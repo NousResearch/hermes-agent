@@ -2246,9 +2246,69 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+
+def bootstrap_external_approval_cli(args) -> None:
+    """Wire inherited grant/record FDs for config-pinned exact-once approvals.
+
+    Ephemeral transport only — activation still requires
+    ``approvals.external.mode: exact-once`` plus its config-pinned public key
+    in config.yaml. Incomplete FD pairs fail closed so adapters cannot
+    half-enable the protocol.
+    """
+    grant_fd = getattr(args, "external_approval_grant_fd", None)
+    record_fd = getattr(args, "external_approval_record_fd", None)
+    provided = [
+        grant_fd is not None,
+        record_fd is not None,
+    ]
+    if not any(provided):
+        return
+    if not all(provided):
+        print(
+            "Error: --external-approval-grant-fd, "
+            "--external-approval-record-fd must be provided together",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    try:
+        grant_input_fd = int(grant_fd)
+        record_output_fd = int(record_fd)
+    except (TypeError, ValueError):
+        print(
+            "Error: --external-approval-grant-fd and "
+            "--external-approval-record-fd must be integers",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    from tools.approval import configure_external_approval_fd_protocol
+
+    try:
+        configure_external_approval_fd_protocol(
+            grant_input_fd=grant_input_fd,
+            record_output_fd=record_output_fd,
+        )
+    except OSError as exc:
+        print(f"Error: invalid external approval FD configuration: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
+
+    # The inherited-FD approval protocol is a headless CLI transport. The TUI
+    # owns its own process and cannot safely preserve that exact-once channel.
+    if use_tui and (
+        getattr(args, "external_approval_grant_fd", None) is not None
+        or getattr(args, "external_approval_record_fd", None) is not None
+    ):
+        print(
+            "Error: --external-approval-grant-fd and "
+            "--external-approval-record-fd are not supported with the TUI",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
     _apply_safe_mode(args)
 
@@ -2383,6 +2443,9 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+
+    # External exact-once approval FD bootstrap (hidden chat flags).
+    bootstrap_external_approval_cli(args)
 
     _pin_kanban_board_env()
 

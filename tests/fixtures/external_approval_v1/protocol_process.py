@@ -8,9 +8,9 @@ supplied record FD.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
+from pathlib import Path
 
 from tools import approval as approval_module
 
@@ -24,7 +24,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("role", choices=("request", "consume", "replay", "fd-probe"))
     parser.add_argument("--grant-fd", type=int)
     parser.add_argument("--record-fd", type=int)
-    parser.add_argument("--verification-key")
     parser.add_argument("--session-id")
     parser.add_argument("--hermes-home")
     parser.add_argument("--probe-fds", nargs=2, type=int)
@@ -46,18 +45,21 @@ def main() -> int:
         print(json.dumps({"grant": _fd_is_open(grant_fd), "records": _fd_is_open(record_fd)}))
         return 0
 
-    os.environ["HERMES_EXEC_ASK"] = "1"
-    os.environ["HERMES_EXTERNAL_APPROVAL_MODE"] = "exact-once"
     os.environ["HERMES_HOME"] = args.hermes_home
     os.environ.pop("HERMES_INTERACTIVE", None)
     os.environ.pop("HERMES_GATEWAY_SESSION", None)
     os.environ.pop("HERMES_YOLO_MODE", None)
+    os.environ.pop("HERMES_EXTERNAL_APPROVAL_MODE", None)
+
+    config_path = Path(args.hermes_home) / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config_path.exists():
+        raise RuntimeError("test parent must configure the pinned verification key")
 
     token = approval_module.set_current_session_key(args.session_id)
     approval_module.configure_external_approval_fd_protocol(
         grant_input_fd=args.grant_fd,
         record_output_fd=args.record_fd,
-        verification_key=base64.b64decode(args.verification_key),
     )
     try:
         result = approval_module.check_all_command_guards(COMMAND, "local")

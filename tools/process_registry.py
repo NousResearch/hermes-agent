@@ -760,6 +760,11 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        try:
+            from tools.approval import external_approval_tool_subprocess_kwargs
+            _popen_kwargs.update(external_approval_tool_subprocess_kwargs())
+        except Exception:
+            _popen_kwargs.setdefault("close_fds", True)
 
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],

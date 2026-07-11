@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -27,7 +28,6 @@ from tools import approval as approval_module
 
 PROTOCOL = "hermes.external-approval"
 VERSION = 1
-MODE_ENV = "HERMES_EXTERNAL_APPROVAL_MODE"
 MODE_VALUE = "exact-once"
 OPERATION_KIND = "terminal.command"
 TOOL_IDENTITY = "terminal"
@@ -41,6 +41,30 @@ COMMAND = (
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "external_approval_v1"
 PROCESS_HELPER = FIXTURES / "protocol_process.py"
 PROCESS_MARKER = "nls-184-external-approval-process"
+
+
+def _write_external_mode_config(
+    profile_home: str, *, mode: str = MODE_VALUE, verification_key: bytes | None = None
+) -> Path:
+    """Configure external approval, including its non-secret pinned public key."""
+    config_path = Path(profile_home) / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    key_line = ""
+    if verification_key is not None:
+        key_line = (
+            "    verification_key: "
+            + base64.b64encode(verification_key).decode("ascii")
+            + "\n"
+        )
+    config_path.write_text(
+        "approvals:\n"
+        "  mode: manual\n"
+        "  external:\n"
+        f"    mode: {mode}\n"
+        + key_line,
+        encoding="utf-8",
+    )
+    return config_path
 
 
 def _canonical(value: dict) -> bytes:
@@ -78,7 +102,7 @@ def _sign(private_key: Ed25519PrivateKey, grant: dict) -> dict:
 
 @dataclass
 class _PipeHarness:
-    """Test-only external peer; production sees only two integer FDs and a public key."""
+    """Test-only peer; production sees only two FDs and config pins its public key."""
 
     grant_read_fd: int
     grant_write_fd: int
@@ -120,26 +144,28 @@ class _PipeHarness:
 
 @pytest.fixture
 def external_protocol(monkeypatch, tmp_path):
-    """Configure the proposed FD-only ABI with an external test peer's public key."""
+    """Configure the FD-only ABI and pin the test peer's public key in config."""
     harness = _PipeHarness.create()
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     public_key = private_key.public_key().public_bytes(
         serialization.Encoding.Raw, serialization.PublicFormat.Raw
     )
     profile_home = str(tmp_path / "profiles" / "headless-test")
+    _write_external_mode_config(
+        profile_home, mode=MODE_VALUE, verification_key=public_key
+    )
 
-    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-    monkeypatch.setenv(MODE_ENV, MODE_VALUE)
     monkeypatch.setenv("HERMES_HOME", profile_home)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     token = approval_module.set_current_session_key(SESSION_ID)
     approval_module.clear_session(SESSION_ID)
     approval_module.configure_external_approval_fd_protocol(
         grant_input_fd=harness.grant_read_fd,
         record_output_fd=harness.records_write_fd,
-        verification_key=public_key,
     )
     try:
         yield harness, private_key, profile_home
@@ -252,6 +278,9 @@ def _read_all_records(fd: int) -> list[dict]:
 
 def _run_protocol_process(*, role: str, profile_home: str, verification_key: bytes, grant: dict | None = None):
     """Run one isolated Hermes process with protocol records restricted to pipes."""
+    _write_external_mode_config(
+        profile_home, mode=MODE_VALUE, verification_key=verification_key
+    )
     grant_read_fd, grant_write_fd = os.pipe()
     record_read_fd, record_write_fd = os.pipe()
     if grant is not None:
@@ -261,7 +290,6 @@ def _run_protocol_process(*, role: str, profile_home: str, verification_key: byt
             sys.executable, str(PROCESS_HELPER), role,
             "--grant-fd", str(grant_read_fd),
             "--record-fd", str(record_write_fd),
-            "--verification-key", base64.b64encode(verification_key).decode("ascii"),
             "--session-id", SESSION_ID,
             "--hermes-home", profile_home,
         ],
@@ -271,6 +299,12 @@ def _run_protocol_process(*, role: str, profile_home: str, verification_key: byt
         stderr=subprocess.PIPE,
         pass_fds=(grant_read_fd, record_write_fd),
         close_fds=True,
+        env={
+            **os.environ,
+            # Prefer this worktree over any editable install of hermes-agent.
+            "PYTHONPATH": str(Path(__file__).parents[2])
+            + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""),
+        },
     )
     os.close(grant_read_fd)
     os.close(grant_write_fd)
@@ -487,6 +521,8 @@ def test_normal_tool_subprocess_cannot_inherit_or_read_protocol_fds(external_pro
 def test_external_grant_never_mutates_yolo_session_or_permanent_allowlists(external_protocol):
     harness, private_key, _profile_home = external_protocol
     executions: list[str] = []
+    before_permanent = set(approval_module._permanent_approved)
+    before_session = set(approval_module._session_approved.get(SESSION_ID, set()))
     _first, _request = _request_then_signed_grant(harness, private_key, executions)
 
     result = _run_guarded(COMMAND, executions)
@@ -494,5 +530,646 @@ def test_external_grant_never_mutates_yolo_session_or_permanent_allowlists(exter
 
     assert result["approved"] is True
     assert approval_module.is_session_yolo_enabled(SESSION_ID) is False
-    assert approval_module._session_approved.get(SESSION_ID, set()) == set()
-    assert approval_module._permanent_approved == set()
+    assert approval_module._session_approved.get(SESSION_ID, set()) == before_session
+    assert approval_module._permanent_approved == before_permanent
+
+
+def test_config_mode_off_keeps_external_protocol_inactive_even_with_fds(monkeypatch, tmp_path):
+    """approvals.external.mode defaults/off must not activate exact-once even when FDs are wired."""
+    harness = _PipeHarness.create()
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    profile_home = str(tmp_path / "profiles" / "mode-off")
+    _write_external_mode_config(
+        profile_home, mode="off", verification_key=public_key
+    )
+    monkeypatch.setenv("HERMES_HOME", profile_home)
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    token = approval_module.set_current_session_key(SESSION_ID)
+    approval_module.configure_external_approval_fd_protocol(
+        grant_input_fd=harness.grant_read_fd,
+        record_output_fd=harness.records_write_fd,
+    )
+    try:
+        assert approval_module._is_external_exact_once_active() is False
+        executions: list[str] = []
+        result = _run_guarded(COMMAND, executions)
+        assert result.get("external_approval") is None
+        assert executions == [] or result["approved"] in (True, False)
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        harness.close()
+        approval_module.reset_current_session_key(token)
+
+
+def test_config_exact_once_activates_without_behavioral_env_var(external_protocol):
+    harness, _private_key, profile_home = external_protocol
+    assert (Path(profile_home) / "config.yaml").read_text().count("exact-once") == 1
+    assert os.getenv("HERMES_EXTERNAL_APPROVAL_MODE") in (None, "")
+    assert approval_module._is_external_exact_once_active() is True
+    executions: list[str] = []
+    result = _run_guarded(COMMAND, executions)
+    request = harness.take_record()
+    assert result["approved"] is False
+    assert request["kind"] == "request"
+    assert executions == []
+
+
+def test_cli_parser_accepts_only_hidden_external_approval_fd_flags():
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, _chat = build_top_level_parser()
+    args = parser.parse_args([
+        "chat",
+        "-q",
+        "ping",
+        "--external-approval-grant-fd",
+        "3",
+        "--external-approval-record-fd", "4",
+    ])
+    assert args.external_approval_grant_fd == 3
+    assert args.external_approval_record_fd == 4
+    assert not hasattr(args, "external_approval_verification_key")
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "chat", "-q", "ping", "--external-approval-verification-key",
+            base64.b64encode(bytes(range(32))).decode("ascii"),
+        ])
+
+
+def test_cli_bootstrap_wires_inherited_fds_and_keeps_records_off_stdio(tmp_path, monkeypatch):
+    """Node adapters spawn hermes chat -q with pass_fds; bootstrap must configure the ABI."""
+    from argparse import Namespace
+
+    from hermes_cli.main import bootstrap_external_approval_cli
+
+    harness = _PipeHarness.create()
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    profile_home = str(tmp_path / "profiles" / "cli-bootstrap")
+    _write_external_mode_config(
+        profile_home, mode=MODE_VALUE, verification_key=public_key
+    )
+    monkeypatch.setenv("HERMES_HOME", profile_home)
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+    args = Namespace(
+        external_approval_grant_fd=harness.grant_read_fd,
+        external_approval_record_fd=harness.records_write_fd,
+    )
+    token = approval_module.set_current_session_key(SESSION_ID)
+    try:
+        bootstrap_external_approval_cli(args)
+        assert approval_module._is_external_exact_once_active() is True
+        executions: list[str] = []
+        result = _run_guarded(COMMAND, executions)
+        request = harness.take_record()
+        assert result["approved"] is False
+        assert request["kind"] == "request"
+        assert SECRET not in json.dumps(request, sort_keys=True)
+        assert executions == []
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        harness.close()
+        approval_module.reset_current_session_key(token)
+
+
+def test_cli_bootstrap_incomplete_fd_pair_fails_closed(monkeypatch):
+    from argparse import Namespace
+
+    from hermes_cli.main import bootstrap_external_approval_cli
+
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        bootstrap_external_approval_cli(Namespace(
+            external_approval_grant_fd=3,
+            external_approval_record_fd=None,
+        ))
+    assert exc.value.code == 2
+
+
+def test_local_environment_subprocess_cannot_read_protocol_fds(external_protocol, tmp_path):
+    """Real terminal launch path must close protocol FDs — not only the unused kwargs helper."""
+    from tools.environments.local import LocalEnvironment
+
+    harness, _private_key, _profile_home = external_protocol
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+    probe = (
+        f"{sys.executable} {PROCESS_HELPER} fd-probe --probe-fds "
+        f"{harness.grant_read_fd} {harness.records_write_fd}"
+    )
+    proc = env._run_bash(probe)
+    stdout, _stderr = proc.communicate(timeout=10)
+    assert proc.returncode == 0, stdout
+    assert json.loads(stdout) == {"grant": False, "records": False}
+
+
+def test_concurrent_processes_cannot_both_consume_the_same_grant(tmp_path):
+    """O_EXCL consume markers must admit exactly one winner across Hermes processes."""
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    verification_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    profile_home = str(tmp_path / "profiles" / "race-test")
+    _write_external_mode_config(profile_home, mode=MODE_VALUE)
+
+    first_marker, first_records = _run_protocol_process(
+        role="request", profile_home=profile_home, verification_key=verification_key
+    )
+    request = first_records[0]
+    grant = _sign(private_key, _unsigned_grant(request))
+
+    grant_payload = _canonical(grant) + b"\n"
+    procs = []
+    record_readers = []
+    for _ in range(2):
+        grant_read_fd, grant_write_fd = os.pipe()
+        record_read_fd, record_write_fd = os.pipe()
+        os.write(grant_write_fd, grant_payload)
+        process = subprocess.Popen(
+            [
+                sys.executable, str(PROCESS_HELPER), "consume",
+                "--grant-fd", str(grant_read_fd),
+                "--record-fd", str(record_write_fd),
+                "--session-id", SESSION_ID,
+                "--hermes-home", profile_home,
+            ],
+            cwd=Path(__file__).parents[2],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(grant_read_fd, record_write_fd),
+            close_fds=True,
+            env={
+                **os.environ,
+                "PYTHONPATH": str(Path(__file__).parents[2])
+                + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""),
+            },
+        )
+        os.close(grant_read_fd)
+        os.close(grant_write_fd)
+        os.close(record_write_fd)
+        procs.append(process)
+        record_readers.append(record_read_fd)
+
+    markers = []
+    receipts = []
+    for process, record_read_fd in zip(procs, record_readers):
+        try:
+            stdout, stderr = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            pytest.fail(f"race child hung: {stderr}")
+        assert process.returncode == 0, stderr
+        markers.append(json.loads(stdout))
+        receipts.extend(_read_all_records(record_read_fd))
+        os.close(record_read_fd)
+
+    approved = [m for m in markers if m["approved"] is True]
+    denied = [m for m in markers if m["approved"] is False]
+    assert first_marker["role"] == "request"
+    assert len(approved) == 1
+    assert len(denied) == 1
+    assert sum(m["executions"] for m in markers) == 1
+    assert sum(1 for r in receipts if r.get("kind") == "receipt") == 1
+
+
+# ---------------------------------------------------------------------------
+# Review-fix RED contracts (Codex attempt-3 blockers)
+# ---------------------------------------------------------------------------
+
+
+def test_claim_fsyncs_parent_consumed_directory_before_authorizing(monkeypatch, tmp_path):
+    """After the O_EXCL marker fsync, the parent consumed dir must be fsynced too."""
+    profile_home = tmp_path / "profiles" / "parent-fsync"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    approval_id = "appr_v1_parent_fsync"
+    marker = approval_module._consumed_marker_path(approval_id)
+    consumed_dir = marker.parent
+
+    fsynced_paths: list[str] = []
+    real_fsync = os.fsync
+    real_open = os.open
+
+    def tracking_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        tracking_open._fd_paths[fd] = str(path)  # type: ignore[attr-defined]
+        return fd
+
+    tracking_open._fd_paths = {}  # type: ignore[attr-defined]
+
+    def tracking_fsync(fd):
+        path = tracking_open._fd_paths.get(fd)  # type: ignore[attr-defined]
+        if path is None:
+            try:
+                path = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                path = f"<fd:{fd}>"
+        fsynced_paths.append(path)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
+
+    assert approval_module._claim_consumed_approval_id(approval_id) is True
+    assert marker.is_file()
+    assert any(Path(p).resolve() == marker.resolve() for p in fsynced_paths)
+    assert any(Path(p).resolve() == consumed_dir.resolve() for p in fsynced_paths)
+    marker_idx = next(
+        i for i, p in enumerate(fsynced_paths) if Path(p).resolve() == marker.resolve()
+    )
+    dir_idx = next(
+        i for i, p in enumerate(fsynced_paths)
+        if Path(p).resolve() == consumed_dir.resolve()
+    )
+    assert dir_idx > marker_idx
+
+
+def test_parent_consumed_directory_fsync_failure_is_permanent_fail_closed(
+    monkeypatch, tmp_path
+):
+    """Directory open/fsync/close failure after a successful claim must stick and deny."""
+    profile_home = tmp_path / "profiles" / "parent-fsync-fail"
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    approval_id = "appr_v1_parent_fsync_fail"
+    marker = approval_module._consumed_marker_path(approval_id)
+    consumed_dir = str(marker.parent)
+
+    real_open = os.open
+    real_fsync = os.fsync
+    real_close = os.close
+    dir_fds: set[int] = set()
+
+    def selective_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if str(path) == consumed_dir and not (flags & os.O_CREAT):
+            dir_fds.add(fd)
+        return fd
+
+    def failing_dir_fsync(fd):
+        if fd in dir_fds:
+            raise OSError(errno.EIO, "injected parent directory fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", selective_open)
+    monkeypatch.setattr(os, "fsync", failing_dir_fsync)
+
+    assert approval_module._claim_consumed_approval_id(approval_id) is False
+    assert marker.is_file(), "failed parent fsync must leave the claim marker in place"
+    monkeypatch.setattr(os, "open", real_open)
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    monkeypatch.setattr(os, "close", real_close)
+    assert approval_module._claim_consumed_approval_id(approval_id) is False
+
+
+@pytest.mark.parametrize(
+    "bad_args",
+    (
+        {"grant_fd": 0, "record_fd": 4},
+        {"grant_fd": 3, "record_fd": 1},
+        {"grant_fd": 3, "record_fd": 3},
+        {"grant_fd": -1, "record_fd": 4},
+    ),
+    ids=("grant-stdin", "record-stdout", "duplicate-fds", "negative-fd"),
+)
+def test_cli_bootstrap_rejects_stdio_duplicate_and_negative_fds(monkeypatch, bad_args):
+    from argparse import Namespace
+
+    from hermes_cli.main import bootstrap_external_approval_cli
+
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        bootstrap_external_approval_cli(Namespace(
+            external_approval_grant_fd=bad_args["grant_fd"],
+            external_approval_record_fd=bad_args["record_fd"],
+        ))
+    assert exc.value.code == 2
+
+
+def test_cli_bootstrap_rejects_closed_and_wrong_direction_fds(monkeypatch):
+    from argparse import Namespace
+
+    from hermes_cli.main import bootstrap_external_approval_cli
+
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    r, w = os.pipe()
+    closed_fd = r
+    os.close(r)
+    os.close(w)
+    with pytest.raises(SystemExit) as exc:
+        bootstrap_external_approval_cli(Namespace(
+            external_approval_grant_fd=closed_fd,
+            external_approval_record_fd=max(closed_fd + 1, 10),
+        ))
+    assert exc.value.code == 2
+
+    grant_r, grant_w = os.pipe()
+    rec_r, rec_w = os.pipe()
+    try:
+        with pytest.raises(SystemExit) as exc:
+            bootstrap_external_approval_cli(Namespace(
+                external_approval_grant_fd=grant_w,
+                external_approval_record_fd=rec_r,
+            ))
+        assert exc.value.code == 2
+    finally:
+        for fd in (grant_r, grant_w, rec_r, rec_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_configure_does_not_suppress_set_inheritable_failure(monkeypatch):
+    grant_r, grant_w = os.pipe()
+    rec_r, rec_w = os.pipe()
+    try:
+        def boom(fd, inheritable):
+            raise OSError(errno.EBADF, "injected set_inheritable failure")
+
+        monkeypatch.setattr(os, "set_inheritable", boom)
+        with pytest.raises(OSError):
+            approval_module.configure_external_approval_fd_protocol(
+                grant_input_fd=grant_r,
+                record_output_fd=rec_w,
+            )
+        assert approval_module._external_fd_protocol is None
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        for fd in (grant_r, grant_w, rec_r, rec_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_grant_select_and_read_errors_deny_cleanly(external_protocol, monkeypatch):
+    harness, _private_key, _profile_home = external_protocol
+    executions: list[str] = []
+
+    def boom_select(*_args, **_kwargs):
+        raise OSError(errno.EINTR, "injected select failure")
+
+    monkeypatch.setattr(approval_module.select, "select", boom_select)
+    result = _run_guarded(COMMAND, executions)
+    assert result["approved"] is False
+    assert executions == []
+    request = harness.take_record()
+    assert request["kind"] == "request"
+
+
+def test_strict_grant_rejects_extra_keys_and_wrong_native_types(external_protocol):
+    harness, private_key, _profile_home = external_protocol
+    executions: list[str] = []
+    first = _run_guarded(COMMAND, executions)
+    request = harness.take_record()
+    assert first["approved"] is False
+
+    cases = []
+
+    extra_top = _unsigned_grant(request)
+    extra_top["extra_field"] = "nope"
+    cases.append(_sign(private_key, extra_top))
+
+    extra_op = _unsigned_grant(request)
+    extra_op["operation"] = dict(extra_op["operation"], extra="x")
+    cases.append(_sign(private_key, extra_op))
+
+    extra_sess = _unsigned_grant(request)
+    extra_sess["session"] = dict(extra_sess["session"], extra="x")
+    cases.append(_sign(private_key, extra_sess))
+
+    bool_version = _unsigned_grant(request)
+    bool_version["version"] = True
+    cases.append(_sign(private_key, bool_version))
+
+    float_ts = _unsigned_grant(request)
+    float_ts["issued_at"] = float(float_ts["issued_at"]) + 0.5
+    cases.append(_sign(private_key, float_ts))
+
+    for grant in cases:
+        harness.send_grant(grant)
+        result = _run_guarded(COMMAND, executions)
+        assert result["approved"] is False, grant
+        assert executions == []
+
+
+def test_validly_signed_noncanonical_wire_bytes_are_rejected(external_protocol):
+    """Signature verification must require the raw FD line to already be canonical JSON."""
+    harness, private_key, _profile_home = external_protocol
+    executions: list[str] = []
+    first = _run_guarded(COMMAND, executions)
+    request = harness.take_record()
+    signed = _sign(private_key, _unsigned_grant(request))
+    canonical = _canonical(signed)
+
+    # Single-line spaced JSON still parses to the same object; must not verify
+    # via re-canonicalization of a parsed dict.
+    noncanonical = json.dumps(signed, sort_keys=True, separators=(", ", ": ")).encode("utf-8")
+    assert b"\n" not in noncanonical
+    assert noncanonical != canonical
+    harness.send_raw_grant(noncanonical)
+
+    result = _run_guarded(COMMAND, executions)
+
+    assert first["approved"] is False
+    assert result["approved"] is False
+    assert executions == []
+
+
+def test_config_pins_the_trust_root_and_cli_cannot_select_a_different_key(tmp_path, monkeypatch):
+    """Only the configured public key, never a child CLI value, may verify grants."""
+    harness = _PipeHarness.create()
+    trusted_private = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    untrusted_private = Ed25519PrivateKey.from_private_bytes(bytes(reversed(range(32))))
+    trusted_public = trusted_private.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    profile_home = str(tmp_path / "profiles" / "pinned-root")
+    _write_external_mode_config(
+        profile_home, mode=MODE_VALUE, verification_key=trusted_public
+    )
+    monkeypatch.setenv("HERMES_HOME", profile_home)
+    from argparse import Namespace
+
+    from hermes_cli.main import bootstrap_external_approval_cli
+
+    token = approval_module.set_current_session_key(SESSION_ID)
+    try:
+        # This obsolete/forged Namespace member models inherited plumbing from
+        # an older child. Bootstrap must ignore it and retain the config key.
+        bootstrap_external_approval_cli(Namespace(
+            external_approval_grant_fd=harness.grant_read_fd,
+            external_approval_record_fd=harness.records_write_fd,
+            external_approval_verification_key=base64.b64encode(
+                untrusted_private.public_key().public_bytes(
+                    serialization.Encoding.Raw, serialization.PublicFormat.Raw
+                )
+            ).decode("ascii"),
+        ))
+        first = _run_guarded(COMMAND, [])
+        request = harness.take_record()
+        assert first["approved"] is False
+        harness.send_grant(_sign(untrusted_private, _unsigned_grant(request)))
+        assert _run_guarded(COMMAND, [])["approved"] is False
+        assert harness.take_record()["kind"] == "request"
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        harness.close()
+        approval_module.reset_current_session_key(token)
+
+
+@pytest.mark.parametrize("stdio_fd", (0, 1, 2), ids=("stdin", "stdout", "stderr"))
+def test_configure_rejects_fds_that_alias_stdio(stdio_fd):
+    """Numeric checks are insufficient: os.dup(0/1/2) is still stdio."""
+    alias_fd = os.dup(stdio_fd)
+    grant_r, grant_w = os.pipe()
+    record_r, record_w = os.pipe()
+    try:
+        kwargs = {
+            "grant_input_fd": alias_fd if stdio_fd == 0 else grant_r,
+            "record_output_fd": alias_fd if stdio_fd != 0 else record_w,
+        }
+        with pytest.raises(OSError) as exc:
+            approval_module.configure_external_approval_fd_protocol(**kwargs)
+        assert exc.value.errno == errno.EINVAL
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        for fd in (alias_fd, grant_r, grant_w, record_r, record_w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_protocol_directory_creation_fsyncs_each_new_private_directory_parent(monkeypatch, tmp_path):
+    """A first-use crash cannot lose either private protocol directory entry."""
+    profile_home = tmp_path / "profiles" / "durable-protocol-dirs"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    external_dir = profile_home / ".external-approval"
+    consumed_dir = external_dir / "consumed"
+    opened: dict[int, Path] = {}
+    fsynced: list[Path] = []
+    real_open = os.open
+    real_fsync = os.fsync
+
+    def tracking_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        opened[fd] = Path(path)
+        return fd
+
+    def tracking_fsync(fd):
+        if fd in opened:
+            fsynced.append(opened[fd].resolve())
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
+    assert approval_module._claim_consumed_approval_id("appr_v1_fresh_dirs") is True
+    assert profile_home.resolve() in fsynced
+    assert external_dir.resolve() in fsynced
+    assert consumed_dir.resolve() in fsynced
+
+
+def test_protocol_directory_parent_fsync_failure_denies_before_marker(monkeypatch, tmp_path):
+    """No one-shot grant is consumed if first-use directory durability fails."""
+    profile_home = tmp_path / "profiles" / "durable-protocol-dir-fail"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    approval_id = "appr_v1_dir_fsync_failure"
+    marker = approval_module._consumed_marker_path(approval_id)
+    real_open = os.open
+    real_fsync = os.fsync
+    parent_fds: set[int] = set()
+
+    def tracking_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if Path(path) == profile_home:
+            parent_fds.add(fd)
+        return fd
+
+    def fail_parent_fsync(fd):
+        if fd in parent_fds:
+            raise OSError(errno.EIO, "injected first-use parent fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fsync", fail_parent_fsync)
+    assert approval_module._claim_consumed_approval_id(approval_id) is False
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("failure", ("mkdir", "chmod", "open", "fsync", "close"))
+def test_private_protocol_directory_setup_fails_closed_on_every_io_step(
+    monkeypatch, tmp_path, failure
+):
+    """Each first-use create/publish I/O failure denies the grant before a marker."""
+    profile_home = tmp_path / "profiles" / f"private-dir-{failure}"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    external_dir = profile_home / ".external-approval"
+    real_mkdir = os.mkdir
+    real_chmod = os.chmod
+    real_open = os.open
+    real_fsync = os.fsync
+    real_close = os.close
+
+    if failure == "mkdir":
+        monkeypatch.setattr(
+            os, "mkdir",
+            lambda path, mode=0o777, *, dir_fd=None: (
+                (_ for _ in ()).throw(OSError(errno.EIO, "injected mkdir failure"))
+                if Path(path) == external_dir else real_mkdir(path, mode, dir_fd=dir_fd)
+            ),
+        )
+    elif failure == "chmod":
+        monkeypatch.setattr(
+            os, "chmod",
+            lambda path, mode, *, dir_fd=None, follow_symlinks=True: (
+                (_ for _ in ()).throw(OSError(errno.EPERM, "injected chmod failure"))
+                if Path(path) == external_dir
+                else real_chmod(path, mode, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+            ),
+        )
+    elif failure == "open":
+        monkeypatch.setattr(
+            os, "open",
+            lambda path, flags, mode=0o777, *, dir_fd=None: (
+                (_ for _ in ()).throw(OSError(errno.EIO, "injected open failure"))
+                if Path(path) == profile_home
+                else real_open(path, flags, mode, dir_fd=dir_fd)
+            ),
+        )
+    elif failure == "fsync":
+        monkeypatch.setattr(
+            os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "injected fsync failure"))
+        )
+    else:
+        monkeypatch.setattr(
+            os, "close", lambda _fd: (_ for _ in ()).throw(OSError(errno.EIO, "injected close failure"))
+        )
+
+    assert approval_module._claim_consumed_approval_id(f"appr_v1_{failure}") is False
+
+
+def test_oversized_unterminated_grant_permanently_fails_closed(external_protocol, monkeypatch):
+    """A malicious never-newline frame cannot grow memory or recover later."""
+    harness, _private_key, _profile_home = external_protocol
+    monkeypatch.setattr(approval_module.select, "select", lambda *_args: ([harness.grant_read_fd], [], []))
+    monkeypatch.setattr(
+        approval_module.os,
+        "read",
+        lambda *_args: b"x" * (64 * 1024 + 1),
+    )
+    result = _run_guarded(COMMAND, [])
+    assert result["approved"] is False
+    assert len(approval_module._grant_read_buffer) <= 64 * 1024
+    assert approval_module._external_fd_protocol_failed is True

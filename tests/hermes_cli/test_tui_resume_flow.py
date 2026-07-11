@@ -178,6 +178,40 @@ def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
     assert captured["toolsets"] == "web,terminal"
 
 
+@pytest.mark.parametrize(
+    ("grant_fd", "record_fd"),
+    ((3, None), (None, 4), (3, 4)),
+    ids=("grant-only", "record-only", "fd-pair"),
+)
+def test_cmd_chat_tui_rejects_external_approval_fds_before_bootstrap_or_launch(
+    monkeypatch, main_mod, grant_fd, record_fd
+):
+    """The inherited-FD protocol is headless CLI-only, never a TUI transport."""
+    bootstrap_calls = []
+
+    monkeypatch.setattr(
+        main_mod,
+        "bootstrap_external_approval_cli",
+        lambda _args: bootstrap_calls.append(True),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_launch_tui",
+        lambda *_args, **_kwargs: pytest.fail("TUI must not launch with approval FDs"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.cmd_chat(
+            _args(
+                external_approval_grant_fd=grant_fd,
+                external_approval_record_fd=record_fd,
+            )
+        )
+
+    assert exc.value.code == 2
+    assert bootstrap_calls == []
+
+
 def test_cmd_chat_tui_forwards_chat_flags(monkeypatch, main_mod):
     captured = {}
 

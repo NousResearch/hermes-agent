@@ -1039,6 +1039,11 @@ class LocalEnvironment(BaseEnvironment):
         _popen_cwd = self.cwd
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+        try:
+            from tools.approval import external_approval_tool_subprocess_kwargs
+            _popen_kwargs.update(external_approval_tool_subprocess_kwargs())
+        except Exception:
+            _popen_kwargs.setdefault("close_fds", True)
 
         proc = subprocess.Popen(
             args,

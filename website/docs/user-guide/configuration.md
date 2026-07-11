@@ -1880,6 +1880,9 @@ Control how Hermes handles potentially dangerous commands:
 ```yaml
 approvals:
   mode: manual   # manual | smart | off
+  external:
+    mode: off    # off | exact-once (FD-based headless grants; see Security)
+    verification_key: ""  # base64 raw 32-byte Ed25519 public key (non-secret)
 ```
 
 | Mode | Behavior |
@@ -1887,6 +1890,8 @@ approvals:
 | `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
 | `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
+
+`approvals.external.mode` is independent of `approvals.mode`. Exact-once additionally requires `approvals.external.verification_key`, a base64 raw 32-byte Ed25519 public key pinned in config. Leave it `off` unless a headless adapter is spawning `hermes chat -q` with dedicated grant/record FDs. See [Security — External Exact-Once Approvals](/user-guide/security#external-exact-once-approvals).
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 

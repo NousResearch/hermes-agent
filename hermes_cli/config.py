@@ -2561,6 +2561,15 @@ DEFAULT_CONFIG = {
         # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
         # opt out there).
         "destructive_slash_confirm": True,
+        # External exact-once approval over inherited FDs (headless/Node
+        # adapters). Default off. When mode is exact-once AND the process
+        # was started with the hidden --external-approval-*-fd flags and this
+        # config-pinned public key, dangerous terminal commands are authorized only by
+        # a signed one-shot grant on the grant FD (no yolo/allowlist mutation).
+        "external": {
+            "mode": "off",  # off | exact-once
+            "verification_key": "",  # base64 raw 32-byte Ed25519 public key
+        },
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

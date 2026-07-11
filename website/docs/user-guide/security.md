@@ -35,6 +35,9 @@ approvals:
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
+  external:
+    mode: off                     # off | exact-once — FD-based headless exact-once grants
+    verification_key: ""          # base64 raw 32-byte Ed25519 public key (non-secret)
 ```
 
 The full set of keys:
@@ -46,6 +49,8 @@ The full set of keys:
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
+| `external.mode` | `off` | When paired with a configured `external.verification_key`, headless adapters may authorize dangerous terminal commands via signed one-shot grants on dedicated inherited FDs (see [External Exact-Once Approvals](#external-exact-once-approvals)). Default `off` preserves normal CLI/gateway prompting. |
+| `external.verification_key` | `""` | Base64 encoding of the raw 32-byte Ed25519 public verification key. It is a non-secret trust root pinned in config; without it exact-once approval remains inactive. |
 
 | Mode | Behavior |
 |------|----------|
@@ -135,6 +140,28 @@ Like the rest of the approval config, changes take effect immediately (the confi
 :::note Threat model
 Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
 :::
+
+### External Exact-Once Approvals
+
+Headless Node (or other) adapters can authorize dangerous terminal commands without interactive prompts by enabling FD-based exact-once grants:
+
+```yaml
+approvals:
+  external:
+    mode: exact-once   # default: off
+    verification_key: "<base64 raw 32-byte Ed25519 public key>"
+```
+
+When `mode` is `exact-once`, a valid `verification_key` is pinned in `config.yaml`, **and** Hermes was started with the hidden chat transport flags (`--external-approval-grant-fd`, `--external-approval-record-fd`), every dangerous command:
+
+1. Emits a canonical JSON **request** on the record-output FD (never on stdout/stderr).
+2. Accepts at most one signed Ed25519 **grant** on the grant-input FD, bound to the exact command fingerprint, session, profile, expiry, and `approve_once` choice.
+3. Atomically consumes the grant (cross-process `O_CREAT|O_EXCL` marker under `~/.hermes/.external-approval/consumed/`) and writes a **receipt** before executing.
+4. Never mutates YOLO, session, or permanent allowlists.
+
+Hermes holds only the adapter's **public** verification key, which is configured before the child starts; private keys stay in the adapter. A child cannot select or replace this trust root through CLI arguments. Incomplete FD pairs fail startup closed. Protocol FDs are marked non-inheritable and terminal/tool subprocesses are spawned with `close_fds=True` so child shells cannot read them.
+
+Leave `external.mode: off` (the default) for normal CLI and gateway sessions.
 
 ### Approval Timeout
 

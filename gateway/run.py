@@ -9079,14 +9079,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         active = get_active_profile_name() or "default"
         connected = 0
-        # (platform, token-fingerprint) -> profile that claimed it. Detects two
-        # profiles trying to poll the same bot credential (impossible to do
-        # concurrently). Seed with the active profile's adapters.
+        # Resource claim -> profile that owns it. Credential claims prevent two
+        # profiles polling the same account; listener claims prevent sidecars
+        # with distinct credentials from binding the same endpoint.
         claimed: Dict[tuple, str] = {}
         for _plat, _ad in self.adapters.items():
             fp = self._adapter_credential_fingerprint(_ad)
             if fp is not None:
                 claimed[(_plat, fp)] = active
+            listener_claim = self._adapter_listener_claim(_plat, _ad)
+            if listener_claim is not None:
+                claimed[listener_claim] = active
 
         for profile_name, profile_home in profiles_to_serve(multiplex=True):
             if profile_name == active:
@@ -9212,6 +9215,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # adapter, shut down the primary profile's live sidecar.
                     continue
                 claimed[(platform, fp)] = profile_name
+
+            listener_claim = self._adapter_listener_claim(platform, adapter)
+            if listener_claim is not None:
+                owner = claimed.get(listener_claim)
+                if owner is not None:
+                    bind, port = listener_claim[-2:]
+                    logger.error(
+                        "Profile '%s' and '%s' both configure %s sidecars on "
+                        "%s:%s — refusing to start the duplicate listener. "
+                        "Set platforms.%s.extra.sidecar_port to a distinct port "
+                        "for profile '%s'.",
+                        owner,
+                        profile_name,
+                        platform.value,
+                        bind,
+                        port,
+                        platform.value,
+                        profile_name,
+                    )
+                    # Like credential conflicts, this adapter never connected
+                    # and owns no resources that should be disconnected.
+                    continue
+                claimed[listener_claim] = profile_name
 
             self._configure_profile_adapter(adapter, profile_name, platform)
 
@@ -9443,6 +9469,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_message(event)
 
         return _handler
+
+    @staticmethod
+    def _adapter_listener_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
+        """Return the exclusive listener resource claimed by an adapter.
+
+        Photon sidecars are per-profile processes. Even when two profiles use
+        different project credentials, their sidecars cannot share a bind and
+        port. Represent that endpoint as a claim so multiplex startup rejects
+        the later adapter before either ``connect()`` or ``disconnect()`` can
+        disturb the first profile.
+        """
+        if getattr(platform, "value", None) != "photon":
+            return None
+        bind = getattr(adapter, "_sidecar_bind", None)
+        port = getattr(adapter, "_sidecar_port", None)
+        if not isinstance(bind, str) or not bind.strip():
+            return None
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            return None
+        return ("listener", "photon", bind.strip().lower(), port)
 
     @staticmethod
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:

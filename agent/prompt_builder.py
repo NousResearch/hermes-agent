@@ -1446,6 +1446,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    promoted_skills: "frozenset[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1463,9 +1464,15 @@ def build_skills_system_prompt(
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
+    the rendered index. The sentinel ``"*"`` demotes EVERY category (the
+    subagent compact index). Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``promoted_skills`` re-promotes named skills to full descriptions even
+    inside demoted categories — the delegate_task per-task ``skills=[...]``
+    allowlist rides on this, so a brief can hand its child exactly the
+    domain skills the task needs while the rest of the index stays compact.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1486,6 +1493,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        tuple(sorted(promoted_skills or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1630,27 +1638,54 @@ def build_skills_system_prompt(
     # their parent.
     demoted = frozenset(
         cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+        if "*" in (compact_categories or frozenset())
+        or cat.split("/", 1)[0] in (compact_categories or frozenset())
     )
 
     hidden_note = ""
     if demoted:
-        hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
-        )
+        if compact_categories and "*" in compact_categories:
+            hidden_note = (
+                "\n(This is a compact index: descriptions are omitted for brevity, "
+                "but every skill works normally — load any of them with "
+                "skill_view(name), or browse with skills_list.)"
+            )
+        else:
+            hidden_note = (
+                "\n(Categories marked [names only] are outside the current coding "
+                "context, so their descriptions are omitted — the skills work "
+                "normally and load with skill_view(name) as usual.)"
+            )
 
     if not skills_by_category:
         result = ""
     else:
         index_lines = []
+        _promoted = promoted_skills or frozenset()
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
             seen = set()
             if category in demoted:
-                names = sorted({name for name, _ in skills_by_category[category]})
-                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                cat_promoted = sorted(
+                    {(n, d) for n, d in skills_by_category[category] if n in _promoted},
+                    key=lambda x: x[0],
+                )
+                names = sorted(
+                    {name for name, _ in skills_by_category[category] if name not in _promoted}
+                )
+                if names:
+                    index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                elif cat_promoted:
+                    index_lines.append(f"  {category}:")
+                else:
+                    index_lines.append(f"  {category} [names only]:")
+                # Promoted skills keep full descriptions even in a demoted
+                # category (the per-task allowlist).
+                for name, desc in cat_promoted:
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
                 continue
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:

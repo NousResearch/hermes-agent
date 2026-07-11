@@ -311,10 +311,33 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
+        # Subagent compact index (delegate_task children): a spawned child
+        # inherits the parent's ENTIRE skills index — measured at 85%+ of a
+        # child's system prompt (~86KB / ~22k tokens on a large skills tree)
+        # for descriptions it almost never reads. Demote everything to
+        # names-only (the "*" sentinel; same demote-never-hide contract as
+        # the coding posture) and re-promote only the skills the dispatching
+        # brief named via delegate_task(skills=[...]). Config-gated:
+        # delegation.compact_skill_index (default ON; set false to restore
+        # the full index for children).
+        _promoted = frozenset()
+        if (agent.platform or "").lower() == "subagent":
+            try:
+                from tools.delegate_tool import _load_config as _delegation_config
+
+                _sub_compact = bool(
+                    (_delegation_config() or {}).get("compact_skill_index", True)
+                )
+            except Exception:
+                _sub_compact = True
+            if _sub_compact:
+                _compact_cats = frozenset({"*"}) | _compact_cats
+                _promoted = frozenset(getattr(agent, "_delegate_skills", ()) or ())
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            promoted_skills=_promoted or None,
         )
     else:
         skills_prompt = ""

@@ -329,6 +329,46 @@ def _is_cron_silence_response(text: str) -> bool:
         return True
     return False
 
+
+# Explicit delivery boundary. Cron prompts instruct the model to place this
+# marker immediately before the user-facing payload. Delivery extraction only
+# honors this marker — never generic Markdown ``---`` rules (#52934 / #53383).
+CRON_DELIVERABLE_MARKER = "FINAL_CRON_OUTPUT:"
+_CRON_DELIVERABLE_MARKER_RE = re.compile(
+    rf"(?im)^\s*{re.escape(CRON_DELIVERABLE_MARKER)}[^\S\r\n]*(.*)$"
+)
+
+
+def _extract_cron_deliverable_response(text: str) -> str:
+    """Return the marked final user-facing cron response when present.
+
+    Cron jobs run in quiet, unattended mode. To avoid deleting legitimate
+    reports with broad content heuristics, only strip text before the explicit
+    marker injected into the cron prompt. Unmarked Markdown (including
+    horizontal rules) is left unchanged.
+    """
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+
+    marker_matches = list(_CRON_DELIVERABLE_MARKER_RE.finditer(stripped))
+    if marker_matches:
+        marker = marker_matches[-1]
+        same_line_tail = (marker.group(1) or "").strip()
+        remaining_tail = stripped[marker.end():].strip()
+        if same_line_tail and remaining_tail:
+            tail = f"{same_line_tail}\n{remaining_tail}"
+        else:
+            tail = same_line_tail or remaining_tail
+        if tail:
+            return tail
+        return stripped
+
+    return stripped
+
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -2374,6 +2414,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
         "final response and the system handles the rest. "
+        f"Before report content, include a line that says exactly "
+        f"{CRON_DELIVERABLE_MARKER}. Only content after that marker "
+        f"will be delivered; do not put working notes after the marker. "
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
@@ -3452,6 +3495,9 @@ def run_job(
             )
 
         final_response = result.get("final_response", "") or ""
+        # Delivery-time extraction (FINAL_CRON_OUTPUT: marker) lives in
+        # run_one_job immediately before _deliver_result so the persisted
+        # cron output document keeps the full model response (#52934).
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
@@ -3737,6 +3783,13 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            # Successful responses only: honor the prompt-injected
+            # FINAL_CRON_OUTPUT: boundary at delivery time so unmarked
+            # Markdown (including ``---`` titles) stays intact and the
+            # condensed form never rewrites the saved output document.
+            if should_deliver and success:
+                deliver_content = _extract_cron_deliverable_response(deliver_content)
+                should_deliver = bool(deliver_content.strip())
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
             # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed

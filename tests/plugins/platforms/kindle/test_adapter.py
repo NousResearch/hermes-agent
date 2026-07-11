@@ -159,5 +159,36 @@ async def test_overlapping_same_chat_request_is_rejected_without_stealing_waiter
     assert sent.success is True
     assert first_response.status == 200
     assert first_body == {"reply": "reply A"}
-    assert dispatched == ["turn A"]
+    assert len(dispatched) == 1
+    assert dispatched[0].endswith("\n\nturn A")
     assert adapter._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_ingest_explains_host_access_and_requires_verified_tool_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter(monkeypatch)
+    dispatched = []
+
+    async def accept(event) -> None:
+        dispatched.append(event.text)
+
+    monkeypatch.setattr(adapter, "handle_message", accept)
+    async with _client(adapter) as client:
+        request = asyncio.create_task(
+            client.post(
+                "/ingest",
+                json=_payload(text="Save this to my desktop"),
+                headers={"X-Kindle-Token": "test-token"},
+            )
+        )
+        await _wait_for_pending(adapter, "scribe-1")
+        await adapter.send("scribe-1", "saved", metadata={"notify": True})
+        response = await request
+
+    assert response.status == 200
+    assert len(dispatched) == 1
+    assert "remote interface to Hermes running on the gateway host" in dispatched[0]
+    assert "perform the action with an available tool and verify its result" in dispatched[0]
+    assert dispatched[0].endswith("\n\nSave this to my desktop")

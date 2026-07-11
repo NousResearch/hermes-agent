@@ -50,6 +50,14 @@ DEFAULT_INGEST_PORT = 8793
 DEFAULT_REPLY_TIMEOUT = 240
 MAX_KINDLE_LENGTH = 8000  # e-ink page; plenty for a notebook reply
 
+KINDLE_HOST_CONTEXT = (
+    "[Kindle host context: This Kindle is a remote interface to Hermes running on the "
+    "gateway host. You may use the host's configured tools, files, databases, and services. "
+    "For requests that read, create, save, copy, or change host resources, perform the action "
+    "with an available tool and verify its result before claiming success. Never invent a path "
+    "or claim a resource was accessed or changed without a successful tool result.]"
+)
+
 
 def check_kindle_requirements() -> bool:
     """Adapter needs aiohttp for its ingest server."""
@@ -203,7 +211,7 @@ class KindleAdapter(BasePlatformAdapter):
             user_name=user_id,
         )
         event = MessageEvent(
-            text=text,
+            text=f"{KINDLE_HOST_CONTEXT}\n\n{text}",
             message_type=MessageType.TEXT,
             source=source,
             raw_message=body,

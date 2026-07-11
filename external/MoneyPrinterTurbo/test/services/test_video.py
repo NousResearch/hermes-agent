@@ -500,6 +500,52 @@ class TestVideoService(unittest.TestCase):
         self.assertEqual(result, combined_video_path)
         self.assertEqual(write_mock.call_count, 4)
 
+    def test_combine_videos_repeats_only_after_all_sequential_inputs(self):
+        """Sequential mode must exhaust distinct inputs before minimal looping."""
+
+        class _FakeAudioClip:
+            duration = 5.0
+
+            def close(self):
+                pass
+
+        class _FakeVideoClip:
+            def __init__(self, duration):
+                self.duration = duration
+                self.size = (1080, 1920)
+                self.w = 1080
+                self.h = 1920
+
+            def subclipped(self, start_time, end_time):
+                return _FakeVideoClip(end_time - start_time)
+
+        def _open_fake_video_clip(_video_path):
+            return _FakeVideoClip(2.0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            combined_video_path = os.path.join(temp_dir, "combined.mp4")
+
+            with patch.object(vd, "AudioFileClip", return_value=_FakeAudioClip()):
+                with patch.object(vd, "_open_video_clip_quietly", side_effect=_open_fake_video_clip):
+                    with patch.object(vd, "_write_videofile_with_codec_fallback"):
+                        with patch.object(vd, "concat_video_clips_with_ffmpeg") as concat_mock:
+                            with patch.object(vd, "delete_files"):
+                                vd.combine_videos(
+                                    combined_video_path=combined_video_path,
+                                    video_paths=["first.mp4", "second.mp4"],
+                                    audio_file=os.path.join(temp_dir, "audio.mp3"),
+                                    video_aspect=vd.VideoAspect.portrait,
+                                    video_concat_mode=vd.VideoConcatMode.sequential,
+                                    video_transition_mode=None,
+                                    max_clip_duration=10,
+                                )
+
+        clip_files = concat_mock.call_args.kwargs["clip_files"]
+        self.assertEqual(
+            [os.path.basename(path) for path in clip_files],
+            ["temp-clip-1.mp4", "temp-clip-2.mp4", "temp-clip-1.mp4"],
+        )
+
     def test_prioritize_unique_source_clips_uses_each_source_before_reuse(self):
         """
         随机模式下，一个长素材会被拆成多个片段。调度层应先让每个源素材

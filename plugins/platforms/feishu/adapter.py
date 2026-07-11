@@ -3273,8 +3273,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
         if str(thread_id) != root_id:
             return None
-        if str(reply_to_message_id) != root_id:
-            return None
+
+        # A user can reply to a later bot message in the root reply chain.
+        # Feishu leaves thread_id empty in that case, so Hermes still creates a
+        # new topic from root_id even though parent_id is not the root message.
 
         open_id = str(getattr(sender_id, "open_id", "") or "").strip()
         user_id = str(getattr(sender_id, "user_id", "") or "").strip()

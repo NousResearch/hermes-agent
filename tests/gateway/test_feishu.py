@@ -4967,7 +4967,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         )
         adapter._dispatch_inbound_event.assert_not_called()
 
-    def test_root_reply_records_human_sender_for_topic_starter_at(self):
+    def test_nested_root_reply_records_human_sender_for_topic_starter_at(self):
         adapter = self._build_adapter()
         adapter._resolve_sender_profile = AsyncMock(
             return_value={
@@ -4992,7 +4992,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             message_id="om_reply",
             mentions=[bot_mention],
             chat_id="oc_chat",
-            parent_id="om_root",
+            parent_id="om_previous_bot_reply",
             upper_message_id=None,
             root_id="om_root",
             thread_id=None,
@@ -5015,6 +5015,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
 
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertEqual(event.source.thread_id, "om_root")
+        self.assertEqual(event.reply_to_message_id, "om_previous_bot_reply")
         self.assertEqual(event.source.feishu_topic_starter_user_id, "ou_human")
         self.assertEqual(event.source.feishu_topic_starter_user_name, "员工 B")
 
@@ -5124,7 +5125,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             parent_id="om_previous_topic_message",
             upper_message_id=None,
             root_id="om_root",
-            thread_id="om_root",
+            thread_id="omt_existing_topic",
         )
 
         asyncio.run(
@@ -5139,6 +5140,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         )
 
         event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.source.thread_id, "omt_existing_topic")
         self.assertFalse(hasattr(event.source, "feishu_topic_starter_user_id"))
 
 

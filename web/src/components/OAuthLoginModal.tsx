@@ -34,13 +34,25 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     "idle",
   );
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+
+  // Password-login state (for supports_password providers like BasicAuth)
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
-  const copyResetTimer = useRef<number | null>(null);
   const { t } = useI18n();
 
-  // Initiate flow on mount
+  // Password providers (e.g. BasicAuthProvider) have flow "external" because
+  // they have no OAuth redirect — detect this and render a credential form
+  // that POSTs to /auth/password-login instead of triggering OAuth.
+  const isPasswordProvider = provider.flow === "external";
+
+  // Initiate OAuth flow on mount (only for non-password providers)
   useEffect(() => {
+    if (isPasswordProvider) {
+      setPhase("idle");
+      return;
+    }
     isMounted.current = true;
     api
       .startOAuthLogin(provider.id)
@@ -63,11 +75,48 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     return () => {
       isMounted.current = false;
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
-      if (copyResetTimer.current !== null)
-        window.clearTimeout(copyResetTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Password form submit handler
+  const handlePasswordSubmit = async () => {
+    if (!username.trim() || !password) return;
+    setPhase("submitting");
+    setErrorMsg(null);
+    try {
+      const resp = await fetch("/auth/password-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          provider: provider.id,
+          username: username.trim(),
+          password,
+        }),
+      });
+      if (!isMounted.current) return;
+      if (resp.ok) {
+        const data = await resp.json();
+        setPhase("approved");
+        onSuccess(`${provider.name} connected`);
+        window.location.assign((data && data.next) || "/");
+      } else {
+        const msg =
+          resp.status === 429
+            ? "Too many attempts. Please wait and try again."
+            : resp.status === 401
+              ? "Invalid username or password."
+              : "Sign-in failed. Please try again.";
+        setErrorMsg(msg);
+        setPhase("idle");
+      }
+    } catch {
+      if (!isMounted.current) return;
+      setErrorMsg("Network error. Please try again.");
+      setPhase("idle");
+    }
+  };
 
   // Tick the countdown
   useEffect(() => {
@@ -111,7 +160,8 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
         if (!isMounted.current) return;
         setPhase("error");
         setErrorMsg(`Polling failed: ${e}`);
-        if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
+        if (pollTimer.current !== null)
+          window.clearInterval(pollTimer.current);
       }
     }, 2000);
     return () => {
@@ -168,24 +218,6 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     return `${m}:${String(r).padStart(2, "0")}`;
   };
 
-  const handleCopyDeviceCode = async (code: string) => {
-    if (copyResetTimer.current !== null) {
-      window.clearTimeout(copyResetTimer.current);
-      copyResetTimer.current = null;
-    }
-    const copied = await copyTextToClipboard(code);
-    if (!isMounted.current) return;
-    setCopyStatus(copied ? "copied" : "failed");
-    copyResetTimer.current = window.setTimeout(() => {
-      if (isMounted.current) setCopyStatus("idle");
-      copyResetTimer.current = null;
-    }, 2000);
-  };
-
-  const deviceCode = start?.flow === "device_code" ? start.user_code : "";
-  const verificationUrl =
-    start?.flow === "device_code" ? start.verification_url : "";
-
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
@@ -226,7 +258,49 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
               )}
           </div>
 
-          {phase === "starting" && (
+          {/* Password login form (e.g. BasicAuthProvider) */}
+          {isPasswordProvider && (phase === "idle" || phase === "submitting") && (
+            <div className="flex flex-col gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-muted-foreground">Username</span>
+                <Input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoFocus
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-sm text-muted-foreground">Password</span>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && handlePasswordSubmit()
+                  }
+                />
+              </label>
+              {errorMsg && (
+                <p className="text-sm text-destructive">{errorMsg}</p>
+              )}
+              <Button
+                onClick={handlePasswordSubmit}
+                disabled={
+                  !username.trim() || !password || phase === "submitting"
+                }
+              >
+                {phase === "submitting" ? <Spinner /> : "Sign in"}
+              </Button>
+            </div>
+          )}
+
+          {phase === "starting" && !isPasswordProvider && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
               <Spinner />
               {t.oauth.initiatingLogin}
@@ -272,7 +346,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
             </>
           )}
 
-          {phase === "submitting" && (
+          {phase === "submitting" && !isPasswordProvider && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
               <Spinner />
               {t.oauth.exchangingCode}
@@ -286,32 +360,35 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
               </p>
               <div className="flex items-center justify-between gap-2 border border-border bg-secondary/30 p-4">
                 <code className="font-mono-ui text-2xl tracking-widest text-foreground">
-                  {deviceCode}
-                </code>
-                <Button
-                  size="sm"
-                  outlined
-                  className="shrink-0 uppercase"
-                  onClick={() => void handleCopyDeviceCode(deviceCode)}
-                  prefix={
-                    copyStatus === "copied" ? (
-                      <Check className="h-4 w-4" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )
+                  {
+                    (
+                      start as Extract<
+                        OAuthStartResponse,
+                        { flow: "device_code" }
+                      >
+                    ).user_code
                   }
-                  aria-label={t.oauth.copyCode}
-                >
-                  {copyStatus === "copied" ? t.oauth.copied : t.oauth.copyCode}
-                </Button>
+                </code>
+                <CopyButton
+                  text={
+                    (
+                      start as Extract<
+                        OAuthStartResponse,
+                        { flow: "device_code" }
+                      >
+                    ).user_code
+                  }
+                />
               </div>
-              {copyStatus === "failed" && (
-                <p className="text-xs text-destructive">
-                  {t.oauth.copyFailed}
-                </p>
-              )}
               <a
-                href={verificationUrl}
+                href={
+                  (
+                    start as Extract<
+                      OAuthStartResponse,
+                      { flow: "device_code" }
+                    >
+                  ).verification_url
+                }
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"

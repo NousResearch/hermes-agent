@@ -1749,11 +1749,23 @@ def init_agent(
         # Try general plugin system as fallback
         if _selected_engine is None:
             _candidate = None
+            _get_plugin_engine = None
             try:
-                from hermes_cli.plugins import get_plugin_context_engine
-                _candidate = get_plugin_context_engine()
+                from hermes_cli.plugins import get_plugin_context_engine as _get_plugin_engine
+                _candidate = _get_plugin_engine()
             except Exception:
                 _candidate = None
+            # If the plugin manager was already discovered before the
+            # context engine plugin registered (e.g. auxiliary agent init
+            # runs after an earlier call to get_plugin_context_engine
+            # returned None), force a re-discovery before giving up.
+            if (_candidate is None or _candidate.name != _engine_name) and _get_plugin_engine is not None:
+                try:
+                    from hermes_cli.plugins import discover_plugins as _disc_plugins
+                    _disc_plugins(force=True)
+                    _candidate = _get_plugin_engine()
+                except Exception:
+                    _candidate = None
             if _candidate is not None and _candidate.name == _engine_name:
                 # Deep-copy the shared plugin singleton so a child agent's
                 # update_model() can't mutate the parent's compressor (#42449).

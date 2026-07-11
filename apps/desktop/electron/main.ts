@@ -2591,7 +2591,7 @@ async function applyUpdates(opts = {}) {
       },
       detached: true,
       stdio: 'ignore',
-      windowsHide: false
+      windowsHide: true
     })
 
     child.unref()
@@ -2619,9 +2619,20 @@ async function applyUpdates(opts = {}) {
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
 
+    // Return WITHOUT clearing updateInFlight. The flag must stay set
+    // through the 2.5s quit dwell — if a renderer reconnect or a retry
+    // arrives during that window, we want applyUpdates / bootstrap
+    // recovery to refuse to spawn a second updater. The flag will be
+    // reset when the process actually exits (no surviving state to
+    // worry about). Resetting in a `finally` block here was the race:
+    // flag went false 2.5s before the process exited, opening a window
+    // where a second update could spawn and fight the first for the
+    // venv shim. Issue #61898.
     return { ok: true, handedOff: true, updater }
-  } finally {
+  } catch (err) {
+    // On error only, clear the flag so the user can retry.
     updateInFlight = false
+    throw err
   }
 }
 
@@ -2629,6 +2640,17 @@ async function handOffWindowsBootstrapRecovery(reason) {
   if (!IS_WINDOWS || !IS_PACKAGED) {
     return false
   }
+
+  // Issue #61898: refuse to spawn a second bootstrap-recovery updater
+  // if one is already in flight. The applyUpdates function uses the
+  // same flag, which is intentional — bootstrap recovery and in-app
+  // update share the venv shim and cannot run concurrently. A second
+  // spawn during the 2.5s quit dwell would race for .pyd files and
+  // leave PowerShell windows on screen.
+  if (updateInFlight) {
+    return false
+  }
+  updateInFlight = true
 
   const updater = resolveUpdaterBinary()
 
@@ -2669,7 +2691,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     },
     detached: true,
     stdio: 'ignore',
-    windowsHide: false
+    windowsHide: true
   })
 
   child.unref()

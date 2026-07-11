@@ -418,7 +418,6 @@ class TestDispatchersTriggerPluginDiscovery:
             result = json.loads(asyncio.run(
                 web_tools.web_extract_tool(
                     ["https://example.com"],
-                    use_llm_processing=False,
                 )
             ))
 
@@ -490,6 +489,136 @@ class TestDispatchersTriggerPluginDiscovery:
             )
             assert "No web search provider configured" not in json.dumps(result)
             assert web_search_registry.get_provider("brave-free") is not None
+        finally:
+            restore()
+
+
+class TestDisabledPluginDiagnostic:
+    """#40190 follow-up: when the configured web backend names a bundled
+    web plugin the user put in ``plugins.disabled``, the dispatcher must
+    tell the user to re-enable the plugin instead of the misleading
+    "No web extract provider configured. Set web.extract_backend to ..."
+    (they already set it correctly — the provider just isn't loaded).
+    """
+
+    def _clear_registry(self):
+        from agent import web_search_registry
+
+        with web_search_registry._lock:
+            original = dict(web_search_registry._providers)
+            web_search_registry._providers.clear()
+
+        def _restore():
+            with web_search_registry._lock:
+                web_search_registry._providers.clear()
+                web_search_registry._providers.update(original)
+
+        return _restore
+
+    class _FakeLoaded:
+        def __init__(self, enabled, error):
+            self.enabled = enabled
+            self.error = error
+
+    def _patch_manager(self, monkeypatch, plugins_map):
+        """Point ``get_plugin_manager()`` at a stub whose ``_plugins``
+        dict is ``plugins_map`` so ``_disabled_web_plugin_for`` sees the
+        simulated disabled/enabled state without touching real config."""
+        import hermes_cli.plugins as plugins_mod
+
+        class _StubMgr:
+            _plugins = plugins_map
+
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _StubMgr())
+
+    def test_disabled_web_plugin_for_matches_by_key(self, monkeypatch):
+        from agent.web_search_registry import _disabled_web_plugin_for
+
+        self._patch_manager(monkeypatch, {
+            "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
+            "web/ddgs": self._FakeLoaded(True, None),
+        })
+        assert _disabled_web_plugin_for("firecrawl") == "web/firecrawl"
+        # Enabled plugin is not a match
+        assert _disabled_web_plugin_for("ddgs") is None
+        # Unknown name is not a match
+        assert _disabled_web_plugin_for("nope") is None
+
+    def test_disabled_web_plugin_for_normalizes_hyphens(self, monkeypatch):
+        from agent.web_search_registry import _disabled_web_plugin_for
+
+        self._patch_manager(monkeypatch, {
+            "web/brave_free": self._FakeLoaded(False, "disabled via config"),
+        })
+        # config name uses a hyphen; plugin key uses an underscore
+        assert _disabled_web_plugin_for("brave-free") == "web/brave_free"
+
+    def test_disabled_web_plugin_for_ignores_non_disabled_errors(self, monkeypatch):
+        from agent.web_search_registry import _disabled_web_plugin_for
+
+        self._patch_manager(monkeypatch, {
+            # a plugin that failed to import is NOT "disabled via config"
+            "web/exa": self._FakeLoaded(False, "ImportError: boom"),
+        })
+        assert _disabled_web_plugin_for("exa") is None
+
+    def test_extract_tool_reports_disabled_plugin(self, monkeypatch):
+        import asyncio
+
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        try:
+            monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"extract_backend": "firecrawl"},
+            )
+            import agent.web_search_registry as wsr
+            monkeypatch.setattr(
+                wsr, "_read_config_key",
+                lambda *path: "firecrawl" if path == ("web", "extract_backend") else None,
+            )
+            self._patch_manager(monkeypatch, {
+                "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
+            })
+            result = json.loads(
+                asyncio.new_event_loop().run_until_complete(
+                    web_tools.web_extract_tool(["https://example.com"])
+                )
+            )
+            err = result["error"]
+            assert "disabled" in err
+            assert "web/firecrawl" in err
+            assert "hermes plugins enable" in err
+            # Must NOT tell them to set extract_backend (already set)
+            assert "Set web.extract_backend to firecrawl" not in err
+        finally:
+            restore()
+
+    def test_search_tool_reports_disabled_plugin(self, monkeypatch):
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        try:
+            monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"search_backend": "firecrawl"},
+            )
+            import agent.web_search_registry as wsr
+            monkeypatch.setattr(
+                wsr, "_read_config_key",
+                lambda *path: "firecrawl" if path == ("web", "search_backend") else None,
+            )
+            self._patch_manager(monkeypatch, {
+                "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
+            })
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
+            err = result["error"]
+            assert "disabled" in err
+            assert "web/firecrawl" in err
+            assert "No web search provider configured" not in err
         finally:
             restore()
 

@@ -7,6 +7,36 @@
 
 export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
 
+export type ToolTitleKey =
+  | 'browser_click'
+  | 'browser_fill'
+  | 'browser_navigate'
+  | 'browser_snapshot'
+  | 'browser_take_screenshot'
+  | 'browser_type'
+  | 'clarify'
+  | 'cronjob'
+  | 'edit_file'
+  | 'execute_code'
+  | 'image_generate'
+  | 'list_files'
+  | 'patch'
+  | 'read_file'
+  | 'search_files'
+  | 'session_search_recall'
+  | 'terminal'
+  | 'todo'
+  | 'vision_analyze'
+  | 'web_extract'
+  | 'web_search'
+  | 'write_file'
+
+interface ToolTitleCopy {
+  done: string
+  pending: string
+  pendingAction: string
+}
+
 interface ModeOptionCopy {
   label: string
   description: string
@@ -40,7 +70,9 @@ export interface Translations {
     docs: string
     done: string
     error: string
+    expand: string
     failed: string
+    formatJson: string
     free: string
     loading: string
     notSet: string
@@ -53,8 +85,25 @@ export interface Translations {
     set: string
     skip: string
     update: string
+    tryHint: (term: string) => string
     on: string
     off: string
+  }
+
+  fileMenu: {
+    revealFinder: string
+    revealExplorer: string
+    revealFileManager: string
+    revealInSidebar: string
+    copyPath: string
+    copyRelativePath: string
+    rename: string
+    delete: string
+    renameTitle: string
+    renameLabel: string
+    deleteTitle: (name: string) => string
+    deleteBody: string
+    pathCopied: string
   }
 
   boot: {
@@ -72,6 +121,7 @@ export interface Translations {
       backgroundExitedDuringStartup: string
       backendStopped: string
       desktopBootFailed: string
+      gatewayConnectionLost: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
     }
@@ -111,6 +161,7 @@ export interface Translations {
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
+    installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
@@ -161,7 +212,6 @@ export interface Translations {
 
   remoteDisplayBanner: {
     message: (reason: string) => string
-    dismiss: string
   }
 
   titlebar: {
@@ -176,6 +226,7 @@ export interface Translations {
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
+    openStarmap: string
     openKeybinds: string
   }
 
@@ -252,8 +303,16 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      uiScaleTitle: string
+      uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
+      embedsTitle: string
+      embedsDesc: string
+      embedsAsk: string
+      embedsAlways: string
+      embedsOff: string
+      embedsReset: (count: number) => string
       product: string
       productDesc: string
       technical: string
@@ -270,6 +329,43 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      pet: {
+        title: string
+        intro: string
+        restartHint: string
+        on: string
+        off: string
+        scaleTitle: string
+        scaleDesc: string
+        roamTitle: string
+        roamDesc: string
+        chooseTitle: string
+        chooseDesc: string
+        searchPlaceholder: string
+        unreachable: string
+        noMatch: (query: string) => string
+        installedTag: string
+        generatedTag: string
+        countCapped: (cap: number, total: number) => string
+        count: (n: number) => string
+        uninstall: (name: string) => string
+        delete: (name: string) => string
+        deleteTitle: (name: string) => string
+        deleteBody: string
+        deleteConfirm: string
+        rename: (name: string) => string
+        renameTitle: string
+        renamePlaceholder: string
+        renameSave: string
+        exportPet: (name: string) => string
+        adoptFailed: (slug: string) => string
+        uninstallFailed: (slug: string) => string
+        renameFailed: (slug: string) => string
+        exportFailed: (slug: string) => string
+        noneAvailable: string
+        turnOnFailed: string
+        turnOffFailed: string
+      }
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -320,8 +416,6 @@ export interface Translations {
       enterValueFirst: string
       couldNotSave: string
       remove: string
-      or: string
-      escToCancel: string
       getKey: string
       saving: string
     }
@@ -348,10 +442,39 @@ export interface Translations {
       profileConnection: (profile: string) => string
       envOverrideTitle: string
       envOverrideDesc: string
+      modeTitle: string
       localTitle: string
       localDesc: string
       remoteTitle: string
       remoteDesc: string
+      remoteAuthHint: string
+      cloudTitle: string
+      cloudDesc: string
+      cloudSignInTitle: string
+      cloudSignIn: string
+      cloudSignedIn: string
+      cloudNeedsSignIn: string
+      cloudSignedInDesc: string
+      cloudAgentsTitle: string
+      cloudOrgPickerTitle: string
+      cloudOrgSelect: string
+      cloudOrgChange: string
+      cloudOrgRole: (role: string) => string
+      cloudLoadingAgents: string
+      cloudNoAgents: { before: string; linkText: string; after: string }
+      cloudRefresh: string
+      cloudConnect: string
+      cloudConnecting: string
+      cloudDiscoverFailed: string
+      cloudConnectFailed: string
+      cloudSignInFailed: string
+      cloudSignedOutTitle: string
+      cloudSignedOutMessage: string
+      cloudConnectedTitle: string
+      cloudConnectedPill: string
+      cloudConnectedTo: (name: string) => string
+      cloudAgentProvisioning: string
+      cloudStatusLabel: (status: string) => string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string
@@ -429,6 +552,43 @@ export interface Translations {
       serverJson: string
       remove: string
       saveServer: string
+      test: string
+      testing: string
+      testOk: (count: number) => string
+      testFailed: string
+      enableServer: (name: string) => string
+      disableServer: (name: string) => string
+      serverEnabled: (name: string) => string
+      serverDisabled: (name: string) => string
+      toggleFailed: (name: string) => string
+      tabServers: string
+      tabCatalog: string
+      catalogLoading: string
+      catalogLoadFailed: string
+      catalogEmpty: string
+      catalogInstalled: string
+      catalogEnabled: string
+      catalogNeedsInstall: string
+      catalogInstall: string
+      catalogInstalling: string
+      catalogInstallStarted: (name: string) => string
+      catalogInstallFailed: (name: string) => string
+      catalogEnvPrompt: (name: string) => string
+      catalogEnvRequired: string
+      capabilitySummary: (tools: number, prompts: number, resources: number) => string
+      statusConnecting: string
+      statusNeedsAuth: string
+      statusError: string
+      statusOff: string
+      allServers: string
+      authenticatedTitle: string
+      authenticatedMessage: (server: string, count: number) => string
+      waitingForBrowser: string
+      authenticate: string
+      unsavedConnect: string
+      enableTool: (tool: string) => string
+      disableTool: (tool: string) => string
+      noOutput: string
     }
     model: {
       loading: string
@@ -527,12 +687,23 @@ export interface Translations {
       postSetupErrorTitle: string
       postSetupErrorMessage: (step: string) => string
       postSetupFailed: (step: string) => string
+      loadingModels: string
+      modelSectionTitle: string
+      modelCount: (count: number) => string
+      modelInUse: string
+      modelDefault: string
+      modelInactiveHint: string
+      modelSelectedTitle: string
+      modelSelectedMessage: (model: string) => string
+      failedSelectModel: (model: string) => string
     }
   }
 
   skills: {
     tabSkills: string
     tabToolsets: string
+    tabMcp: string
+    tabHub: string
     all: string
     searchSkills: string
     searchToolsets: string
@@ -557,8 +728,98 @@ export interface Translations {
     toolsetDisabled: string
     appliesToNewSessions: (name: string) => string
     failedToUpdate: (name: string) => string
+    sortMostUsed: string
+    sortAlpha: string
+    sortMostUsedDesc: string
+    sortLeastUsedAsc: string
+    enableAll: string
+    disableAll: string
+    disableUnused: string
+    bulkUpdated: (count: number) => string
+    bulkNoChange: string
+    usageCount: (count: number | string) => string
+    provenance: Record<'agent' | 'bundled' | 'hub', string>
+    emptyNoneFound: (noun: string) => string
+    emptyNothingMatches: (query: string) => string
+    emptyNoneAvailable: (noun: string) => string
+    changesApplyNewSessions: string
+    skillUpdated: string
+    edit: string
+    archive: string
+    skillArchivedTitle: string
+    skillArchivedMessage: string
+    hub: {
+      searchPlaceholder: string
+      search: string
+      searching: string
+      connectingHubs: string
+      connectedHubs: string
+      featured: string
+      landingHint: string
+      noResults: string
+      resultCount: (count: number, ms: number | null) => string
+      timedOut: (sources: string) => string
+      installed: string
+      install: string
+      installing: string
+      uninstall: string
+      uninstalling: string
+      updateAll: string
+      updating: string
+      preview: string
+      scan: string
+      scanning: string
+      close: string
+      files: string
+      noReadme: string
+      trust: Record<string, string>
+      verdictSafe: string
+      verdictCaution: string
+      verdictDangerous: string
+      policyAllow: string
+      policyAsk: string
+      policyBlock: string
+      findings: (count: number) => string
+      noFindings: string
+      installStarted: (name: string) => string
+      uninstallStarted: (name: string) => string
+      updateStarted: string
+      actionFailed: string
+      actionLog: string
+      loadFailed: string
+      previewFailed: string
+      scanFailed: string
+      searchFailed: string
+    }
   }
 
+  starmap: {
+    title: string
+    subtitle: (nodes: number, clusters: number) => string
+    close: string
+    refresh: string
+    memory: string
+    filterAll: string
+    filterUsed: string
+    filterLearned: string
+    viewGraph: string
+    loadFailed: string
+    loading: string
+    emptyTitle: string
+    emptyDesc: string
+    share: string
+    shareHint: string
+    shareTitle: string
+    sharePlaceholder: string
+    copy: string
+    copied: string
+    importMap: string
+    importBtn: string
+    importEmpty: string
+    importSuccess: (nodes: number) => string
+    importedBadge: string
+    resetToMine: string
+  }
   agents: {
     close: string
     title: string
@@ -586,8 +847,7 @@ export interface Translations {
     ageHours: (hours: number) => string
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
-    tokensK: (k: string) => string
-    tokens: (value: number) => string
+    tokens: (value: number | string) => string
   }
 
   commandCenter: {
@@ -597,13 +857,60 @@ export interface Translations {
     searchPlaceholder: string
     goTo: string
     goToSession: string
+    branches: string
+    startInBranch: (branch: string) => string
     commandCenter: string
     appearance: string
     settings: string
     changeTheme: string
     changeColorMode: string
+    pets: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      staleBackend: string
+      empty: string
+      turnOff: string
+      turnOn: string
+      installed: string
+      generatedTag: string
+      adoptFailed: string
+      toggleFailed: string
+      noneAvailable: string
+    }
+    generatePet: {
+      title: string
+      placeholder: string
+      promptHint: string
+      readyHint: string
+      generate: string
+      generating: string
+      retry: string
+      hatch: string
+      spawning: string
+      hatching: string
+      hatchingSub: string
+      hatched: string
+      hatchRow: (state: string, done: number, total: number) => string
+      hatchComposing: string
+      hatchSaving: string
+      namePlaceholder: string
+      staleBackend: string
+      backgroundHint: string
+      slowProviderHint: string
+      remix: string
+      remixConfirmTitle: string
+      remixConfirmBody: string
+      genericError: string
+      referenceImageTooLarge: string
+      referenceImageInvalid: string
+      adopt: string
+      startOver: string
+    }
     installTheme: {
       title: string
+      pageTitle: string
       placeholder: string
       loading: string
       error: string
@@ -616,8 +923,8 @@ export interface Translations {
     settingsFields: string
     mcpServers: string
     archivedChats: string
-    sections: Record<'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'sessions' | 'system' | 'usage', string>
+    sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -661,6 +968,53 @@ export interface Translations {
     topSkills: string
     noSkillActivity: string
     actions: (count: string) => string
+    logFile: string
+    logLevel: string
+    logSearchPlaceholder: string
+    maintenance: {
+      runOps: string
+      doctor: string
+      doctorDesc: string
+      securityAudit: string
+      securityAuditDesc: string
+      backup: string
+      backupDesc: string
+      debugShare: string
+      debugShareDesc: string
+      debugShareRunning: string
+      debugShareLinks: string
+      debugShareFailed: string
+      copyLink: string
+      linkCopied: string
+      curator: string
+      curatorDesc: string
+      curatorPaused: string
+      curatorActive: string
+      curatorDisabled: string
+      curatorLastRun: (when: string) => string
+      curatorNeverRan: string
+      pause: string
+      resume: string
+      runNow: string
+      memoryData: string
+      memoryDataDesc: string
+      memoryProvider: (name: string) => string
+      builtinMemory: string
+      memoryFile: string
+      userFile: string
+      bytes: (size: string) => string
+      empty: string
+      resetMemory: string
+      resetUser: string
+      resetAll: string
+      resetConfirm: (target: string) => string
+      resetDone: (files: string) => string
+      resetFailed: string
+      actionStarted: (name: string) => string
+      actionFailed: (name: string) => string
+      running: string
+      viewLog: string
+    }
   }
 
   messaging: {
@@ -710,6 +1064,7 @@ export interface Translations {
     nameHint: string
     title: string
     count: (count: number) => string
+    search: string
     loading: string
     newProfile: string
     allProfiles: string
@@ -730,6 +1085,8 @@ export interface Translations {
     env: string
     defaultBadge: string
     rename: string
+    renameMenu: string
+    editSoul: string
     copySetup: string
     copying: string
     modelLabel: string
@@ -782,6 +1139,8 @@ export interface Translations {
 
   cron: {
     close: string
+    title: string
+    count: (count: number) => string
     search: string
     loading: string
     states: Record<string, string>
@@ -897,13 +1256,74 @@ export interface Translations {
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
+    showProjects: string
+    showSessions: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string
+    noProject: string
+    projectEmpty: string
+    noSessions: string
+    projects: {
+      sectionLabel: string
+      newButton: string
+      createTitle: string
+      createDesc: string
+      renameTitle: string
+      addFolderTitle: string
+      namePlaceholder: string
+      foldersLabel: string
+      ideaLabel: string
+      ideaPlaceholder: string
+      ideaGenerate: string
+      ideaGenerating: string
+      ideaShuffle: string
+      noFolders: string
+      addFolder: string
+      primaryBadge: string
+      removeFolder: string
+      create: string
+      menu: string
+      menuRename: string
+      menuAppearance: string
+      noColor: string
+      menuAddFolder: string
+      menuSetActive: string
+      menuDelete: string
+      reveal: string
+      copyPath: string
+      removeFromSidebar: string
+      createFailed: string
+      staleBackend: string
+      deleteConfirm: string
+      startWork: string
+      newWorktreeTitle: string
+      newWorktreeDesc: string
+      branchPlaceholder: string
+      startWorkFailed: string
+      convertBranch: string
+      convertBranchTitle: string
+      convertBranchDesc: string
+      convertBranchPlaceholder: string
+      convertBranchInstead: string
+      branchOpenExisting: string
+      branchSwitchHome: string
+      branchCreateWorktree: string
+      branchesLoading: string
+      noBranches: string
+      removeWorktree: string
+      removeWorktreeFailed: string
+      removeWorktreeConfirm: string
+      removeWorktreeDirty: string
+      forceRemove: string
+      enter: (label: string) => string
+      reorder: (label: string) => string
+      toggle: (label: string) => string
+      back: string
+    }
     newSessionIn: (label: string) => string
-    reorderWorkspace: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string
     loadMore: string
@@ -913,6 +1333,7 @@ export interface Translations {
       unpin: string
       copyId: string
       export: string
+      branchFrom: string
       rename: string
       archive: string
       newWindow: string
@@ -962,6 +1383,8 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    speakReplies: string
+    stopSpeakingReplies: string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string
@@ -1025,6 +1448,50 @@ export interface Translations {
     stop: string
     dismiss: string
     exit: (code: number) => string
+    coding: {
+      title: string
+      noBranch: string
+      detached: string
+      clean: string
+      changed: (count: number) => string
+      ahead: (count: number) => string
+      behind: (count: number) => string
+      review: string
+      close: string
+      openChanges: string
+      openFile: string
+      stage: string
+      unstage: string
+      stageAll: string
+      viewAsTree: string
+      viewAsList: string
+      revert: string
+      revertAll: string
+      revertConfirm: string
+      revertAllConfirm: string
+      staged: string
+      noChanges: string
+      notRepo: string
+      noDiff: string
+      scopeUncommitted: string
+      scopeBranch: string
+      scopeLastTurn: string
+      commit: string
+      commitAndPush: string
+      commitPlaceholder: string
+      generateCommitMessage: string
+      stopGenerating: string
+      createPr: string
+      openPr: string
+      ghMissing: string
+      agentShip: string
+      agentShipPrompt: string
+      newBranch: string
+      branchOffFrom: (base: string) => string
+      switchTo: (branch: string) => string
+      switchFailed: (branch: string) => string
+      worktrees: string
+    }
   }
 
   updates: {
@@ -1252,9 +1719,29 @@ export interface Translations {
       running: (count: number) => string
       cron: string
       openCron: string
+      starmap: string
+      openStarmap: string
       turnRunning: string
       currentTurnElapsed: string
       contextUsage: string
+      contextUsagePanel: {
+        categories: {
+          conversation: string
+          mcp: string
+          memory: string
+          rules: string
+          skills: string
+          subagent_definitions: string
+          system_prompt: string
+          tool_definitions: string
+        }
+        empty: string
+        loading: string
+        percentFull: (percent: number) => string
+        title: string
+        tokenSummary: (used: string, max: string) => string
+      }
+      openContextUsage: string
       session: string
       runtimeSessionElapsed: string
       yoloOn: string
@@ -1286,6 +1773,8 @@ export interface Translations {
     couldNotPreview: (path: string) => string
     noProjectTitle: string
     noProjectBody: string
+    noProjectOpen: string
+    noDiffs: string
     unreadableTitle: string
     unreadableBody: (error: string) => string
     emptyTitle: string
@@ -1296,21 +1785,31 @@ export interface Translations {
     loadingTree: string
     loadingFiles: string
     terminalHide: string
+    terminalsAria: string
+    terminalNew: string
+    terminalCloseOthers: string
+    terminalCloseAll: string
     addToChat: string
   }
 
   preview: {
     tab: string
     closeTab: (label: string) => string
+    closeOthers: string
+    closeToRight: string
+    closeAll: string
     closePane: string
     loading: string
     unavailable: string
     opening: string
     hide: string
     openPreview: string
+    openInBrowser: string
+    linkHint: string
     sourceLineTitle: string
     source: string
     renderedPreview: string
+    diff: string
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string
@@ -1320,6 +1819,14 @@ export interface Translations {
     truncated: string
     noInlineTitle: string
     noInlineBody: (mimeType: string) => string
+    edit: string
+    editing: string
+    unsavedChanges: string
+    saveFailed: (message: string) => string
+    diskChangedTitle: string
+    diskChangedBody: string
+    overwrite: string
+    discardReload: string
     console: {
       deselect: string
       select: string
@@ -1381,6 +1888,7 @@ export interface Translations {
       loadingSession: string
       showEarlier: string
       loadingResponse: string
+      resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       today: (time: string) => string
       yesterday: (time: string) => string
@@ -1394,6 +1902,7 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      expandMessage: string
       scrollToBottom: string
       stop: string
       restorePrevious: string
@@ -1428,10 +1937,8 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcutSuffix: string
-      back: string
       skip: string
-      send: string
+      continueLabel: string
     }
     tool: {
       code: string
@@ -1456,6 +1963,32 @@ export interface Translations {
       statusError: string
       statusRecovered: string
       statusDone: string
+      actions: {
+        read: string
+        reading: string
+        opened: string
+        opening: string
+        failedToOpen: string
+        searched: string
+        searching: string
+        ran: string
+        running: string
+        ranCode: string
+        runningCode: string
+      }
+      prefixes: {
+        browser: string
+        web: string
+      }
+      titleTemplates: {
+        actionCommand: (action: string, command: string) => string
+        actionQuoted: (action: string, value: string) => string
+        actionTarget: (action: string, target: string) => string
+        prefixedDone: (prefix: string, action: string) => string
+        runningPrefixedTool: (prefix: string, action: string) => string
+        runningTool: (action: string) => string
+      }
+      titles: Record<ToolTitleKey, ToolTitleCopy>
     }
   }
 
@@ -1504,7 +2037,7 @@ export interface Translations {
     sessionBusy: string
     branchStopCurrent: string
     branchNoText: string
-    branchTitle: string
+    branchTitle: (n: number) => string
     branchFailed: string
     deleteFailed: string
     archived: string

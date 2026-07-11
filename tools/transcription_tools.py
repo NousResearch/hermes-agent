@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -121,7 +122,7 @@ def _load_stt_config() -> dict:
     """Load the ``stt`` section from user config, falling back to defaults."""
     try:
         from hermes_cli.config import load_config
-        return load_config().get("stt", {})
+        return load_config().get("stt") or {}
     except Exception:
         return {}
 
@@ -1128,7 +1129,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
-        local_config = _load_stt_config().get("local", {})
+        local_config = _load_stt_config().get("local") or {}
         _forced_lang = (
             local_config.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
@@ -1191,7 +1192,7 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
         return converted_path, None
     except subprocess.TimeoutExpired:
         logger.error("ffmpeg conversion timed out for %s", file_path)
@@ -1216,7 +1217,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
     # Language: config.yaml (stt.local.language) > env var > "en" default.
     language = (
-        _load_stt_config().get("local", {}).get("language")
+        (_load_stt_config().get("local") or {}).get("language")
         or os.getenv(LOCAL_STT_LANGUAGE_ENV)
         or DEFAULT_LOCAL_STT_LANGUAGE
     )
@@ -1237,9 +1238,9 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
@@ -1450,7 +1451,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
         }
 
     stt_config = _load_stt_config()
-    xai_config = stt_config.get("xai", {})
+    xai_config = stt_config.get("xai") or {}
     base_url = str(
         xai_config.get("base_url")
         or get_env_value("XAI_STT_BASE_URL")
@@ -1545,7 +1546,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
 
     stt_config = _load_stt_config()
-    elevenlabs_config = stt_config.get("elevenlabs", {})
+    elevenlabs_config = stt_config.get("elevenlabs") or {}
     base_url = str(
         elevenlabs_config.get("base_url")
         or get_env_value("ELEVENLABS_STT_BASE_URL")
@@ -1660,14 +1661,14 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     provider = _get_provider(stt_config)
 
     if provider == "local":
-        local_cfg = stt_config.get("local", {})
+        local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":
-        local_cfg = stt_config.get("local", {})
+        local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_command_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
@@ -1678,12 +1679,12 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_groq(file_path, model_name)
 
     if provider == "openai":
-        openai_cfg = stt_config.get("openai", {})
+        openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
 
     if provider == "mistral":
-        mistral_cfg = stt_config.get("mistral", {})
+        mistral_cfg = stt_config.get("mistral") or {}
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
@@ -1693,7 +1694,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_xai(file_path, model_name)
 
     if provider == "elevenlabs":
-        elevenlabs_cfg = stt_config.get("elevenlabs", {})
+        elevenlabs_cfg = stt_config.get("elevenlabs") or {}
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
         return _transcribe_elevenlabs(file_path, model_name)
 
@@ -1757,7 +1758,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
     stt_config = _load_stt_config()
-    openai_cfg = stt_config.get("openai", {})
+    openai_cfg = stt_config.get("openai") or {}
     cfg_api_key = openai_cfg.get("api_key", "")
     cfg_base_url = openai_cfg.get("base_url", "")
     if cfg_api_key:

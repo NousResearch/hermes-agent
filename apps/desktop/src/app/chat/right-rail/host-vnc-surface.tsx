@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { getHostDisplay, type HostDisplayResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $previewProfileKey } from '@/store/preview-profile'
 import { $connection } from '@/store/session'
 
 interface HostDisplayState {
@@ -25,7 +25,7 @@ function errorMessage(error: unknown): string {
 
 export function HostVncSurface() {
   const { t } = useI18n()
-  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const previewProfileKey = useStore($previewProfileKey)
   const connection = useStore($connection)
   const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
   const [reloadRequest, setReloadRequest] = useState(0)
@@ -51,7 +51,7 @@ export function HostVncSurface() {
     return () => {
       cancelled = true
     }
-  }, [activeGatewayProfile, connectionKey, reloadRequest])
+  }, [connectionKey, previewProfileKey, reloadRequest])
 
   const configuredUrl = state.response?.available ? state.response.url : null
 

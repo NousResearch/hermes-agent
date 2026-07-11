@@ -12,13 +12,13 @@ import {
   selectRightRailTab
 } from './layout'
 import { setPaneOpen } from './panes'
+import { $previewProfileKey, normalizePreviewProfileKey } from './preview-profile'
 import {
   clampFloatingGeometry,
   type FloatingGeometry,
   type PreviewSnapSlot,
   type PreviewViewport
 } from './preview-surface-layout'
-import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
@@ -117,9 +117,9 @@ function opaqueScopeId(value: string): string {
 export function previewWorkspaceScopeId(
   sessionId: string,
   connectionKey = desktopFsCacheKey(),
-  profileKey = $activeGatewayProfile.get()
+  profileKey = $previewProfileKey.get()
 ): string {
-  return opaqueScopeId(`${connectionKey}\u0000${normalizeProfileKey(profileKey)}\u0000${sessionId.trim()}`)
+  return opaqueScopeId(`${connectionKey}\u0000${normalizePreviewProfileKey(profileKey)}\u0000${sessionId.trim()}`)
 }
 
 function storedPreviewWorkspaceScope(): string {
@@ -200,7 +200,7 @@ if (
 export function setPreviewWorkspaceScope(
   sessionId: string,
   connectionKey = desktopFsCacheKey(),
-  profileKey = $activeGatewayProfile.get()
+  profileKey = $previewProfileKey.get()
 ): string {
   const id = sessionId.trim()
   const nextScope = id ? previewWorkspaceScopeId(id, connectionKey, profileKey) : ''

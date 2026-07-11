@@ -704,3 +704,40 @@ class TestValidateCronBaseUrl:
 
     def test_base_url_without_provider_rejected(self):
         assert self._v(None, "https://x.example/v1") is not None
+
+
+class TestCronTickerWarning:
+    """Salvage of #2793 by @ygd58 — warn at create time when the gateway (and
+    thus the cron ticker) is not running, so a CLI-only schedule does not
+    silently never fire."""
+
+    def test_warning_when_gateway_not_running(self, monkeypatch):
+        import tools.cronjob_tools as ct
+
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda *a, **k: None, raising=False
+        )
+        msg = ct._check_cron_ticker_warning()
+        assert msg is not None
+        assert "gateway is not running" in msg
+        assert "hermes cron tick" in msg
+
+    def test_no_warning_when_gateway_running(self, monkeypatch):
+        import tools.cronjob_tools as ct
+
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda *a, **k: 4321, raising=False
+        )
+        assert ct._check_cron_ticker_warning() is None
+
+    def test_no_warning_on_status_error(self, monkeypatch):
+        import tools.cronjob_tools as ct
+
+        def _boom(*a, **k):
+            raise RuntimeError("status unavailable")
+
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", _boom, raising=False
+        )
+        # Best-effort: failures must never block job creation.
+        assert ct._check_cron_ticker_warning() is None

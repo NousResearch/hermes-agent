@@ -105,6 +105,22 @@ export interface VideoLibraryTimelineResult {
   timeline: Record<string, unknown>
 }
 
+export interface VideoLibraryMigrationRecord {
+  error: string
+  source_asset_id: string
+  state: 'failed' | 'imported' | 'skipped'
+  target_asset_id: string
+}
+
+export interface VideoLibraryMigrationResult {
+  failed: number
+  imported: number
+  library_id: string
+  records: VideoLibraryMigrationRecord[]
+  skipped: number
+  total: number
+}
+
 export interface MoneyPrinterAudioAsset {
   downloadUrl?: string
   file: string
@@ -729,6 +745,16 @@ async function videoLibraryRequest<T>(
 }
 
 export const videoLibraryClient = {
+  addSourceRoot(
+    libraryId: string,
+    path: string
+  ): Promise<MoneyPrinterResponse<{ library_id: string; source_roots: string[] }>> {
+    return videoLibraryRequest<{ library_id: string; source_roots: string[] }>(
+      `/libraries/${encodeURIComponent(libraryId)}/source-roots`,
+      { body: { path }, method: 'POST' }
+    )
+  },
+
   analyzeAsset(first: string, second?: string): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>> {
     const assetId = second || first
     const libraryId = second ? first : ''
@@ -754,9 +780,14 @@ export const videoLibraryClient = {
     return videoLibraryRequest<VideoLibraryStatus>(`/libraries/${encodeURIComponent(libraryId)}/status`)
   },
 
-  importAsset(sourcePath: string): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>> {
+  importAsset(
+    libraryIdOrSourcePath: string,
+    namedSourcePath?: string
+  ): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>> {
+    const sourcePath = namedSourcePath || libraryIdOrSourcePath
+    const libraryId = namedSourcePath ? libraryIdOrSourcePath : ''
     return videoLibraryRequest<{ asset: VideoLibraryAsset }>('/assets', {
-      body: { sourcePath },
+      body: libraryId ? { libraryId, sourcePath } : { sourcePath },
       method: 'POST'
     })
   },
@@ -785,6 +816,13 @@ export const videoLibraryClient = {
 
   listLibraries(): Promise<MoneyPrinterResponse<{ libraries: VideoLibraryDescriptor[] }>> {
     return videoLibraryRequest<{ libraries: VideoLibraryDescriptor[] }>('/libraries')
+  },
+
+  migrateLegacyLibrary(libraryId: string): Promise<MoneyPrinterResponse<VideoLibraryMigrationResult>> {
+    return videoLibraryRequest<VideoLibraryMigrationResult>(
+      `/libraries/${encodeURIComponent(libraryId)}/migrate-legacy`,
+      { method: 'POST' }
+    )
   },
 
   replaceClipTags(

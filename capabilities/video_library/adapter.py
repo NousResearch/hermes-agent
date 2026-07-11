@@ -10,6 +10,7 @@ from hermes_constants import get_hermes_home
 
 from .batch import build_library_service, library_status, list_libraries, scan_library
 from .config import resolve_library_config, resolve_source_path
+from .management import add_library_source_root, migrate_legacy_library
 from .service import VideoLibraryService
 from .store import VideoLibraryStore
 
@@ -167,5 +168,24 @@ def scan_library_data(library_id: str, body: dict[str, Any] | None = None) -> tu
 def library_status_data(library_id: str) -> tuple[int, dict[str, Any]]:
     try:
         return 200, _envelope(library_status(library_id))
+    except Exception as exc:
+        return _failure(exc)
+
+
+def add_library_source_root_data(
+    library_id: str, body: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    try:
+        source_path = str(body.get("path") or "").strip()
+        if not source_path:
+            raise ValueError("path is required")
+        return 200, _envelope(add_library_source_root(library_id, source_path))
+    except Exception as exc:
+        return _failure(exc)
+
+
+def migrate_legacy_library_data(library_id: str) -> tuple[int, dict[str, Any]]:
+    try:
+        return 200, _envelope(migrate_legacy_library(library_id))
     except Exception as exc:
         return _failure(exc)

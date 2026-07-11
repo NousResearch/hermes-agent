@@ -141,6 +141,9 @@ describe('moneyprinter video studio client mapping', () => {
     })
 
     await videoLibraryClient.listLibraries()
+    await videoLibraryClient.addSourceRoot('beef-noodle', '/vault/material')
+    await videoLibraryClient.migrateLegacyLibrary('beef-noodle')
+    await videoLibraryClient.importAsset('beef-noodle', '/vault/material/source.mov')
     await videoLibraryClient.listAssets('beef-noodle')
     await videoLibraryClient.listClips('beef-noodle', { limit: 5, query: '热气 牛肉' })
     await videoLibraryClient.replaceClipTags('beef-noodle', 'clip-1', ['人工确认'])
@@ -148,6 +151,26 @@ describe('moneyprinter video studio client mapping', () => {
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({ path: '/api/capabilities/video-library/libraries' })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { path: '/vault/material' },
+        method: 'POST',
+        path: '/api/capabilities/video-library/libraries/beef-noodle/source-roots'
+      })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        path: '/api/capabilities/video-library/libraries/beef-noodle/migrate-legacy'
+      })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { libraryId: 'beef-noodle', sourcePath: '/vault/material/source.mov' },
+        method: 'POST',
+        path: '/api/capabilities/video-library/assets'
+      })
     )
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({ path: '/api/capabilities/video-library/assets?library_id=beef-noodle' })

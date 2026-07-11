@@ -105,6 +105,43 @@ def test_named_library_list_and_scan_routes(clients, monkeypatch):
     assert scanned.json()["data"]["dry_run"] is True
 
 
+def test_named_library_management_routes_keep_target_library(clients, monkeypatch):
+    _anonymous, authenticated, _service = clients
+    from capabilities.video_library import adapter
+
+    captured = []
+    monkeypatch.setattr(
+        adapter,
+        "add_library_source_root_data",
+        lambda library_id, body: captured.append(("source", library_id, body))
+        or (200, {"ok": True, "data": {"source_roots": [body["path"]]}, "error": None}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "migrate_legacy_library_data",
+        lambda library_id: captured.append(("migrate", library_id))
+        or (200, {"ok": True, "data": {"imported": 1, "skipped": 0, "failed": 0}, "error": None}),
+        raising=False,
+    )
+
+    rooted = authenticated.post(
+        "/api/capabilities/video-library/libraries/beef-noodle/source-roots",
+        json={"path": "/vault/material"},
+    )
+    migrated = authenticated.post(
+        "/api/capabilities/video-library/libraries/beef-noodle/migrate-legacy",
+        json={},
+    )
+
+    assert rooted.status_code == 200
+    assert migrated.status_code == 200
+    assert captured == [
+        ("source", "beef-noodle", {"path": "/vault/material"}),
+        ("migrate", "beef-noodle"),
+    ]
+
+
 def test_named_library_clip_query_and_tag_write_are_isolated(clients, monkeypatch):
     _anonymous, authenticated, default_service = clients
     from capabilities.video_library import adapter

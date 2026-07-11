@@ -464,6 +464,29 @@ async def api_video_library_scan_library(library_id: str, request: Request):
     return JSONResponse(payload, status_code=status)
 
 
+@app.post("/api/capabilities/video-library/libraries/{library_id}/source-roots")
+async def api_video_library_add_source_root(library_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().add_library_source_root_data,
+        library_id,
+        body if isinstance(body, dict) else {},
+    )
+    return JSONResponse(payload, status_code=status)
+
+
+@app.post("/api/capabilities/video-library/libraries/{library_id}/migrate-legacy")
+async def api_video_library_migrate_legacy(library_id: str):
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().migrate_legacy_library_data,
+        library_id,
+    )
+    return JSONResponse(payload, status_code=status)
+
+
 @app.get("/api/capabilities/video-library/libraries/{library_id}/status")
 async def api_video_library_status(library_id: str):
     status, payload = await asyncio.to_thread(_video_library_adapter().library_status_data, library_id)
@@ -484,8 +507,11 @@ async def api_video_library_import_asset(request: Request):
 
 
 @app.get("/api/capabilities/video-library/assets")
-async def api_video_library_list_assets():
-    status, payload = await asyncio.to_thread(_video_library_adapter().list_assets_data)
+async def api_video_library_list_assets(library_id: Optional[str] = None):
+    status, payload = await asyncio.to_thread(
+        _video_library_adapter().list_assets_data,
+        library_id=library_id,
+    )
     return JSONResponse(payload, status_code=status)
 
 

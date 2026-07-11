@@ -100,3 +100,40 @@ describe('ModelMenuPanel MoA presets', () => {
     expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa' })
   })
 })
+
+describe('ModelMenuPanel configured defaults', () => {
+  it('renders an inactive GPT model with its configured Fast High defaults', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'gpt-5.6-sol',
+      provider: 'custom:helix-gpt-5.6',
+      providers: [
+        {
+          name: 'Helix LiteLLM · Responses',
+          slug: 'custom:helix-gpt-5.6',
+          models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+          capabilities: {
+            'gpt-5.6-sol': {
+              fast: true,
+              reasoning: true,
+              fast_default: true,
+              reasoning_default: 'high'
+            },
+            'gpt-5.6-terra': {
+              fast: true,
+              reasoning: true,
+              fast_default: true,
+              reasoning_default: 'high'
+            }
+          }
+        }
+      ]
+    })
+    $currentModel.set('gpt-5.6-sol')
+    $currentProvider.set('custom:helix-gpt-5.6')
+    renderPanel()
+
+    const terra = await findByText(document.body, 'GPT-5.6 Terra')
+    const item = terra.closest('[role="menuitem"]') ?? terra.parentElement
+    expect(item?.textContent).toContain('Fast High')
+  })
+})

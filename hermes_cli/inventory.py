@@ -52,6 +52,8 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    default_reasoning_effort: str = ""
+    default_fast: bool = False
 
     def with_overrides(
         self,
@@ -96,12 +98,18 @@ def load_picker_context() -> ConfigContext:
         current_provider = ""
         current_base_url = ""
     raw = cfg.get("providers")
+    agent_cfg = cfg.get("agent")
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
+        default_reasoning_effort=str(agent_cfg.get("reasoning_effort") or ""),
+        default_fast=str(agent_cfg.get("service_tier") or "").lower()
+        in {"fast", "priority"},
     )
 
 
@@ -242,7 +250,7 @@ def build_models_payload(
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
-        _apply_capabilities(rows)
+        _apply_capabilities(rows, ctx)
 
     return {
         "providers": rows,
@@ -251,7 +259,50 @@ def build_models_payload(
     }
 
 
-def _apply_capabilities(rows: list[dict]) -> None:
+def _configured_model_defaults(
+    ctx: ConfigContext, slug: str, model: str
+) -> tuple[str, bool | None]:
+    """Resolve presentation defaults from the configured model policy.
+
+    Named custom providers are stored without their ``custom:`` runtime
+    prefix.  A model-level ``session_controls`` record is authoritative when
+    present; otherwise the profile-wide agent defaults remain the fallback.
+    """
+
+    provider = ctx.user_providers.get(slug)
+    if not isinstance(provider, dict) and slug.startswith("custom:"):
+        provider = ctx.user_providers.get(slug.removeprefix("custom:"))
+    if not isinstance(provider, dict):
+        provider = {}
+    models = provider.get("models")
+    record = models.get(model) if isinstance(models, dict) else None
+    controls = record.get("session_controls") if isinstance(record, dict) else None
+    controls = controls if isinstance(controls, dict) else {}
+
+    reasoning = controls.get("reasoning")
+    reasoning_default = ctx.default_reasoning_effort
+    if isinstance(reasoning, dict):
+        mode = reasoning.get("mode")
+        if mode == "fixed":
+            reasoning_default = str(reasoning.get("value") or reasoning_default)
+        elif mode == "selectable":
+            reasoning_default = str(reasoning.get("default") or reasoning_default)
+
+    fast = controls.get("fast")
+    fast_default: bool | None = ctx.default_fast
+    if isinstance(fast, dict):
+        mode = fast.get("mode")
+        if mode == "none":
+            fast_default = None
+        elif mode == "fixed":
+            fast_default = str(fast.get("value") or "").lower() == "fast"
+        elif mode == "selectable":
+            fast_default = str(fast.get("default") or "").lower() == "fast"
+
+    return reasoning_default, fast_default
+
+
+def _apply_capabilities(rows: list[dict], ctx: ConfigContext) -> None:
     """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
@@ -269,7 +320,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        caps: dict[str, dict[str, object]] = {}
 
         for model in row.get("models") or []:
             reasoning = True
@@ -281,10 +332,17 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
-                "fast": bool(model_supports_fast_mode(model)),
+            supports_fast = bool(model_supports_fast_mode(model))
+            defaults = _configured_model_defaults(ctx, slug, model)
+            item: dict[str, object] = {
+                "fast": supports_fast,
                 "reasoning": reasoning,
             }
+            if reasoning and defaults[0]:
+                item["reasoning_default"] = defaults[0]
+            if supports_fast and defaults[1] is not None:
+                item["fast_default"] = defaults[1]
+            caps[model] = item
 
         row["capabilities"] = caps
 

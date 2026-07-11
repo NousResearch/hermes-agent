@@ -8,8 +8,8 @@ import { setCurrentFastMode, setCurrentReasoningEffort } from './session'
 const STORAGE_KEY = 'hermes.desktop.model-presets'
 
 /** Per-model reasoning/fast preset, remembered globally across sessions and
- *  re-applied to the session whenever that model is selected. Unset dimensions
- *  fall back to the Hermes default (medium effort, no fast). */
+ *  re-applied to the session whenever that model is selected. The picker
+ *  supplies configured model/profile defaults for unset dimensions. */
 export interface ModelPreset {
   effort?: string
   fast?: boolean
@@ -60,16 +60,18 @@ export async function applyModelPreset(
   { effort, fast }: ModelPreset,
   ctx: { failMessage: string; request: RequestGateway; sessionId: null | string }
 ): Promise<void> {
-  if (!ctx.sessionId) {
-    return
-  }
-
   if (effort !== undefined) {
     setCurrentReasoningEffort(effort)
   }
 
   if (fast !== undefined) {
     setCurrentFastMode(fast)
+  }
+
+  // Pre-session choices are composer state only. session.create ships these
+  // values as per-session overrides; never write the profile from this path.
+  if (!ctx.sessionId) {
+    return
   }
 
   try {

@@ -117,6 +117,15 @@ def test_load_picker_context_empty_config():
     assert ctx.custom_providers == []
 
 
+def test_load_picker_context_carries_agent_control_defaults():
+    cfg = _cfg()
+    cfg["agent"] = {"reasoning_effort": "high", "service_tier": "fast"}
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+    assert ctx.default_reasoning_effort == "high"
+    assert ctx.default_fast is True
+
+
 # ─── with_overrides ────────────────────────────────────────────────────
 
 
@@ -617,6 +626,67 @@ def test_payload_shape_compatible_with_modelpickerdialog_frontend():
     for row in payload["providers"]:
         missing = required_keys - row.keys()
         assert not missing, f"row {row['slug']} missing keys: {missing}"
+
+
+def test_capabilities_include_configured_model_control_defaults():
+    model = "gpt-5.6-terra"
+    rows = [
+        {
+            "slug": "custom:helix-gpt-5.6",
+            "name": "Helix LiteLLM",
+            "models": [model],
+            "total_models": 1,
+            "is_current": True,
+            "is_user_defined": True,
+            "source": "user-config",
+        }
+    ]
+    ctx = ConfigContext(
+        current_provider="custom:helix-gpt-5.6",
+        current_model=model,
+        current_base_url="http://localhost:4000/v1",
+        user_providers={
+            "helix-gpt-5.6": {
+                "models": {
+                    model: {
+                        "session_controls": {
+                            "reasoning": {
+                                "mode": "selectable",
+                                "allowed": ["low", "medium", "high"],
+                                "default": "high",
+                            },
+                            "fast": {
+                                "mode": "selectable",
+                                "allowed": ["normal", "fast"],
+                                "default": "fast",
+                            },
+                        }
+                    }
+                }
+            }
+        },
+        custom_providers=[],
+        default_reasoning_effort="medium",
+        default_fast=False,
+    )
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.models.model_supports_fast_mode", return_value=True),
+        patch("agent.models_dev.get_model_capabilities", return_value=None),
+    ):
+        payload = build_models_payload(ctx, capabilities=True)
+
+    provider = next(
+        row
+        for row in payload["providers"]
+        if row["slug"] == "custom:helix-gpt-5.6"
+    )
+    assert provider["capabilities"][model] == {
+        "fast": True,
+        "reasoning": True,
+        "fast_default": True,
+        "reasoning_default": "high",
+    }
 
 
 # ─── Aggregator dedup (issue #45954) ───────────────────────────────────

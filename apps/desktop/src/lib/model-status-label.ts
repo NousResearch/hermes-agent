@@ -6,7 +6,8 @@ const REASONING_LABELS: Record<string, string> = {
   low: 'Low',
   medium: 'Med',
   high: 'High',
-  xhigh: 'Max'
+  xhigh: 'Max',
+  max: 'Max'
 }
 
 export function reasoningEffortLabel(effort: string): string {
@@ -61,7 +62,10 @@ function prettifyBase(base: string): string {
   }
 
   if (/^gpt-/i.test(base)) {
-    return base.replace(/^gpt-/i, 'GPT-')
+    const [version = '', ...suffix] = base.replace(/^gpt-/i, '').split('-')
+    const qualifier = titleCase(suffix.join(' '))
+
+    return `GPT-${version}${qualifier ? ` ${qualifier}` : ''}`
   }
 
   if (/^gemini-/i.test(base)) {

@@ -743,8 +743,11 @@ class GatewayConfig:
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
     # Operator-configured outbound suppression: regex strings matched
-    # (re.search) against every outbound chat-surface message; a match drops
-    # the message before send. Global list here; per-platform lists under
+    # (re.search) against non-streamed outbound chat-surface sends (final
+    # responses, status updates, notices, shutdown notifications); a match
+    # drops the message before send. Mid-stream chunk delivery is not
+    # filtered — see _outbound_suppressed_by_config in gateway/run.py.
+    # Global list here; per-platform lists under
     # platforms.<name>.suppress_outbound extend (never replace) it. Empty by
     # default = zero behavior change. Programmatic surfaces (local,
     # api_server, webhook, msgraph_webhook) are always exempt.

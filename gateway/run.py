@@ -418,8 +418,12 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 _SUPPRESS_OUTBOUND_COMPILED: Dict[str, Optional["re.Pattern[str]"]] = {}
 
 # Resolved-config cache so the per-message hot path does not re-parse
-# config.yaml. Keyed by the config file's mtime stamp.
-_SUPPRESS_OUTBOUND_CFG_CACHE: Dict[str, Any] = {}
+# config.yaml. Keyed by resolved config path -> (mtime stamp, config):
+# context-local profile homes (multiplex_profiles) route different config
+# files through this one process, and two files can share an mtime, so the
+# path must be part of the cache identity. Bounded by the number of profile
+# homes, so no eviction is needed.
+_SUPPRESS_OUTBOUND_CFG_CACHE: Dict[str, tuple[Any, Any]] = {}
 
 
 def _compile_suppress_outbound_pattern(pattern: str) -> Optional["re.Pattern[str]"]:
@@ -446,9 +450,9 @@ def _compile_suppress_outbound_pattern(pattern: str) -> Optional["re.Pattern[str
 def _suppress_outbound_patterns_for(platform: Any) -> List[str]:
     """Resolve the effective suppress_outbound pattern list for a platform.
 
-    Reads the GatewayConfig (global list + per-platform extension) with an
-    mtime-keyed cache so repeated outbound sends do not re-parse config.yaml.
-    Fail-open: any config error resolves to no suppression.
+    Reads the GatewayConfig (global list + per-platform extension) with a
+    path+mtime-keyed cache so repeated outbound sends do not re-parse
+    config.yaml. Fail-open: any config error resolves to no suppression.
     """
     try:
         config_path = _gateway_config_home() / "config.yaml"
@@ -456,10 +460,15 @@ def _suppress_outbound_patterns_for(platform: Any) -> List[str]:
             stamp: Any = config_path.stat().st_mtime_ns
         except OSError:
             stamp = None
-        if _SUPPRESS_OUTBOUND_CFG_CACHE.get("stamp") != stamp or "config" not in _SUPPRESS_OUTBOUND_CFG_CACHE:
-            _SUPPRESS_OUTBOUND_CFG_CACHE["config"] = load_gateway_config()
-            _SUPPRESS_OUTBOUND_CFG_CACHE["stamp"] = stamp
-        cfg = _SUPPRESS_OUTBOUND_CFG_CACHE["config"]
+        cache_key = str(config_path)
+        cached = _SUPPRESS_OUTBOUND_CFG_CACHE.get(cache_key)
+        if cached is None or cached[0] != stamp:
+            # load_gateway_config() honors the same context-local home
+            # override as _gateway_config_home(), so the loaded config
+            # matches the path this entry is keyed by.
+            cached = (stamp, load_gateway_config())
+            _SUPPRESS_OUTBOUND_CFG_CACHE[cache_key] = cached
+        cfg = cached[1]
         try:
             platform_enum: Optional[Platform] = Platform(_gateway_platform_value(platform))
         except (ValueError, KeyError):
@@ -477,6 +486,13 @@ def _outbound_suppressed_by_config(platform: Any, text: str) -> bool:
     logs an info line with a redacted, truncated preview. Programmatic
     surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` are always exempt — operators
     can only mute human-facing chat surfaces, never API/webhook payloads.
+
+    Scope: non-streamed sends only — final responses (including the fallback
+    send when streaming delivery fails), status updates, platform notices,
+    and shutdown notifications. Streamed replies are delivered incrementally
+    via progressive message edits (gateway/stream_consumer.py); a whole-
+    message regex over partial chunks is unsound, so mid-stream delivery is
+    deliberately not filtered.
     """
     if not text or _gateway_surface_passes_raw_text(platform):
         return False
@@ -5879,6 +5895,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     continue
 
+                # Operator-configured suppression covers this direct-send rail
+                # too — shutdown notices never pass through
+                # _sanitize_gateway_final_response. Drop is logged inside.
+                if _outbound_suppressed_by_config(platform, msg):
+                    continue
+
                 reply_to_message_id = getattr(source, "message_id", None) if source is not None else None
                 if reply_to_message_id is None and restart_source is not None:
                     try:
@@ -5966,6 +5988,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
                     platform.value,
                 )
+                continue
+
+            # Same operator-configured suppression as the active-session rail
+            # above — the home-channel broadcast is an equally direct send.
+            if _outbound_suppressed_by_config(platform, msg):
                 continue
 
             dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)

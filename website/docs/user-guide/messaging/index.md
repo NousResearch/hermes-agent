@@ -133,7 +133,7 @@ Failed turns still surface as errors; Hermes does not hide failures just because
 
 ## Outbound Suppression Patterns
 
-Operators can drop unwanted outbound messages on chat surfaces with `suppress_outbound`: a list of regex strings in `config.yaml`, settable globally and per platform. Any outbound gateway message (final replies, status updates, and operational notices) that matches a pattern is dropped before send and logged with a truncated preview. This is the user-controlled complement to the built-in provider-error sanitization — useful for muting operational chatter (lifecycle acks, setup nags) or redundant reaction narration in a personal inbox.
+Operators can drop unwanted outbound messages on chat surfaces with `suppress_outbound`: a list of regex strings in `config.yaml`, settable globally and per platform. A matching non-streamed outbound gateway message — final replies (including the fallback send when streaming delivery fails), status updates, operational notices, and shutdown/restart notifications — is dropped before send and logged with a truncated preview. This is the user-controlled complement to the built-in provider-error sanitization — useful for muting operational chatter (lifecycle acks, setup nags) or redundant reaction narration in a personal inbox.
 
 ```yaml
 # Global: applies to every chat platform
@@ -154,6 +154,7 @@ Rules:
 - Per-platform lists extend the global list, they never replace it.
 - Invalid regexes are skipped with a warning; they never crash the gateway.
 - Programmatic surfaces (`local`, `api_server`, `webhook`, `msgraph_webhook`) are always exempt — API and webhook consumers keep the raw text.
+- Streamed replies are not filtered mid-stream: streaming delivers a reply incrementally through progressive message edits, and partial text is already visible before the message completes, so a whole-message regex cannot be applied soundly there. Suppression covers non-streamed sends only.
 - Default is an empty list: no configuration means no behavior change.
 
 ## Quick Setup

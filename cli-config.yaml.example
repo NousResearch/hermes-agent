@@ -827,8 +827,11 @@ platform_toolsets:
 # Platform-specific knobs live under `extra`.
 #
 # Outbound suppression (opt-in; default empty = no behavior change): regex
-# strings matched (re.search) against every outbound message on human-facing
-# chat surfaces; a match drops the message before send. Useful for muting
+# strings matched (re.search) against non-streamed outbound messages on
+# human-facing chat surfaces — final responses, status updates, notices, and
+# shutdown notifications; a match drops the message before send. Streamed
+# replies are delivered incrementally via message edits and are NOT filtered
+# mid-stream (a regex over a partial message is unsound). Useful for muting
 # operational chatter or redundant narration in personal chat threads.
 # Patterns compile as written — add (?i) for case-insensitive matching and
 # anchor with ^...$ for a full-message match. Invalid regexes are skipped

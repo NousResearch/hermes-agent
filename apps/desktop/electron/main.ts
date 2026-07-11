@@ -7507,6 +7507,28 @@ ipcMain.handle('hermes:render-cache:read', (_event, gatewayUrl, activeStoredSess
   }
 })
 
+// Per-session transcript read (switch-paint; Ace 2026-07-11): lets the click
+// path paint a cached transcript instantly while the live prefetch runs. Same
+// gateway-URL resolution + fail-open contract as the boot read above.
+ipcMain.handle('hermes:render-cache:read-transcript', (_event, gatewayUrl, storedSessionId) => {
+  try {
+    let url = String(gatewayUrl || '').trim()
+    if (!url) {
+      const config = readDesktopConnectionConfig()
+      if (config.mode === 'remote' && config.remote?.url) {
+        url = String(config.remote.url).trim()
+      }
+    }
+    const cache = getRenderCache(url)
+    if (!cache || !storedSessionId) {
+      return null
+    }
+    return cache.readTranscript(String(storedSessionId))
+  } catch {
+    return null
+  }
+})
+
 // Reconcile observability (Phase 0 RC4): the renderer reports how many rows
 // differed between the cached paint and the first live snapshot. rows=0 means
 // the cache matched live exactly — I1's "reconciles within one cycle" held.

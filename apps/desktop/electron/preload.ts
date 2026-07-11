@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   renderCache: {
     read: (gatewayUrl, activeStoredSessionId) =>
       ipcRenderer.invoke('hermes:render-cache:read', gatewayUrl, activeStoredSessionId),
+    // Per-session transcript read (switch-paint): cheap, returns {rows}|null.
+    readTranscript: (gatewayUrl, storedSessionId) =>
+      ipcRenderer.invoke('hermes:render-cache:read-transcript', gatewayUrl, storedSessionId),
     putSessions: (gatewayUrl, data) => ipcRenderer.send('hermes:render-cache:put-sessions', gatewayUrl, data),
     putStatus: (gatewayUrl, data) => ipcRenderer.send('hermes:render-cache:put-status', gatewayUrl, data),
     putTranscript: (gatewayUrl, storedSessionId, rows) =>

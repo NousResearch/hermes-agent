@@ -17,7 +17,9 @@
  * Everything here is fail-open: cache errors degrade to today's boot (I3).
  */
 
-import type { SessionInfo } from '@/types/hermes'
+import { toChatMessages } from '@/lib/chat-messages'
+import type { ChatMessage } from '@/lib/chat-messages'
+import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export interface CachedSessionList {
   sessions: SessionInfo[]
@@ -69,15 +71,17 @@ export async function hydrateFromRenderCache(deps: {
     // thread-switch branch, which publishes pending.state.messages unmerged).
     let transcriptPainted = false
     const cachedTranscript = result.transcript as { rows?: unknown[] } | null
+    const transcriptRows = Array.isArray(cachedTranscript?.rows)
+      ? normalizeCachedTranscriptRows(cachedTranscript!.rows)
+      : []
     if (
       deps.setMessages &&
       deps.getMessages &&
       deps.rememberedSessionId &&
-      Array.isArray(cachedTranscript?.rows) &&
-      cachedTranscript!.rows.length > 0 &&
+      transcriptRows.length > 0 &&
       deps.getMessages().length === 0
     ) {
-      deps.setMessages(cachedTranscript!.rows)
+      deps.setMessages(transcriptRows)
       transcriptPainted = true
     }
 
@@ -156,6 +160,50 @@ export function reconcileRenderCache(opts: {
     }
   } catch {
     // fail-open
+  }
+}
+
+/**
+ * Read a cached transcript for ANY session (the switch-paint path; Ace
+ * 2026-07-11: "cache them so we never wait when we click on a session").
+ * Returns the cached rows or null. Fail-open: any error is a miss. Rows come
+ * back in whichever shape the writer stored (raw SessionMessage from the
+ * preloader, converted ChatMessage from the write-through) — callers paint
+ * via normalizeCachedTranscriptRows.
+ */
+export async function readCachedTranscript(storedSessionId: string | null): Promise<unknown[] | null> {
+  try {
+    const api = renderCacheApi()
+    if (!api?.readTranscript || !storedSessionId) {
+      return null
+    }
+    const result = (await api.readTranscript(null, storedSessionId)) as { rows?: unknown[] } | null
+    const rows = Array.isArray(result?.rows) ? result!.rows : null
+    return rows && rows.length > 0 ? rows : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Normalize cached transcript rows to ChatMessage[] for painting. Two writer
+ * shapes exist: the transcript preloader stores raw SessionMessage rows; the
+ * active-session write-through stores converted ChatMessage rows (they carry
+ * `parts: []`). Sniff and convert; anything unconvertible comes back empty
+ * (callers treat empty as a miss and fall through to the network).
+ */
+export function normalizeCachedTranscriptRows(rows: unknown[]): ChatMessage[] {
+  try {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return []
+    }
+    const first = rows[0] as { parts?: unknown }
+    if (first != null && typeof first === 'object' && Array.isArray(first.parts)) {
+      return rows as ChatMessage[]
+    }
+    return toChatMessages(rows as SessionMessage[])
+  } catch {
+    return []
   }
 }
 

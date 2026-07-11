@@ -3906,6 +3906,11 @@ def generate_launchd_plist() -> str:
             priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
         )
     )
+    kanban_db = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    kanban_plist_env = (
+        f"        <key>HERMES_KANBAN_DB</key>\n        <string>{kanban_db}</string>\n"
+        if kanban_db else ""
+    )
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
@@ -3948,7 +3953,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
-    </dict>
+{kanban_plist_env}    </dict>
 
     <key>LimitLoadToSessionType</key>
     <array>

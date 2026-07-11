@@ -3570,10 +3570,12 @@ class TestServiceWorkingDirIsStable:
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setenv("HERMES_KANBAN_DB", "/shared/kanban.db")
 
         plist = gateway_cli.generate_launchd_plist()
 
         assert "<key>AbandonProcessGroup</key>\n    <true/>" in plist
+        assert "<key>HERMES_KANBAN_DB</key>\n        <string>/shared/kanban.db</string>" in plist
 
 
 class TestLaunchctlBootstrapEioRetry:

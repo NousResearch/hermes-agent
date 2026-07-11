@@ -200,6 +200,68 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
     ]
 
 
+def test_human_single_query_main_handles_keyboard_interrupt(monkeypatch):
+    calls = []
+
+    import cli as cli_mod
+
+    class _Console:
+        def print(self, *_args, **_kwargs):
+            calls.append("query-label")
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = _Console()
+            self.session_id = "interrupted-session"
+            self.agent = SimpleNamespace(
+                session_id="interrupted-session",
+                platform="cli",
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            calls.append(("claim", surface, stderr))
+            return True
+
+        def _show_security_advisories(self):
+            calls.append("advisories")
+
+        def chat(self, query, images=None):
+            calls.append(("chat", query, images))
+            raise KeyboardInterrupt
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append(("summary", clear_screen))
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_emit_interrupted_session_end",
+        lambda fake_cli, *, reason: calls.append(
+            ("interrupted", fake_cli.session_id, reason)
+        ),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+
+    assert exc_info.value.code == 130
+    assert calls == [
+        ("claim", "cli", False),
+        "query-label",
+        "advisories",
+        ("chat", "hello", None),
+        ("interrupted", "interrupted-session", "keyboard_interrupt"),
+        ("summary", False),
+        ("finalize", "interrupted-session"),
+    ]
+
+
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
     calls = []
 

@@ -89,6 +89,17 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+# Only these errno values mean "this filesystem cannot honor F_FULLFSYNC"
+# (e.g. some network mounts). They are the sole cases where downgrading to a
+# plain os.fsync is acceptable. Any other error (EIO, EBADF, ...) is a real
+# failure and must propagate instead of masquerading as a successful sync.
+_FULLFSYNC_UNSUPPORTED_ERRNOS = frozenset(
+    getattr(errno, _name)
+    for _name in ("ENOTSUP", "EOPNOTSUPP", "EINVAL")
+    if hasattr(errno, _name)
+)
+
+
 def durable_fsync(fd: int) -> None:
     """``fsync`` that is actually durable on macOS.
 
@@ -101,18 +112,26 @@ def durable_fsync(fd: int) -> None:
     extending the same durability guarantee to the plain atomic file writes
     (tempfile + fsync + ``os.replace``) used across the codebase.
 
-    Falls back to ``os.fsync`` where ``F_FULLFSYNC`` is unavailable or
-    unsupported (non-Darwin platforms, and network filesystems where the
-    request returns ``ENOTSUP``/``EINVAL``).
+    On non-Darwin platforms this is a plain ``os.fsync``.  On Darwin, only an
+    "operation not supported" error (a filesystem that cannot honor
+    ``F_FULLFSYNC``) falls back to ``os.fsync``; any other error (such as
+    ``EIO`` or ``EBADF``) propagates, so a caller is never told a durable
+    flush succeeded when it did not.
     """
     if sys.platform == "darwin":
         try:
             import fcntl
 
-            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-            return
-        except (OSError, AttributeError):
-            pass
+            full_fsync = fcntl.F_FULLFSYNC
+        except (ImportError, AttributeError):
+            full_fsync = None
+        if full_fsync is not None:
+            try:
+                fcntl.fcntl(fd, full_fsync)
+                return
+            except OSError as exc:
+                if exc.errno not in _FULLFSYNC_UNSUPPORTED_ERRNOS:
+                    raise
     os.fsync(fd)
 
 

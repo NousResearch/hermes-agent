@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 from hermes_cli.config import cfg_get
 
 
@@ -66,7 +66,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(subs, fh, indent=2, ensure_ascii=False)
             fh.flush()
-            os.fsync(fh.fileno())
+            durable_fsync(fh.fileno())
         os.chmod(tmp_path, _SUBSCRIPTIONS_FILE_MODE)
         atomic_replace(tmp_path, path)
         # Re-assert after rename in case the destination existed with a

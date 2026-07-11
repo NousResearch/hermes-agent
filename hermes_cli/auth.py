@@ -51,7 +51,7 @@ from hermes_cli.config import (
 )
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
+from utils import atomic_replace, atomic_yaml_write, durable_fsync, env_float, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1149,7 +1149,7 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
-            os.fsync(handle.fileno())
+            durable_fsync(handle.fileno())
         atomic_replace(tmp_path, auth_file)
         try:
             dir_fd = os.open(str(auth_file.parent), os.O_RDONLY)
@@ -2241,7 +2241,7 @@ def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(tokens, indent=2, sort_keys=True) + "\n")
             fh.flush()
-            os.fsync(fh.fileno())
+            durable_fsync(fh.fileno())
         atomic_replace(tmp_path, auth_path)
     finally:
         try:
@@ -4784,7 +4784,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(json.dumps(shared, indent=2, sort_keys=True))
                     fh.flush()
-                    os.fsync(fh.fileno())
+                    durable_fsync(fh.fileno())
                 os.replace(tmp, path)
             finally:
                 try:

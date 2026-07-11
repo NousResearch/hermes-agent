@@ -34,7 +34,7 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier,
 )
 from hermes_constants import get_hermes_dir, get_hermes_home
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,7 @@ def _secure_write(path: Path, data: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, path)
         try:
             os.chmod(path, 0o600)

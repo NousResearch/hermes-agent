@@ -742,7 +742,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home  # noqa: F811,E402
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, durable_fsync, fast_safe_load
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -7453,7 +7453,7 @@ def sanitize_env_file() -> int:
         with os.fdopen(fd, "w", **write_kw) as f:
             f.writelines(sanitized)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
     except BaseException:
         try:
@@ -7589,7 +7589,7 @@ def save_env_value(key: str, value: str):
         with os.fdopen(fd, 'w', **write_kw) as f:
             f.writelines(lines)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
         # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
         # instead of letting _secure_file unconditionally tighten to 0600.
@@ -7660,7 +7660,7 @@ def remove_env_value(key: str) -> bool:
             with os.fdopen(fd, 'w', **write_kw) as f:
                 f.writelines(new_lines)
                 f.flush()
-                os.fsync(f.fileno())
+                durable_fsync(f.fileno())
             atomic_replace(tmp_path, env_path)
             # Preserve the original file mode (e.g. 0640 for Docker volume
             # mounts) instead of letting _secure_file unconditionally tighten

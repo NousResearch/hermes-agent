@@ -42,13 +42,14 @@ def test_full_fsync_used_on_darwin(monkeypatch, real_fd):
 
 
 def test_falls_back_to_fsync_when_full_fsync_unsupported(monkeypatch, real_fd):
-    """A filesystem that rejects F_FULLFSYNC must degrade to os.fsync."""
+    """A filesystem that reports F_FULLFSYNC unsupported must degrade to os.fsync."""
+    import errno
     import fcntl
 
     fsync_calls = []
 
     def _reject(fd, cmd):
-        raise OSError("F_FULLFSYNC not supported")
+        raise OSError(errno.ENOTSUP, "operation not supported")
 
     monkeypatch.setattr(utils.sys, "platform", "darwin")
     monkeypatch.setattr(fcntl, "F_FULLFSYNC", 51, raising=False)
@@ -58,6 +59,28 @@ def test_falls_back_to_fsync_when_full_fsync_unsupported(monkeypatch, real_fd):
     utils.durable_fsync(real_fd)
 
     assert fsync_calls == [real_fd]
+
+
+def test_real_io_error_propagates_on_darwin(monkeypatch, real_fd):
+    """A genuine F_FULLFSYNC failure (EIO) must not be masked by a weaker fsync."""
+    import errno
+    import fcntl
+
+    fsync_calls = []
+
+    def _eio(fd, cmd):
+        raise OSError(errno.EIO, "I/O error")
+
+    monkeypatch.setattr(utils.sys, "platform", "darwin")
+    monkeypatch.setattr(fcntl, "F_FULLFSYNC", 51, raising=False)
+    monkeypatch.setattr(fcntl, "fcntl", _eio)
+    monkeypatch.setattr(utils.os, "fsync", lambda fd: fsync_calls.append(fd))
+
+    with pytest.raises(OSError) as excinfo:
+        utils.durable_fsync(real_fd)
+
+    assert excinfo.value.errno == errno.EIO
+    assert fsync_calls == []
 
 
 def test_plain_fsync_off_darwin(monkeypatch, real_fd):

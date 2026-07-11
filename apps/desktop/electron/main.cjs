@@ -37,7 +37,11 @@ const {
   resolveBootstrapFailureFallback
 } = require('./apex-runtime-select.cjs')
 // hc-472 P1 · versioned runtime bundle (opt-in, behind HERMES_BUNDLE_MODE).
-const bundleLayout = require('./apex-bundle-layout.cjs')
+// main talks to the layout only through the migrate + diskspace facades (which
+// wrap reconcile/GC with the D1 migration + C2 watermark), so it does not
+// require apex-bundle-layout directly.
+const bundleMigrate = require('./apex-bundle-migrate.cjs')
+const bundleDiskspace = require('./apex-bundle-diskspace.cjs')
 const { downloadWithResume } = require('./apex-bundle-download.cjs')
 const { applyBundleUpdate: applyRuntimeBundleUpdate } = require('./apex-bundle-install.cjs')
 const { createShellUpdater } = require('./shell-updater.cjs')
@@ -627,22 +631,31 @@ function bundleRuntimeDownload({ url, dest, sha256, size }) {
   return downloadWithResume({ url, dest, sha256, size, log: msg => rememberLog(msg) })
 }
 
-// Startup self-heal: rebuild the active link from the truth pointer (a switch
-// interrupted mid-repoint), then GC everything but current+previous and any
-// `.tmp` half-installs. Runs before any runtime child is spawned (nothing holds
-// a handle on an old venv), and is fully fail-soft.
+// Startup self-heal: rebuild the active link from the truth pointer (a switch or
+// legacy migration interrupted mid-repoint — D1), GC everything but
+// current+previous and any `.tmp` half-installs, tighten past the disk budget if
+// versions/ overflowed (C2), and reap the legacy in-place fallback once it is no
+// longer a rollback target (D1). Runs before any runtime child is spawned
+// (nothing holds a handle on an old venv), and is fully fail-soft.
 function reconcileAndGcBundleRuntime() {
   if (!bundleModeEnabled()) return
   try {
-    const rec = bundleLayout.reconcileActiveLink(HERMES_HOME)
-    if (rec.reconciled) rememberLog(`[bundle] healed active link -> versions/${rec.key}`)
-    const gc = bundleLayout.garbageCollect(HERMES_HOME)
-    if (gc.removed.length || gc.orphansRemoved.length || gc.skipped.length) {
+    const rec = bundleMigrate.reconcileMigration(HERMES_HOME)
+    if (rec.reconciled) rememberLog(`[bundle] healed active link (${rec.action}) -> ${rec.key || '?'}`)
+    // Watermark-aware GC: normal keep current+previous, or drop previous when
+    // versions/ blew past its disk budget. One pass (the watermark check runs GC).
+    const water = bundleDiskspace.enforceVersionsWatermark(HERMES_HOME)
+    const gc = water.gc
+    if (gc && (gc.removed.length || gc.orphansRemoved.length || gc.skipped.length)) {
       rememberLog(
         `[bundle] GC removed=${JSON.stringify(gc.removed)} staging=${JSON.stringify(gc.orphansRemoved)} ` +
           `skipped=${JSON.stringify(gc.skipped)}`
       )
     }
+    if (water.warning) rememberLog(`[bundle] ${water.warning}`)
+    // Reap the legacy in-place fallback once the sentinel has left the pointer.
+    const asideGc = bundleMigrate.gcLegacyAside(HERMES_HOME)
+    if (asideGc.removed) rememberLog(`[bundle] reaped legacy in-place fallback ${asideGc.path}`)
   } catch (error) {
     rememberLog(`[bundle] reconcile/GC errored (ignored): ${error && error.message}`)
   }
@@ -7125,6 +7138,20 @@ ipcMain.handle('hermes:runtime:apply-update', async () => {
         error: 'min_desktop_version',
         required: result.required,
         current: result.current,
+        latest: { version: pin.version, key: pin.key }
+      }
+    }
+    if (result.code === 'insufficient_disk') {
+      // Hard stop: the legacy chain re-bootstraps IN PLACE and needs even more
+      // disk, so falling back would only fail worse (and mutate a working
+      // runtime). Surface the readable precheck message (C2, design §8).
+      rememberLog(`[bundle] refusing update: ${result.error}`)
+      return {
+        ok: false,
+        error: 'insufficient_disk',
+        message: result.error,
+        freeBytes: result.freeBytes,
+        requiredBytes: result.requiredBytes,
         latest: { version: pin.version, key: pin.key }
       }
     }

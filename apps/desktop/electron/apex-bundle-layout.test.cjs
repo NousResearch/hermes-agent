@@ -311,11 +311,27 @@ test('garbageCollect: honors extra keep[] and isLocked skip', () => {
   }
 })
 
+test('garbageCollect: dropPrevious sheds previous too (C2 disk-pressure path)', () => {
+  const home = mkHome()
+  try {
+    for (const k of ['AAA', 'BBB', 'CCC']) seedVersion(home, k)
+    layout.writePointerAtomic(home, { key: 'CCC', previous: 'BBB' })
+    const r = layout.garbageCollect(home, { dropPrevious: true })
+    assert.equal(r.droppedPrevious, true)
+    assert.deepEqual(r.kept, ['CCC'], 'only current survives under pressure')
+    assert.deepEqual(r.removed.sort(), ['AAA', 'BBB'])
+    assert.equal(fs.existsSync(layout.bundlePaths(home).versionDir('BBB')), false)
+    assert.equal(fs.existsSync(layout.bundlePaths(home).versionDir('CCC')), true)
+  } finally {
+    rm(home)
+  }
+})
+
 test('garbageCollect: empty / no-versions home is a safe no-op', () => {
   const home = mkHome()
   try {
     const r = layout.garbageCollect(home)
-    assert.deepEqual(r, { kept: [], removed: [], skipped: [], orphansRemoved: [], orphansSkipped: [] })
+    assert.deepEqual(r, { kept: [], removed: [], skipped: [], orphansRemoved: [], orphansSkipped: [], droppedPrevious: false })
   } finally {
     rm(home)
   }

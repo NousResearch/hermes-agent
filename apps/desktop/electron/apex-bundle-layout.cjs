@@ -320,29 +320,76 @@ function listVersions(hermesHome) {
 }
 
 /**
+ * Remove a version dir with ALL-OR-NOTHING semantics on Windows (design §4 C2
+ * 无句柄探测). A version dir is only ever GC'd when nothing references it, but a
+ * stale runtime child can still hold a handle on a `.pyd` inside an old venv; a
+ * plain recursive rmSync would then delete SOME files before hitting the locked
+ * one, leaving a half-shredded dir. So on win32 we first RENAME the whole tree to
+ * a sibling `<name>.gc.tmp`: Windows refuses that rename atomically (EPERM/EBUSY)
+ * while ANY handle is open, so a locked dir is left COMPLETELY intact and retried
+ * next startup; only once detached under a `.tmp` name (which listVersions reads
+ * as an orphan staging dir the next GC reaps) do we rmSync it — a partial failure
+ * there just leaves an unreferenced `.tmp`. On POSIX an open file never blocks
+ * unlink, so a direct recursive rm is already all-or-nothing (byte-identical to
+ * the pre-C2 behaviour). Returns true on a completed removal, false when the dir
+ * was left in place (locked).
+ *
+ * WIN-VERIFY: the rename-refused-while-open-handle behaviour is Windows-specific
+ * and only exercisable on a real Windows machine; asserted structurally here.
+ */
+function removeVersionDir(absDir, platform) {
+  if (isWin(platform)) {
+    const detached = `${absDir}.gc${TMP_SUFFIX}`
+    try {
+      fs.rmSync(detached, { recursive: true, force: true }) // clear any prior probe residue
+      fs.renameSync(absDir, detached)
+    } catch {
+      return false // a held handle refused the rename — leave the dir fully intact
+    }
+    try {
+      fs.rmSync(detached, { recursive: true, force: true })
+    } catch {
+      // Detached + unreferenced (ends in .tmp) — next startup GC reaps it.
+    }
+    return true
+  }
+  try {
+    fs.rmSync(absDir, { recursive: true, force: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Startup GC: keep current + previous (+ any explicit `keep` keys), delete every
  * other committed version dir and EVERY orphan `.tmp` staging dir.
  *
  * Timing is the safety mechanism: GC runs at shell startup, before any runtime
  * child process is spawned, so nothing holds a handle on an old venv's .pyd. As
- * belt-and-suspenders a directory that still can't be removed (EBUSY/EPERM/
- * ENOTEMPTY on Windows = an open handle) is SKIPPED and retried next startup —
- * never fatal. `isLocked(name, absPath)` can force-skip (tests / a future
- * handle probe, design §4 C2); removal errors are caught regardless.
+ * belt-and-suspenders a directory that still can't be removed (an open handle) is
+ * SKIPPED and retried next startup — never fatal (the removal is all-or-nothing,
+ * see removeVersionDir). `isLocked(name, absPath)` can force-skip (tests / an
+ * explicit handle probe); removal errors are caught regardless.
  *
- * Returns {kept, removed, skipped, orphansRemoved, orphansSkipped}.
+ * `dropPrevious:true` (design §4/C2 disk-pressure path) sheds the `previous`
+ * version too — a working `current` beats an instant-rollback target we can't
+ * afford the disk for. Default keeps current+previous.
+ *
+ * Returns {kept, removed, skipped, orphansRemoved, orphansSkipped, droppedPrevious}.
  */
 function garbageCollect(hermesHome, opts = {}) {
   const { versionsDir } = bundlePaths(hermesHome)
+  const platform = currentPlatform(opts)
   const isLocked = typeof opts.isLocked === 'function' ? opts.isLocked : () => false
   const pointer = readPointer(hermesHome)
   const protectedKeys = new Set()
   if (pointer && pointer.key) protectedKeys.add(pointer.key)
-  if (pointer && pointer.previous) protectedKeys.add(pointer.previous)
+  if (!opts.dropPrevious && pointer && pointer.previous) protectedKeys.add(pointer.previous)
   for (const k of opts.keep || []) if (k) protectedKeys.add(k)
 
   const { versions, staging } = listVersions(hermesHome)
-  const result = { kept: [], removed: [], skipped: [], orphansRemoved: [], orphansSkipped: [] }
+  const result = { kept: [], removed: [], skipped: [], orphansRemoved: [], orphansSkipped: [], droppedPrevious: Boolean(opts.dropPrevious) }
 
   const tryRemove = (name, bucketRemoved, bucketSkipped) => {
     const abs = path.join(versionsDir, name)
@@ -350,13 +397,8 @@ function garbageCollect(hermesHome, opts = {}) {
       bucketSkipped.push(name)
       return
     }
-    try {
-      fs.rmSync(abs, { recursive: true, force: true })
-      bucketRemoved.push(name)
-    } catch {
-      // Held handle / permission — leave it, next startup retries.
-      bucketSkipped.push(name)
-    }
+    if (removeVersionDir(abs, platform)) bucketRemoved.push(name)
+    else bucketSkipped.push(name) // held handle / permission — next startup retries
   }
 
   for (const name of versions) {
@@ -413,6 +455,7 @@ module.exports = {
   rollbackToPrevious,
   reconcileActiveLink,
   listVersions,
+  removeVersionDir,
   garbageCollect,
   layoutState
 }

@@ -41,6 +41,38 @@ cos_artifacts:
     consumer: "Install-GitFromCos"
     ends: [win]
 
+# ── 预构建 runtime bundle(hc-472 P1)─────────────────────────────────────────
+# desktop-bundle.yml 按 (os,arch) 原生构建、传 COS `bundle/` 前缀(与 `runtime/`
+# 并列、在 host 根,不含 cos_base 的 /runtime 后缀)。对象名由
+# scripts/build-runtime-bundle.mjs 固定:archive=runtime-bundle-<key>-<os>-<arch>.tar.gz、
+# 边车 .sha256、以及固定名 manifest.json(sibling,带 archive{name,sha256,size})。
+# verify-environment.py --check-bundles --bundle-key <sha12> 对给定 key 断言三平台
+# 三对象全 HEAD-200,且 sha 自洽(manifest.json 的 archive.sha256 == .sha256 边车首字段)。
+# 这是 is_default 翻转前的硬闸(hc-471「先 publish 后翻」的 publish 完成判据),
+# 从结构上堵死 hc-448 类「某腿缺包就翻默认」。
+bundles:
+  framework: hermes-agent
+  # 前缀在 COS host 根(cos_base 去掉尾部 /runtime);verify 同样这样推导 host。
+  prefix: "bundle/{framework}/{key}/{os}-{arch}"
+  # 每平台必存在、纳入闸的对象(名字由 build-runtime-bundle.mjs 固定):
+  objects:
+    - "manifest.json"
+    - "runtime-bundle-{key}-{os}-{arch}.tar.gz"
+    - "runtime-bundle-{key}-{os}-{arch}.tar.gz.sha256"
+  # sha 自洽:manifest.json 的 archive.sha256 必须等于 .sha256 边车文件首字段。
+  sha_self_consistency:
+    manifest: "manifest.json"
+    manifest_field: "archive.sha256"
+    sha_sidecar: "runtime-bundle-{key}-{os}-{arch}.tar.gz.sha256"
+  platforms:
+    - {os: win, arch: x64}     # P1 验收腿
+    - {os: mac, arch: arm64}   # P2(desktop-bundle.yml experimental)
+    - {os: mac, arch: x64}     # P2(desktop-bundle.yml experimental)
+  # 懒加载附件与 latest 指针:P1 workflow 尚未产出,仅登记(设计 §2/§6),不纳闸。
+  lazy_optional:
+    - {name: chromium, key: "chromium-{pwver}.tar.gz", note: "playwright Chromium,按 pwver 版本键;首次用浏览器工具才拉;P1 未上传,仅参考"}
+    - {name: latest,   key: "bundle/{framework}/{key}/latest.json", note: "per-os-arch 指针(hc-478 web + 桌面更新发现共读);P1 未产出,占位"}
+
 # ── CN-registry 镜像产物 ──────────────────────────────────────────────────────
 # 经域内包/二进制 registry 取(Set-ApexCnMirrorEnv 设的 env)。registry 常在;verify 视为可达。
 cn_registry:

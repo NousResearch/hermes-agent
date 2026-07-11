@@ -7,6 +7,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const layout = require('./apex-bundle-layout.cjs')
+const migrate = require('./apex-bundle-migrate.cjs')
 const install = require('./apex-bundle-install.cjs')
 
 // A manifest faithful to scripts/build-runtime-bundle.mjs output (sibling
@@ -264,6 +265,10 @@ function baseDeps(home, key = REAL_KEY, manifest = winManifest()) {
     desktopVersion: '0.18.2',
     cosBase: '',
     platformOpts: { platform: process.platform }, // posix symlink on the mac CI leg
+    // C2 probes injected so the disk precheck is deterministic + machine-agnostic:
+    // generous free space, and a tiny per-dir size (no real du of the fake tree).
+    freeBytesOf: () => 64 * 1024 * 1024 * 1024,
+    dirSizeOf: () => 1024,
     fetchManifest: async () => manifest,
     download: async ({ dest }) => {
       seen.download += 1
@@ -339,6 +344,112 @@ test('applyBundleUpdate: a verify failure returns {ok:false} and commits nothing
     // Nothing switched — a caller can safely fall back to the legacy chain.
     assert.equal(layout.readPointer(home), null)
     assert.equal(fs.existsSync(layout.bundlePaths(home).versionDir(REAL_KEY)), false)
+  } finally {
+    rm(home)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// C2 — disk precheck (design §8) inside applyBundleUpdate
+// ---------------------------------------------------------------------------
+
+test('applyBundleUpdate: refuses BEFORE downloading when free disk < required', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    const deps = baseDeps(home)
+    deps.freeBytesOf = () => 100 * 1024 * 1024 // 100 MiB — far below a bundle install
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'insufficient_disk')
+    assert.equal(r.stage, 'preflight')
+    assert.match(r.error, /disk space/i)
+    assert.equal(deps.seen.download, 0, 'never pulls the archive when the disk cannot hold it')
+    assert.equal(layout.readPointer(home), null)
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: low disk first drops `previous` to reclaim, then proceeds', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    // Seed a current+previous catalog with a live link at current.
+    const older = 'aaaaaaaaaaaa'
+    const current = 'bbbbbbbbbbbb'
+    for (const k of [older, current]) {
+      const dir = layout.bundlePaths(home).versionDir(k)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'id.txt'), k)
+    }
+    layout.writePointerAtomic(home, { key: current, previous: older })
+    layout.repointActiveLink(home, current, { platform: process.platform })
+
+    const deps = baseDeps(home)
+    let call = 0
+    // Below required on the first probe, above it on the re-check after reclaim.
+    deps.freeBytesOf = () => (++call === 1 ? 100 * 1024 * 1024 : 64 * 1024 * 1024 * 1024)
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, true, 'proceeds once the reclaim frees room')
+    assert.ok(call >= 2, 're-checks free space after reclaiming')
+    // `previous` (older) was dropped to reclaim; new key is now current.
+    assert.equal(fs.existsSync(layout.bundlePaths(home).versionDir(older)), false)
+    assert.equal(layout.readPointer(home).key, REAL_KEY)
+  } finally {
+    rm(home)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// D1 — legacy in-place side-by-side migration (design §5) via applyBundleUpdate
+// ---------------------------------------------------------------------------
+
+function seedLegacyInPlace(home, extra = {}) {
+  const dir = layout.bundlePaths(home).activeLink // HERMES_HOME/hermes-agent, a REAL dir
+  fs.mkdirSync(path.join(dir, 'venv', 'bin'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'venv', 'bin', 'python'), '#!/legacy/abs/venv/bin/python')
+  fs.writeFileSync(path.join(dir, '.hermes-bootstrap-complete'), '{}')
+  for (const [rel, body] of Object.entries(extra)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+    fs.writeFileSync(path.join(dir, rel), body)
+  }
+  return dir
+}
+
+test('applyBundleUpdate: migrates a legacy in-place install side-by-side', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    seedLegacyInPlace(home)
+    const r = await install.applyBundleUpdate(baseDeps(home))
+    assert.equal(r.ok, true)
+    assert.equal(r.switched.migrated, true)
+    // pointer: new current, previous = the legacy sentinel (rollback fallback)
+    const p = layout.readPointer(home)
+    assert.equal(p.key, REAL_KEY)
+    assert.equal(p.previous, migrate.LEGACY_SENTINEL)
+    // active link now resolves to versions/<new>; payload readable through it
+    const { activeLink } = layout.bundlePaths(home)
+    assert.equal(layout.linkStatus(activeLink).kind, 'link')
+    assert.equal(fs.readFileSync(path.join(activeLink, 'payload.txt'), 'utf8'), `runtime ${REAL_KEY}`)
+    // legacy dir preserved aside, unmoved-content, as the rollback fallback
+    const aside = migrate.legacyAsidePath(home)
+    assert.equal(fs.readFileSync(path.join(aside, 'venv', 'bin', 'python'), 'utf8'), '#!/legacy/abs/venv/bin/python')
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: refuses migration when user data lives in the runtime dir', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    seedLegacyInPlace(home, { '.env': 'RELAY_KEY=secret' })
+    const r = await install.applyBundleUpdate(baseDeps(home))
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'migration_refused')
+    assert.equal(r.reason, 'user-data-in-runtime-dir')
+    // Nothing moved: no pointer, no aside, hermes-agent still a real dir.
+    assert.equal(layout.readPointer(home), null)
+    assert.equal(fs.existsSync(migrate.legacyAsidePath(home)), false)
+    assert.equal(layout.linkStatus(layout.bundlePaths(home).activeLink).kind, 'dir')
   } finally {
     rm(home)
   }

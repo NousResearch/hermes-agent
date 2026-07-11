@@ -28,6 +28,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const layout = require('./apex-bundle-layout.cjs')
+const migrate = require('./apex-bundle-migrate.cjs')
+const diskspace = require('./apex-bundle-diskspace.cjs')
 
 const MANIFEST_SCHEMA = 1
 const BUNDLE_KIND = 'apexnodes-runtime-bundle'
@@ -276,6 +278,10 @@ async function stageAndCommitBundle(o) {
  * @param {(exe:string, argv:string[], label:string)=>void} o.runTool
  * @param {string} [o.downloadDir]     where the archive lands (default versions/.downloads)
  * @param {object} [o.platformOpts]    {platform} forwarded to layout
+ * @param {(p:string)=>number} [o.freeBytesOf]   C2 precheck free-space probe (injected in tests)
+ * @param {(dir:string)=>number} [o.dirSizeOf]   C2 versions/ usage probe (injected in tests)
+ * @param {number} [o.minFreeBytes]    C2 install free-space floor override
+ * @param {string[]} [o.migrateMarkers] D1 data-location assertion marker override
  * @param {(msg:string)=>void} [o.log]
  * @returns {Promise<{ok:true, key, versionDir, switched}|{ok:false, error, code, stage}>}
  */
@@ -292,8 +298,13 @@ async function applyBundleUpdate(o) {
     extract,
     runTool,
     platformOpts,
+    freeBytesOf,
+    dirSizeOf,
+    minFreeBytes,
+    migrateMarkers,
     log = () => {}
   } = o
+  const platform = platformOpts && platformOpts.platform
   const paths = layout.bundlePaths(hermesHome)
   const cos = bundleCosLayout({ cosBase, key, os, arch })
 
@@ -320,6 +331,27 @@ async function applyBundleUpdate(o) {
       }
     }
 
+    // 1b. C2 disk precheck: refuse BEFORE pulling ~0.6 GB when the target volume
+    //     can't hold the archive + its extracted staging. Under pressure first
+    //     force-drop `previous` to reclaim ~1 bundle (design §8 "不足则先 GC
+    //     previous"), then re-check; only then refuse with a readable error.
+    const archiveSize = manifest.archive.size
+    const preflightArgs = { hermesHome, archiveSize, freeBytesOf, dirSizeOf, minFreeBytes, platform }
+    let disk = diskspace.preflightDiskSpace(preflightArgs)
+    if (!disk.ok) {
+      log(`[bundle-install] low disk (free=${disk.freeBytes} < need=${disk.requiredBytes}); dropping previous to reclaim`)
+      try {
+        layout.garbageCollect(hermesHome, { platform, dropPrevious: true })
+      } catch {
+        // reclamation is best-effort; the re-check below still gates.
+        void 0
+      }
+      disk = diskspace.preflightDiskSpace(preflightArgs)
+    }
+    if (!disk.ok) {
+      return { ok: false, code: 'insufficient_disk', stage: 'preflight', error: disk.message, freeBytes: disk.freeBytes, requiredBytes: disk.requiredBytes }
+    }
+
     // 2. Download the archive with Range resume, gated on the manifest's sha256.
     const archiveName = manifest.archive.name
     const downloadDir = o.downloadDir || path.join(paths.versionsDir, '.downloads')
@@ -335,10 +367,14 @@ async function applyBundleUpdate(o) {
     // 3. Stage → fixup → verify → atomic commit (F2).
     const staged = await stageAndCommitBundle({ hermesHome, key, archivePath, manifest, extract, runTool, opts: platformOpts, log })
 
-    // 4. Atomic switch: pointer (truth) then link (derived) (C1).
-    const sw = layout.switchToVersion(hermesHome, key, platformOpts)
+    // 4. Atomic switch: pointer (truth) then link (derived) (C1) — upgraded to a
+    //    CONTROLLED side-by-side MIGRATION (D1) when the active path is a legacy
+    //    in-place dir (turning the add-only layer's real-dir refusal into a
+    //    migration + a `legacy-inplace` rollback fallback).
+    const sw = migrate.switchToVersionOrMigrate(hermesHome, key, { platform, markers: migrateMarkers, log })
     if (!sw.ok) {
-      return { ok: false, code: 'switch_failed', stage: 'switch', error: `could not activate versions/${key}: ${sw.reason}`, reason: sw.reason }
+      const code = sw.reason === 'user-data-in-runtime-dir' ? 'migration_refused' : 'switch_failed'
+      return { ok: false, code, stage: 'switch', error: `could not activate versions/${key}: ${sw.reason}`, reason: sw.reason, found: sw.found }
     }
 
     // 5. Best-effort cleanup of the downloaded archive + startup-style GC (keep

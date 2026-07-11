@@ -11,6 +11,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -24,6 +25,24 @@ def head(url, timeout=10):
         return e.code
     except Exception:
         return 0
+
+
+def http_get(url, timeout=15):
+    """(status, body_bytes). status 0 / body b'' on any transport error."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+    except Exception:
+        return 0, b""
+
+
+def bundle_host(m):
+    """Bundle objects live under the COS host ROOT (bundle/ is a sibling of the
+    runtime/ prefix), so strip the cos_base's trailing /runtime — same derivation
+    as apex-bundle-install.cjs::deriveCosHost."""
+    return re.sub(r"/runtime$", "", m["cos_base"].rstrip("/"), flags=re.I)
 
 
 def load_manifest(path):
@@ -119,12 +138,69 @@ def cos_urls(m, commit):
                 yield (f"{name}[{a}]", f"{base}/{key}")
 
 
+def check_bundles(m, key, only_os=None):
+    """hc-472 E1: yield (label, status, detail) for the prebuilt runtime bundles.
+    Per platform (win-x64 / mac-arm64 / mac-x64) for a given key: HEAD-200 on
+    manifest.json + the .tar.gz + its .sha256, and sha SELF-CONSISTENCY (the
+    manifest's archive.sha256 == the .sha256 sidecar's first field). This is the
+    is_default-flip hard gate (hc-471). `only_os` (e.g. {"win"}) narrows to a
+    phase's acceptance legs (P1 = win-only, design §7); default = all platforms.
+    status: OK | MISS(code) | MISMATCH | SKIP.
+    """
+    b = m.get("bundles")
+    if not b:
+        yield ("bundles[section]", "MISS(none)", "apexnodes-environment.yaml 无 bundles 段")
+        return
+    if not key:
+        yield ("bundles[--bundle-key]", "SKIP", "--check-bundles 需配 --bundle-key <sha12>")
+        return
+    host = bundle_host(m)
+    fw = b["framework"]
+    sc = b.get("sha_self_consistency") or {}
+    plats = [p for p in b.get("platforms", []) if not only_os or p["os"] in only_os]
+    if not plats:
+        yield ("bundles[--bundle-os]", "SKIP", f"没有平台匹配 --bundle-os={sorted(only_os or [])}")
+        return
+    for plat in plats:
+        osn, arch = plat["os"], plat["arch"]
+        base = f"{host}/" + b["prefix"].format(framework=fw, key=key, os=osn, arch=arch)
+        for tmpl in b.get("objects", []):
+            name = tmpl.format(key=key, os=osn, arch=arch)
+            code = head(f"{base}/{name}")
+            good = 200 <= code < 300
+            yield (f"bundle[{osn}-{arch}]/{name}", "OK" if good else f"MISS({code})", f"{base}/{name}")
+        if sc:
+            label = f"bundle[{osn}-{arch}]/sha-self-consistency"
+            man_url = f"{base}/" + sc["manifest"].format(key=key, os=osn, arch=arch)
+            sha_url = f"{base}/" + sc["sha_sidecar"].format(key=key, os=osn, arch=arch)
+            mcode, mbody = http_get(man_url)
+            scode, sbody = http_get(sha_url)
+            if not (200 <= mcode < 300 and 200 <= scode < 300):
+                yield (label, f"MISS({mcode}/{scode})", "manifest.json 或 .sha256 取不到")
+                continue
+            try:
+                ref = json.loads(mbody.decode("utf-8"))
+                for part in sc.get("manifest_field", "archive.sha256").split("."):
+                    ref = ref[part]
+                sidecar = sbody.decode("utf-8").split()[0].strip().lower()
+                if str(ref).strip().lower() == sidecar:
+                    yield (label, "OK", f"{sidecar[:16]}…")
+                else:
+                    yield (label, "MISMATCH", f"manifest {str(ref)[:16]}… != sidecar {sidecar[:16]}…")
+            except Exception as e:  # any parse/shape error = not self-consistent
+                yield (label, "MISMATCH", f"解析失败: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--commit", help="runtime 完整 SHA(runtime-source tarball 用)")
     ap.add_argument("--manifest", default=os.path.join(os.path.dirname(__file__), "..", "apexnodes-environment.yaml"))
+    ap.add_argument("--check-bundles", action="store_true", help="额外校验 bundle/ 前缀的预构建 runtime bundle(hc-472),需配 --bundle-key")
+    ap.add_argument("--bundle-key", help="bundle key(runtime sha12);配 --check-bundles")
+    ap.add_argument("--bundle-os", help="逗号分隔,限定平台(如 win 只校验 P1 验收腿);默认全平台")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+    only_os = {s.strip() for s in args.bundle_os.split(",") if s.strip()} if args.bundle_os else None
 
     m = load_manifest(args.manifest)
     results = []
@@ -132,7 +208,9 @@ def main():
     for name, url in cos_urls(m, args.commit):
         if url is None:
             results.append((name, "SKIP", "缺 --commit,无法校验 runtime tarball"))
-            ok = False
+            # A bundle-only run legitimately omits --commit; don't fail on the skip.
+            if not args.check_bundles:
+                ok = False
             continue
         code = head(url)
         good = 200 <= code < 300
@@ -144,13 +222,22 @@ def main():
     static = static_source_checks(args.manifest)
     ok = ok and all(s_ok for _, s_ok, _ in static)
 
+    bundles = list(check_bundles(m, args.bundle_key, only_os)) if args.check_bundles else []
+    ok = ok and all(s == "OK" for _, s, _ in bundles)
+
     if args.json:
-        print(json.dumps({
+        out = {
             "ok": ok,
             "cos": [{"name": n, "status": s, "url": u} for n, s, u in results],
             "cn_registry": [{"name": n, "http": c} for n, c in reg],
             "static_checks": [{"name": n, "ok": s_ok, "detail": d} for n, s_ok, d in static],
-        }, ensure_ascii=False, indent=2))
+        }
+        if args.check_bundles:
+            out["bundles"] = {
+                "key": args.bundle_key,
+                "checks": [{"name": n, "status": s, "detail": d} for n, s, d in bundles],
+            }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
         print(f"=== COS 产物 (commit={args.commit or '<none>'}) ===")
         for n, s, _ in results:
@@ -161,6 +248,10 @@ def main():
         print("=== 静态回归守卫(源码断言,纳入闸)===")
         for n, s_ok, d in static:
             print(f"  [{'OK' if s_ok else 'FAIL':>9}] {n} ({d})")
+        if args.check_bundles:
+            print(f"=== 预构建 bundle (key={args.bundle_key or '<none>'},纳入闸)===")
+            for n, s, _ in bundles:
+                print(f"  [{s:>9}] {n}")
         na = m.get("needs_audit", [])
         if na:
             print(f"=== needs_audit ({len(na)}) — 源未确认,未纳入闸 ===")

@@ -421,8 +421,8 @@ class TestElevenLabsTavilyExaKeys:
         assert redact_sensitive_text(text, code_file=True) == text
 
     def test_sk_short_alnum_identifier_not_masked(self):
-        """A short underscore-free ``sk_`` token stays below the 20-char floor."""
-        text = "loaded sk_module2026 config"
+        """A short underscore-free ``sk_`` token stays below the 10-char floor."""
+        text = "loaded sk_cfg1 config"
         assert redact_sensitive_text(text, code_file=True) == text
 
     def test_tavily_key_redacted(self):

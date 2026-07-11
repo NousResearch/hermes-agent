@@ -97,11 +97,11 @@ _PREFIX_PATTERNS = [
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
     # ElevenLabs TTS key (sk_ underscore-prefix, not sk- dash). No underscores
-    # in the body and a 20-char floor: real keys are one long alnum run, while
-    # ``sk_`` + underscores also matches snake_case filenames/identifiers
+    # in the body: real keys are one long alnum run, while ``sk_`` +
+    # underscores also matches snake_case filenames/identifiers
     # (``sk_daily_report_chart.png``), whose masked form then broke MEDIA
     # delivery — the model only ever saw the masked, nonexistent path.
-    r"sk_[A-Za-z0-9]{20,}",
+    r"sk_[A-Za-z0-9]{10,}",
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key

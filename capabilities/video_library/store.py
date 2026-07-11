@@ -357,6 +357,58 @@ class VideoLibraryStore:
             item["tags"] = self._clip_tags(conn, clip_id)
             return item
 
+    def update_clip_semantic(
+        self,
+        clip_id: str,
+        *,
+        confidence: float,
+        description: str,
+        quality_score: float,
+        semantic_json: dict[str, Any],
+        status: str,
+        tags: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        now = _now_ms()
+        with self.connect() as conn:
+            if conn.execute("SELECT 1 FROM clips WHERE id = ?", (clip_id,)).fetchone() is None:
+                raise KeyError(f"unknown video clip: {clip_id}")
+            preserved = [tag for tag in self._clip_tags(conn, clip_id) if not str(tag["source"]).startswith("semantic")]
+            self._replace_clip_tags_in_conn(conn, clip_id, [*preserved, *tags], now=now)
+            conn.execute(
+                """
+                UPDATE clips
+                SET description = ?, semantic_json = ?, quality_score = ?, confidence = ?,
+                    status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(description or ""),
+                    json.dumps(semantic_json or {}, ensure_ascii=False),
+                    max(0.0, min(1.0, float(quality_score))),
+                    max(0.0, min(1.0, float(confidence))),
+                    str(status or "ready"),
+                    now,
+                    clip_id,
+                ),
+            )
+            item = _clip_row(conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone())
+            assert item is not None
+            item["tags"] = self._clip_tags(conn, clip_id)
+            return item
+
+    def update_clip_status(self, clip_id: str, status: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE clips SET status = ?, updated_at = ? WHERE id = ?",
+                (str(status), _now_ms(), clip_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown video clip: {clip_id}")
+            item = _clip_row(conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone())
+            assert item is not None
+            item["tags"] = self._clip_tags(conn, clip_id)
+            return item
+
     def _replace_clip_tags_in_conn(
         self,
         conn: sqlite3.Connection,
@@ -548,16 +600,27 @@ class VideoLibraryStore:
         state: str,
         progress: int,
         error: str = "",
+        stage: str | None = None,
     ) -> dict[str, Any]:
         with self.connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE analysis_jobs
-                SET state = ?, progress = ?, error = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (state, max(0, min(100, int(progress))), error[:2000], _now_ms(), job_id),
-            )
+            if stage is None:
+                cursor = conn.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET state = ?, progress = ?, error = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (state, max(0, min(100, int(progress))), error[:2000], _now_ms(), job_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET state = ?, progress = ?, error = ?, stage = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (state, max(0, min(100, int(progress))), error[:2000], stage, _now_ms(), job_id),
+                )
             if cursor.rowcount != 1:
                 raise KeyError(f"unknown analysis job: {job_id}")
             return dict(conn.execute("SELECT * FROM analysis_jobs WHERE id = ?", (job_id,)).fetchone())

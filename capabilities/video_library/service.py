@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 from . import media
+from .semantic import SemanticClipResult
 from .store import VideoLibraryStore
 
 
@@ -45,8 +46,16 @@ def _technical_tags(metadata: dict[str, Any], duration_seconds: float) -> list[d
 
 
 class VideoLibraryService:
-    def __init__(self, store: VideoLibraryStore | None = None):
+    def __init__(
+        self,
+        store: VideoLibraryStore | None = None,
+        *,
+        semantic_analyzer: Callable[..., SemanticClipResult] | None = None,
+        taxonomy: str = "beef-noodle-v1",
+    ):
         self.store = store or VideoLibraryStore()
+        self.semantic_analyzer = semantic_analyzer
+        self.taxonomy = taxonomy
 
     def import_asset(self, source_path: Path | str) -> dict[str, Any]:
         return self.store.import_asset(source_path)
@@ -174,6 +183,52 @@ class VideoLibraryService:
             result = self.store.commit_analysis(asset_id, job["id"], metadata, clip_inputs)
             shutil.rmtree(backup_clip_dir, ignore_errors=True)
             shutil.rmtree(backup_keyframe_dir, ignore_errors=True)
+            semantic_errors: list[str] = []
+            if self.semantic_analyzer is not None:
+                total = len(result["clips"])
+                for index, clip in enumerate(result["clips"]):
+                    self.store.update_analysis_job(
+                        job["id"],
+                        state="running",
+                        progress=90 + int(((index + 1) / total) * 9),
+                        stage="semantic_analysis",
+                    )
+                    try:
+                        semantic = self.semantic_analyzer(
+                            [Path(clip["keyframe_path"])],
+                            taxonomy=self.taxonomy,
+                        )
+                        if semantic.quality_score < 0.2:
+                            status = "unusable"
+                        elif semantic.confidence < 0.5:
+                            status = "low_confidence"
+                        else:
+                            status = "ready"
+                        semantic_json = dict(semantic.raw)
+                        semantic_json["_index"] = {
+                            "model": semantic.model,
+                            "search_text": semantic.search_text,
+                        }
+                        self.store.update_clip_semantic(
+                            clip["id"],
+                            confidence=semantic.confidence,
+                            description=semantic.summary,
+                            quality_score=semantic.quality_score,
+                            semantic_json=semantic_json,
+                            status=status,
+                            tags=semantic.tag_records(),
+                        )
+                    except Exception as exc:
+                        self.store.update_clip_status(clip["id"], "semantic_failed")
+                        semantic_errors.append(f"{clip['id']}: {exc}")
+            result["clips"] = self.store.list_clips(asset_id=asset_id)
+            result["job"] = self.store.update_analysis_job(
+                job["id"],
+                state="complete" if not semantic_errors else "partial",
+                progress=100,
+                error="\n".join(semantic_errors),
+                stage="indexing",
+            )
             return result
         except Exception as exc:
             if new_clip_installed:

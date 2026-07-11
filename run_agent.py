@@ -448,6 +448,7 @@ class AIAgent:
         tool_complete_callback: callable = None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
+        commentary_callback: callable = None,
         clarify_callback: callable = None,
         read_terminal_callback: callable = None,
         step_callback: callable = None,
@@ -524,6 +525,7 @@ class AIAgent:
             tool_complete_callback=tool_complete_callback,
             thinking_callback=thinking_callback,
             reasoning_callback=reasoning_callback,
+            commentary_callback=commentary_callback,
             clarify_callback=clarify_callback,
             read_terminal_callback=read_terminal_callback,
             step_callback=step_callback,
@@ -4739,6 +4741,25 @@ class AIAgent:
         if cb is not None:
             try:
                 cb(text)
+            except Exception:
+                pass
+
+    def _fire_commentary_delta(self, text: str) -> None:
+        """Fire commentary callback if registered.
+
+        Codex ``commentary``/``analysis`` narration is user-facing mid-turn
+        progress, semantically distinct from reasoning.  Surfaces that don't
+        register a dedicated commentary lane (CLI, ACP) fall back to the
+        reasoning display so the narration isn't silently dropped.
+        """
+        cb = getattr(self, "commentary_callback", None) or self.reasoning_callback
+        if cb is not None:
+            try:
+                cb(text)
+                # Once-only guard: build_assistant_message's whole-text
+                # fallback checks this so commentary that already streamed
+                # live is never re-delivered (reset per Codex stream call).
+                self._codex_commentary_delivered = True
             except Exception:
                 pass
 

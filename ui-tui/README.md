@@ -277,6 +277,7 @@ Primary event types the client handles today:
 | `thinking.delta`           | `{ text }`                                                                  |
 | `reasoning.delta`          | `{ text, verbose? }`                                                        |
 | `reasoning.available`      | `{ text, verbose? }`                                                        |
+| `commentary.delta`         | `{ text }` — Codex mid-turn narration (desktop: "Working" lane)             |
 | `status.update`            | `{ kind, text }`                                                            |
 | `notification.show`        | `{ id, key, kind, level, text, ttl_ms? }`                                   |
 | `notification.clear`       | `{ key }`                                                                   |

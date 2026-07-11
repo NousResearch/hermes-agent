@@ -2140,6 +2140,7 @@ export const zhHant = defineLocale({
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
       today: time => `今天，${time}`,
+      working: '工作中',
       yesterday: time => `昨天，${time}`,
       copy: '複製',
       refresh: '重新整理',

@@ -629,7 +629,7 @@ def test_run_codex_stream_returns_collected_items_when_stream_ends_without_termi
     assert response.output == [output_item]
 
 
-def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkeypatch):
+def test_consume_codex_stream_routes_commentary_phase_deltas_to_commentary_callback(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 
     commentary_item = SimpleNamespace(
@@ -647,6 +647,7 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     )
     streamed = []
     reasoning_streamed = []
+    commentary_streamed = []
 
     response = _consume_codex_event_stream(
         _FakeCreateStream([
@@ -667,12 +668,199 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
         model="gpt-5-codex",
         on_text_delta=streamed.append,
         on_reasoning_delta=reasoning_streamed.append,
+        on_commentary_delta=commentary_streamed.append,
     )
 
+    # Commentary narration is its own semantic lane: never the visible answer
+    # stream, and never conflated with genuine reasoning.
     assert streamed == []
-    assert reasoning_streamed == ["I’ll call the tool now."]
+    assert reasoning_streamed == []
+    assert commentary_streamed == ["I’ll call the tool now."]
     assert response.output == [commentary_item, function_item]
     assert response.output_text == ""
+
+
+def test_consume_codex_stream_keeps_reasoning_and_commentary_lanes_distinct(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    streamed = []
+    reasoning_streamed = []
+    commentary_streamed = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.reasoning_summary_text.delta", delta="Planning the fix"),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="commentary"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="Reading the screenshot first."),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="final_answer"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="Here is the answer."),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_text_delta=streamed.append,
+        on_reasoning_delta=reasoning_streamed.append,
+        on_commentary_delta=commentary_streamed.append,
+    )
+
+    assert reasoning_streamed == ["Planning the fix"]
+    assert commentary_streamed == ["Reading the screenshot first."]
+    assert streamed == ["Here is the answer."]
+    assert response.output_text == "Here is the answer."
+
+
+def _commentary_stream_events():
+    return [
+        SimpleNamespace(type="response.created"),
+        SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(type="message", phase="commentary"),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="Checking the logs."),
+        SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+    ]
+
+
+def test_run_codex_stream_fires_commentary_callback(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    commentary_seen = []
+    reasoning_seen = []
+    agent.commentary_callback = commentary_seen.append
+    agent.reasoning_callback = reasoning_seen.append
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return _FakeCreateStream(_commentary_stream_events())
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    agent._run_codex_stream(_codex_request_kwargs())
+
+    assert commentary_seen == ["Checking the logs."]
+    assert reasoning_seen == []
+
+
+def test_run_codex_stream_commentary_falls_back_to_reasoning_callback(monkeypatch):
+    """Surfaces without a commentary lane (CLI/ACP) keep showing narration
+    in their thinking display instead of silently dropping it."""
+    agent = _build_agent(monkeypatch)
+    reasoning_seen = []
+    agent.commentary_callback = None
+    agent.reasoning_callback = reasoning_seen.append
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return _FakeCreateStream(_commentary_stream_events())
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    agent._run_codex_stream(_codex_request_kwargs())
+
+    assert reasoning_seen == ["Checking the logs."]
+
+
+def _commentary_assistant_message(text="Checking the logs."):
+    return SimpleNamespace(
+        content="",
+        tool_calls=None,
+        reasoning=None,
+        reasoning_content=None,
+        reasoning_details=None,
+        commentary=text,
+        codex_reasoning_items=None,
+        codex_message_items=[
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text}],
+                "phase": "commentary",
+            }
+        ],
+    )
+
+
+def test_build_assistant_message_commentary_fallback_fires_once(monkeypatch):
+    """Contract: commentary appears exactly once. The whole-text fallback in
+    build_assistant_message fires only when the live delta stream did NOT
+    already deliver it (gated on _codex_commentary_delivered, not on stream
+    callback registration)."""
+    from agent.chat_completion_helpers import build_assistant_message
+
+    agent = _build_agent(monkeypatch)
+    seen = []
+    agent.commentary_callback = seen.append
+
+    # Not delivered live (e.g. concrete-response compat path) -> fallback fires.
+    agent._codex_commentary_delivered = False
+    msg = build_assistant_message(agent, _commentary_assistant_message(), "stop")
+    assert seen == ["Checking the logs."]
+    # Commentary never enters the message dict's reasoning/content fields.
+    assert not (msg.get("reasoning") or "")
+    assert not (msg.get("content") or "")
+
+    # Already streamed live -> no duplicate delivery.
+    seen.clear()
+    agent._codex_commentary_delivered = True
+    build_assistant_message(agent, _commentary_assistant_message(), "stop")
+    assert seen == []
+
+
+def test_run_conversation_result_exposes_last_commentary(monkeypatch):
+    """The turn result carries the narration for recap surfaces (CLI post-turn
+    box, messaging show_reasoning) now that it no longer rides reasoning."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_commentary_message_response("I'll inspect the repo structure first."),
+        _codex_tool_call_response(),
+        _codex_message_response("Architecture summary complete."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
+        for call in assistant_message.tool_calls:
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": '{"ok":true}'})
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    assert result["last_commentary"] == "I'll inspect the repo structure first."
+    assert not (result.get("last_reasoning") or "")
+
+
+def test_commentary_text_from_message_items_accepts_json_string():
+    from agent.codex_responses_adapter import commentary_text_from_message_items
+    import json as _json
+
+    items = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "Reading the file."}],
+            "phase": "commentary",
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "The answer."}],
+            "phase": "final_answer",
+        },
+    ]
+
+    assert commentary_text_from_message_items(items) == "Reading the file."
+    assert commentary_text_from_message_items(_json.dumps(items)) == "Reading the file."
+    assert commentary_text_from_message_items(None) == ""
+    assert commentary_text_from_message_items("not json") == ""
 
 
 def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
@@ -1638,7 +1826,9 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
     assert finish_reason == "incomplete"
     assert (assistant_message.content or "") == ""
-    assert "inspect the repository" in (assistant_message.reasoning or "")
+    # Commentary must not contaminate the reasoning lane; it gets its own field.
+    assert (assistant_message.reasoning or "") == ""
+    assert "inspect the repository" in (assistant_message.commentary or "")
     assert assistant_message.codex_message_items
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
     assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
@@ -1655,8 +1845,54 @@ def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentar
 
     assert finish_reason == "incomplete"
     assert (assistant_message.content or "") == ""
-    assert "call the tool" in (assistant_message.reasoning or "")
+    assert (assistant_message.reasoning or "") == ""
+    assert "call the tool" in (assistant_message.commentary or "")
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+
+
+def test_normalize_codex_response_separates_commentary_reasoning_and_final_answer(monkeypatch):
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_001",
+                encrypted_content="enc_abc123",
+                summary=[SimpleNamespace(type="summary_text", text="Planning the analysis")],
+            ),
+            SimpleNamespace(
+                type="message",
+                phase="commentary",
+                status="completed",
+                id="msg_commentary",
+                content=[SimpleNamespace(type="output_text", text="Reading the screenshot first.")],
+            ),
+            SimpleNamespace(
+                type="message",
+                phase="final_answer",
+                status="completed",
+                id="msg_final",
+                content=[SimpleNamespace(type="output_text", text="The total is $42.")],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    # Final answer stays the assistant content, with no commentary concatenated.
+    assert assistant_message.content == "The total is $42."
+    # True reasoning keeps the reasoning lane to itself.
+    assert assistant_message.reasoning == "Planning the analysis"
+    # Commentary rides its own field.
+    assert assistant_message.commentary == "Reading the screenshot first."
+    # Exact phase-bearing items survive for Responses replay / prompt cache.
+    phases = [item.get("phase") for item in assistant_message.codex_message_items]
+    assert phases == ["commentary", "final_answer"]
+    assert assistant_message.codex_message_items[0]["id"] == "msg_commentary"
+
 
 def test_normalize_codex_response_final_answer_overrides_top_level_incomplete(monkeypatch):
     from agent.codex_responses_adapter import _normalize_codex_response

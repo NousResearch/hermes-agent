@@ -3878,6 +3878,12 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         ),
+        # Codex commentary/analysis narration: user-facing mid-turn progress,
+        # semantically distinct from reasoning — its own event so the client
+        # can render a "Working" lane instead of the "Thinking" disclosure.
+        "commentary_callback": lambda text: _emit(
+            "commentary.delta", sid, {"text": text}
+        ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
@@ -4911,6 +4917,19 @@ def _coerce_message_text(content: Any) -> str:
     return str(content)
 
 
+def _commentary_from_message(m: dict) -> str:
+    """Join Codex commentary/analysis narration from persisted message items.
+
+    Commentary is never stored in ``reasoning``/``reasoning_content`` — the
+    only durable record is the phase-bearing ``codex_message_items`` kept for
+    Responses replay. Derive the display text from those items so reloads
+    reconstruct the "Working" lane without a schema change.
+    """
+    from agent.codex_responses_adapter import commentary_text_from_message_items
+
+    return commentary_text_from_message_items(m.get("codex_message_items"))
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -4922,6 +4941,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if role not in {"user", "assistant", "tool", "system"}:
             continue
         content_text = _coerce_message_text(m.get("content"))
+        commentary_text = _commentary_from_message(m) if role == "assistant" else ""
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
@@ -4932,7 +4952,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not content_text.strip():
+            # Content-less tool-call turns are normally elided (the tool
+            # messages themselves render the turn), but Codex commentary
+            # narration precedes its tool calls and must survive reload.
+            if not content_text.strip() and not commentary_text:
                 continue
         if role == "tool":
             tc_id = m.get("tool_call_id", "")
@@ -4959,13 +4982,15 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         has_reasoning = role == "assistant" and any(
             m.get(key) for key in reasoning_keys
         )
-        if not content_text.strip() and not has_reasoning:
+        if not content_text.strip() and not has_reasoning and not commentary_text:
             continue
         msg = {"role": role, "text": content_text}
         if role == "assistant":
             for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
+            if commentary_text:
+                msg["commentary"] = commentary_text
         messages.append(msg)
 
     return messages
@@ -9084,6 +9109,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     session["model_override"] = _restore
 
             last_reasoning = None
+            last_commentary = None
             status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
@@ -9143,6 +9169,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
+                lc = result.get("last_commentary")
+                if isinstance(lc, str) and lc.strip():
+                    last_commentary = lc.strip()
             else:
                 raw = str(result)
                 status = "complete"
@@ -9150,6 +9179,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
+            if last_commentary:
+                # Codex narration recap — parallels ``reasoning``; the desktop
+                # already received it live via commentary.delta and ignores
+                # this, but protocol clients get the completed-turn value.
+                payload["commentary"] = last_commentary
             if status_note:
                 payload["warning"] = status_note
             rendered = render_message(raw, cols)

@@ -683,6 +683,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'commentary.delta':
+        // Codex commentary/analysis narration. The desktop renders it in a
+        // dedicated "Working" lane; the TUI folds it into the thinking lane
+        // so the narration stays visible (parity with the pre-split display).
+        if (ev.payload?.text) {
+          turnController.recordReasoningDelta(ev.payload.text, false)
+        }
+
+        return
+
       case 'reasoning.available':
         turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''), Boolean(ev.payload?.verbose))
 

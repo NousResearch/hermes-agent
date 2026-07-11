@@ -980,6 +980,23 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             except Exception:
                 pass
 
+    # Codex commentary/analysis narration: deliver the whole text exactly
+    # once when the live delta stream didn't already (``codex_responses``
+    # always streams internally, so gate on actual delivery rather than on
+    # stream-callback registration — that proxy both double-fired in
+    # callback-without-streaming configs and dropped the concrete-response
+    # compat path).  Display-only — commentary never enters the message
+    # dict's content/reasoning fields (the exact phase-bearing items ride
+    # codex_message_items below).
+    commentary_text = getattr(assistant_message, "commentary", None)
+    if commentary_text and not getattr(agent, "_codex_commentary_delivered", False):
+        commentary_cb = getattr(agent, "commentary_callback", None) or agent.reasoning_callback
+        if commentary_cb:
+            try:
+                commentary_cb(_sanitize_surrogates(commentary_text))
+            except Exception:
+                pass
+
     # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
     # can return invalid surrogate code points that crash json.dumps() on persist.
     _raw_content = assistant_message.content or ""

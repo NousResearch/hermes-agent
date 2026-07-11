@@ -11712,6 +11712,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
+                # Codex commentary narration is no longer folded into
+                # ``reasoning`` (dedicated lane); keep the opt-in reasoning
+                # display surfacing it for messaging platforms by appending
+                # it after any genuine reasoning.
+                last_commentary = agent_result.get("last_commentary")
+                if last_commentary:
+                    last_reasoning = (
+                        f"{last_reasoning.strip()}\n\n{last_commentary}"
+                        if last_reasoning
+                        else last_commentary
+                    )
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
                     lines = last_reasoning.strip().splitlines()

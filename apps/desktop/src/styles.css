@@ -1194,7 +1194,8 @@ text-* variant utilities. */ .btn-arc {
    chevron column to escape into), so their headers and bodies share a
    common left edge with the model's text. */
 [data-slot='aui_assistant-message-content'] > [data-slot='tool-block'],
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'] {
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_commentary-disclosure'] {
   width: 100%;
   max-width: 100%;
 }
@@ -1297,7 +1298,8 @@ text-* variant utilities. */ .btn-arc {
    stays at full strength; scaffolding lifts back to full opacity on
    hover/focus so it stays legible when the user actually wants to read it. */
 [data-slot='tool-block'],
-[data-slot='aui_thinking-disclosure'] {
+[data-slot='aui_thinking-disclosure'],
+[data-slot='aui_commentary-disclosure'] {
   background: transparent !important;
 }
 
@@ -1309,6 +1311,7 @@ text-* variant utilities. */ .btn-arc {
    it impossible to keep one row lit (an open diff) while its siblings faded.
    With the fade per-row, each row hovers/focuses independently. */
 [data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_commentary-disclosure'],
 [data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
@@ -1318,6 +1321,7 @@ text-* variant utilities. */ .btn-arc {
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
 [data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_commentary-disclosure']:is(:hover, :has(:focus-visible)),
 [data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
@@ -1389,11 +1393,16 @@ text-* variant utilities. */ .btn-arc {
    rhythm so split-out text parts don't look like a big gap. */
 /* Scaffolding adjacent to anything → roomy block gap. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_commentary-disclosure'])
+  + :is(
+    [data-slot='tool-block'],
+    [data-slot='aui_thinking-disclosure'],
+    [data-slot='aui_commentary-disclosure'],
+    .aui-md
+  ),
 [data-slot='aui_assistant-message-content']
   > .aui-md
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_commentary-disclosure']) {
   margin-top: var(--turn-block-gap);
 }
 

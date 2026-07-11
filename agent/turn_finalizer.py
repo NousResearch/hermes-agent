@@ -421,10 +421,29 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
+    # Codex commentary narration for the same turn window. It is no longer
+    # flattened into ``reasoning`` (dedicated lane; see codex_runtime), so
+    # recap surfaces that read this result (CLI post-turn box, messaging
+    # show_reasoning) get it from here. Aggregated chronologically — the
+    # narration typically spans several tool-call steps in one turn.
+    last_commentary = None
+    _commentary_chunks: list = []
+    from agent.codex_responses_adapter import commentary_text_from_message_items
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            break  # turn boundary — don't cross into prior turns
+        if msg.get("role") == "assistant" and msg.get("codex_message_items"):
+            chunk = commentary_text_from_message_items(msg.get("codex_message_items"))
+            if chunk:
+                _commentary_chunks.append(chunk)
+    if _commentary_chunks:
+        last_commentary = "\n\n".join(reversed(_commentary_chunks))
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
+        "last_commentary": last_commentary,
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,

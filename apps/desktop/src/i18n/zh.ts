@@ -2424,6 +2424,7 @@ export const zh: Translations = {
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
       today: time => `今天，${time}`,
+      working: '工作中',
       yesterday: time => `昨天，${time}`,
       copy: '复制',
       refresh: '刷新',

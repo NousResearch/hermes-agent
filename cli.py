@@ -12655,6 +12655,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         display_reasoning = reasoning.strip()
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+                # Codex commentary narration recap. No longer folded into
+                # ``reasoning`` (it rides its own lane end-to-end), so give it
+                # its own dim box — mirrors the desktop's "Working" disclosure.
+                # Same gate as the reasoning box: skipped when streaming
+                # already showed it live via the reasoning callback fallback.
+                commentary = result.get("last_commentary")
+                if commentary:
+                    w = self._scrollback_box_width()
+                    c_label = " Working "
+                    c_fill = w - 2 - len(c_label)
+                    c_top = f"{_DIM}┌─{c_label}{'─' * max(c_fill - 1, 0)}┐{_RST}"
+                    c_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
+                    lines = commentary.strip().splitlines()
+                    if len(lines) > 10 and not getattr(self, "reasoning_full", False):
+                        display_commentary = "\n".join(lines[:10])
+                        display_commentary += f"\n{_DIM}  ... ({len(lines) - 10} more lines — /reasoning full to show){_RST}"
+                    else:
+                        display_commentary = commentary.strip()
+                    _cprint(f"\n{c_top}\n{_DIM}{display_commentary}{_RST}\n{c_bot}")
 
             if response and not response_previewed:
                 # Use skin engine for label/color with fallback

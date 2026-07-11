@@ -292,6 +292,7 @@ def init_agent(
     tool_complete_callback: callable = None,
     thinking_callback: callable = None,
     reasoning_callback: callable = None,
+    commentary_callback: callable = None,
     clarify_callback: callable = None,
     read_terminal_callback: callable = None,
     step_callback: callable = None,
@@ -527,6 +528,7 @@ def init_agent(
     agent.suppress_status_output = False
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
+    agent.commentary_callback = commentary_callback
     agent.clarify_callback = clarify_callback
     agent.read_terminal_callback = read_terminal_callback
     agent.step_callback = step_callback

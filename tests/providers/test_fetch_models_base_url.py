@@ -5,7 +5,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from unittest.mock import patch, MagicMock
 
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, _FETCH_MODELS_MAX_BYTES
 
 
 class _FakeModelHandler(BaseHTTPRequestHandler):
@@ -94,6 +94,64 @@ class TestFetchModelsBaseUrlOverride:
             assert result == ["from-models-url"]
         finally:
             server.shutdown()
+
+    def test_oversized_response_body_falls_back_without_unbounded_read(self):
+        """Oversized provider catalogs should fail closed before reading the full body."""
+
+        class OversizedResponse:
+            headers = {}
+
+            def __init__(self):
+                self.read_sizes = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                if size is None or size < 0:
+                    raise AssertionError("fetch_models() must not use an unbounded read")
+                return b" " * (_FETCH_MODELS_MAX_BYTES + 1)
+
+        response = OversizedResponse()
+        profile = ProviderProfile(name="test", base_url="http://models.example")
+
+        with patch("urllib.request.urlopen", return_value=response):
+            result = profile.fetch_models(api_key="test-key")
+
+        assert result is None
+        assert response.read_sizes == [_FETCH_MODELS_MAX_BYTES + 1]
+
+    def test_oversized_content_length_falls_back_without_reading_body(self):
+        """A declared oversized catalog should be rejected before body allocation."""
+
+        class OversizedResponse:
+            headers = {"Content-Length": str(_FETCH_MODELS_MAX_BYTES + 1)}
+
+            def __init__(self):
+                self.read_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                self.read_called = True
+                return b"{}"
+
+        response = OversizedResponse()
+        profile = ProviderProfile(name="test", base_url="http://models.example")
+
+        with patch("urllib.request.urlopen", return_value=response):
+            result = profile.fetch_models(api_key="test-key")
+
+        assert result is None
+        assert response.read_called is False
 
 
 class TestCustomProviderBaseUrlPassthrough:

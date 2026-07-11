@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
+    _MODEL_CATALOG_MAX_BYTES,
     azure_foundry_model_api_mode,
     copilot_model_api_mode,
     fetch_github_model_catalog,
@@ -286,7 +287,7 @@ class TestFetchApiModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data": [{"id": "local-model"}]}'
 
         calls = []
@@ -305,6 +306,59 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    def test_probe_api_models_bounds_response_body_reads(self):
+        class _Resp:
+            headers = {}
+
+            def __init__(self):
+                self.read_sizes = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                if size is None or size < 0:
+                    raise AssertionError("probe_api_models() must not use an unbounded read")
+                return b" " * (_MODEL_CATALOG_MAX_BYTES + 1)
+
+        response = _Resp()
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=response):
+            probe = probe_api_models("key", "https://example.com/v1")
+
+        assert probe["models"] is None
+        assert response.read_sizes == [
+            _MODEL_CATALOG_MAX_BYTES + 1,
+            _MODEL_CATALOG_MAX_BYTES + 1,
+        ]
+
+    def test_probe_api_models_rejects_oversized_content_length_before_read(self):
+        class _Resp:
+            headers = {"Content-Length": str(_MODEL_CATALOG_MAX_BYTES + 1)}
+
+            def __init__(self):
+                self.read_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                self.read_called = True
+                return b"{}"
+
+        response = _Resp()
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=response):
+            probe = probe_api_models("key", "https://example.com/v1")
+
+        assert probe["models"] is None
+        assert response.read_called is False
+
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):
@@ -313,7 +367,7 @@ class TestFetchApiModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:

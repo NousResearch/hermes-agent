@@ -22,12 +22,36 @@ from hermes_cli import __version__ as _HERMES_VERSION
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
 _HERMES_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
+_MODEL_CATALOG_MAX_BYTES = 4 * 1024 * 1024
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+
+
+def _read_model_catalog_body(resp: Any) -> bytes:
+    """Read a model catalog response without trusting its body size."""
+    content_length = None
+    headers = getattr(resp, "headers", None)
+    if headers is not None:
+        try:
+            content_length = headers.get("Content-Length") or headers.get("content-length")
+        except Exception:
+            content_length = None
+    if content_length is not None:
+        try:
+            length = int(content_length)
+        except (TypeError, ValueError):
+            length = None
+        if length is not None and length > _MODEL_CATALOG_MAX_BYTES:
+            raise ValueError("model catalog response is too large")
+
+    raw = resp.read(_MODEL_CATALOG_MAX_BYTES + 1)
+    if len(raw) > _MODEL_CATALOG_MAX_BYTES:
+        raise ValueError("model catalog response is too large")
+    return raw
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -3592,7 +3616,7 @@ def probe_api_models(
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(_read_model_catalog_body(resp).decode())
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
                     "probed_url": url,

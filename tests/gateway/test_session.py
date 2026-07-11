@@ -12,6 +12,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
 
@@ -903,6 +904,39 @@ class TestWhatsAppSessionKeyConsistency:
             build_session_key(source, group_sessions_per_user=False)
             == "agent:main:whatsapp:group:120363000000000000@g.us"
         )
+
+    def test_shared_helper_matches_build_session_key_group_thread(self):
+        """is_shared_multi_user_session must mirror build_session_key exactly.
+
+        In the group_sessions_per_user=False + thread_sessions_per_user=True
+        combo, build_session_key emits a SHARED thread key (no participant_id),
+        so the helper must report the session shared. Regression: the old
+        thread branch dropped the group factor and wrongly reported isolated,
+        making the resume IDOR gate deny a legitimate co-member.
+        """
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            thread_id="thread-9",
+            user_id="alice",
+            user_name="Alice",
+        )
+        key = build_session_key(
+            source,
+            group_sessions_per_user=False,
+            thread_sessions_per_user=True,
+        )
+        shared = is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=False,
+            thread_sessions_per_user=True,
+        )
+        # The key carries no participant_id, so the session is genuinely shared.
+        assert "alice" not in key
+        assert shared is True
+        # Tie the helper to the actual key: shared iff participant absent.
+        assert shared == ("alice" not in key)
 
     def test_store_delegates_to_build_session_key(self, store):
         """SessionStore._generate_session_key must produce the same result."""

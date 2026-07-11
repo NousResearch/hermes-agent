@@ -2298,6 +2298,7 @@ async def fs_default_cwd():
 # ---------------------------------------------------------------------------
 
 from hermes_cli import web_git as _web_git  # noqa: E402
+from hermes_cli import web_github as _web_github  # noqa: E402
 
 
 async def _git_op(fn, *args):
@@ -2426,6 +2427,26 @@ async def git_push_route(body: GitPathBody):
 @app.post("/api/git/review/create-pr")
 async def git_create_pr_route(body: GitPathBody):
     return await _git_op(_web_git.review_create_pr, _git_path(body.path))
+
+
+@app.get("/api/github/pull-requests")
+async def github_pull_requests_route(kind: str, state: str, limit: int = 100):
+    try:
+        _web_github.validate_filter(kind, state, limit)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await asyncio.to_thread(_web_github.list_pull_requests, kind, state, limit)
+
+
+@app.get("/api/github/pull-requests/detail")
+async def github_pull_request_detail_route(repository: str, number: int):
+    try:
+        _web_github.validate_ref(repository, number)
+        return await asyncio.to_thread(_web_github.pull_request_detail, repository, number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/git/worktree/add")

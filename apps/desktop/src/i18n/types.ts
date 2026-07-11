@@ -1221,6 +1221,40 @@ export interface Translations {
     createAction: string
   }
 
+  pullRequests: {
+    title: string
+    created: string
+    reviewRequested: string
+    closed: string
+    search: string
+    refresh: string
+    refreshing: string
+    loading: string
+    loadingDetails: string
+    open: string
+    draft: string
+    merged: string
+    reviewDecision: string
+    checks: string
+    openGithub: string
+    copyUrl: string
+    back: string
+    noneCreated: string
+    noneReview: string
+    noneClosed: string
+    ghMissing: string
+    authRequired: string
+    authHint: string
+    loadFailed: string
+    detailFailed: string
+    retry: string
+    updated: string
+    repository: string
+    changedFiles: string
+    additions: string
+    deletions: string
+  }
+
   artifacts: {
     search: string
     refresh: string

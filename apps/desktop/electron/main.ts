@@ -84,7 +84,8 @@ import {
   reviewUnstage
 } from './git-review-ops'
 import { gitRootForIpc } from './git-root'
-import { addWorktree, listBaseBranches, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
+import { addWorktree, listBaseBranches, listBranches, listWorktrees, removeWorktree, switchBranch } from "./git-worktree-ops"
+import { getGithubPullRequestDetail, listGithubPullRequests } from "./github-pr-ops"
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -8510,6 +8511,12 @@ ipcMain.handle('hermes:git:review:push', async (_event, repoPath) => reviewPush(
 ipcMain.handle('hermes:git:review:shipInfo', async (_event, repoPath) => reviewShipInfo(repoPath, resolveGhBinary()))
 ipcMain.handle('hermes:git:review:createPr', async (_event, repoPath) =>
   reviewCreatePr(repoPath, resolveGitBinary(), resolveGhBinary())
+)
+ipcMain.handle('hermes:github:pullRequests:list', async (_event, filter) =>
+  listGithubPullRequests(filter, resolveGhBinary())
+)
+ipcMain.handle('hermes:github:pullRequests:detail', async (_event, ref) =>
+  getGithubPullRequestDetail(ref, resolveGhBinary())
 )
 
 // Repo-first project discovery: scan bounded roots for git repos (pure fs walk,

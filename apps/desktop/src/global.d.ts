@@ -72,6 +72,12 @@ declare global {
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
+      github?: {
+        pullRequests: {
+          list: (filter: HermesGithubPullRequestFilter) => Promise<HermesGithubPullRequestList>
+          detail: (ref: HermesGithubPullRequestRef) => Promise<HermesGithubPullRequestDetail>
+        }
+      }
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
@@ -250,6 +256,47 @@ export interface HermesTerminalSession {
   cwd: string
   id: string
   shell: string
+}
+
+export type HermesGithubAuthState = 'ready' | 'gh-missing' | 'not-authenticated' | 'error'
+export type HermesGithubPullRequestFilter =
+  | { kind: 'created'; state: 'open' | 'closed'; limit?: number }
+  | { kind: 'review-requested'; state: 'open'; limit?: number }
+export interface HermesGithubPullRequestRef {
+  repository: string
+  number: number
+}
+export interface HermesGithubPullRequestSummary {
+  id: string
+  repository: string
+  number: number
+  title: string
+  url: string
+  state: 'OPEN' | 'CLOSED' | 'MERGED' | 'UNKNOWN'
+  isDraft: boolean
+  author: null | { login: string; url?: string }
+  labels: Array<{ name: string; color?: string }>
+  commentsCount: number
+  createdAt: string
+  updatedAt: string
+}
+export interface HermesGithubPullRequestDetail extends HermesGithubPullRequestSummary {
+  body: string
+  headRefName: string
+  baseRefName: string
+  additions: number
+  deletions: number
+  changedFiles: number
+  reviewDecision: null | string
+  mergeStateStatus: null | string
+  mergedAt: null | string
+  checks: { total: number; pending: number; passed: number; failed: number; skipped: number }
+}
+export interface HermesGithubPullRequestList {
+  authState: HermesGithubAuthState
+  items: HermesGithubPullRequestSummary[]
+  fetchedAt: number
+  error?: string
 }
 
 export interface HermesTerminalExit {

@@ -69,15 +69,25 @@ function ok<T>(data: T): Promise<MoneyPrinterResponse<T>> {
 
 function fakeClient(): NamedVideoLibraryClient {
   return {
+    addSourceRoot: vi.fn((_libraryId, path) => ok({ library_id: 'beef-noodle', source_roots: [path] })),
+    analyzeAsset: vi.fn((_libraryId, assetId) =>
+      ok({ asset: { id: assetId } as VideoLibraryAsset, clips: [clip], job: { error: '', id: 'job-1', progress: 100, state: 'complete' } })
+    ),
     createTimeline: vi.fn((_libraryId, clipIds) =>
       ok({ id: 'timeline-1', path: '/vault/牛肉面资产库/timelines/timeline-1.json', timeline: { clipIds } })
     ),
     getLibraryStatus: vi.fn(libraryId => ok({ ...status, library_id: libraryId })),
+    importAsset: vi.fn((_libraryId, sourcePath) =>
+      ok({ asset: { id: `asset-${sourcePath.split('/').pop()}` } as VideoLibraryAsset })
+    ),
     listAssets: vi.fn(() => ok({ assets: [] as VideoLibraryAsset[], total: 0 })),
     listClips: vi.fn((_libraryId, options) =>
       ok({ clips: options?.query ? [clip] : [clip], total: 1 })
     ),
     listLibraries: vi.fn(() => ok({ libraries })),
+    migrateLegacyLibrary: vi.fn(() =>
+      ok({ failed: 0, imported: 1, library_id: 'beef-noodle', records: [], skipped: 0, total: 1 })
+    ),
     scanLibrary: vi.fn(() => ok({ complete: 0, skipped: 11 }))
   }
 }
@@ -153,5 +163,52 @@ describe('useNamedVideoLibrary', () => {
       '9:16',
       [{ text: '第一段。' }, { text: '第二段。' }]
     )
+  })
+
+  it('imports and analyzes files only in the selected library', async () => {
+    const client = fakeClient()
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '后厨现煮。' }))
+    await waitFor(() => expect(result.current.libraries).toHaveLength(2))
+    act(() => result.current.selectLibrary('beef-noodle'))
+    await waitFor(() => expect(result.current.status).not.toBeNull())
+
+    await act(() => result.current.importFiles(['/vault/material/a.mov']))
+
+    expect(client.importAsset).toHaveBeenCalledWith('beef-noodle', '/vault/material/a.mov')
+    expect(client.analyzeAsset).toHaveBeenCalledWith('beef-noodle', 'asset-a.mov')
+  })
+
+  it('requires a dry-run before confirming a real directory scan', async () => {
+    const client = fakeClient()
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '后厨现煮。' }))
+    await waitFor(() => expect(result.current.libraries).toHaveLength(2))
+    act(() => result.current.selectLibrary('beef-noodle'))
+    await waitFor(() => expect(result.current.status).not.toBeNull())
+
+    await act(() => result.current.addSourceRoot('/vault/new-material'))
+
+    expect(client.addSourceRoot).toHaveBeenCalledWith('beef-noodle', '/vault/new-material')
+    expect(client.scanLibrary).toHaveBeenCalledWith('beef-noodle', true)
+    expect(client.scanLibrary).not.toHaveBeenCalledWith('beef-noodle', false)
+
+    await act(() => result.current.confirmScan())
+    expect(client.scanLibrary).toHaveBeenCalledWith('beef-noodle', false)
+  })
+
+  it('clears management results when switching libraries', async () => {
+    const client = fakeClient()
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '后厨现煮。' }))
+    await waitFor(() => expect(result.current.libraries).toHaveLength(2))
+    act(() => result.current.selectLibrary('beef-noodle'))
+    await waitFor(() => expect(result.current.status).not.toBeNull())
+    await act(() => result.current.addSourceRoot('/vault/new-material'))
+    await act(() => result.current.migrateLegacyLibrary())
+    expect(result.current.scanPreview).not.toBeNull()
+    expect(result.current.migrationResult).not.toBeNull()
+
+    act(() => result.current.selectLibrary('second-library'))
+
+    expect(result.current.scanPreview).toBeNull()
+    expect(result.current.migrationResult).toBeNull()
   })
 })

@@ -12,15 +12,25 @@ import {
 import type {
   MoneyPrinterResponse,
   VideoAspect,
+  VideoLibraryAnalysisResult,
   VideoLibraryAsset,
   VideoLibraryClip,
   VideoLibraryClipQuery,
   VideoLibraryDescriptor,
+  VideoLibraryMigrationResult,
   VideoLibraryStatus,
   VideoLibraryTimelineResult
 } from './moneyprinter-client'
 
 export interface NamedVideoLibraryClient {
+  addSourceRoot(
+    libraryId: string,
+    path: string
+  ): Promise<MoneyPrinterResponse<{ library_id: string; source_roots: string[] }>>
+  analyzeAsset(
+    libraryId: string,
+    assetId: string
+  ): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>>
   createTimeline(
     libraryId: string,
     clipIds: string[],
@@ -28,12 +38,17 @@ export interface NamedVideoLibraryClient {
     script?: Array<Record<string, unknown>>
   ): Promise<MoneyPrinterResponse<VideoLibraryTimelineResult>>
   getLibraryStatus(libraryId: string): Promise<MoneyPrinterResponse<VideoLibraryStatus>>
+  importAsset(
+    libraryId: string,
+    sourcePath: string
+  ): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>>
   listAssets(libraryId?: string): Promise<MoneyPrinterResponse<{ assets: VideoLibraryAsset[]; total: number }>>
   listClips(
     libraryId?: string,
     options?: VideoLibraryClipQuery
   ): Promise<MoneyPrinterResponse<{ clips: VideoLibraryClip[]; total: number }>>
   listLibraries(): Promise<MoneyPrinterResponse<{ libraries: VideoLibraryDescriptor[] }>>
+  migrateLegacyLibrary(libraryId: string): Promise<MoneyPrinterResponse<VideoLibraryMigrationResult>>
   scanLibrary(libraryId: string, dryRun?: boolean): Promise<MoneyPrinterResponse<Record<string, unknown>>>
 }
 
@@ -64,6 +79,9 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   const [matchingAll, setMatchingAll] = useState(false)
   const [matchingSegmentId, setMatchingSegmentId] = useState('')
   const [scanBusy, setScanBusy] = useState(false)
+  const [scanPreview, setScanPreview] = useState<Record<string, unknown> | null>(null)
+  const [migrationResult, setMigrationResult] = useState<VideoLibraryMigrationResult | null>(null)
+  const [managementBusy, setManagementBusy] = useState(false)
   const [timelineBusy, setTimelineBusy] = useState(false)
   const [timeline, setTimeline] = useState<VideoLibraryTimelineResult | null>(null)
   const segments = useMemo(() => segmentVideoScript(script), [script])
@@ -120,6 +138,8 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
     setClips([])
     setMatches(current => clearLibraryMatches(current))
     setTimeline(null)
+    setScanPreview(null)
+    setMigrationResult(null)
     setError('')
   }, [])
 
@@ -176,6 +196,94 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
     }
   }, [client, refreshSelectedLibrary, selectedLibraryId])
 
+  const importFiles = useCallback(
+    async (sourcePaths: string[]) => {
+      if (!selectedLibraryId) throw new Error('请先选择资产库')
+      setManagementBusy(true)
+      setError('')
+      try {
+        for (const sourcePath of sourcePaths) {
+          const imported = requireData(
+            await client.importAsset(selectedLibraryId, sourcePath),
+            `素材导入失败：${sourcePath}`
+          )
+          requireData(
+            await client.analyzeAsset(selectedLibraryId, imported.asset.id),
+            `素材分析失败：${sourcePath}`
+          )
+        }
+        await refreshSelectedLibrary()
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason)
+        setError(message)
+        throw reason
+      } finally {
+        setManagementBusy(false)
+      }
+    },
+    [client, refreshSelectedLibrary, selectedLibraryId]
+  )
+
+  const addSourceRoot = useCallback(
+    async (path: string) => {
+      if (!selectedLibraryId) throw new Error('请先选择资产库')
+      setManagementBusy(true)
+      setError('')
+      try {
+        const rooted = requireData(
+          await client.addSourceRoot(selectedLibraryId, path),
+          '素材目录添加失败'
+        )
+        setLibraries(current =>
+          current.map(library =>
+            library.id === selectedLibraryId ? { ...library, source_roots: rooted.source_roots } : library
+          )
+        )
+        const preview = requireData(
+          await client.scanLibrary(selectedLibraryId, true),
+          '素材目录预扫描失败'
+        )
+        setScanPreview(preview)
+        return preview
+      } finally {
+        setManagementBusy(false)
+      }
+    },
+    [client, selectedLibraryId]
+  )
+
+  const confirmScan = useCallback(async () => {
+    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    setScanBusy(true)
+    try {
+      const result = requireData(
+        await client.scanLibrary(selectedLibraryId, false),
+        '资产库扫描失败'
+      )
+      setScanPreview(null)
+      await refreshSelectedLibrary()
+      return result
+    } finally {
+      setScanBusy(false)
+    }
+  }, [client, refreshSelectedLibrary, selectedLibraryId])
+
+  const migrateLegacyLibrary = useCallback(async () => {
+    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    setManagementBusy(true)
+    try {
+      const result = requireData(
+        await client.migrateLegacyLibrary(selectedLibraryId),
+        '旧素材库迁移失败'
+      )
+      setMigrationResult(result)
+      await refreshSelectedLibrary()
+      return result
+    } finally {
+      setManagementBusy(false)
+    }
+  }, [client, refreshSelectedLibrary, selectedLibraryId])
+
   const createTimeline = useCallback(
     async (aspect: VideoAspect) => {
       if (!selectedLibraryId) throw new Error('请先选择资产库')
@@ -201,21 +309,28 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
   )
 
   return {
+    addSourceRoot,
     assets,
     clips,
     confirmClip,
+    confirmScan,
     createTimeline,
     error,
+    importFiles,
     libraries,
     loadingLibraries,
     loadingLibrary,
+    managementBusy,
     matchAll,
     matchSegment,
     matches,
     matchingAll,
     matchingSegmentId,
+    migrateLegacyLibrary,
+    migrationResult,
     refreshSelectedLibrary,
     scanBusy,
+    scanPreview,
     scanSelectedLibrary,
     segments,
     selectLibrary,

@@ -236,7 +236,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(
+        self, *, is_reconnect: bool = False, send_only: bool = False
+    ) -> bool:
         if not self.server_url or not self.password:
             logger.error(
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
@@ -268,6 +270,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self.client = None
             return False
 
+        # send_only=True skips the local webhook server. Outbound-only callers
+        # (standalone cron delivery, send_message_tool) don't need to receive
+        # inbound events and must not bind self.webhook_port — the gateway
+        # process already holds it, so binding here raises OSError(EADDRINUSE)
+        # and aborts the send.
+        # A send-only adapter also must not touch gateway-owned runtime state:
+        # it shares the same BlueBubbles config/webhook URL as the running
+        # gateway adapter, so calling _mark_connected() here (and later
+        # _mark_disconnected() / _unregister_webhook() in disconnect()) would
+        # overwrite the gateway's runtime status and could delete the webhook
+        # the gateway registered. This adapter never created the listener, so
+        # it must not manage that lifecycle. disconnect() gates cleanup on
+        # self._runner, which stays None on the send_only path.
+        if send_only:
+            return True
+
         # Explicit body cap: BlueBubbles webhook events are small JSON (or
         # form-encoded) payloads. client_max_size makes aiohttp enforce the
         # cap on every read path — including chunked requests that carry no
@@ -297,16 +315,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
-        # Unregister webhook before cleaning up
-        await self._unregister_webhook()
+        # Only the adapter instance that owns the webhook lifecycle should
+        # unregister/mark disconnected. send_only adapters leave _runner is None.
+        if self._runner is not None:
+            await self._unregister_webhook()
+            await self._runner.cleanup()
+            self._runner = None
+            self._mark_disconnected()
 
         if self.client:
             await self.client.aclose()
             self.client = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._mark_disconnected()
 
     @property
     def _webhook_url(self) -> str:

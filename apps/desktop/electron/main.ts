@@ -96,7 +96,9 @@ import {
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
+  enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
@@ -6207,11 +6209,18 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
-  const nextToken = incomingToken
-    ? persistToken
-      ? encryptDesktopSecret(incomingToken, { allowPlainText: input.allowPlainTextToken === true })
-      : { encoding: 'plain', value: incomingToken }
-    : existingBlock.token
+  // Persist decision lives in hardening.resolvePersistedRemoteToken so the
+  // IPC-propagation seam (allowPlainTextToken → encryptDesktopSecret opt-in) is
+  // covered by a focused regression test. Pass allowPlainText through RAW — the
+  // helper coerces with `=== true`, so a truthy-non-true value never enables
+  // plain-text storage, and that strictness is asserted in exactly one place.
+  const nextToken = resolvePersistedRemoteToken({
+    incomingToken,
+    persistToken,
+    existingToken: existingBlock.token,
+    allowPlainText: input.allowPlainTextToken,
+    encryptSecret: encryptDesktopSecret
+  })
 
   if (key) {
     // Per-profile scope: a remote/cloud entry pins this profile to its own
@@ -9563,21 +9572,14 @@ app.whenReady().then(() => {
     rememberLog(`[tls] could not load Windows system CA certificates: ${systemCa.error}`)
   }
 
-  // Keyring-less Linux (e.g. Hyprland/Sway with no GNOME Keyring or KWallet):
-  // `--password-store=basic` selects Electron's built-in "basic" backend, but
-  // Electron only counts it as available once setUsePlainTextEncryption(true)
-  // is called. Do this before createWindow() and anything that could touch
-  // safeStorage. Older/mocked safeStorage may lack the method, so guard + wrap.
-  if (process.platform === 'linux' && app.commandLine.getSwitchValue('password-store') === 'basic') {
-    try {
-      if (typeof safeStorage.setUsePlainTextEncryption === 'function') {
-        safeStorage.setUsePlainTextEncryption(true)
-      }
-    } catch {
-      // Non-fatal: encryption simply stays unavailable and the user can fall
-      // back to the plain-text opt-in or the HERMES_DESKTOP_REMOTE_* env vars.
-    }
-  }
+  // Keyring-less Linux `--password-store=basic` support. This must run before
+  // createWindow() and anything that could touch safeStorage; the narrow
+  // platform/switch/guard semantics live in the extracted helper.
+  enableBasicPasswordStoreEncryption({
+    platform: process.platform,
+    passwordStoreSwitch: app.commandLine.getSwitchValue('password-store'),
+    safeStorageApi: safeStorage
+  })
 
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())

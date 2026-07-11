@@ -5081,7 +5081,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent._fallback_auto_activate = bool(auto_activate)
         rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
         if (
-            getattr(agent, "_fallback_activated", False)
+            bool(auto_activate)
+            and getattr(agent, "_fallback_activated", False)
             and rate_limited_until > time.monotonic()
             and getattr(agent, "_fallback_manual_selected_index", None) is None
         ):

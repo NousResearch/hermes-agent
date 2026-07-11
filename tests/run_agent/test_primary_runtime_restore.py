@@ -669,6 +669,32 @@ class TestRateLimitCooldown:
         assert getattr(agent, "_fallback_activated") is False
         assert getattr(agent, "provider") == "custom"
 
+    def test_manual_policy_restores_auto_selected_route_despite_cooldown(self):
+        """Turning manual mode on must end a cached automatic fallback route."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        )
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            agent._try_activate_fallback()
+
+        assert getattr(agent, "_fallback_manual_selected_index", None) is None
+        setattr(agent, "_fallback_auto_activate", False)
+        setattr(agent, "_rate_limited_until", time.monotonic() + 60)
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert getattr(agent, "_fallback_activated") is False
+        assert getattr(agent, "provider") == "custom"
+
     def test_restore_allowed_after_cooldown_expires(self):
         """Once the cooldown window passes, restore proceeds normally."""
         agent = _make_agent(

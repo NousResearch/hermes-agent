@@ -139,11 +139,40 @@ def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
     GatewayRunner._apply_fallback_chain_to_agent(
         agent,
         [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}],
-        auto_activate=False,
+        auto_activate=True,
     )
 
     assert agent._fallback_chain == live
     assert agent._fallback_index == 1
+    assert agent._fallback_activated is True
+    assert agent._fallback_auto_activate is True
+
+
+def test_apply_fallback_chain_auto_to_manual_updates_during_cooldown():
+    """Switching to manual mode must replace future choices immediately."""
+    from gateway.run import GatewayRunner
+
+    live = [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
+    updated = [
+        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}
+    ]
+    agent = SimpleNamespace(
+        _fallback_chain=live,
+        _fallback_model=live[0],
+        _fallback_index=1,
+        _fallback_activated=True,
+        _fallback_auto_activate=True,
+        _fallback_manual_selected_index=None,
+        _rate_limited_until=time.monotonic() + 30,
+        _unavailable_fallback_keys=set(),
+    )
+
+    GatewayRunner._apply_fallback_chain_to_agent(
+        agent, updated, auto_activate=False
+    )
+
+    assert agent._fallback_chain == updated
+    assert agent._fallback_model == updated[0]
     assert agent._fallback_activated is True
     assert agent._fallback_auto_activate is False
 

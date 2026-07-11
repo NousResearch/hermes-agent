@@ -157,8 +157,25 @@ def build_turn_context(
     # turn on that paid route or publishing it process-wide.
     manual_restore_required = bool(
         getattr(agent, "_fallback_activated", False)
-        and getattr(agent, "_fallback_manual_selected_index", None) is not None
+        and (
+            getattr(agent, "_fallback_manual_selected_index", None) is not None
+            or not getattr(agent, "_fallback_auto_activate", True)
+        )
     )
+    clear_aux_runtime = None
+    if manual_restore_required:
+        try:
+            from agent.auxiliary_client import clear_runtime_main as clear_aux_runtime
+            # Remove the previous one-turn route before restore. If restore or
+            # publication fails, auxiliary calls must see no route rather than
+            # retain the manually selected provider process-wide.
+            clear_aux_runtime()
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not clear the previous manual auxiliary runtime; "
+                "refusing to start a new turn."
+            ) from exc
+
     restored = agent._restore_primary_runtime()
     if manual_restore_required and not restored:
         raise RuntimeError(
@@ -176,8 +193,20 @@ def build_turn_context(
             api_key=getattr(agent, "api_key", "") or "",
             api_mode=getattr(agent, "api_mode", "") or "",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        if manual_restore_required:
+            if clear_aux_runtime is not None:
+                try:
+                    clear_aux_runtime()
+                except Exception:
+                    logger.exception(
+                        "Failed to clear auxiliary runtime after primary publication failure"
+                    )
+            raise RuntimeError(
+                "Could not publish the restored primary runtime; refusing to "
+                "start a new turn after manual fallback."
+            ) from exc
+        logger.debug("auxiliary main runtime publication skipped", exc_info=True)
 
     # Tag log records on this thread with the session ID for ``hermes logs``.
     set_session_context(agent.session_id)

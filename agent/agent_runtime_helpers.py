@@ -1157,14 +1157,15 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
-    manual_turn_route = (
+    manual_restore_required = (
         getattr(agent, "_fallback_manual_selected_index", None) is not None
+        or not getattr(agent, "_fallback_auto_activate", True)
     )
     if (
         getattr(agent, "_rate_limited_until", 0) > time.monotonic()
-        and not manual_turn_route
+        and not manual_restore_required
     ):
-        return False  # automatic fallback remains active during primary cooldown
+        return False  # automatic policy keeps fallback active during primary cooldown
 
     rt = agent._primary_runtime
     try:

@@ -224,16 +224,83 @@ def test_manual_fallback_restores_before_aux_runtime_is_published():
     )
 
 
+def test_manual_fallback_aux_publish_failure_aborts_and_clears():
+    agent = _FakeAgent()
+    agent._fallback_activated = True
+    agent._fallback_manual_selected_index = 0
+    events = []
+
+    def restore_primary():
+        agent.provider = "anthropic"
+        agent.model = "primary/model"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_key = "pk"
+        agent._fallback_activated = False
+        return True
+
+    def publish_failure(*_args, **_kwargs):
+        events.append("publish")
+        raise RuntimeError("publish failed")
+
+    agent._restore_primary_runtime = MagicMock(side_effect=restore_primary)
+
+    with (
+        patch(
+            "agent.auxiliary_client.clear_runtime_main",
+            side_effect=lambda: events.append("clear"),
+        ),
+        patch(
+            "agent.auxiliary_client.set_runtime_main",
+            side_effect=publish_failure,
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="publish the restored primary runtime"):
+            _build(agent)
+
+    assert events == ["clear", "publish", "clear"]
+
+
 def test_manual_fallback_restore_failure_aborts_new_turn():
     agent = _FakeAgent()
     agent._fallback_activated = True
     agent._fallback_manual_selected_index = 0
     agent._restore_primary_runtime = MagicMock(return_value=False)
 
-    with patch("agent.auxiliary_client.set_runtime_main") as publish:
+    with (
+        patch("agent.auxiliary_client.clear_runtime_main") as clear,
+        patch("agent.auxiliary_client.set_runtime_main") as publish,
+    ):
         with pytest.raises(RuntimeError, match="restore the primary runtime"):
             _build(agent)
 
+    clear.assert_called_once_with()
+    publish.assert_not_called()
+
+
+def test_manual_policy_restore_failure_aborts_auto_selected_route():
+    agent = _FakeAgent()
+    agent._fallback_activated = True
+    agent._fallback_manual_selected_index = None
+    setattr(agent, "_fallback_auto_activate", False)
+    events = []
+
+    def restore_failure():
+        events.append("restore")
+        return False
+
+    agent._restore_primary_runtime = MagicMock(side_effect=restore_failure)
+
+    with (
+        patch(
+            "agent.auxiliary_client.clear_runtime_main",
+            side_effect=lambda: events.append("clear"),
+        ),
+        patch("agent.auxiliary_client.set_runtime_main") as publish,
+    ):
+        with pytest.raises(RuntimeError, match="restore the primary runtime"):
+            _build(agent)
+
+    assert events == ["clear", "restore"]
     publish.assert_not_called()
 
 

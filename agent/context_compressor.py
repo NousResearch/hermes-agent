@@ -35,6 +35,37 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+
+_SUMMARY_ACCESS_OR_QUOTA_ERROR_SUBSTRINGS: tuple[str, ...] = (
+    "invalid api key",
+    "invalid x-api-key",
+    "unauthorized",
+    "authentication",
+    "insufficient_quota",
+    "quota exceeded",
+    "quota_exceeded",
+    "out of funds",
+    "out of credits",
+    "out of credit",
+    "out of extra usage",
+)
+
+
+def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+    """Return True for non-retryable summary auth, permission, or quota errors."""
+
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in {401, 402, 403}:
+        return True
+
+    err_text = str(exc).lower()
+    if "api key" in err_text and ("invalid" in err_text or "blocked" in err_text):
+        return True
+    return any(marker in err_text for marker in _SUMMARY_ACCESS_OR_QUOTA_ERROR_SUBSTRINGS)
+
+
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
@@ -2129,24 +2160,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
-            # Authentication / permission failures (401/403) are NOT transient
-            # and NOT fixable by retrying the same request: the credential is
-            # invalid/blocked/expired or the endpoint is wrong (e.g. a prod
-            # token sent to a staging inference URL). Flag them so compress()
-            # aborts and preserves the session instead of rotating into a
+            # Authentication, permission, and exhausted-quota failures are NOT
+            # transient or fixable by retrying the same request. Flag them so
+            # compress() preserves the session instead of rotating into a
             # degraded child with a placeholder summary. We still allow the
             # one-shot fallback to the MAIN model below when the failure came
-            # from a distinct auxiliary summary_model (its dedicated creds may
-            # be the only broken thing); only a failure on the main model — or
-            # a fallback that also auth-fails — makes the abort stick.
-            _is_auth_error = (
-                _status in {401, 403}
-                or "invalid api key" in _err_str
-                or "invalid x-api-key" in _err_str
-                or ("api key" in _err_str and ("invalid" in _err_str or "blocked" in _err_str))
-                or "unauthorized" in _err_str
-                or "authentication" in _err_str
-            )
+            # from a distinct auxiliary summary_model; only a failure on the
+            # main model — or a fallback that also access/quota-fails — makes
+            # the abort stick.
+            _is_auth_error = _is_summary_access_or_quota_error(e)
             if _is_auth_error:
                 self._last_summary_auth_failure = True
             if _is_json_decode and not _is_model_not_found and not _is_timeout:

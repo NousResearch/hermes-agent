@@ -9,8 +9,16 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _is_summary_access_or_quota_error,
 )
 from hermes_state import SessionDB
+
+
+class StubProviderError(Exception):
+    def __init__(self, message, *, status_code=None, response=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
 
 
 @pytest.fixture()
@@ -781,12 +789,76 @@ class TestAuthFailureAborts:
         ]
 
     def _auth_err(self, status=401):
-        err = Exception(
+        return StubProviderError(
             f"Error code: {status} - "
-            "{'status': 401, 'message': 'Your API key is invalid, blocked or out of funds.'}"
+            "{'status': 401, 'message': 'Your API key is invalid, blocked or out of funds.'}",
+            status_code=status,
         )
-        err.status_code = status
-        return err
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "insufficient_quota",
+            "quota exceeded",
+            "quota_exceeded",
+            "out of funds",
+            "out of credits",
+            "out of credit",
+            "out of extra usage",
+        ],
+    )
+    def test_quota_classifier_accepts_explicit_provider_signals(self, message):
+        assert _is_summary_access_or_quota_error(Exception(message)) is True
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "billing portal is temporarily unavailable",
+            "usage limit documentation could not be loaded",
+            "rate limit exceeded; retry later",
+            "request timed out",
+        ],
+    )
+    def test_quota_classifier_rejects_transient_or_ambiguous_messages(self, message):
+        assert _is_summary_access_or_quota_error(Exception(message)) is False
+
+    @pytest.mark.parametrize("status", [401, 402, 403])
+    def test_access_classifier_accepts_non_retryable_http_statuses(self, status):
+        err = StubProviderError(
+            "provider rejected summary request",
+            status_code=status,
+        )
+        assert _is_summary_access_or_quota_error(err) is True
+
+    def test_classifier_reads_response_status_code(self):
+        err = StubProviderError(
+            "provider rejected summary request",
+            response=MagicMock(status_code=402),
+        )
+        assert _is_summary_access_or_quota_error(err) is True
+
+    def test_400_out_of_extra_usage_aborts_instead_of_dropping_context(self):
+        """Quota exhaustion preserves the original messages for a later retry."""
+        err = StubProviderError(
+            "Error code: 400 - {'error': {'message': 'out of extra usage'}}",
+            status_code=400,
+        )
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch("agent.context_compressor.call_llm", side_effect=err):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_auth_failure is True
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
 
     def test_generate_summary_flags_auth_failure(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

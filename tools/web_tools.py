@@ -720,24 +720,36 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
+            response_data = None
             try:
                 response_data = provider.search(query, limit)
                 if not response_data or not response_data.get("success", True):
                     error_detail = response_data.get("error") if response_data else "Empty response"
-                    raise Exception(f"Provider search returned success=False: {error_detail}")
+                    if error_detail == "Interrupted":
+                        pass
+                    else:
+                        raise Exception(f"Provider search returned success=False: {error_detail}")
             except Exception as search_exc:
+                from tools.interrupt import is_interrupted
+                if is_interrupted():
+                    raise search_exc
+
                 if provider.name != "ddgs":
                     logger.warning(
                         "Web search via %s failed: %s. Falling back to ddgs.",
                         provider.name, search_exc,
                     )
                     ddg_provider = _wsp_get_provider("ddgs")
-                    if ddg_provider and ddg_provider.supports_search():
+                    if ddg_provider and ddg_provider.supports_search() and ddg_provider.is_available():
                         logger.info(
                             "Web search via fallback ddgs: '%s' (limit: %d)",
                             query, limit,
                         )
-                        response_data = ddg_provider.search(query, limit)
+                        fallback_data = ddg_provider.search(query, limit)
+                        if fallback_data and fallback_data.get("success", True):
+                            response_data = fallback_data
+                        else:
+                            raise search_exc
                     else:
                         raise search_exc
                 else:

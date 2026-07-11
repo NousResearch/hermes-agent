@@ -1380,24 +1380,14 @@ def _current_max_iterations() -> int:
 from contextlib import contextmanager as _contextmanager
 
 
-# Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
-# multiplexer the default profile owns the single shared listener and serves
-# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
-# enabling one of these is always a misconfiguration: it would try to bind a
-# port already held by the default's listener. We hard-error on it rather than
-# silently dropping the adapter (see _start_one_profile_adapters).
-# Stored as platform .value strings since the Platform enum is imported below.
-_PORT_BINDING_PLATFORM_VALUES = frozenset({
-    "webhook",
-    "api_server",
-    "msgraph_webhook",
-    "feishu",
-    "wecom_callback",
-    "bluebubbles",
-    "sms",
-    "whatsapp_cloud",
-    "line",
-})
+# Platforms that bind a host TCP port (HTTP/webhook listeners). A SECONDARY
+# profile enabling one of these under gateway.multiplex_profiles is always a
+# misconfiguration — we hard-error on it rather than silently dropping the
+# adapter (see _start_one_profile_adapters). The set lives in gateway.config
+# so the dashboard's pre-write validation enforces the same policy.
+from gateway.config import (
+    PORT_BINDING_PLATFORM_VALUES as _PORT_BINDING_PLATFORM_VALUES,
+)
 
 
 class MultiplexConfigError(RuntimeError):

@@ -50,6 +50,52 @@ def test_validate_rejects_direct_xai_media_model_below_main_context_floor():
     assert "context window of 1,024 tokens" in result["message"]
 
 
+def test_validate_rejects_media_model_on_custom_provider_pointed_at_xai():
+    with patch("agent.model_metadata.get_model_context_length", return_value=1_024):
+        result = validate_requested_model(
+            "grok-imagine-video",
+            "custom:xai-direct",
+            api_key="dummy",
+            base_url="https://api.x.ai/v1",
+        )
+
+    assert result["accepted"] is False
+    assert result["persist"] is False
+    assert result.get("hard_reject") is True
+    assert "context window of 1,024 tokens" in result["message"]
+
+
+def test_validate_does_not_apply_xai_floor_to_other_custom_endpoints():
+    with patch(
+        "hermes_cli.models.probe_api_models",
+        return_value={
+            "models": ["grok-imagine-video"],
+            "probed_url": "https://models.example.test/v1/models",
+        },
+    ):
+        result = validate_requested_model(
+            "grok-imagine-video",
+            "custom:example",
+            api_key="dummy",
+            base_url="https://models.example.test/v1",
+        )
+
+    assert result["accepted"] is True
+
+
+def test_validate_rejects_xai_media_model_when_context_lookup_raises():
+    with patch(
+        "agent.model_metadata.get_model_context_length",
+        side_effect=RuntimeError("probe failed"),
+    ):
+        result = validate_requested_model("grok-imagine-video", "xai-oauth")
+
+    assert result["accepted"] is False
+    assert result["persist"] is False
+    assert result.get("hard_reject") is True
+    assert "Grok Imagine media-generation model" in result["message"]
+
+
 def test_validate_still_accepts_xai_chat_model_above_main_context_floor():
     with patch(
         "hermes_cli.models.provider_model_ids",

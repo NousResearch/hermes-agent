@@ -4084,7 +4084,15 @@ def validate_requested_model(
         }
 
     def _reject_below_main_context_floor(model_id: str) -> Optional[dict[str, Any]]:
-        if normalized not in {"xai", "xai-oauth"}:
+        endpoint = (base_url or "").strip()
+        if endpoint and "://" not in endpoint:
+            endpoint = f"https://{endpoint}"
+        try:
+            endpoint_host = urllib.parse.urlparse(endpoint).hostname or ""
+        except ValueError:
+            endpoint_host = ""
+        is_xai_endpoint = endpoint_host.lower() == "api.x.ai"
+        if normalized not in {"xai", "xai-oauth"} and not is_xai_endpoint:
             return None
         model_key = model_id.strip().lower()
         is_media_model = model_key.startswith("grok-imagine-")
@@ -4246,9 +4254,6 @@ def validate_requested_model(
             catalog_models = []
         if catalog_models:
             if requested_for_lookup in set(catalog_models):
-                floor_rejection = _reject_below_main_context_floor(requested_for_lookup)
-                if floor_rejection is not None:
-                    return floor_rejection
                 return {
                     "accepted": True,
                     "persist": True,
@@ -4304,9 +4309,6 @@ def validate_requested_model(
                         f"{suggestion_text}"
                     ),
                 }
-            floor_rejection = _reject_below_main_context_floor(requested_for_lookup)
-            if floor_rejection is not None:
-                return floor_rejection
             return {
                 "accepted": True,
                 "persist": True,
@@ -4461,9 +4463,6 @@ def validate_requested_model(
                 for m in api_models
             ]
         if requested_for_lookup in set(api_models):
-            floor_rejection = _reject_below_main_context_floor(requested_for_lookup)
-            if floor_rejection is not None:
-                return floor_rejection
             # API confirmed the model exists
             return {
                 "accepted": True,

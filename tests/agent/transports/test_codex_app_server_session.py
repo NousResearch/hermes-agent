@@ -528,6 +528,24 @@ class TestCompactThread:
         assert r.token_usage_last["totalTokens"] == 12
         assert r.model_context_window == 200000
 
+    def test_compact_thread_interrupted_returns_non_success(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.error == "compact turn interrupted"
+
     def test_compact_thread_failure_returns_error(self):
         client = FakeClient()
         from agent.transports.codex_app_server import CodexAppServerError

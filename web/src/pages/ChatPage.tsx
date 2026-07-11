@@ -37,6 +37,10 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import {
+  shouldOpenPtySocketAfterUrlBuild,
+  shouldRotatePtyAttachToken,
+} from "@/lib/pty-attach";
+import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
@@ -920,13 +924,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // rotates the token so the previous keep-alive PTY is not reattached
       // (registry reaps it) — the new PTY spawns under the new profile's
       // HERMES_HOME (see web_server._resolve_chat_argv).
-      params.attach = ptyAttachToken(forceFresh || profileChangedRef.current);
+      const rotateAttach = shouldRotatePtyAttachToken(
+        forceFresh,
+        profileChangedRef.current,
+      );
+      params.attach = ptyAttachToken(rotateAttach);
       profileChangedRef.current = false;
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
       const url = await api.buildWsUrl("/api/pty", params);
+      // Profile switch / unmount during the await tears down this effect and
+      // sets unmounting=true. Do not open a stale socket for the old scope.
+      if (!shouldOpenPtySocketAfterUrlBuild(unmounting)) {
+        return;
+      }
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;

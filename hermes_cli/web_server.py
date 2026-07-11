@@ -6088,11 +6088,76 @@ async def get_env_vars(profile: Optional[str] = None):
     return result
 
 
+def _is_provider_api_key_env(key: str) -> bool:
+    """Return True when *key* looks like a provider credential env var.
+
+    Covers canonical ``*_API_KEY`` names plus legacy/ad-hoc names such as
+    ``ANTHROPIC_TOKEN`` and ``AZURE_ANTHROPIC_KEY``.  When the user
+    explicitly updates one of these env vars via the Settings UI the stale
+    inline ``model.api_key`` in config.yaml must be evicted — otherwise an
+    old key left behind by an earlier ``POST /api/model/set`` call still
+    takes priority over the fresh env-var value at resolution time.
+    """
+    if not isinstance(key, str) or not key.strip():
+        return False
+    k = key.strip()
+    # The canonical pattern: <VENDOR>_API_KEY
+    if k.endswith("_API_KEY"):
+        return True
+    # Legacy / ad-hoc names that do not follow the **_**API_KEY convention.
+    _ADDITIONAL_CREDENTIAL_KEYS = frozenset({
+        "ANTHROPIC_TOKEN",
+        "AZURE_ANTHROPIC_KEY",
+        "HF_TOKEN",
+    })
+    return k in _ADDITIONAL_CREDENTIAL_KEYS
+
+
+def _clear_stale_model_api_key() -> None:
+    """Remove inline ``model.api_key`` from config.yaml if present.
+
+    An inline key left behind by ``POST /api/model/set`` takes priority
+    over env vars in the runtime resolver (see ``runtime_provider.py``,
+    ``_resolve_api_key_for_endpoint``).  When the user explicitly updates a
+    provider credential via the Settings / Env UI we must evict the stale
+    inline copy so the new env-var value is actually used.
+    """
+    try:
+        config_path = get_config_path()
+        if not config_path.exists():
+            return
+        config = read_raw_config()
+        if not isinstance(config, dict):
+            return
+        model_cfg = config.get("model")
+        if not isinstance(model_cfg, dict):
+            return
+        if not model_cfg.get("api_key"):
+            return  # nothing to clear
+        clear_model_endpoint_credentials(model_cfg, clear_api_mode=False)
+        config["model"] = model_cfg
+        save_config(config)
+        _log.debug(
+            "Cleared stale model.api_key from config.yaml after env-var update"
+        )
+    except Exception:
+        _log.warning(
+            "Failed to clear stale model.api_key from config.yaml",
+            exc_info=True,
+        )
+
+
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
             save_env_value(body.key, body.value)
+        # When the user updates a provider API key env var, evict any stale
+        # inline model.api_key from config.yaml that an earlier model-setup
+        # step may have left behind.  This ensures the new env-var value is
+        # actually resolved at runtime.
+        if _is_provider_api_key_env(body.key):
+            _clear_stale_model_api_key()
         return {"ok": True, "key": body.key}
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
@@ -13748,6 +13813,12 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
                 saved.append(key)
             else:
                 skipped.append(key)
+
+        # If any of the saved keys is a provider credential, also evict the
+        # stale inline model.api_key from config.yaml (see _clear_stale_model_api_key
+        # for rationale).
+        if any(_is_provider_api_key_env(k) for k in saved):
+            _clear_stale_model_api_key()
 
         status = {k: bool(get_env_value(k)) for k in allowed}
     return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}

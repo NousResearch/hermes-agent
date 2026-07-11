@@ -456,8 +456,8 @@ class LSPClient:
                 except asyncio.TimeoutError:
                     try:
                         proc.kill()
-                        await proc.wait()
-                    except ProcessLookupError:
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except (ProcessLookupError, asyncio.TimeoutError):
                         pass
             except ProcessLookupError:
                 pass

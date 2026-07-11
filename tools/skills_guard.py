@@ -776,7 +776,13 @@ def content_hash(skill_path: Path) -> str:
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
+        # Sort by normalized posix path to ensure identical hash on
+        # Windows and POSIX — Path sorting is case-insensitive on
+        # Windows but case-sensitive on Linux (#62310).
+        for f in sorted(
+            skill_path.rglob("*"),
+            key=lambda p: p.relative_to(skill_path).as_posix(),
+        ):
             if f.is_file():
                 try:
                     rel = f.relative_to(skill_path).as_posix()

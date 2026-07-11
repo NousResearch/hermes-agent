@@ -3573,10 +3573,13 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
+    # Normalize backslash separators to forward slash before sorting
+    # so the hash is identical on Windows and POSIX (#62310).
+    for rel_path in sorted(bundle.files, key=lambda p: p.replace("\\", "/")):
+        normalized = rel_path.replace("\\", "/")
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
-        h.update(rel_path.encode("utf-8"))
+        h.update(normalized.encode("utf-8"))
         h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):

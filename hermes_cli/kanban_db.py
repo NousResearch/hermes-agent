@@ -519,16 +519,23 @@ def archived_board_exists(board: Optional[str] = None) -> bool:
     :func:`remove_board`). A concurrent :func:`create_board` for a slug that
     has an archived sibling would silently fabricate a fresh, empty live board
     over the archive (#61945) — this lets callers detect and refuse that.
+
+    The archive directory is named ``<slug>-<digits>`` (optionally
+    ``<slug>-<digits>-<n>`` on rapid re-archive). We match the full suffix as a
+    timestamp, not a ``startswith(slug-)`` prefix, so ``foo-bar`` archived as
+    ``foo-bar-<ts>`` is NOT mistaken for an archive of ``foo`` (#62029).
     """
+    import re
+
     slug = _normalize_board_slug(board)
     if not slug or slug == DEFAULT_BOARD:
         return False
     archive_root = boards_root() / "_archived"
     if not archive_root.is_dir():
         return False
-    prefix = f"{slug}-"
+    pat = re.compile(rf"^{re.escape(slug)}-\d+(?:-\d+)?$")
     return any(
-        child.is_dir() and child.name.startswith(prefix)
+        child.is_dir() and pat.match(child.name)
         for child in archive_root.iterdir()
     )
 
@@ -1736,6 +1743,16 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # #62029: a named-board connect to an archived slug must not resurrect an
+    # empty live board over the archive (the same bug class as create_board).
+    # Refuse and point at the restore path. Skipped when an explicit db_path
+    # is given (legacy/test callers name the file directly).
+    if board is not None and not board_exists(board) and archived_board_exists(board):
+        raise ValueError(
+            f"board {board!r} is archived; restore it with "
+            f"'hermes kanban boards restore {board}' or create a new board "
+            f"with a different slug (refusing to resurrect an empty live board)"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, the expensive

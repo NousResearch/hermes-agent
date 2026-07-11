@@ -273,6 +273,38 @@ class TestBoardCRUD:
         assert meta["slug"] == "projx2"
         assert kb.board_exists("projx2")
 
+    def test_archived_match_is_not_prefix_collision(self, fresh_home):
+        # #62029: `foo-bar` archived as `foo-bar-<ts>` must NOT be reported as
+        # an archive of `foo` (the old startswith(slug-) matched the `foo-`).
+        kb.create_board("foo-bar")
+        kb.remove_board("foo-bar")  # archive -> foo-bar-<ts>/
+        assert kb.archived_board_exists("foo-bar")
+        assert not kb.archived_board_exists("foo")
+        # And `foo` can still be created without tripping the guard.
+        meta = kb.create_board("foo")
+        assert meta["slug"] == "foo"
+        assert kb.board_exists("foo")
+
+    def test_connect_refuses_archived_slug(self, fresh_home):
+        # #62029: the direct named-board connect path (not just create_board)
+        # must also refuse to resurrect an empty live board over the archive.
+        kb.create_board("projy")
+        kb.remove_board("projy")
+        assert kb.archived_board_exists("projy")
+        with pytest.raises(ValueError, match="archived"):
+            kb.connect(board="projy")
+        # No live board fabricated.
+        assert not kb.board_exists("projy")
+
+    def test_connect_normal_slug_still_works(self, fresh_home):
+        kb.create_board("okboard")
+        conn = kb.connect(board="okboard")
+        try:
+            assert conn is not None
+        finally:
+            conn.close()
+        assert kb.board_exists("okboard")
+
     def test_archived_board_exists_false_for_live_only(self, fresh_home):
         kb.create_board("liveonly")
         assert not kb.archived_board_exists("liveonly")
@@ -299,13 +331,12 @@ class TestBoardCRUD:
         kb.remove_board("pinned")
         assert kb.get_current_board() == "default"
 
-    @pytest.mark.parametrize("archive", [True, False])
-    def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
+    def test_remove_clears_init_cache_for_recreated_db(self, fresh_home):
         # Regression for #23833: poll loops that call connect(board=slug) right
-        # after remove_board() recreate an empty kanban.db at the same path
-        # (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS still
-        # contains the resolved path, the CREATE TABLE pass is skipped and
-        # downstream readers hit `no such table: task_events`.
+        # after a HARD remove_board() recreate an empty kanban.db at the same
+        # path (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS
+        # still contains the resolved path, the CREATE TABLE pass is skipped
+        # and downstream readers hit `no such table: task_events`.
         kb.create_board("recycle")
         # First connect populates _INITIALIZED_PATHS for this DB.
         with kb.connect(board="recycle") as conn:
@@ -313,9 +344,9 @@ class TestBoardCRUD:
         db_path = kb.board_dir("recycle") / "kanban.db"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
 
-        kb.remove_board("recycle", archive=archive)
-        # remove_board must drop the cache entry so a re-create through
-        # connect() gets a fresh schema-init pass.
+        # Hard-delete (not archive): cache entry must drop so a re-create
+        # through connect() gets a fresh schema-init pass.
+        kb.remove_board("recycle", archive=False)
         assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
 
         # Simulate the event-stream poll: re-open the same slug. connect()
@@ -329,6 +360,21 @@ class TestBoardCRUD:
             }
         assert "task_events" in tables
         assert "tasks" in tables
+
+    def test_archived_slug_connect_is_refused_not_resurrected(self, fresh_home):
+        # #62029: an ARCHIVED slug must not be silently resurrected by a
+        # concurrent connect() — that is the #61945 bug class via the
+        # named-board open path. connect() must refuse and leave the archive.
+        kb.create_board("recycle")
+        with kb.connect(board="recycle") as conn:
+            kb.create_task(conn, title="t1", assignee="dev")
+        kb.remove_board("recycle", archive=True)
+        assert kb.archived_board_exists("recycle")
+
+        with pytest.raises(ValueError, match="archived"):
+            kb.connect(board="recycle")
+        # Archive intact; no live board fabricated.
+        assert not kb.board_exists("recycle")
 
     def test_rename_updates_metadata(self, fresh_home):
         kb.create_board("slug-immutable")

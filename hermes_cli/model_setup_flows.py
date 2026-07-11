@@ -1906,6 +1906,12 @@ def _model_flow_devin_acp(config, current_model=""):
     print("  Authenticate with: devin auth login")
     print(f"  Command: {resolved_command}")
     print(f"  Backend marker: {effective_base}")
+    if status.get("auth_present") is True:
+        print("  Local credentials: detected")
+    elif status.get("auth_present") is False:
+        print("  Local credentials: missing")
+    if status.get("hint"):
+        print(f"  ⚠ {status['hint']}")
     print()
 
     try:

@@ -29,20 +29,41 @@ class TestDevinAcpProviderRegistry(unittest.TestCase):
 class TestDevinAcpResolve(unittest.TestCase):
     def test_status_and_creds(self):
         with patch("hermes_cli.auth.shutil.which", return_value="/usr/local/bin/devin"):
-            with patch.dict("os.environ", {"HERMES_DEVIN_ACP_ARGS": "acp --debug"}, clear=False):
-                status = get_external_process_provider_status("devin-acp")
-                assert status["configured"] is True
-                assert status["command"] == "devin"
-                assert status["resolved_command"] == "/usr/local/bin/devin"
-                assert status["args"] == ["acp", "--debug"]
-                assert status["base_url"] == "acp://devin"
+            with patch(
+                "hermes_cli.auth._devin_local_credentials_present",
+                return_value=True,
+            ):
+                with patch.dict("os.environ", {"HERMES_DEVIN_ACP_ARGS": "acp --debug"}, clear=False):
+                    status = get_external_process_provider_status("devin-acp")
+                    assert status["configured"] is True
+                    assert status["cli_installed"] is True
+                    assert status["auth_present"] is True
+                    assert status["logged_in"] is True
+                    assert status["command"] == "devin"
+                    assert status["resolved_command"] == "/usr/local/bin/devin"
+                    assert status["args"] == ["acp", "--debug"]
+                    assert status["base_url"] == "acp://devin"
 
-                creds = resolve_external_process_provider_credentials("devin-acp")
-                assert creds["provider"] == "devin-acp"
-                assert creds["api_key"] == "devin-acp"
-                assert creds["base_url"] == "acp://devin"
-                assert creds["command"] == "/usr/local/bin/devin"
-                assert creds["args"] == ["acp", "--debug"]
+                    creds = resolve_external_process_provider_credentials("devin-acp")
+                    assert creds["provider"] == "devin-acp"
+                    assert creds["api_key"] == "devin-acp"
+                    assert creds["base_url"] == "acp://devin"
+                    assert creds["command"] == "/usr/local/bin/devin"
+                    assert creds["args"] == ["acp", "--debug"]
+
+    def test_status_cli_without_credentials_is_not_logged_in(self):
+        with patch("hermes_cli.auth.shutil.which", return_value="/usr/local/bin/devin"):
+            with patch(
+                "hermes_cli.auth._devin_local_credentials_present",
+                return_value=False,
+            ):
+                status = get_external_process_provider_status("devin-acp")
+        assert status["configured"] is True
+        assert status["cli_installed"] is True
+        assert status["auth_present"] is False
+        assert status["logged_in"] is False
+        assert status.get("hint")
+        assert "devin auth login" in status["hint"]
 
 
 class TestDevinAcpClientDefaults(unittest.TestCase):
@@ -86,8 +107,9 @@ class TestDevinAcpClientDefaults(unittest.TestCase):
 
 class TestAcpClientFactory(unittest.TestCase):
     def test_create_devin(self):
-        from agent.acp_client_factory import create_acp_client, is_acp_provider
+        from agent.acp_client_factory import ACP_PROVIDERS, create_acp_client, is_acp_provider
 
+        assert "devin-acp" in ACP_PROVIDERS
         assert is_acp_provider("devin-acp") is True
         assert is_acp_provider(base_url="acp://devin") is True
         client = create_acp_client(
@@ -104,6 +126,50 @@ class TestAcpClientFactory(unittest.TestCase):
             )
         assert isinstance(client, DevinACPClient)
         assert client._acp_args == ["acp"]
+
+    def test_create_devin_fills_missing_command_from_resolver(self):
+        from agent.acp_client_factory import create_acp_client
+
+        with patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "command": "/resolved/devin",
+                "args": ["acp", "--from-resolver"],
+            },
+        ):
+            client = create_acp_client(provider="devin-acp", acp_cwd="/tmp")
+        assert isinstance(client, DevinACPClient)
+        assert client._acp_command == "/resolved/devin"
+        assert client._acp_args == ["acp", "--from-resolver"]
+
+    def test_devin_credentials_probe_reads_marker_not_secret(self, tmp_path=None):
+        import tempfile
+        from pathlib import Path
+
+        from hermes_cli.auth import _devin_local_credentials_present
+
+        with tempfile.TemporaryDirectory() as td:
+            cred_dir = Path(td) / "devin"
+            cred_dir.mkdir()
+            cred_file = cred_dir / "credentials.toml"
+            cred_file.write_text(
+                'windsurf_api_key = "devin-session-token$secret-value"\n',
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"APPDATA": td, "XDG_CONFIG_HOME": td}, clear=False):
+                # Point home-based candidates away from the real user home by
+                # still using APPDATA/XDG which our probe checks first.
+                assert _devin_local_credentials_present() is True
+
+            missing = Path(td) / "empty"
+            missing.mkdir()
+            with patch.dict(
+                "os.environ",
+                {"APPDATA": str(missing), "XDG_CONFIG_HOME": str(missing)},
+                clear=False,
+            ):
+                with patch("pathlib.Path.home", return_value=missing):
+                    assert _devin_local_credentials_present() is False
 
 
 class TestOneshotAcpWiring(unittest.TestCase):

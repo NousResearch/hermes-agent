@@ -6325,6 +6325,67 @@ def _resolve_external_process_command_args(provider_id: str) -> tuple[str, list[
     return command, args
 
 
+def _devin_local_credentials_present() -> bool:
+    """Best-effort check that Devin CLI has a local credentials file.
+
+    Does **not** validate the token with the network — only that a
+    credentials.toml with a key-shaped field exists in known locations
+    (Windows ``%APPDATA%/devin``, macOS Application Support, XDG config).
+    """
+    from pathlib import Path
+
+    home = Path.home()
+    candidates: list[Path] = []
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        candidates.append(Path(appdata) / "devin" / "credentials.toml")
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        candidates.append(Path(xdg) / "devin" / "credentials.toml")
+    candidates.extend(
+        [
+            home / ".config" / "devin" / "credentials.toml",
+            home / "Library" / "Application Support" / "devin" / "credentials.toml",
+            home / ".devin" / "credentials.toml",
+        ]
+    )
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+            # Avoid loading secrets into logs — only look for key *names*.
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        lower = text.lower()
+        if any(
+            marker in lower
+            for marker in (
+                "windsurf_api_key",
+                "api_key",
+                "access_token",
+                "session_token",
+                "refresh_token",
+            )
+        ):
+            return True
+    return False
+
+
+def _external_process_auth_present(provider_id: str) -> Optional[bool]:
+    """Return True/False when local auth can be probed; None if unknown."""
+    if provider_id == "devin-acp":
+        return _devin_local_credentials_present()
+    # Copilot ACP auth is CLI/session specific; PATH presence is the only
+    # cheap signal we have without spawning the binary.
+    return None
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for providers that run a local subprocess."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -6337,15 +6398,31 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = pconfig.inference_base_url
 
     resolved_command = shutil.which(command) if command else None
+    cli_installed = bool(resolved_command or base_url.startswith("acp+tcp://"))
+    auth_present = _external_process_auth_present(provider_id)
+    # Treat a confirmed-missing local auth file as not logged in even when
+    # the CLI binary is on PATH (so doctor/status can nudge `devin auth login`).
+    logged_in = bool(cli_installed and auth_present is not False)
+
+    hint = None
+    if not cli_installed:
+        spec = _external_process_spec(provider_id)
+        hint = str(spec.get("missing_msg") or "CLI not found.").format(command=command)
+    elif auth_present is False and provider_id == "devin-acp":
+        hint = "Devin CLI found but no local credentials — run: devin auth login"
+
     return {
-        "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "configured": cli_installed,
         "provider": provider_id,
         "name": pconfig.name,
         "command": command,
         "args": args,
         "resolved_command": resolved_command,
         "base_url": base_url,
-        "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "cli_installed": cli_installed,
+        "auth_present": auth_present,
+        "logged_in": logged_in,
+        "hint": hint,
     }
 
 
@@ -6367,7 +6444,11 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
     pconfig_for_status = PROVIDER_REGISTRY.get(target)
-    if target in {"copilot-acp", "devin-acp"} or (
+    try:
+        from agent.acp_client_factory import ACP_PROVIDERS as _ACP_PROVIDERS
+    except Exception:
+        _ACP_PROVIDERS = frozenset({"copilot-acp", "devin-acp"})
+    if target in _ACP_PROVIDERS or (
         pconfig_for_status and pconfig_for_status.auth_type == "external_process"
     ):
         return get_external_process_provider_status(target)

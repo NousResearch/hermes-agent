@@ -1833,7 +1833,9 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider in {"copilot-acp", "devin-acp"}:
+    from agent.acp_client_factory import ACP_PROVIDERS
+
+    if provider in ACP_PROVIDERS:
         creds = resolve_external_process_provider_credentials(provider)
         return {
             "provider": provider,

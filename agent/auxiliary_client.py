@@ -4990,7 +4990,9 @@ def resolve_provider_client(
             or _read_main_model(),
             provider,
         )
-        if provider in {"copilot-acp", "devin-acp"}:
+        from agent.acp_client_factory import ACP_PROVIDERS, create_acp_client
+
+        if provider in ACP_PROVIDERS:
             api_key = str(creds.get("api_key", "")).strip()
             base_url = str(creds.get("base_url", "")).strip()
             command = str(creds.get("command", "")).strip() or None
@@ -5009,7 +5011,6 @@ def resolve_provider_client(
                     provider,
                 )
                 return None, None
-            from agent.acp_client_factory import create_acp_client
 
             client = create_acp_client(
                 provider=provider,

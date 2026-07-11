@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.acp_client_factory import is_acp_provider
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
@@ -487,9 +488,7 @@ def init_agent(
     if (
         api_mode is None
         and agent.api_mode == "chat_completions"
-        and agent.provider not in {"copilot-acp", "devin-acp"}
-        and not str(agent.base_url or "").lower().startswith("acp://")
-        and not str(agent.base_url or "").lower().startswith("acp+tcp://")
+        and not is_acp_provider(agent.provider, agent.base_url)
         and not agent._is_azure_openai_url()
         and (
             agent._is_direct_openai_url()
@@ -912,7 +911,7 @@ def init_agent(
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
             if _provider_timeout is not None:
                 client_kwargs["timeout"] = _provider_timeout
-            if agent.provider in {"copilot-acp", "devin-acp"}:
+            if is_acp_provider(agent.provider, base_url):
                 client_kwargs["command"] = agent.acp_command
                 # Prefer None over [] so the ACP client can apply provider
                 # defaults when a call site forgot to forward runtime args.

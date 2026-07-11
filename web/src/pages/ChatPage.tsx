@@ -302,10 +302,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // reattaches to the old PTY which was spawned under the previous profile.
   const prevProfileRef = useRef(scopedProfile);
   const profileChangedRef = useRef(false);
-  if (prevProfileRef.current !== scopedProfile) {
-    profileChangedRef.current = true;
-    prevProfileRef.current = scopedProfile;
-  }
+  useEffect(() => {
+    if (prevProfileRef.current !== scopedProfile) {
+      profileChangedRef.current = true;
+      prevProfileRef.current = scopedProfile;
+    }
+  }, [scopedProfile]);
   const channel = useMemo(
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],

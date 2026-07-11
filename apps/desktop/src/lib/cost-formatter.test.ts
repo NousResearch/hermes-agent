@@ -62,6 +62,6 @@ describe('quotaLabel', () => {
     expect(quotaLabel(95, undefined)).toBe('quota 95%')
   })
   it('returns percentage with reset detail', () => {
-    expect(quotaLabel(50, '5h23m')).toBe('quota 50%')
+    expect(quotaLabel(50, '5h23m')).toBe('quota 50% (resets in 5h23m)')
   })
 })

@@ -19,7 +19,8 @@ export function quotaColorClass(pct: number | undefined): string {
   return 'text-red-500'
 }
 
-export function quotaLabel(pct: number | undefined, _reset?: string | undefined): string {
+export function quotaLabel(pct: number | undefined, reset?: string | undefined): string {
   if (pct == null) return ''
-  return `quota ${Math.round(pct)}%`
+  const pctStr = `quota ${Math.round(pct)}%`
+  return reset ? `${pctStr} (resets in ${reset})` : pctStr
 }

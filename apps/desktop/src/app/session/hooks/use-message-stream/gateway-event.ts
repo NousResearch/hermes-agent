@@ -95,18 +95,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const prevQuotaPctRef = useRef<Map<string, number>>(new Map())
 
   return useCallback(
-      (event: RpcEvent) => {
-        const payload = event.payload as GatewayEventPayload | undefined
-        const explicitSid = event.session_id || ''
+    (event: RpcEvent) => {
+      const payload = event.payload as GatewayEventPayload | undefined
+      const explicitSid = event.session_id || ''
 
-        if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
-          return
-        }
+      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+        return
+      }
 
-        const sessionId = explicitSid || activeSessionIdRef.current
-        const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+      const sessionId = explicitSid || activeSessionIdRef.current
+      const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
-        if (event.type === 'gateway.ready') {
+      if (event.type === 'gateway.ready') {
+        return
+      } else if (event.type === 'session.info') {
+        // Apply session-scoped fields when the event targets the active
+        // session, OR when it's a global broadcast and we have no session.
         const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
         const statePatch = sessionInfoStatePatch(payload)
         const hasStatePatch = hasSessionInfoStatePatch(statePatch)
@@ -340,26 +344,26 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (payload?.usage) {
-                  const usage = payload.usage
-                  setCurrentUsage(current => {
-                    const newUsage = { ...current, ...usage }
+          const usage = payload.usage
+          setCurrentUsage(current => {
+            const newUsage = { ...current, ...usage }
 
-                    // Detect quota exhaustion transition: prev < 95% and new >= 100%
-                    if (sessionId && usage.quota_pct !== undefined) {
-                      const prevPct = prevQuotaPctRef.current.get(sessionId)
-                      const newPct = usage.quota_pct
-                      if (prevPct !== undefined && prevPct < 95 && newPct >= 100) {
-                        const provider = payload.provider || 'unknown'
-                        const quotaReset = usage.quota_reset
-                        dispatchQuotaExhaustedNotification(sessionId, provider, quotaReset)
-                      }
-                      prevQuotaPctRef.current.set(sessionId, newPct)
-                    }
+            // Detect quota exhaustion transition: prev < 95% and new >= 100%
+            if (sessionId && usage.quota_pct !== undefined) {
+              const prevPct = prevQuotaPctRef.current.get(sessionId)
+              const newPct = usage.quota_pct
+              if (prevPct !== undefined && prevPct < 95 && newPct >= 100) {
+                const provider = payload.provider || 'unknown'
+                const quotaReset = usage.quota_reset
+                dispatchQuotaExhaustedNotification(sessionId, provider, quotaReset)
+              }
+              prevQuotaPctRef.current.set(sessionId, newPct)
+            }
 
-                    return newUsage
-                  })
-                }
-              } else if (event.type === 'session.title') {
+            return newUsage
+          })
+        }
+      } else if (event.type === 'session.title') {
         // Live auto-title push (titler runs async, after the turn's refresh).
         const storedId = typeof payload?.session_id === 'string' ? payload.session_id : ''
         const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''

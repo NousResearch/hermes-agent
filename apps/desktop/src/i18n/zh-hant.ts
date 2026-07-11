@@ -158,11 +158,11 @@ export const zhHant = defineLocale({
       turnDoneBody: '回覆已就緒。',
       turnErrorTitle: '本輪失敗',
       backgroundDoneTitle: '背景工作已完成',
-            backgroundFailedTitle: '背景工作失敗',
-            quotaExhaustedTitle: '配額已用完: {provider}',
-                  quotaExhaustedBody: '提供商配額已耗盡。請檢查您的提供商控制面板。{quotaReset?}'
-          }
-        },
+      backgroundFailedTitle: '背景工作失敗',
+      quotaExhaustedTitle: '配額已用完: {provider}',
+      quotaExhaustedBody: '提供商配額已耗盡。請檢查您的提供商控制面板。{quotaReset?}'
+    }
+  },
 
   remoteDisplayBanner: {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
@@ -238,14 +238,14 @@ export const zhHant = defineLocale({
           description: '本輪以錯誤結束。'
         },
         backgroundDone: {
-                  label: '背景工作完成',
-                  description: '背景終端機指令已完成。'
-                },
-                quotaExhausted: {
-                  label: '配額已用完: {provider}',
-                  description: '提供商配額已耗盡。請檢查您的提供商控制面板。{quotaReset?}'
-                }
-              },
+          label: '背景工作完成',
+          description: '背景終端機指令已完成。'
+        },
+        quotaExhausted: {
+          label: '配額已用完: {provider}',
+          description: '提供商配額已耗盡。請檢查您的提供商控制面板。{quotaReset?}'
+        }
+      },
       test: '傳送測試通知',
       testTitle: 'Hermes',
       testBody: '通知運作正常。',
@@ -286,7 +286,8 @@ export const zhHant = defineLocale({
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
       uiScaleTitle: '介面縮放',
-      uiScaleDesc: (percent: number) => `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      uiScaleDesc: (percent: number) =>
+        `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       embedsTitle: '內嵌預覽',
@@ -1994,9 +1995,9 @@ export const zhHant = defineLocale({
       },
       openContextUsage: '開啟上下文使用量明細',
       session: '工作階段',
-            runtimeSessionElapsed: '執行時工作階段已用時間',
-            sessionCost: '工作階段成本',
-            yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
+      runtimeSessionElapsed: '執行時工作階段已用時間',
+      sessionCost: '工作階段成本',
+      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
       yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
       modelNone: '無',
       noModel: '無模型',

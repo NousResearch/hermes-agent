@@ -352,78 +352,78 @@ export function useStatusbarItems({
   )
 
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
-      () => [
-        {
-          detail: <LiveDuration since={turnStartedAt} />,
-          hidden: !busy || !turnStartedAt,
-          icon: <Loader2 className="size-3 animate-spin" />,
-          id: 'running-timer',
-          label: copy.turnRunning,
-          title: copy.currentTurnElapsed,
-          variant: 'text'
-        },
-        {
-          detail: contextBar || undefined,
-          hidden: !contextUsage,
-          id: 'context-usage',
-          label: contextUsage,
-          menuAlign: 'end',
-          menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
-          menuContent: (
-            <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
-          ),
-          title: copy.openContextUsage,
-          variant: 'menu'
-        },
-        {
-          detail: <LiveDuration since={sessionStartedAt} />,
-          hidden: !sessionStartedAt,
-          id: 'session-timer',
-          label: copy.session,
-          title: copy.runtimeSessionElapsed,
-          variant: 'text'
-        },
-        {
-          hidden: !currentUsage?.cost_usd,
-          id: 'session-cost',
-          label: formatCost(currentUsage?.cost_usd ?? 0),
-          title: copy.sessionCost ?? 'Session cost',
-          variant: 'text'
-        },
-        {
-          className: quotaColorClass(currentUsage?.quota_pct),
-          hidden: currentUsage?.quota_pct == null,
-          id: 'quota-gauge',
-          label: quotaLabel(currentUsage?.quota_pct),
-          title: currentUsage?.quota_rl_text ? `quota reset: ${currentUsage.quota_rl_text}` : 'Provider quota',
-          variant: 'text'
-        },
-        {
-          className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
-          hidden: !showYoloToggle,
-          icon: yoloActive ? (
-            <ZapFilled className="size-3.5 shrink-0" />
-          ) : (
-            <Zap className="size-3.5 shrink-0 opacity-70" />
-          ),
-          id: 'yolo',
-          onSelect: modifiers => void toggleYolo(modifiers),
-          title: yoloActive ? copy.yoloOn : copy.yoloOff,
-          variant: 'action'
-        },
-        {
-          className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
-          hidden: !chatOpen,
-          icon: <Terminal className="size-3.5" />,
-          id: 'terminal',
-          onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
-          title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
-          variant: 'action'
-        },
-        clientVersionItem,
-        ...(backendVersionItem ? [backendVersionItem] : [])
-      ],
-            [
+    () => [
+      {
+        detail: <LiveDuration since={turnStartedAt} />,
+        hidden: !busy || !turnStartedAt,
+        icon: <Loader2 className="size-3 animate-spin" />,
+        id: 'running-timer',
+        label: copy.turnRunning,
+        title: copy.currentTurnElapsed,
+        variant: 'text'
+      },
+      {
+        detail: contextBar || undefined,
+        hidden: !contextUsage,
+        id: 'context-usage',
+        label: contextUsage,
+        menuAlign: 'end',
+        menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
+        menuContent: (
+          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+        ),
+        title: copy.openContextUsage,
+        variant: 'menu'
+      },
+      {
+        detail: <LiveDuration since={sessionStartedAt} />,
+        hidden: !sessionStartedAt,
+        id: 'session-timer',
+        label: copy.session,
+        title: copy.runtimeSessionElapsed,
+        variant: 'text'
+      },
+      {
+        hidden: !currentUsage?.cost_usd,
+        id: 'session-cost',
+        label: formatCost(currentUsage?.cost_usd ?? 0),
+        title: copy.sessionCost ?? 'Session cost',
+        variant: 'text'
+      },
+      {
+        className: quotaColorClass(currentUsage?.quota_pct),
+        hidden: currentUsage?.quota_pct == null,
+        id: 'quota-gauge',
+        label: quotaLabel(currentUsage?.quota_pct),
+        title: currentUsage?.quota_rl_text ? `quota reset: ${currentUsage.quota_rl_text}` : 'Provider quota',
+        variant: 'text'
+      },
+      {
+        className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
+        hidden: !showYoloToggle,
+        icon: yoloActive ? (
+          <ZapFilled className="size-3.5 shrink-0" />
+        ) : (
+          <Zap className="size-3.5 shrink-0 opacity-70" />
+        ),
+        id: 'yolo',
+        onSelect: modifiers => void toggleYolo(modifiers),
+        title: yoloActive ? copy.yoloOn : copy.yoloOff,
+        variant: 'action'
+      },
+      {
+        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        hidden: !chatOpen,
+        icon: <Terminal className="size-3.5" />,
+        id: 'terminal',
+        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
+        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        variant: 'action'
+      },
+      clientVersionItem,
+      ...(backendVersionItem ? [backendVersionItem] : [])
+    ],
+    [
       activeSessionId,
       backendVersionItem,
       busy,

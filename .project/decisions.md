@@ -2,6 +2,17 @@
 
 > memory-schema: v1.2 · ย้ายมาจาก `.hermes/decisions.md` เมื่อ 2026-07-05 (Migration §1b) · append อย่างเดียว ใหม่สุดอยู่บนหลังบรรทัดนี้
 
+## 2026-07-11 · DS พร้อมใช้จริง + branch cleanup (Claude/Opus · เจ้าของสั่งทีละคำสั่ง)
+
+Decision 1: onemanfleet = ตัวอย่าง 1 เคส ไม่ใช่ต้นแบบให้ลอก — เพิ่ม `brand-leak-check.sh` จับสี `#E94560`/`#1A1A2E` · ทุก project สร้างสีเองผ่านด่านสี Phase 3 (เดิม ADOPT-RECIPE สั่ง "ก๊อป onemanfleet-ds.html" ตรง ๆ = สีติด = พังเละ)
+Decision 2: contrast-audit ต้องมีตัวรันจริง (playwright headless) — เดิมเป็น browser-console script รันด้วย node ไม่ได้ = ด่านที่รันไม่ได้จริง · ทำ `contrast-audit-run.mjs` + `ds-adopt.sh` 1 คำสั่ง (prep/check) ใช้เหมือนกัน VPS+Notebook
+Decision 3: branch preserve-then-delete — งานเสี่ยงหาย push เก็บก่อน · ยืนยันซ้ำที่อื่น (SaaS/main) แล้วลบ · ไม่ self-merge งานคนอื่น (เปิด PR ให้เจ้าของ review) · ลบ remote `upstream`(NousResearch 1,292)+`fork` ที่ทำ Git graph รก 1,300 อัน
+
+Reason:
+- DS เดิมเอาไปใช้พังเละ (เจ้าของแก้ กปถ. เอง) เพราะ contrast-audit รันไม่ได้ + onemanfleet สีติดหน้าโชว์
+- เจ้าของเห็น branch เต็ม Git graph = `upstream` ของ NousResearch (fork parent) ไม่ใช่งานเรา — ผมพลาดตัด upstream ออกจากการนับหลายรอบทำเจ้าของสับสน+โกรธ · แก้ = ลบ remote upstream/fork ให้กราฟเหลือ origin/main + vps
+- งานที่หายแล้วกู้ไม่ได้ ต้อง push ก่อนตัดสินลบ
+
 ## 2026-07-10 · แผน QAQC — shortcut "Use QA QC" ระบบตรวจคุณภาพงาน 5-20 ล้าน+ (Fable ออกแบบ · เจ้าของอนุมัติโดยตอบครบ 3 คำถาม)
 
 Decision 1: Fable 5 เป็นสมองออกแบบแผนนี้ (เจ้าของสั่งตรงในแชท 2026-07-10 + สลับ model เป็น claude-fable-5 เอง) — ข้อยกเว้นแบบเดียวกับแผน GRD · ตัว shortcut ที่ได้จะรันด้วย Opus/Codex/Grok ตาม relay ปกติ ไม่ผูก Fable

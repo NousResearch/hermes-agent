@@ -1829,9 +1829,9 @@ def _get_platform_tools(
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
+    known_map = config.get("known_plugin_toolsets", {}) or {}
+    known_for_platform = set(known_map.get(platform, []) or [])
     if plugin_ts_keys:
-        known_map = config.get("known_plugin_toolsets", {}) or {}
-        known_for_platform = set(known_map.get(platform, []) or [])
         for pts in plugin_ts_keys:
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
@@ -1898,9 +1898,48 @@ def _get_platform_tools(
     # last so it overrides everything above.
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
-    if disabled_toolsets:
-        disabled_set = {str(ts) for ts in disabled_toolsets}
+    disabled_set = {str(ts) for ts in disabled_toolsets}
+    if disabled_set:
         enabled_toolsets -= disabled_set
+
+    # Plugin tools that opted into the core/messaging family via
+    # register(..., include_in_messaging_toolsets=True) are guaranteed the
+    # same surface as _HERMES_CORE_TOOLS. The reverse-mapping above only
+    # yields toolset names, so an opt-in tool whose owning toolset didn't make
+    # the effective set (e.g. registered via registry.register with no plugin
+    # toolset bookkeeping) would silently drop off every ordinary
+    # CLI/gateway/cron session even though resolve_toolset() unions it into
+    # the platform composites. Carry it through by bare tool name —
+    # model_tools resolves messaging opt-in tool names as single-tool entries.
+    # Only for surfaces whose default composite carries the full core tool set
+    # (excludes hermes-webhook / hermes-api-server by construction; ACP never
+    # goes through this resolver), and never against a user disable:
+    # known-but-unchecked plugin toolsets, agent.disabled_toolsets (owning
+    # toolset or tool name), default-off toolsets, and explicit empty
+    # selections all win. Gated on include_default_mcp_servers because False
+    # is the config-editing variant (see PR #3252) — these names are
+    # runtime-only and must never be persisted by _save_platform_tools.
+    if include_default_mcp_servers and not explicit_empty_selection:
+        from toolsets import _HERMES_CORE_TOOLS
+
+        if set(_HERMES_CORE_TOOLS).issubset(platform_tool_universe):
+            try:
+                from tools.registry import registry
+                optin_names = registry.get_messaging_optin_tool_names()
+            except Exception:
+                optin_names = []
+            for tool_name in optin_names:
+                entry = registry.get_entry(tool_name)
+                owner = entry.toolset if entry else None
+                if owner in enabled_toolsets:
+                    continue  # already rides along with its own toolset
+                if owner in known_for_platform and owner not in toolset_names:
+                    continue  # user unchecked the plugin toolset here
+                if owner in _DEFAULT_OFF_TOOLSETS:
+                    continue  # opt-in-only toolset the user never enabled
+                if owner in disabled_set or tool_name in disabled_set:
+                    continue
+                enabled_toolsets.add(tool_name)
 
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of

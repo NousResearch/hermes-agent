@@ -354,6 +354,19 @@ def get_tool_definitions(
     return result
 
 
+def _messaging_optin_tool(name: str) -> bool:
+    """True if ``name`` is a tool registered with
+    ``include_in_messaging_toolsets=True``. Such tools are addressable by
+    bare tool name in enabled/disabled toolset lists (see
+    ``hermes_cli.tools_config._get_platform_tools``); no other tool name is —
+    this is deliberately not a generic tools-as-toolsets path."""
+    # Late import so tests that monkeypatch ``tools.registry.registry`` (the
+    # pattern used across the toolset suites) are honored here too.
+    from tools.registry import registry as _registry
+    entry = _registry.get_entry(name)
+    return entry is not None and entry.include_in_messaging_toolsets
+
+
 def _compute_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -384,6 +397,15 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif _messaging_optin_tool(toolset_name):
+                # Messaging opt-in plugin tools (registered with
+                # include_in_messaging_toolsets=True) arrive from
+                # _get_platform_tools as bare tool names when their owning
+                # toolset is absent from the effective platform set. Include
+                # just the tool itself — never its whole toolset.
+                tools_to_include.add(toolset_name)
+                if not quiet_mode:
+                    print(f"✅ Enabled messaging opt-in tool '{toolset_name}'")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
@@ -432,6 +454,14 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif _messaging_optin_tool(toolset_name):
+                # Symmetric single-tool disable: a bare messaging opt-in tool
+                # name in disabled_toolsets removes exactly that tool, so a
+                # user can suppress the opt-in without disabling the plugin's
+                # whole toolset.
+                tools_to_include.discard(toolset_name)
+                if not quiet_mode:
+                    print(f"🚫 Disabled messaging opt-in tool '{toolset_name}'")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 

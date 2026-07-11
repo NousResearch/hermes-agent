@@ -624,6 +624,66 @@ def _find_shell() -> str:
     return _find_bash()
 
 
+# Shells that use zsh-style snapshot commands (alias -L, setopt, functions).
+# Everything else (bash, sh, dash, ksh, fish, …) uses the bash-style bootstrap
+# (alias -p, shopt, declare -F) — those shells either support those commands
+# directly (bash/ksh) or are compatible enough at the snapshot level (dash/sh).
+_ZSH_FAMILY = frozenset({"zsh"})
+
+
+def _resolve_terminal_shell(shell_setting: str) -> str:
+    """Resolve a terminal.shell config value to a shell binary path.
+
+    Args:
+        shell_setting: One of "auto", "bash", "zsh".
+
+    Returns:
+        Absolute path to a shell binary on disk.
+
+    "auto" follows ``$SHELL`` when it is a POSIX-sh-family shell (bash, zsh,
+    sh, dash, ksh, mksh); otherwise falls back to bash.  This lets zsh users
+    inherit their full login environment (aliases, functions, mise/pyenv
+    activation) without bash-to-zsh translation fragility.
+
+    "bash" always returns a bash binary regardless of ``$SHELL``.
+
+    "zsh" returns zsh when installed, falling back to bash when absent.
+    """
+    if shell_setting == "bash":
+        return _find_bash()
+
+    if shell_setting == "zsh":
+        for candidate in ("/usr/bin/zsh", "/bin/zsh", "/usr/local/bin/zsh"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        # zsh not installed — fall back to bash.
+        return _find_bash()
+
+    # "auto" or any unrecognized value → follow $SHELL.
+    user_shell = os.environ.get("SHELL", "")
+    if (
+        user_shell
+        and os.path.isfile(user_shell)
+        and os.access(user_shell, os.X_OK)
+        and Path(user_shell).name in _SPAWN_COMPATIBLE_SHELLS
+    ):
+        return user_shell
+    return _find_bash()
+
+
+def _shell_kind(shell_path: str) -> str:
+    """Classify a shell binary for snapshot-bootstrap command selection.
+
+    Returns "zsh" for zsh-family shells, "bash" for everything else.
+    The distinction matters because the snapshot bootstrap uses
+    ``alias -p`` / ``shopt`` (bash) vs ``alias -L`` / ``setopt`` (zsh).
+    """
+    name = Path(shell_path).name
+    if name in _ZSH_FAMILY:
+        return "zsh"
+    return "bash"
+
+
 # Standard PATH entries for environments with minimal PATH.
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
@@ -935,10 +995,14 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
+                 *, shell: str = "auto"):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self._shell_setting = shell
+        self._shell_path = _resolve_terminal_shell(shell)
+        self._shell_kind = _shell_kind(self._shell_path)
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -997,7 +1061,7 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
-        bash = _find_bash()
+        shell_bin = self._shell_path
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
         # custom init files so tools registered outside bash_profile
@@ -1008,7 +1072,7 @@ class LocalEnvironment(BaseEnvironment):
             init_files = _resolve_shell_init_files()
             if init_files:
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
-        args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
+        args = [shell_bin, "-l", "-c", cmd_string] if login else [shell_bin, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
         # Recover when the cwd has been deleted out from under us — usually by

@@ -321,6 +321,11 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
+        # Subclasses (LocalEnvironment) override this to "zsh" when the
+        # terminal shell is zsh-family.  The snapshot bootstrap uses it to
+        # pick zsh-compatible commands (alias -L / setopt / functions vs
+        # alias -p / shopt / declare -F).
+        self._shell_kind = "bash"
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -394,26 +399,46 @@ class BaseEnvironment(ABC):
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Shell-aware bootstrap: zsh uses different commands than bash for
+        # function listing (functions vs declare -F), alias dump (alias -L
+        # vs alias -p), and alias expansion enable (setopt vs shopt).  Using
+        # the wrong commands crashes the snapshot shell with exit 1.
+        _is_zsh = getattr(self, "_shell_kind", "bash") == "zsh"
         bootstrap = (
             f"umask 077\n"
             f"export -p > {_snap_tmp}\n"
-            # Dump function definitions, filtering out private (``_``-prefixed)
-            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
-            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
-            # is line-based: it strips the function *header* line but leaves the
-            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
-            # makes every sourced command fail (e.g. exit 127).  Selecting the
-            # wanted names with ``declare -F`` first, then dumping only those
-            # whole definitions, preserves the filter's intent without ever
-            # tearing a function body.  The non-empty guard matters: bare
-            # ``declare -f`` with no name args dumps ALL functions, so an empty
-            # name list (only private funcs present) would otherwise leak the
-            # very functions we meant to drop.
-            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
-            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
-            f">> {_snap_tmp} 2>/dev/null || true\n"
-            f"alias -p >> {_snap_tmp}\n"
-            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
+        )
+        if _is_zsh:
+            # zsh: ``functions`` lists function definitions; ``alias -L``
+            # dumps aliases in restorable form; ``setopt interactive_comments``
+            # replaces bash's ``shopt -s expand_aliases``.
+            bootstrap += (
+                f"__hermes_fns=$(functions 2>/dev/null | "
+                f"grep -E '^[a-zA-Z_][a-zA-Z0-9_]* \\(\\) \\{{' | "
+                f"awk '{{print $1}}' | grep -vE '^_[^_]') || true\n"
+                # zsh does NOT word-split unquoted variables by default\n"
+                # (unlike bash). ``functions $__hermes_fns`` passes the\n"
+                # entire multi-line string as one arg → silent no-op.\n"
+                # Use ${(f)...} to split on newlines and iterate.\n"
+                f"for __fn in \"${{(f)__hermes_fns}}\"; do "
+                f"functions \"$__fn\"; done >> {_snap_tmp} 2>/dev/null || true\n"
+                f"alias -L >> {_snap_tmp} 2>/dev/null || true\n"
+                f"echo 'setopt interactive_comments' >> {_snap_tmp}\n"
+            )
+        else:
+            # bash: ``declare -F`` lists function names by name, ``declare -f``
+            # dumps bodies, ``alias -p`` dumps aliases, ``shopt`` enables alias
+            # expansion.  Filter private (``_``-prefixed) helpers by NAME, not
+            # by line — a line-based grep strips the header but leaves the
+            # orphaned ``{ … }`` body behind, corrupting the snapshot.
+            bootstrap += (
+                f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
+                f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
+                f">> {_snap_tmp} 2>/dev/null || true\n"
+                f"alias -p >> {_snap_tmp}\n"
+                f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
+            )
+        bootstrap += (
             f"echo 'set +e' >> {_snap_tmp}\n"
             f"echo 'set +u' >> {_snap_tmp}\n"
             # Publish atomically only if assembly succeeded; otherwise drop the

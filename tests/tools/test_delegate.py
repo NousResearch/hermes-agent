@@ -228,6 +228,11 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
 
+    def test_task_null_goal(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(tasks=[{"goal": None}], parent_agent=parent))
+        self.assertIn("error", result)
+
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
         mock_run.return_value = {

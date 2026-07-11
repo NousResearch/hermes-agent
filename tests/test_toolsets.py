@@ -277,23 +277,29 @@ class TestMessagingOptInTools:
         )
         return reg
 
+    # Deliberately constrained/curated surfaces that must never receive
+    # opt-in tools: webhook (untrusted input), ACP and API server (curated).
+    _EXCLUDED_SURFACES = frozenset({"hermes-webhook", "hermes-acp", "hermes-api-server"})
+
     def test_core_family_membership(self):
         from toolsets import _HERMES_CORE_FAMILY, _HERMES_CORE_TOOLS
+        from hermes_cli.platforms import PLATFORMS
 
         # Every member must actually carry the full core tool set.
         for name in _HERMES_CORE_FAMILY:
             assert set(_HERMES_CORE_TOOLS) <= set(TOOLSETS[name]["tools"]), name
 
+        # Derive the expected members from the platform definitions instead
+        # of a literal snapshot: every platform default toolset except the
+        # deliberate exclusions must be in the family, so a newly added
+        # messaging platform is covered automatically.
         expected_members = {
-            "hermes-cli", "hermes-cron",
-            "hermes-telegram", "hermes-discord", "hermes-whatsapp",
-            "hermes-slack", "hermes-signal", "hermes-bluebubbles",
-            "hermes-homeassistant", "hermes-email", "hermes-sms",
-        }
+            info.default_toolset for info in PLATFORMS.values()
+        } - self._EXCLUDED_SURFACES
         assert expected_members <= _HERMES_CORE_FAMILY
 
         # Constrained/curated toolsets must never be picked up.
-        for name in ["hermes-webhook", "hermes-acp", "hermes-api-server", "hermes-gateway", "coding", "web"]:
+        for name in self._EXCLUDED_SURFACES | {"hermes-gateway", "coding", "web"}:
             assert name not in _HERMES_CORE_FAMILY, name
 
     def test_optin_tool_resolves_into_core_family_toolsets(self, monkeypatch):

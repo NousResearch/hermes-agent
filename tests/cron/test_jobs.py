@@ -1,5 +1,8 @@
 """Tests for cron/jobs.py — schedule parsing, job CRUD, and due-job detection."""
 
+import socket
+import subprocess
+import sys
 import threading
 import pytest
 from datetime import datetime, timedelta, timezone
@@ -1056,6 +1059,48 @@ class TestGetDueJobs:
                             lambda: t0 + timedelta(seconds=ttl + 10))
         recovered = get_due_jobs()
         assert [j["id"] for j in recovered] == ["wedged"]
+
+    def test_expired_one_shot_run_claim_is_preserved_for_live_owner(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """A live peer can outlast the stale TTL; do not delete its job record."""
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        claim_at = (t0 - timedelta(seconds=ttl + 10)).isoformat()
+        owner = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"]
+        )
+        try:
+            save_jobs([{
+                "id": "live-owner",
+                "name": "Live owner",
+                "prompt": "long one-shot",
+                "schedule": {"kind": "once", "run_at": run_at},
+                "next_run_at": run_at,
+                "enabled": True,
+                "state": "scheduled",
+                "repeat": {"times": 1, "completed": 1},
+                "run_claim": {
+                    "at": claim_at,
+                    "by": f"{socket.gethostname()}:{owner.pid}",
+                },
+            }])
+
+            monkeypatch.setattr("cron.jobs._hermes_now", lambda: t0)
+
+            assert get_due_jobs() == []
+            assert get_job("live-owner") is not None
+        finally:
+            owner.terminate()
+            try:
+                owner.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                owner.kill()
+                owner.wait(timeout=5)
 
     def test_run_claim_ttl_derived_from_cron_timeout(self, tmp_cron_dir, monkeypatch):
         """The stale-recovery TTL tracks HERMES_CRON_TIMEOUT (3x headroom), with

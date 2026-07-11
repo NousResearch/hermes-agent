@@ -1701,6 +1701,45 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+def _run_claim_owner_process_alive(claim: Any) -> bool:
+    """Best-effort check that a stale-looking run claim still has a live owner.
+
+    ``run_claim.by`` defaults to ``<hostname>:<pid>``.  Fresh claims are already
+    protected by the TTL check; this helper only covers the edge where a
+    healthy one-shot outlives that TTL while another Hermes process scans the
+    same profile store.  Unknown/custom machine IDs remain recoverable.
+    """
+    if not isinstance(claim, dict):
+        return False
+    owner = str(claim.get("by") or "")
+    host, sep, pid_text = owner.rpartition(":")
+    if not sep or not host or not pid_text.isdecimal():
+        return False
+    try:
+        import socket
+
+        if host != socket.gethostname():
+            return False
+        pid = int(pid_text)
+    except Exception:
+        return False
+
+    try:
+        import psutil  # type: ignore
+
+        try:
+            proc = psutil.Process(pid)
+            return proc.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.Error:
+            return psutil.pid_exists(pid)
+    except Exception:
+        # psutil is a core dependency, but if cron is imported in a stripped
+        # environment, do not turn stale-claim recovery into an import failure.
+        return False
+
+
 def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
     """Atomically claim a job for a single external 'fire' (multi-machine
     at-most-once). Returns True iff THIS caller won the claim.
@@ -2052,6 +2091,16 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     "Job '%s': dispatch limit reached (%d/%d) "
                                     "but its run is still in flight in this "
                                     "process — keeping entry",
+                                    job.get("name", job.get("id", "?")),
+                                    completed,
+                                    times,
+                                )
+                                continue
+                            if _run_claim_owner_process_alive(job.get("run_claim")):
+                                logger.info(
+                                    "Job '%s': dispatch limit reached (%d/%d) "
+                                    "but its claiming process is still alive — "
+                                    "keeping entry",
                                     job.get("name", job.get("id", "?")),
                                     completed,
                                     times,

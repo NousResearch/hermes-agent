@@ -13693,7 +13693,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     operator_topic = None
                 # Only treat dict-shaped returns as operator-declared; a
                 # bare MagicMock or other sentinel shouldn't count.
-                if isinstance(operator_topic, dict):
+                if isinstance(operator_topic, dict) and operator_topic.get("is_static", True):
                     return
 
         session_db = getattr(self, "_session_db", None)

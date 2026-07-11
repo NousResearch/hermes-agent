@@ -1,4 +1,4 @@
-# NIS2 — Scoping (Determinação de Escopo)
+# NIS2 — Scoping (Determinação de âmbito)
 
 Aplica-se a entidades em setores e tipos de atividade listados nos Anexos I (essencial) e II (importante) da Diretiva (UE) 2022/2555, estabelecidas na UE, cujo tamanho ultrapasse os limiares gerais — salvo designação expressa.
 
@@ -24,8 +24,8 @@ Aplica-se a entidades em setores e tipos de atividade listados nos Anexos I (ess
 - Digital (marketplaces online, motores de busca, plataformas de partilha de vídeo)
 
 ## Limiares de tamanho (regra geral)
-- Entidade **fora de escopo** se: < 50 trabalhadores **E** volume de negócios anual ou balanço total ≤ €10 milhões.
-- Entidades de **tamanho médio** (Anexo II) com > 50 trabalhadores **OU** > €10M estão no escopo como importantes.
+- Entidade **fora de âmbito** se: < 50 trabalhadores **E** volume de negócios anual ou balanço total ≤ €10 milhões.
+- Entidades de **tamanho médio** (Anexo II) com > 50 trabalhadores **OU** > €10M estão no âmbito como importantes.
 - Entidades de **grande dimensão** (Anexo I) com > 250 trabalhadores **OU** > €50M volume/€43M balanço são essenciais; abaixo disso, presunção de essenciais em setores críticos, mas a autoridade nacional pode rever.
 
 ## Exclusões e exceções
@@ -34,12 +34,12 @@ Aplica-se a entidades em setores e tipos de atividade listados nos Anexos I (ess
 - Trusted flag / designação expressa pela autoridade competente nacional pode incluir entidades abaixo dos limiares.
 - Prestadores de serviços digitais essenciais podem ter tratamento próprio conforme transposição nacional.
 
-## Decisão de escopo — template de saída
+## Decisão de âmbito — template de saída
 ```
 Entidade: ____________________
 Setor / Anexo: I (essencial) | II (importante)
 Tamanho: trabalhadores ___ | volume ___ | balanço ___
-Nível de escopo: ESSENCIAL | IMPORTANTE | FORA DE ESCOPO
+Nível de âmbito: ESSENCIAL | IMPORTANTE | FORA DE âmbito
 Fundamentação: (citação do Anexo + limiar + eventuais designações)
 Autoridade competente (EU): ____________________
 Data da decisão: ____________

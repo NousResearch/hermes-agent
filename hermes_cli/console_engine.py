@@ -1,4 +1,4 @@
-"""Safe Hermes Console command engine.
+"""Safe HT AI Agent Console command engine.
 
 This module backs ``hermes console`` and is intentionally narrower than the
 full Hermes CLI. It exposes a curated set of native adapters that can later be
@@ -578,7 +578,7 @@ def _register_command_family(
 
 
 class HermesConsoleEngine:
-    """Curated line-command executor for Hermes Console."""
+    """Curated line-command executor for HT AI Agent Console."""
 
     def __init__(self, *, output_limit: int = 20000, context: ConsoleContext = "local"):
         if context not in ALL_CONTEXTS:
@@ -603,7 +603,7 @@ class HermesConsoleEngine:
 
             if _contains_shell_syntax(raw_line, tokens):
                 raise ConsoleCommandError(
-                    "Hermes Console does not run shell syntax. Use one supported "
+                    "HT AI Agent Console does not run shell syntax. Use one supported "
                     "Hermes command at a time."
                 )
 
@@ -636,7 +636,7 @@ class HermesConsoleEngine:
             return f"{command.usage}\n{command.summary}"
 
         lines = [
-            "Hermes Console",
+            "HT AI Agent Console",
             "",
             "Supported commands:",
         ]
@@ -703,7 +703,7 @@ class HermesConsoleEngine:
         self._register_broad_cli_surface()
 
     def _register_broad_cli_surface(self) -> None:
-        """Register non-admin CLI commands that are safe for Hermes Console."""
+        """Register non-admin CLI commands that are safe for HT AI Agent Console."""
 
         extracted = {
             "version": (
@@ -1278,7 +1278,7 @@ class HermesConsoleEngine:
                 if self.context not in command.contexts:
                     raise ConsoleCommandError(
                         f"`hermes {command.usage}` is not available in "
-                        f"{self.context} Hermes Console."
+                        f"{self.context} HT AI Agent Console."
                     )
                 self._enforce_context_policy(command, list(tokens[size:]))
                 return command, list(tokens[size:])
@@ -1291,7 +1291,7 @@ class HermesConsoleEngine:
         probe = " ".join(tokens[:2]) if len(tokens) > 1 else tokens[0]
         suggestions = difflib.get_close_matches(probe, available, n=3, cutoff=0.45)
         suffix = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-        raise ConsoleCommandError(f"Unsupported Hermes Console command: {probe}.{suffix}")
+        raise ConsoleCommandError(f"Unsupported HT AI Agent Console command: {probe}.{suffix}")
 
     def _enforce_context_policy(self, command: ConsoleCommand, args: list[str]) -> None:
         if self.context != "hosted":
@@ -1301,7 +1301,7 @@ class HermesConsoleEngine:
     def _rejection_for(self, tokens: Sequence[str]) -> str:
         first = tokens[0]
         if first.startswith("-"):
-            return f"{first} is not available in Hermes Console."
+            return f"{first} is not available in HT AI Agent Console."
         blocked_top = {
             "acp",
             "chat",
@@ -1327,30 +1327,30 @@ class HermesConsoleEngine:
             "whatsapp-cloud",
         }
         if first in blocked_top:
-            return f"`hermes {first}` is not available in Hermes Console."
+            return f"`hermes {first}` is not available in HT AI Agent Console."
         blocked_pairs = {
-            ("config", "edit"): "`config edit` opens an editor and is not available in Hermes Console.",
-            ("mcp", "serve"): "`mcp serve` starts a server and is not available in Hermes Console.",
-            ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in Hermes Console.",
-            ("skills", "config"): "`skills config` is interactive and is not available in Hermes Console.",
-            ("skills", "publish"): "`skills publish` is not available in Hermes Console.",
-            ("portal", "login"): "`portal login` is interactive and is not available in Hermes Console.",
-            ("portal", "open"): "`portal open` opens a browser and is not available in Hermes Console.",
-            ("kanban", "tail"): "`kanban tail` streams output and is not available in Hermes Console.",
-            ("kanban", "watch"): "`kanban watch` streams output and is not available in Hermes Console.",
-            ("kanban", "daemon"): "`kanban daemon` starts a service and is not available in Hermes Console.",
-            ("kanban", "dispatcher"): "`kanban dispatcher` starts a worker and is not available in Hermes Console.",
-            ("kanban", "swarm"): "`kanban swarm` starts agent work and is not available in Hermes Console.",
-            ("kanban", "decompose"): "`kanban decompose` starts agent work and is not available in Hermes Console.",
-            ("kanban", "specify"): "`kanban specify` starts agent work and is not available in Hermes Console.",
-            ("kanban", "gc"): "`kanban gc` is not available in Hermes Console.",
+            ("config", "edit"): "`config edit` opens an editor and is not available in HT AI Agent Console.",
+            ("mcp", "serve"): "`mcp serve` starts a server and is not available in HT AI Agent Console.",
+            ("profile", "alias"): "`profile alias` creates shell wrappers and is not available in HT AI Agent Console.",
+            ("skills", "config"): "`skills config` is interactive and is not available in HT AI Agent Console.",
+            ("skills", "publish"): "`skills publish` is not available in HT AI Agent Console.",
+            ("portal", "login"): "`portal login` is interactive and is not available in HT AI Agent Console.",
+            ("portal", "open"): "`portal open` opens a browser and is not available in HT AI Agent Console.",
+            ("kanban", "tail"): "`kanban tail` streams output and is not available in HT AI Agent Console.",
+            ("kanban", "watch"): "`kanban watch` streams output and is not available in HT AI Agent Console.",
+            ("kanban", "daemon"): "`kanban daemon` starts a service and is not available in HT AI Agent Console.",
+            ("kanban", "dispatcher"): "`kanban dispatcher` starts a worker and is not available in HT AI Agent Console.",
+            ("kanban", "swarm"): "`kanban swarm` starts agent work and is not available in HT AI Agent Console.",
+            ("kanban", "decompose"): "`kanban decompose` starts agent work and is not available in HT AI Agent Console.",
+            ("kanban", "specify"): "`kanban specify` starts agent work and is not available in HT AI Agent Console.",
+            ("kanban", "gc"): "`kanban gc` is not available in HT AI Agent Console.",
         }
         if len(tokens) >= 2:
             pair = (tokens[0], tokens[1])
             if pair in blocked_pairs:
                 return blocked_pairs[pair]
         if tuple(tokens[:2]) in {("sessions", "delete"), ("sessions", "prune")}:
-            return "`sessions delete` and `sessions prune` are not available in Hermes Console."
+            return "`sessions delete` and `sessions prune` are not available in HT AI Agent Console."
         return ""
 
     def _help_result(self) -> ConsoleResult:
@@ -1440,7 +1440,7 @@ def _enforce_hosted_line_policy(path: tuple[str, ...], args: Sequence[str]) -> N
         key = args[0] if args else ""
         if key and not _hosted_config_key_allowed(key):
             raise ConsoleCommandError(
-                f"`config set {key}` is not available in hosted Hermes Console. "
+                f"`config set {key}` is not available in hosted HT AI Agent Console. "
                 "Use the dashboard setting for hosted account/provider changes."
             )
         return
@@ -1448,24 +1448,24 @@ def _enforce_hosted_line_policy(path: tuple[str, ...], args: Sequence[str]) -> N
     if path == ("mcp", "add"):
         if _flag_present(args, "--command") or _flag_present(args, "--args"):
             raise ConsoleCommandError(
-                "Hosted Hermes Console does not add stdio MCP servers. "
+                "Hosted HT AI Agent Console does not add stdio MCP servers. "
                 "Use catalog install or an HTTP/SSE URL."
             )
         if _flag_present(args, "--preset"):
             raise ConsoleCommandError(
-                "Hosted Hermes Console does not add MCP presets directly. "
+                "Hosted HT AI Agent Console does not add MCP presets directly. "
                 "Use `mcp install <catalog-name>`."
             )
         url = _flag_value(args, "--url")
         if not url:
             raise ConsoleCommandError(
-                "Hosted Hermes Console requires `mcp add` to use --url with "
+                "Hosted HT AI Agent Console requires `mcp add` to use --url with "
                 "an HTTP/SSE endpoint."
             )
         scheme = urlparse(url).scheme.lower()
         if scheme not in {"http", "https"}:
             raise ConsoleCommandError(
-                "Hosted Hermes Console only accepts http:// or https:// MCP URLs."
+                "Hosted HT AI Agent Console only accepts http:// or https:// MCP URLs."
             )
         return
 
@@ -1474,7 +1474,7 @@ def _enforce_hosted_line_policy(path: tuple[str, ...], args: Sequence[str]) -> N
             if _flag_present(args, flag):
                 raise ConsoleCommandError(
                     f"`cron {' '.join(path[1:])} {flag}` is not available in "
-                    "hosted Hermes Console."
+                    "hosted HT AI Agent Console."
                 )
 
 
@@ -1494,7 +1494,7 @@ def _apply_confirmed_defaults(args: argparse.Namespace, context: ConsoleContext)
     if getattr(args, "auth_action", None) == "add":
         auth_type = getattr(args, "auth_type", None)
         if auth_type in {"api-key", "api_key"} and not getattr(args, "api_key", None):
-            raise ConsoleCommandError("auth add --type api-key requires --api-key in Hermes Console.")
+            raise ConsoleCommandError("auth add --type api-key requires --api-key in HT AI Agent Console.")
     if getattr(args, "import_name", None) is not None:
         # profile import has no prompt flag; leave it alone.
         return
@@ -1530,7 +1530,7 @@ def _doctor(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 def _logs(_engine: HermesConsoleEngine, args: list[str]) -> str:
     if "-f" in args or "--follow" in args:
-        raise ConsoleCommandError("`logs -f` is not available in Hermes Console.")
+        raise ConsoleCommandError("`logs -f` is not available in HT AI Agent Console.")
     parser = _ArgumentParser(prog="logs", add_help=False)
     parser.add_argument("log_name", nargs="?", default="agent")
     parser.add_argument("-n", "--lines", type=int, default=50)
@@ -1843,7 +1843,7 @@ def run_console_repl(
 
     engine = HermesConsoleEngine()
     if interactive:
-        print("Hermes Console. Type `help` for commands, `exit` to quit.", file=stdout)
+        print("HT AI Agent Console. Type `help` for commands, `exit` to quit.", file=stdout)
 
     while True:
         if interactive:

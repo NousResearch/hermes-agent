@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read the in-app terminal pane in the Hermes desktop GUI.
+"""Read the in-app terminal pane in the HT AI Agent desktop GUI.
 
 The embedded terminal's buffer lives in the desktop renderer (xterm.js), so this
 tool round-trips through the gateway's blocking-prompt bridge — the same one
@@ -23,7 +23,7 @@ def read_terminal_tool(
 ) -> str:
     """Return the in-app terminal's contents (+ line metadata) as a JSON string."""
     if callback is None:
-        return tool_error("read_terminal is only available in the Hermes desktop app.")
+        return tool_error("read_terminal is only available in the HT AI Agent desktop app.")
 
     try:
         window = {

@@ -876,7 +876,7 @@ def run_debug_share(args):
     # Manual delete fallback
     print("To delete now:  hermes debug delete <url>")
 
-    print("\nShare these links with the Hermes team for support.")
+    print("\nShare these links with the HT AI Agent team for support.")
 
 
 _NOUS_PRIVACY_NOTICE = """\

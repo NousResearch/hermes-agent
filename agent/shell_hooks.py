@@ -737,7 +737,7 @@ def _prompt_and_record(
         return False
 
     print(
-        f"\n⚠ Hermes is about to register a shell hook that will run a\n"
+        f"\n⚠ HT AI Agent is about to register a shell hook that will run a\n"
         f"  command on your behalf.\n\n"
         f"    Event:   {event}\n"
         f"    Command: {command}\n\n"

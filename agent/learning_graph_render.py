@@ -464,7 +464,7 @@ def render_graph(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, rev
     rows = max(14, rows)
     nodes = list(payload.get("nodes", []))
     if not nodes:
-        placeholder = [["no learning yet — keep using Hermes and it maps out here", STYLE_DIM, 0.7]]
+        placeholder = [["no learning yet — keep using HT AI Agent and it maps out here", STYLE_DIM, 0.7]]
         return {"grid": [placeholder], "date": "", "reveal": reveal, "visible": 0}
 
     rec = compute_recency(nodes)

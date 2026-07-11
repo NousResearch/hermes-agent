@@ -517,7 +517,7 @@ def _make_callback_handler() -> tuple[type, dict]:
 
             body = (
                 "<html><body><h2>Authorization Successful</h2>"
-                "<p>You can close this tab and return to Hermes.</p></body></html>"
+                "<p>You can close this tab and return to HT AI Agent.</p></body></html>"
             ) if code else (
                 "<html><body><h2>Authorization Failed</h2>"
                 f"<p>Error: {error or 'unknown'}</p></body></html>"
@@ -844,7 +844,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         raise ValueError(
             "_configure_callback_port() must be called before _build_client_metadata()"
         )
-    client_name = cfg.get("client_name", "Hermes Agent")
+    client_name = cfg.get("client_name", "HT AI Agent")
     scope = cfg.get("scope")
     redirect_uri = f"http://127.0.0.1:{port}/callback"
 

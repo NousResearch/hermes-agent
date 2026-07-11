@@ -294,7 +294,7 @@ def auto_setup_telegram_bot_result(
     sys.stdout.flush()
     pairing = create_pairing(resolved_api_url)
     if not pairing:
-        print("  ✗ Could not reach the Hermes Telegram onboarding service.")
+        print("  ✗ Could not reach the HT AI Agent Telegram onboarding service.")
         print("    Try the manual setup instead, or check your network.")
         return None
 

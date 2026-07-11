@@ -1562,7 +1562,7 @@ class ProcessRegistry:
         if sink is None:
             return {
                 "status": "error",
-                "error": "close_terminal is only available in the Hermes desktop app.",
+                "error": "close_terminal is only available in the HT AI Agent desktop app.",
             }
         # The session may already be finished (or pruned) — the tab can still
         # linger and be closed, so a missing session is not an error here.

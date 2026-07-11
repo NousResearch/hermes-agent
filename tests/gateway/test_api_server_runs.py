@@ -22,6 +22,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_state import SessionDB
 from tools import approval as approval_mod
 
 
@@ -85,8 +86,23 @@ def _make_slow_agent(**kwargs):
 
 
 @pytest.fixture
-def adapter():
-    return _make_adapter()
+def session_db(tmp_path):
+    """Temporary on-disk SessionDB for real-path regression tests."""
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        yield db
+    finally:
+        close = getattr(db, "close", None)
+        if callable(close):
+            close()
+
+
+@pytest.fixture
+def adapter(session_db):
+    """Adapter wired to a real temporary SessionDB."""
+    adapter = _make_adapter()
+    adapter._session_db = session_db
+    return adapter
 
 
 @pytest.fixture
@@ -191,13 +207,16 @@ class TestStartRun:
                 assert resp.status == 202
 
     @pytest.mark.asyncio
-    async def test_run_restores_history_from_session_id(self, adapter):
+    async def test_run_restores_history_from_session_id(self, adapter, session_db):
         """When session_id is provided without conversation_history,
-        the handler should load history from SessionDB (#62732)."""
+        the handler should load history from SessionDB (#62732).
+
+        Uses a *real* SessionDB — not a mock — to exercise the full
+        resolution path from append_message → get_messages_as_conversation.
+        """
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create, \
-                 patch.object(adapter, "_conversation_history_for_session") as mock_hist:
+            with patch.object(adapter, "_create_agent") as mock_create:
                 mock_agent = MagicMock()
                 mock_agent.run_conversation.return_value = {"final_response": "done"}
                 mock_agent.session_prompt_tokens = 0
@@ -205,11 +224,10 @@ class TestStartRun:
                 mock_agent.session_total_tokens = 0
                 mock_create.return_value = mock_agent
 
-                loaded_history = [
-                    {"role": "user", "content": "previous question"},
-                    {"role": "assistant", "content": "previous answer"},
-                ]
-                mock_hist.return_value = loaded_history
+                # Seed real messages into SessionDB
+                session_db.create_session("my-session", "test")
+                session_db.append_message("my-session", "user", "previous question")
+                session_db.append_message("my-session", "assistant", "previous answer")
 
                 resp = await cli.post(
                     "/v1/runs",
@@ -218,24 +236,30 @@ class TestStartRun:
                 assert resp.status == 202
                 await asyncio.sleep(0.3)
 
-                mock_hist.assert_called_once_with("my-session")
                 mock_agent.run_conversation.assert_called_once()
-                assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == loaded_history
+                history = mock_agent.run_conversation.call_args.kwargs["conversation_history"]
+                assert len(history) == 2
+                assert history[0]["role"] == "user"
+                assert history[0]["content"] == "previous question"
+                assert history[1]["role"] == "assistant"
+                assert history[1]["content"] == "previous answer"
 
     @pytest.mark.asyncio
-    async def test_explicit_history_takes_precedence_over_session_db(self, adapter):
+    async def test_explicit_history_takes_precedence_over_session_db(self, adapter, session_db):
         """Explicit conversation_history should win over SessionDB loading."""
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create, \
-                 patch.object(adapter, "_conversation_history_for_session") as mock_hist:
+            with patch.object(adapter, "_create_agent") as mock_create:
                 mock_agent = MagicMock()
                 mock_agent.run_conversation.return_value = {"final_response": "done"}
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
                 mock_create.return_value = mock_agent
-                mock_hist.return_value = [{"role": "user", "content": "from db"}]
+
+                # Seed DB with history that should NOT be used
+                session_db.create_session("my-session", "test")
+                session_db.append_message("my-session", "user", "from db")
 
                 explicit_history = [{"role": "user", "content": "explicit"}]
                 resp = await cli.post(
@@ -249,30 +273,63 @@ class TestStartRun:
                 assert resp.status == 202
                 await asyncio.sleep(0.3)
 
-                mock_hist.assert_not_called()
                 mock_agent.run_conversation.assert_called_once()
                 assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == explicit_history
 
     @pytest.mark.asyncio
-    async def test_no_session_id_does_not_load_from_db(self, adapter):
-        """Without session_id the handler must not attempt SessionDB lookup."""
+    async def test_explicit_empty_history_not_overwritten_by_session_db(self, adapter, session_db):
+        """An explicit "conversation_history": [] means "start fresh" and
+        must NOT be overwritten by SessionDB history (#62732 review)."""
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create, \
-                 patch.object(adapter, "_conversation_history_for_session") as mock_hist:
+            with patch.object(adapter, "_create_agent") as mock_create:
                 mock_agent = MagicMock()
                 mock_agent.run_conversation.return_value = {"final_response": "done"}
                 mock_agent.session_prompt_tokens = 0
                 mock_agent.session_completion_tokens = 0
                 mock_agent.session_total_tokens = 0
                 mock_create.return_value = mock_agent
-                mock_hist.return_value = [{"role": "user", "content": "from db"}]
+
+                # Seed DB with history that must NOT leak through
+                session_db.create_session("my-session", "test")
+                session_db.append_message("my-session", "user", "from db")
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "session_id": "my-session",
+                        "conversation_history": [],
+                    },
+                )
+                assert resp.status == 202
+                await asyncio.sleep(0.3)
+
+                mock_agent.run_conversation.assert_called_once()
+                assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_does_not_load_from_db(self, adapter, session_db):
+        """Without session_id the handler must not attempt SessionDB lookup."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                # Seed DB — even if session_id happened to be generated,
+                # it should never collide with real stored data here.
+                session_db.create_session("other-session", "test")
+                session_db.append_message("other-session", "user", "from db")
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})
                 assert resp.status == 202
                 await asyncio.sleep(0.3)
 
-                mock_hist.assert_not_called()
                 mock_agent.run_conversation.assert_called_once()
                 assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == []
 

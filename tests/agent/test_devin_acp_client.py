@@ -172,6 +172,127 @@ class TestAcpClientFactory(unittest.TestCase):
                     assert _devin_local_credentials_present() is False
 
 
+class TestAcpToolLoopSession(unittest.TestCase):
+    def test_tool_call_then_tool_result_reuses_session(self):
+        """Assistant tool_call → tool result should continue the same ACP session."""
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcess] = []
+
+        class _ToolAwareProcess(_ScriptedAcpProcess):
+            def write(self, data: str) -> int:
+                import json
+
+                line = data.strip()
+                if not line:
+                    return 0
+                req = json.loads(line)
+                self.writes.append(req)
+                method = req.get("method")
+                req_id = req.get("id")
+                if method == "initialize":
+                    result = {"protocolVersion": 1}
+                elif method == "session/new":
+                    self.session_seq += 1
+                    result = {"sessionId": f"sess-{self.session_seq}"}
+                elif method == "session/prompt":
+                    prompt_text = req["params"]["prompt"][0]["text"]
+                    if "Tool:" in prompt_text or "tool result" in prompt_text.lower():
+                        body = "file contents here"
+                    else:
+                        body = (
+                            '<tool_call>{"id":"call_1","type":"function",'
+                            '"function":{"name":"read_file","arguments":"{\\"path\\":\\"a.txt\\"}"}}'
+                            "</tool_call>"
+                        )
+                    chunk = {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": body},
+                            }
+                        },
+                    }
+                    self.stdout.push(json.dumps(chunk) + "\n")
+                    result = {"stopReason": "end_turn"}
+                else:
+                    result = {}
+                self.stdout.push(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}) + "\n")
+                return len(data)
+
+        def _popen(*_a, **_k):
+            proc = _ToolAwareProcess()
+            procs.append(proc)
+            return proc
+
+        with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+            client = CopilotACPClient(
+                command="fake-acp",
+                args=["--stdio"],
+                acp_cwd="/tmp",
+            )
+            client._reuse_enabled = True
+            client._session_reuse_enabled = True
+
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+            r1 = client._create_chat_completion(
+                model="x",
+                messages=[{"role": "user", "content": "read a.txt"}],
+                tools=tools,
+                timeout=5,
+            )
+            assert r1.choices[0].finish_reason == "tool_calls"
+            tc = r1.choices[0].message.tool_calls[0]
+            assert tc.function.name == "read_file"
+
+            r2 = client._create_chat_completion(
+                model="x",
+                messages=[
+                    {"role": "user", "content": "read a.txt"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": "hello from file",
+                    },
+                ],
+                tools=tools,
+                timeout=5,
+            )
+            client.close()
+
+        assert "file contents here" in (r2.choices[0].message.content or "")
+        assert client._spawn_count == 1
+        assert client._session_count == 1
+        assert client._session_continues == 1
+        methods = [w.get("method") for w in procs[0].writes]
+        assert methods.count("session/new") == 1
+        assert methods.count("session/prompt") == 2
+
+
 class TestAcpErrorClassification(unittest.TestCase):
     def test_missing_cli_is_non_retryable(self):
         from agent.error_classifier import FailoverReason, classify_api_error

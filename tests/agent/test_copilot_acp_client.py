@@ -31,7 +31,9 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             "</tool_call>"
         )
 
-        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+        with patch.object(
+            self.client, "_run_conversation_prompt", return_value=(tool_response, "")
+        ):
             response = self.client._create_chat_completion(
                 model="copilot-acp",
                 messages=[{"role": "user", "content": "read README.md"}],
@@ -57,14 +59,17 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertEqual(choice.message.content, "I'll inspect that.")
 
     def test_stream_true_returns_iterable_text_chunks(self) -> None:
-        with patch.object(self.client, "_run_prompt", return_value=("Hello from ACP", "")):
+        # Keep the patch active while the generator is consumed — the stream
+        # worker thread only runs on iteration.
+        with patch.object(
+            self.client, "_run_conversation_prompt", return_value=("Hello from ACP", "")
+        ):
             stream = self.client._create_chat_completion(
                 model="copilot-acp",
                 messages=[{"role": "user", "content": "hello"}],
                 stream=True,
             )
-
-        chunks = list(stream)
+            chunks = list(stream)
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0].choices[0].delta.content, "Hello from ACP")
         self.assertIsNone(chunks[0].choices[0].delta.tool_calls)
@@ -80,14 +85,15 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             "</tool_call>"
         )
 
-        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+        with patch.object(
+            self.client, "_run_conversation_prompt", return_value=(tool_response, "")
+        ):
             stream = self.client._create_chat_completion(
                 model="copilot-acp",
                 messages=[{"role": "user", "content": "read README.md"}],
                 stream=True,
             )
-
-        chunks = list(stream)
+            chunks = list(stream)
         delta = chunks[0].choices[0].delta
         self.assertIsNone(delta.content)
         self.assertEqual(chunks[0].choices[0].finish_reason, "tool_calls")
@@ -105,7 +111,16 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
     def test_timeout_object_is_coerced_for_streaming_requests(self) -> None:
         captured: dict[str, float] = {}
 
-        def fake_run_prompt(prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        def fake_run_conversation_prompt(
+            messages,
+            *,
+            model=None,
+            tools=None,
+            tool_choice=None,
+            timeout_seconds: float = 0,
+            on_text_chunk=None,
+            on_reasoning_chunk=None,
+        ) -> tuple[str, str]:
             captured["timeout"] = timeout_seconds
             return "ok", ""
 
@@ -115,7 +130,9 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             {"read": 12.0, "write": 5.0, "connect": 3.0, "pool": 1.0},
         )()
 
-        with patch.object(self.client, "_run_prompt", side_effect=fake_run_prompt):
+        with patch.object(
+            self.client, "_run_conversation_prompt", side_effect=fake_run_conversation_prompt
+        ):
             list(
                 self.client._create_chat_completion(
                     model="copilot-acp",
@@ -256,9 +273,8 @@ if __name__ == "__main__":
 
 
 # ── HOME env propagation tests (from PR #11285) ─────────────────────
-
-from unittest.mock import patch as _patch
-import pytest
+# pytest is optional at import time so unittest can load the safety class
+# above without a full pytest install in every environment.
 
 
 def _make_home_client(tmp_path):
@@ -280,6 +296,9 @@ def _fake_popen_capture(captured):
 
 
 def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):
+    import pytest
+    from unittest.mock import patch as _patch
+
     hermes_home = tmp_path / "hermes"
     (hermes_home / "home").mkdir(parents=True)
     real_home = tmp_path / "real-home"
@@ -300,6 +319,9 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
 
 
 def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
+    import pytest
+    from unittest.mock import patch as _patch
+
     monkeypatch.delenv("HOME", raising=False)
     monkeypatch.delenv("HERMES_HOME", raising=False)
 

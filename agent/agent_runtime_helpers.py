@@ -37,6 +37,12 @@ def _apply_transform_tool_result_hook(
     args: dict,
     result: Any,
     agent: Any,
+    *,
+    task_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    duration_ms: int = 0,
 ) -> Any:
     """Shared transform_tool_result hook for agent-runtime direct-dispatch tools.
 
@@ -51,12 +57,12 @@ def _apply_transform_tool_result_hook(
                 tool_name=function_name,
                 args=args,
                 result=result,
-                task_id="",
+                task_id=task_id or "",
                 session_id=getattr(agent, "session_id", "") or "",
-                tool_call_id="",
-                turn_id="",
-                api_request_id="",
-                duration_ms=0,
+                tool_call_id=tool_call_id or "",
+                turn_id=turn_id or "",
+                api_request_id=api_request_id or "",
+                duration_ms=duration_ms,
                 status=None,
                 error_type=None,
                 error_message=None,
@@ -2247,7 +2253,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             # Fire post_tool_call hook FIRST (established ordering),
             # then apply transform_tool_result hooks.
             result = _finish_agent_tool(result, next_args)
-            result = _apply_transform_tool_result_hook("session_search", next_args, result, agent)
+            result = _apply_transform_tool_result_hook(
+                "session_search", next_args, result, agent,
+                task_id=effective_task_id or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            )
             return result
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:

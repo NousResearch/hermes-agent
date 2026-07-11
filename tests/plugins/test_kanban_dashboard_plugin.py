@@ -2265,3 +2265,21 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_dispatch_passes_workspace_guard(client, monkeypatch):
+    guard = {"canonical_roots": ["/tmp/repo"]}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"kanban": {"dispatcher": guard}}
+    )
+    captured = {}
+
+    def fake_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return kb.DispatchResult()
+
+    plugin_module = sys.modules["hermes_dashboard_plugin_kanban_test"]
+    monkeypatch.setattr(plugin_module.kanban_db, "dispatch_once", fake_dispatch_once)
+    response = client.post("/api/plugins/kanban/dispatch?dry_run=true")
+    assert response.status_code == 200
+    assert captured.get("workspace_guard") == guard

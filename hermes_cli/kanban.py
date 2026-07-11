@@ -2122,11 +2122,20 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     # (#28805). Same semantics as the gateway dispatch path so behavior
     # matches whether the user runs the CLI directly or relies on the
     # gateway-embedded dispatcher.
+    workspace_guard = None
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
-        default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
+        if not isinstance(_kanban_cfg, dict):
+            _kanban_cfg = {}
+        workspace_guard = _kanban_cfg.get("dispatcher")
+        default_assignee_raw = _kanban_cfg.get("default_assignee")
+        default_assignee = (
+            default_assignee_raw.strip() or None
+            if isinstance(default_assignee_raw, str)
+            else None
+        )
 
         def _coerce_positive_int(value):
             if value is None:
@@ -2161,6 +2170,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            workspace_guard=workspace_guard,
         )
     if getattr(args, "json", False):
         print(json.dumps({
@@ -2169,6 +2179,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "timed_out": res.timed_out,
             "stale": res.stale,
             "auto_blocked": res.auto_blocked,
+            "workspace_blocked": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.workspace_blocked
+            ],
             "promoted": res.promoted,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
@@ -2196,6 +2210,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
+    print(f"Workspace-blocked: {len(res.workspace_blocked)}")
+    for tid, reason in res.workspace_blocked:
+        print(f"  {tid}: {reason}")
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
@@ -2345,11 +2362,25 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         except Exception:
             return False
 
+    workspace_guard = None
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        if isinstance(_kanban_cfg, dict):
+            workspace_guard = _kanban_cfg.get("dispatcher")
+    except Exception:
+        # Config loading failure preserves historical behavior. If a dispatcher
+        # guard was successfully extracted, unrelated config errors must never
+        # clear it; this block runs before extraction in that failure mode.
+        pass
+
     try:
         kb.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            workspace_guard=workspace_guard,
             on_tick=_on_tick,
         )
     finally:

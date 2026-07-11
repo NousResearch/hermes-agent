@@ -1171,3 +1171,118 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     assert FakeCompressAgent.last_instance is None, (
         "Compression should NOT fire at 12 messages with default hard_limit=5000"
     )
+
+
+# ---------------------------------------------------------------------------
+# model.context_length scoping — the override describes the CONFIGURED model,
+# not whatever model the session runtime resolves (PR #62124).
+# ---------------------------------------------------------------------------
+
+def _make_scoping_runner(monkeypatch, tmp_path, session_model: str, captured: dict):
+    """Minimal runner whose session runtime resolves ``session_model`` and whose
+    config names model-a with an explicit context_length override."""
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:group:-1001:17585",
+        session_id="sess-scope",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+    # >= 4 messages so hygiene sizing runs; tiny so compression never fires.
+    runner.session_store.load_transcript.return_value = _make_history(6, content_size=40)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._resolve_session_agent_runtime = (
+        lambda source, session_key, user_config=None: (
+            session_model,
+            {"provider": None, "base_url": None, "api_key": None},
+        )
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "model-a", "context_length": 1234}},
+    )
+
+    async def _capture_ctx_len(model, base_url="", api_key="", config_context_length=None, provider=""):
+        captured["model"] = model
+        captured["config_context_length"] = config_context_length
+        return 200_000
+
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async", _capture_ctx_len
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+    return runner
+
+
+def _scoping_event():
+    return MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="17585",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_scopes_context_override_to_session_model(monkeypatch, tmp_path):
+    """Regression: the session runtime resolves a DIFFERENT model than the
+    configured one — the configured model's context_length override must not
+    size hygiene for it (stale-override bug, PR #62124 review)."""
+    captured = {}
+    runner = _make_scoping_runner(monkeypatch, tmp_path, "model-b", captured)
+    result = await runner._handle_message(_scoping_event())
+    assert result == "ok"
+    assert captured["model"] == "model-b"
+    assert captured["config_context_length"] is None, (
+        "override for model-a must not size hygiene for session model model-b"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_keeps_context_override_for_configured_model(monkeypatch, tmp_path):
+    """Control: when the session runs the configured model, the override applies."""
+    captured = {}
+    runner = _make_scoping_runner(monkeypatch, tmp_path, "model-a", captured)
+    result = await runner._handle_message(_scoping_event())
+    assert result == "ok"
+    assert captured["model"] == "model-a"
+    assert captured["config_context_length"] == 1234

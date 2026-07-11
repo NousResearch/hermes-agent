@@ -11109,6 +11109,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_base_url = None
             _hyg_api_key = None
             _hyg_data = {}
+            _model_cfg = None
             try:
                 _hyg_data = _load_gateway_config()
                 if _hyg_data:
@@ -11118,14 +11119,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _hyg_model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
-                        # Read explicit context_length override from model config
-                        # (same as run_agent.py lines 995-1005)
-                        _raw_ctx = _model_cfg.get("context_length")
-                        if _raw_ctx is not None:
-                            try:
-                                _hyg_config_context_length = int(_raw_ctx)
-                            except (TypeError, ValueError):
-                                pass
+                        # model.context_length is read AFTER session-runtime
+                        # resolution below: the session may run a different
+                        # model than the configured one, and the override
+                        # describes only the model the config names.
                         # Read provider for accurate context detection
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
@@ -11158,6 +11155,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
                 except Exception:
                     pass
+
+                # Scope model.context_length to the model hygiene will size.
+                # The session runtime may have switched _hyg_model away from
+                # the configured model; the configured override describes only
+                # the model the config names (same scoping as agent init, see
+                # agent.agent_init.scoped_config_context_length). On mismatch
+                # the override is dropped and sizing falls through to the
+                # custom_providers / metadata lookups below.
+                if isinstance(_model_cfg, dict):
+                    try:
+                        from agent.agent_init import scoped_config_context_length
+
+                        def _hyg_normalize(name: str) -> str:
+                            from hermes_cli.model_normalize import (
+                                _AGGREGATOR_PROVIDERS,
+                                normalize_model_for_provider,
+                            )
+                            if (_hyg_provider or "") in _AGGREGATOR_PROVIDERS:
+                                return name
+                            return normalize_model_for_provider(name, _hyg_provider or "")
+
+                        _scoped_ctx, _hyg_ctx_mismatch = scoped_config_context_length(
+                            _model_cfg, _hyg_model, normalize=_hyg_normalize,
+                        )
+                        if _scoped_ctx is not None:
+                            try:
+                                _hyg_config_context_length = int(_scoped_ctx)
+                            except (TypeError, ValueError):
+                                _hyg_config_context_length = None
+                        elif _hyg_ctx_mismatch is not None:
+                            logger.info(
+                                "Session hygiene: ignoring model.context_length=%r — "
+                                "it describes model %r, session model is %r",
+                                _hyg_ctx_mismatch[2],
+                                _hyg_ctx_mismatch[0],
+                                _hyg_ctx_mismatch[1],
+                            )
+                    except Exception:
+                        pass
 
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).

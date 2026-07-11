@@ -791,3 +791,148 @@ class TestMigratePinKey:
         block = {"pinUserPeer": True}
         assert honcho_cli._migrate_pin_key(block) is False
         assert block == {"pinUserPeer": True}
+
+
+class TestCloneCarriesInjectGates:
+    """The ``inject`` layer gates must survive profile cloning/enabling.
+
+    Without propagation, a cloned profile silently reverts to injecting
+    every prefetched layer — exactly the noise the gates exist to
+    suppress (e.g. a stale AI self-representation).
+    """
+
+    _clone_env = TestCloneHonchoForProfile._setup_clone_env
+
+    def test_clone_inherits_inject_object(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {
+                "peerName": "alice",
+                "inject": {"aiRepresentation": False, "sessionSummary": False},
+            }},
+        }
+        honcho_cli, written = self._clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
+        assert new_block["inject"] == {
+            "aiRepresentation": False, "sessionSummary": False,
+        }
+
+    def test_clone_without_inject_stays_unset(self, monkeypatch, tmp_path):
+        cfg = {"apiKey": "***", "hosts": {"hermes": {"peerName": "alice"}}}
+        honcho_cli, written = self._clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        assert "inject" not in written["cfg"]["hosts"]["hermes_coder"]
+
+    def test_enable_seeds_inject_from_default_block(self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {
+                "aiPeer": "hermes",
+                "inject": {"userRepresentation": False},
+            }},
+        }
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}")
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_coder")
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+        written = {}
+        monkeypatch.setattr(
+            honcho_cli, "_write_config", lambda c, path=None: written.setdefault("cfg", c),
+        )
+
+        honcho_cli.cmd_enable(SimpleNamespace())
+
+        block = written["cfg"]["hosts"]["hermes_coder"]
+        assert block["inject"] == {"userRepresentation": False}
+
+
+class TestSetupInjectLayersPrompt:
+    """The wizard's inject-layers question writes the cards-only preset,
+    resets to all-layers (including overriding a root-level object), and
+    leaves custom per-layer config untouched."""
+
+    _run_setup = TestSetupWizardDeploymentShape._run_setup
+
+    def _answers(self, inject_answer):
+        return [
+            "cloud",      # deployment
+            "",           # api key (keep)
+            "eri",        # peer name
+            "hermetika",  # ai peer
+            "hermes",     # workspace
+            "1",          # identity tree: just me
+            "",           # observation mode (keep)
+            "",           # write frequency (keep)
+            "",           # recall mode (keep)
+            "",           # context tokens (keep)
+            inject_answer,
+        ]
+
+    def test_cards_only_preset_written(self, monkeypatch, tmp_path):
+        from plugins.memory.honcho.cli import CARDS_ONLY_INJECT
+
+        host = self._run_setup(
+            monkeypatch, tmp_path, answers=self._answers("cards-only"))
+        assert host["inject"] == dict(CARDS_ONLY_INJECT)
+
+    def test_all_answer_clears_host_inject(self, monkeypatch, tmp_path):
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"inject": {"aiRepresentation": False}}},
+        }
+        host = self._run_setup(
+            monkeypatch, tmp_path, answers=self._answers("all"),
+            initial_cfg=initial_cfg)
+        assert "inject" not in host
+
+    def test_all_answer_overrides_root_inject_with_empty_host_object(
+        self, monkeypatch, tmp_path
+    ):
+        """With a root-level ``inject`` and no host object, popping the host
+        key is a no-op (resolution falls back to root, client.py:640) — the
+        wizard must write an explicit empty host object so 'all' actually
+        restores every layer."""
+        initial_cfg = {
+            "apiKey": "***",
+            "inject": {"aiRepresentation": False},
+            "hosts": {"hermes": {"peerName": "eri"}},
+        }
+        host = self._run_setup(
+            monkeypatch, tmp_path, answers=self._answers("all"),
+            initial_cfg=initial_cfg)
+        assert host["inject"] == {}
+
+    def test_root_inject_detected_as_current_state(self, monkeypatch, tmp_path):
+        """A root-level custom object is the effective config, so the wizard
+        must not misreport 'all'; the exhausted answer list falls back to the
+        prompt default ('custom'), which keeps the host block untouched."""
+        initial_cfg = {
+            "apiKey": "***",
+            "inject": {"aiRepresentation": False},
+            "hosts": {"hermes": {"peerName": "eri"}},
+        }
+        host = self._run_setup(
+            monkeypatch, tmp_path,
+            answers=["cloud", "", "eri", "hermetika", "hermes", "1"],
+            initial_cfg=initial_cfg)
+        assert "inject" not in host  # default "custom" keeps root config active
+
+    def test_custom_inject_preserved_on_enter(self, monkeypatch, tmp_path):
+        custom = {"userRepresentation": False}
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"inject": dict(custom)}},
+        }
+        # No scripted answer for the inject prompt: the harness falls back
+        # to the prompt default ("custom"), which must keep the object.
+        host = self._run_setup(
+            monkeypatch, tmp_path,
+            answers=["cloud", "", "eri", "hermetika", "hermes", "1"],
+            initial_cfg=initial_cfg)
+        assert host["inject"] == custom

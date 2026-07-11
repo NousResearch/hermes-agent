@@ -387,8 +387,15 @@ Config file: `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.jso
 | `injectionFrequency` | `every-turn` | `every-turn` or `first-turn` |
 | `contextCadence` | `1` | Min turns between context API calls |
 | `dialecticCadence` | `2` | Min turns between dialectic LLM calls (recommended 1–5) |
+| `inject.sessionSummary` | `true` | Auto-inject the session summary layer |
+| `inject.userRepresentation` | `true` | Auto-inject the generated user representation |
+| `inject.userCard` | `true` | Auto-inject the curated user peer card |
+| `inject.aiRepresentation` | `true` | Auto-inject the generated AI self-representation |
+| `inject.aiCard` | `true` | Auto-inject the curated AI identity card |
 
 The `contextTokens` budget is enforced at injection time. If the session summary + representation + card exceed the budget, Honcho trims the summary first, then the representation, preserving the card. This prevents context blowup in long sessions.
+
+The `inject` object gates which prefetched layers are auto-injected into the prompt; the underlying data stays available through the Honcho tools and CLI. It resolves by whole-object presence (host block wins over root when present; missing sub-keys default to `true`), so suppressing a single noisy layer — e.g. `"inject": {"aiRepresentation": false}` — keeps every other layer injected. `hermes honcho setup` offers an `all` / `cards-only` preset, and `hermes honcho status` shows the resolved per-layer state.
 
 ### Memory-context sanitization
 

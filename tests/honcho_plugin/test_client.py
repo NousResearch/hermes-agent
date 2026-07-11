@@ -690,6 +690,17 @@ class TestInjectionConfig:
             if flag != "inject_ai_representation":
                 assert getattr(cfg, flag) is True
 
+    def test_root_inject_applies_when_host_has_no_inject_key(self, tmp_path):
+        cfg = self._load(tmp_path, {
+            "apiKey": "k",
+            "inject": {"aiRepresentation": False},
+            "hosts": {"hermes": {"enabled": True}},
+        })
+        assert cfg.inject_ai_representation is False
+        for flag in self._ALL_FLAGS:
+            if flag != "inject_ai_representation":
+                assert getattr(cfg, flag) is True
+
     def test_empty_host_inject_wins_over_root(self, tmp_path):
         cfg = self._load(tmp_path, {
             "apiKey": "k",

@@ -14,6 +14,17 @@ from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
 
+# Setup-wizard preset for the ``inject`` context-layer gates: keep the
+# curated peer cards, suppress the generated/stale layers. Key names must
+# match client.py ``_resolve_injection``.
+CARDS_ONLY_INJECT = {
+    "sessionSummary": False,
+    "userRepresentation": False,
+    "userCard": True,
+    "aiRepresentation": False,
+    "aiCard": True,
+}
+
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
     """Auto-clone Honcho config for a new profile from the default host block.
@@ -48,7 +59,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
                 "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
                 "dialecticMaxInputChars", "saveMessages", "observation",
-                "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
+                "inject", "pinUserPeer", "userPeerAliases", "runtimePeerPrefix"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
@@ -117,7 +128,7 @@ def cmd_enable(args) -> None:
         for key in ("recallMode", "writeFrequency", "sessionStrategy",
                     "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
                     "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
-                    "saveMessages", "observation"):
+                    "saveMessages", "observation", "inject"):
             val = default_block.get(key)
             if val is not None and key not in block:
                 block[key] = val
@@ -878,6 +889,40 @@ def cmd_setup(args) -> None:
         except (ValueError, TypeError):
             pass  # keep current
 
+    # --- 7a. Context injection layers ---
+    # Same host-over-root read the resolver uses (whole-object presence,
+    # see client.py _resolve_injection): a root-level object is the
+    # effective config when the host block has no ``inject`` key.
+    _existing_inject = (
+        hermes_host["inject"] if "inject" in hermes_host else cfg.get("inject")
+    )
+    if not isinstance(_existing_inject, dict):
+        _existing_inject = None
+    if _existing_inject is None or _existing_inject == {}:
+        current_layers = "all"
+    elif _existing_inject == CARDS_ONLY_INJECT:
+        current_layers = "cards-only"
+    else:
+        current_layers = "custom"
+    print("\n  Context injection layers (hybrid/context recall modes only):")
+    print("    all        -- inject every prefetched layer (default)")
+    print("    cards-only -- inject curated peer cards only; suppress the generated")
+    print("                  session summary and user/AI representations")
+    print("    Fine-tune per layer via the 'inject' object in honcho.json:")
+    print("    sessionSummary, userRepresentation, userCard, aiRepresentation, aiCard")
+    new_layers = _prompt("Inject layers", default=current_layers).strip().lower()
+    if new_layers in {"cards-only", "cardsonly", "cards"}:
+        hermes_host["inject"] = dict(CARDS_ONLY_INJECT)
+    elif new_layers == "all":
+        if isinstance(cfg.get("inject"), dict) and cfg.get("inject"):
+            # A root-level object would keep gating after a host-key pop
+            # (host presence wins wholesale), so restoring all-layers needs
+            # an explicit empty host object: "host chooses defaults".
+            hermes_host["inject"] = {}
+        else:
+            hermes_host.pop("inject", None)
+    # anything else (including "custom") keeps the current setting
+
     # --- 7b. Dialectic cadence ---
     current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "2")
     print("\n  Dialectic cadence:")
@@ -1105,6 +1150,17 @@ def cmd_status(args) -> None:
     heuristic_on = "on" if hcfg.reasoning_heuristic else "off"
     print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
+    inject_bits = " ".join(
+        f"{label}={'on' if getattr(hcfg, attr, True) else 'off'}"
+        for label, attr in (
+            ("summary", "inject_session_summary"),
+            ("userRep", "inject_user_representation"),
+            ("userCard", "inject_user_card"),
+            ("aiRep", "inject_ai_representation"),
+            ("aiCard", "inject_ai_card"),
+        )
+    )
+    print(f"  Inject:         {inject_bits}")
     print(f"  Write freq:     {hcfg.write_frequency}")
 
     if hcfg.enabled and (hcfg.api_key or hcfg.base_url):

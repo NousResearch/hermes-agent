@@ -307,6 +307,42 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `firstTurnBaseWait` | float | `3.0` | Max seconds turn 1 waits for base context / session init. `0` disables the wait (fully async; context surfaces on later turns). Turns 2+ never wait on a stalled init |
 | `firstTurnDialecticWait` | float | `2.0` | Max seconds turn 1 waits for a dialectic result. `0` disables |
 
+### Context Injection (Per-Layer)
+
+Gates which prefetched context layers are auto-injected into the prompt.
+Only affects automatic injection — the underlying data stays available
+through the Honcho tools and CLI. Useful for keeping curated peer cards
+injected while suppressing noisier generated layers (e.g. a stale AI
+self-representation).
+
+```json
+"inject": {
+  "sessionSummary": true,
+  "userRepresentation": true,
+  "userCard": true,
+  "aiRepresentation": false,
+  "aiCard": true
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inject.sessionSummary` | bool | `true` | Inject the session summary layer |
+| `inject.userRepresentation` | bool | `true` | Inject the generated user representation |
+| `inject.userCard` | bool | `true` | Inject the curated user peer card |
+| `inject.aiRepresentation` | bool | `true` | Inject the generated AI self-representation |
+| `inject.aiCard` | bool | `true` | Inject the curated AI identity card |
+
+Unlike other keys, `inject` resolves by **whole-object presence**, not
+per-key merge: if the host block contains an `inject` object at all, that
+object wins and its missing sub-keys fall back to `true` (so a host-level
+`"inject": {}` means "this host explicitly uses defaults", not "merge with
+the root object"). Without a host-level object, a root-level `inject`
+applies; without either, every layer is injected (legacy behavior).
+
+`hermes honcho setup` offers an `all` / `cards-only` preset for these keys,
+and `hermes honcho status` shows the resolved per-layer state.
+
 ### Observation (Granular)
 
 Maps 1:1 to Honcho's per-peer `SessionPeerConfig`. When present, overrides `observationMode` preset.
@@ -384,6 +420,13 @@ Presets:
       "observation": {
         "user": { "observeMe": true, "observeOthers": true },
         "ai": { "observeMe": true, "observeOthers": true }
+      },
+      "inject": {
+        "sessionSummary": true,
+        "userRepresentation": true,
+        "userCard": true,
+        "aiRepresentation": false,
+        "aiCard": true
       },
       "writeFrequency": "async",
       "sessionStrategy": "per-directory",

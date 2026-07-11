@@ -6795,8 +6795,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) after the most recent
+        explicit ``unblocked`` event, if any. A prior worker already
+        opened a PR for the current review round; re-spawning risks a
+        duplicate PR on the same task.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -6879,7 +6881,20 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Ignore PR comments from before the latest explicit unblock: those belong
+    # to the previous review round and must not block legitimate rework on the
+    # same task/branch after operators resume it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    last_unblocked = conn.execute(
+        "SELECT created_at FROM task_events "
+        "WHERE task_id = ? AND kind = 'unblocked' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if last_unblocked is not None:
+        # Timestamps are second-granularity, so require comments to land after
+        # the unblock second to count as part of the resumed review round.
+        pr_cutoff = max(pr_cutoff, int(last_unblocked["created_at"]) + 1)
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),

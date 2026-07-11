@@ -147,17 +147,28 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
-// Two modes via the `compact` height variant (styles.css):
-//   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
-//   compact → COMPACT_FLAT drops the caps so the whole stack scrolls as one.
-// Sections stay shrink-0 so none can be squeezed below its content and bleed onto
-// the next — the flexbox `min-height: auto` overlap trap that caused the bug.
+// Scroll architecture: ONE shared scroll container (the SCROLL_Y div below)
+// owns all session-stack scrolling in both height modes. Sections are
+// shrink-0 (never flex-squeezed below content — the `min-height: auto`
+// overlap trap). In tall mode, pinned/messaging bodies are max-h capped with
+// their own small chainable scrollers (GROUP_BODY); in compact mode
+// COMPACT_FLAT drops those caps so the whole stack is one flat scroll.
 const COMPACT_FLAT = 'compact:max-h-none compact:overflow-visible'
 
-// Vertical scroll only — never a horizontal bar from glow bleed, long titles, etc.
-const SCROLL_Y = 'overflow-y-auto overflow-x-hidden overscroll-contain'
+// Vertical scroll only — never a horizontal bar from glow bleed, long titles,
+// etc. Deliberately NO overscroll-contain here or on anything nested inside:
+// Chromium latches a wheel gesture to the nearest scroll container under the
+// cursor, and overscroll-contain stops the scroll chain there EVEN WHEN that
+// container cannot scroll — nested (often unscrollable) containers with
+// contain made wheel input dead over session rows while the scrollbar track
+// still worked. scrollbar-gutter keeps the width stable as the scrollbar
+// comes and goes.
+const SCROLL_Y = 'overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]'
 
-// A non-session group's scroll body: own scroller when tall, flattened when compact.
+// A capped group body (pinned, messaging): max-h capped with its OWN small
+// scroller so rows beyond the cap stay reachable. No overscroll-contain (see
+// SCROLL_Y): at its scroll edges the wheel chains outward to the shared
+// sidebar scroller instead of dying here. Compact mode drops the cap.
 const GROUP_BODY = cn(SCROLL_Y, COMPACT_FLAT)
 
 // Section-header action icons stay hidden until the whole header row is hovered
@@ -285,6 +296,11 @@ export function ChatSidebar({
   // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
+  // The single scroll container for the whole session stack (search results,
+  // pinned, recents). Also handed to the virtualizer via getScrollElement so
+  // virtualized recents scroll in the same surface instead of nesting a
+  // second scroller inside this one.
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const trimmedQuery = searchQuery.trim()
 
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
@@ -975,6 +991,9 @@ export function ChatSidebar({
   const recentsVirtualizes =
     !displayAgentGroups?.length && !agentProjectTree?.length && displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
 
+  // The one scroll element shared by every section (and the virtualizer).
+  const getScrollElement = useCallback(() => scrollContainerRef.current, [])
+
   // Keep the persisted parent + worktree orders reconciled with what's on screen:
   // freshly-seen repos/worktrees surface at the top, vanished ones drop out of
   // the saved order.
@@ -1123,11 +1142,16 @@ export function ChatSidebar({
         )}
 
         {contentVisible && showSessionSections && (
-          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
+          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)} ref={scrollContainerRef}>
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex min-h-0 flex-1 flex-col gap-px pb-1.75', SCROLL_Y)}
+                // No nested scroller here: the outer container is the only
+                // scroller; long result lists virtualize into it via
+                // getScrollElement. The root must be shrink-0 and NOT
+                // overflow-hidden, or the flexbox squeezes the section to its
+                // min-height and clips results out of reach.
+                contentClassName="flex flex-col gap-px pb-1.75"
                 emptyState={
                   searchPending ? (
                     <SidebarSessionSkeletons />
@@ -1137,6 +1161,7 @@ export function ChatSidebar({
                     </div>
                   )
                 }
+                getScrollElement={getScrollElement}
                 label={s.results}
                 labelMeta={String(searchResults.length)}
                 onArchiveSession={onArchiveSession}
@@ -1147,7 +1172,7 @@ export function ChatSidebar({
                 onTogglePin={pinSession}
                 open
                 pinned={false}
-                rootClassName="min-h-32 flex-1 overflow-hidden p-0"
+                rootClassName="min-h-32 shrink-0 p-0"
                 sessions={searchResults}
                 workingSessionIdSet={workingSessionIdSet}
               />
@@ -1181,15 +1206,15 @@ export function ChatSidebar({
                 activeProjectId={activeProjectId}
                 activeSessionId={activeSidebarSessionId}
                 collapsible={!inProject}
+                // No own scroller and no COMPACT_FLAT needed: this section
+                // carries no overflow or max-height in either height mode —
+                // the shared outer container scrolls, and virtualized recents
+                // scroll in it too (getScrollElement below).
                 contentClassName={cn(
-                  'flex min-h-0 flex-1 flex-col pb-1.75',
-                  SCROLL_Y,
+                  'flex flex-col pb-1.75',
                   // Separate profile sections clearly in the ALL view; rows inside
                   // each group keep their own tight gap-px rhythm.
-                  showAllProfiles ? 'gap-3' : 'gap-px',
-                  // Flatten into the single scroll when compact — unless this is the
-                  // virtualized long list, which must keep its own scroller.
-                  !recentsVirtualizes && COMPACT_FLAT
+                  showAllProfiles ? 'gap-3' : 'gap-px'
                 )}
                 dndSensors={dndSensors}
                 emptyState={
@@ -1217,6 +1242,7 @@ export function ChatSidebar({
                   ) : null
                 }
                 forceEmptyState={showSessionSkeletons}
+                getScrollElement={recentsVirtualizes ? getScrollElement : undefined}
                 groups={displayAgentGroups}
                 headerAction={
                   inProject && enteredProject ? (
@@ -1321,10 +1347,11 @@ export function ChatSidebar({
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
-                rootClassName={cn(
-                  'min-h-32 flex-1 overflow-hidden p-0',
-                  !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
-                )}
+                // shrink-0: sections in the shared scroller must never be
+                // flex-squeezed below their content — the outer container
+                // scrolls; sections take their natural height. compact keeps
+                // its tighter minimum.
+                rootClassName="min-h-32 shrink-0 p-0 compact:min-h-0"
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
                 workingSessionIdSet={workingSessionIdSet}

@@ -1082,14 +1082,16 @@ class PluginContext:
             )
         """
         # Duck-type to avoid importing python-telegram-bot in environments
-        # that don't use Telegram (it is an optional dependency).
+        # that don't use Telegram (it is an optional dependency). PTB v22's
+        # BaseHandler contract is check_update() + handle_update(); it has no
+        # `handle` attribute, so a real MessageHandler/TypeHandler must pass.
         if not (
             callable(getattr(handler, "check_update", None))
-            and callable(getattr(handler, "handle", None))
+            and callable(getattr(handler, "handle_update", None))
         ):
             raise ValueError(
                 "register_telegram_handler expects a telegram.ext.BaseHandler "
-                "instance (needs check_update/handle)."
+                "instance (needs check_update/handle_update)."
             )
         self._manager._telegram_handlers.append(
             (handler, group, self.manifest.name)

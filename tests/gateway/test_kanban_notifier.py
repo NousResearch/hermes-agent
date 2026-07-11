@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.kanban_watchers import _format_completed_message
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -13,6 +14,16 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+
+def test_completed_message_is_concise_and_omits_technical_ids():
+    message = _format_completed_message(
+        "Agent Board bereinigen",
+        "PR #158 ist gemerged. Vercel Production läuft auf ff04ae4 und wurde geprüft.",
+    )
+
+    assert message == "Agent Board bereinigen fertig.\nPR #158 gemerged, Production geprüft."
+    assert "t_" not in message and "ff04ae4" not in message
 
 
 class DisconnectedAdapters(dict):
@@ -84,8 +95,7 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert "Kanban" in adapter.sent[0]["text"]
-    assert tid in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"] == "notify once fertig."
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):

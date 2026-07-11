@@ -55,6 +55,23 @@ class TestReapCgroup:
         assert (1001, signal.SIGKILL) in killed_pids
         assert (1002, signal.SIGKILL) in killed_pids
 
+    def test_preserves_running_kanban_worker_tree(self, tmp_path, monkeypatch):
+        cgroup_path = "/test.slice/hermes-gateway.service"
+        procs_file = tmp_path / "cgroup.procs"
+        procs_file.write_text("1001\n1002\n1003\n")
+        monkeypatch.setattr(
+            cgroup_cleanup,
+            "Path",
+            lambda p: procs_file if p.endswith("cgroup.procs") else Path(p),
+        )
+        monkeypatch.setattr(cgroup_cleanup, "_running_kanban_worker_pids", lambda: {1001})
+        monkeypatch.setattr(cgroup_cleanup, "_descendant_pids", lambda roots, pids: {1002})
+        killed = []
+        monkeypatch.setattr(cgroup_cleanup.os, "kill", lambda pid, sig: killed.append(pid))
+
+        assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
+        assert killed == [1003]
+
     def test_tolerates_already_exited_pids(self, tmp_path, monkeypatch):
         cgroup_path = "/test.slice/hermes-gateway.service"
         procs_file = tmp_path / "cgroup.procs"

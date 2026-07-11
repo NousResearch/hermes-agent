@@ -444,9 +444,7 @@ class TestGeneratedSystemdUnits:
         # cgroup and block Restart=always — issue #37454.
         assert "ExecStopPost=" in unit
         assert "-m gateway.cgroup_cleanup" in unit
-        # KillMode=mixed is preserved so the gateway still reaps its own
-        # tool-call children before systemd SIGKILLs the cgroup — #8202.
-        assert "KillMode=mixed" in unit
+        assert "KillMode=process" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -556,9 +554,7 @@ class TestGeneratedSystemdUnits:
         # cgroup and block Restart=always — issue #37454.
         assert "ExecStopPost=" in unit
         assert "-m gateway.cgroup_cleanup" in unit
-        # KillMode=mixed is preserved so the gateway still reaps its own
-        # tool-call children before systemd SIGKILLs the cgroup — #8202.
-        assert "KillMode=mixed" in unit
+        assert "KillMode=process" in unit
 
 
 class TestGatewayStopCleanup:
@@ -3569,6 +3565,15 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+    def test_launchd_restart_leaves_detached_workers_running(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>AbandonProcessGroup</key>\n    <true/>" in plist
 
 
 class TestLaunchctlBootstrapEioRetry:

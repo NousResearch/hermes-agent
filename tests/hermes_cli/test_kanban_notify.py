@@ -26,11 +26,26 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_notify_subscribe_updates_explicit_notifier_identity(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="identity", assignee="default")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="slack", chat_id="channel",
+            notifier_profile="developer",
+        )
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="slack", chat_id="channel",
+            notifier_profile="default",
+        )
+        assert kb.list_notify_subs(conn, tid)[0]["notifier_profile"] == "default"
+    finally:
+        conn.close()
+
+
 @pytest.mark.asyncio
-async def test_notifier_unsubs_after_completed_event(kanban_home):
-    """
-    Subscription should be remove after completed event
-    """
+async def test_notifier_retains_delivery_receipt_after_completed_event(kanban_home):
+    """Completed subscriptions retain their cursor as a durable delivery receipt."""
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
@@ -68,14 +83,15 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     fake_adapter.send.assert_called_once()
     call_msg = fake_adapter.send.call_args[0][1]
-    assert "completed" in call_msg
+    assert call_msg == "test task fertig."
 
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == [], "Subscription should be unsub after completed event"
+    assert len(subs) == 1
+    assert int(subs[0]["last_event_id"]) > 0
 
 
 @pytest.mark.asyncio
@@ -437,7 +453,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
-    assert subs == []
+    assert len(subs) == 1
 
 
 @pytest.mark.asyncio

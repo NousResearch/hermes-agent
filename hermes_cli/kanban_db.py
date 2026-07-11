@@ -8283,14 +8283,11 @@ def add_notify_sub(
             (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
         )
         if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
             conn.execute(
                 """
                 UPDATE kanban_notify_subs
                    SET notifier_profile = ?
                  WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )

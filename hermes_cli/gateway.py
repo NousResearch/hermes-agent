@@ -2761,7 +2761,7 @@ Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-KillMode=mixed
+KillMode=process
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
@@ -2795,7 +2795,7 @@ Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-KillMode=mixed
+KillMode=process
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
@@ -3960,6 +3960,9 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
+    <true/>
+
+    <key>AbandonProcessGroup</key>
     <true/>
     
     <key>StandardOutPath</key>

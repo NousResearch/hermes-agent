@@ -1048,7 +1048,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
                 # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                # Also allow thread_starter_message (type 21): when a thread is
+                # created from a message in a regular channel, Discord sends the
+                # starter message with this type.  Forum posts use default type
+                # so they weren't affected, but channel-created threads were
+                # silently dropped here.
+                if message.type not in {
+                    discord.MessageType.default,
+                    discord.MessageType.reply,
+                    discord.MessageType.thread_starter_message,
+                }:
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
@@ -5726,6 +5735,16 @@ class DiscordAdapter(BasePlatformAdapter):
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
+            # Pre-seed dedup for forum posts (thread_id == message_id).
+            # Discord fires a duplicate MESSAGE_CREATE event for the thread
+            # starter message when a forum post is created.  The auto-thread
+            # path already pre-seeds at line ~5830, but manual thread creation
+            # (forum posts, "Create Thread" from context menu) was missing it,
+            # causing the duplicate to slip through and — in some cases —
+            # wedge the WebSocket connection.  Fixes silent disconnect on
+            # forum post + @mention.
+            if thread_id == str(message.id):
+                self._dedup.is_duplicate(thread_id)
 
         is_voice_linked_channel = False
 

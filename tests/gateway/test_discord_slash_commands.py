@@ -47,6 +47,7 @@ def _ensure_discord_mock():
             describe=lambda **kwargs: (lambda fn: fn),
             choices=lambda **kwargs: (lambda fn: fn),
             autocomplete=lambda **kwargs: (lambda fn: fn),
+            rename=lambda **kwargs: (lambda fn: fn),
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
             Group=_FakeGroup,
             Command=_FakeCommand,
@@ -69,6 +70,11 @@ def _ensure_discord_mock():
     if _app is not None and not hasattr(_app, "autocomplete"):
         try:
             _app.autocomplete = lambda **kwargs: (lambda fn: fn)
+        except Exception:
+            pass
+    if _app is not None and not hasattr(_app, "rename"):
+        try:
+            _app.rename = lambda **kwargs: (lambda fn: fn)
         except Exception:
             pass
 
@@ -261,6 +267,52 @@ async def test_auto_registered_plugin_command_without_args_hint(adapter):
     interaction = SimpleNamespace()
     await ping_cmd.callback(interaction)
     adapter._run_simple_slash.assert_awaited_once_with(interaction, "/ping")
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_subcommands_replace_generic_args_field(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    commands = {
+        "tf": {
+            "handler": lambda _a: "ok",
+            "description": "ThreadForge tasks",
+            "args_hint": "run <goal> | status",
+            "plugin": "threadforge-bridge",
+            "subcommands": {
+                "run": {
+                    "description": "Start a task",
+                    "argument": {
+                        "name": "goal", "description": "Coding goal", "required": True,
+                    },
+                },
+                "status": {
+                    "description": "Show task status",
+                    "argument": {
+                        "name": "task-ref", "description": "Task reference", "required": False,
+                    },
+                },
+                "health": {"description": "Check supervisor health"},
+            },
+        }
+    }
+    with patch("hermes_cli.plugins.get_plugin_commands", return_value=commands):
+        adapter._register_slash_commands()
+
+    group = adapter._client.tree.commands["tf"]
+    children = getattr(group, "_children", None)
+    if children is None:
+        children = {command.name: command for command in group.commands}
+    assert set(children) == {"run", "status", "health"}
+
+    interaction = SimpleNamespace()
+    await children["run"].callback(interaction, value="fix parser safely")
+    await children["status"].callback(interaction, value="")
+    await children["health"].callback(interaction)
+    assert adapter._run_simple_slash.await_args_list == [
+        ((interaction, "/tf run 'fix parser safely'"), {}),
+        ((interaction, "/tf status"), {}),
+        ((interaction, "/tf health"), {}),
+    ]
 
 
 @pytest.mark.asyncio

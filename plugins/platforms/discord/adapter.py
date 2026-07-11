@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import struct
 import subprocess
 import tempfile
@@ -4077,6 +4078,59 @@ class DiscordAdapter(BasePlatformAdapter):
                 callback=handler,
             )
 
+        def _build_plugin_slash_group(_name, _description, _subcommands):
+            """Build a native Discord group backed by one raw-text plugin handler."""
+            group = discord.app_commands.Group(
+                name=_name.lower()[:32],
+                description=(_description or f"Run /{_name}")[:100],
+            )
+            for subcommand_name, raw_spec in list(_subcommands.items())[:25]:
+                spec = raw_spec if isinstance(raw_spec, dict) else {}
+                subcommand = subcommand_name.lower()[:32]
+                argument = spec.get("argument")
+
+                if isinstance(argument, dict):
+                    argument_name = str(argument.get("name") or "value")[:32]
+                    argument_description = str(argument.get("description") or "Command argument")[:100]
+
+                    def _make_argument_handler(__subcommand, __required):
+                        if __required:
+                            async def _handler(interaction: discord.Interaction, value: str):
+                                command = f"/{_name} {__subcommand} {shlex.quote(value)}"
+                                await self._run_simple_slash(interaction, command)
+                        else:
+                            async def _handler(interaction: discord.Interaction, value: str = ""):
+                                suffix = f" {shlex.quote(value)}" if value else ""
+                                await self._run_simple_slash(
+                                    interaction, f"/{_name} {__subcommand}{suffix}"
+                                )
+                        _handler.__name__ = f"plugin_slash_{_name}_{__subcommand}".replace("-", "_")
+                        described = discord.app_commands.describe(
+                            value=argument_description
+                        )(_handler)
+                        return discord.app_commands.rename(value=argument_name)(described)
+
+                    handler = _make_argument_handler(
+                        subcommand, bool(argument.get("required", False))
+                    )
+                else:
+                    def _make_subcommand_handler(__subcommand):
+                        async def _handler(interaction: discord.Interaction):
+                            await self._run_simple_slash(
+                                interaction, f"/{_name} {__subcommand}"
+                            )
+                        _handler.__name__ = f"plugin_slash_{_name}_{__subcommand}".replace("-", "_")
+                        return _handler
+
+                    handler = _make_subcommand_handler(subcommand)
+
+                group.add_command(discord.app_commands.Command(
+                    name=subcommand,
+                    description=str(spec.get("description") or f"Run {subcommand}")[:100],
+                    callback=handler,
+                ))
+            return group
+
         already_registered: set[str] = set()
         # Native commands above are registered first and are the highest
         # priority, so they always survive the 100-command cap. Reserve one
@@ -4130,7 +4184,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # API needed — plugin commands are platform-agnostic.
         try:
             from hermes_cli.commands import _iter_plugin_command_entries
+            from hermes_cli.plugins import get_plugin_commands
 
+            plugin_commands = get_plugin_commands()
             for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
                 discord_name = plugin_name.lower()[:32]
                 if discord_name in already_registered:
@@ -4138,11 +4194,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 if len(already_registered) >= slot_cap:
                     dropped_over_cap += 1
                     continue
-                auto_cmd = _build_auto_slash_command(
-                    plugin_name,
-                    plugin_desc,
-                    plugin_args_hint,
-                )
+                subcommands = plugin_commands.get(plugin_name, {}).get("subcommands")
+                if isinstance(subcommands, dict) and subcommands:
+                    auto_cmd = _build_plugin_slash_group(
+                        plugin_name, plugin_desc, subcommands
+                    )
+                else:
+                    auto_cmd = _build_auto_slash_command(
+                        plugin_name,
+                        plugin_desc,
+                        plugin_args_hint,
+                    )
                 try:
                     tree.add_command(auto_cmd)
                     already_registered.add(discord_name)

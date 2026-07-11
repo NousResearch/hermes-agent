@@ -1674,6 +1674,31 @@ class TestPluginCommands:
         ctx.register_command("foo", lambda a: a, args_hint="  <file>  ")
         assert mgr._plugin_commands["foo"]["args_hint"] == "<file>"
 
+    def test_register_command_normalizes_native_subcommands(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+        ctx.register_command(
+            "jobs", lambda a: a, args_hint="run <goal>",
+            subcommands={
+                "Run": {
+                    "description": "Start a job",
+                    "argument": {
+                        "name": "Goal", "description": "Job goal", "required": True,
+                    },
+                },
+                "health": {"description": "Check health"},
+            },
+        )
+        assert mgr._plugin_commands["jobs"]["subcommands"] == {
+            "run": {
+                "description": "Start a job",
+                "argument": {
+                    "name": "goal", "description": "Job goal", "required": True,
+                },
+            },
+            "health": {"description": "Check health"},
+        }
+
     def test_register_command_normalizes_name(self):
         """Names are lowercased, stripped, and leading slashes removed."""
         mgr = PluginManager()

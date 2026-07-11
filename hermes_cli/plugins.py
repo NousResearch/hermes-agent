@@ -39,6 +39,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -530,6 +531,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        subcommands: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -546,6 +548,13 @@ class PluginContext:
         command picker. Plugin commands without ``args_hint`` register as
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
+
+        ``subcommands`` optionally describes a native command group for
+        adapters that support it. Each mapping value accepts a short
+        ``description`` and, optionally, one string ``argument`` with
+        ``name``, ``description``, and ``required`` fields. The handler still
+        receives raw text in ``"<subcommand> <argument>"`` form. Gateways
+        without native groups continue to use the flat ``args_hint`` form.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -570,11 +579,41 @@ class PluginContext:
         except Exception:
             pass  # If commands module isn't available, skip the check
 
+        normalized_subcommands: dict[str, dict[str, Any]] = {}
+        for raw_subcommand, raw_spec in (subcommands or {}).items():
+            subcommand = str(raw_subcommand).lower().strip().replace(" ", "-")
+            if not re.fullmatch(r"[a-z0-9_-]{1,32}", subcommand):
+                logger.warning(
+                    "Plugin '%s' ignored invalid subcommand '/%s %s'.",
+                    self.manifest.name, clean, raw_subcommand,
+                )
+                continue
+            spec = raw_spec if isinstance(raw_spec, dict) else {}
+            normalized: dict[str, Any] = {
+                "description": str(spec.get("description") or f"Run {subcommand}")[:100]
+            }
+            argument = spec.get("argument")
+            if isinstance(argument, dict):
+                argument_name = str(argument.get("name") or "value").lower().strip()
+                if re.fullmatch(r"[a-z0-9_-]{1,32}", argument_name):
+                    normalized["argument"] = {
+                        "name": argument_name,
+                        "description": str(argument.get("description") or "Command argument")[:100],
+                        "required": bool(argument.get("required", False)),
+                    }
+                else:
+                    logger.warning(
+                        "Plugin '%s' ignored invalid argument name '%s' for '/%s %s'.",
+                        self.manifest.name, argument_name, clean, subcommand,
+                    )
+            normalized_subcommands[subcommand] = normalized
+
         self._manager._plugin_commands[clean] = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "subcommands": normalized_subcommands,
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 

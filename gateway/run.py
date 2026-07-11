@@ -4216,6 +4216,10 @@ class GatewayRunner:
             logger.debug("Failed to persist active restart origin: %s", exc)
             return False
 
+    def mark_signal_initiated_shutdown(self) -> None:
+        """Record an external signal so stop() persists the startup marker."""
+        self._signal_initiated_shutdown = True
+
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
@@ -19857,6 +19861,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
+            runner.mark_signal_initiated_shutdown()
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",

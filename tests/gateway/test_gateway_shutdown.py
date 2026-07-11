@@ -164,6 +164,15 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
+def test_external_signal_marks_runner_before_shutdown():
+    """The signal handler must set the instance flag consumed by stop()."""
+    runner, _adapter = make_restart_runner()
+
+    runner.mark_signal_initiated_shutdown()
+
+    assert runner._signal_initiated_shutdown is True
+
+
 @pytest.mark.asyncio
 async def test_unexpected_signal_writes_home_startup_marker(tmp_path, monkeypatch):
     """External supervisor restarts should send the missing 'back online' half."""

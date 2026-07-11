@@ -4249,3 +4249,26 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+class TestApiServerCorsAndCacheHeaders:
+    @pytest.mark.asyncio
+    async def test_cors_expose_headers_present(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models", headers={"Origin": "http://localhost:3000"})
+            assert resp.status == 200
+            exposed = resp.headers.get("Access-Control-Expose-Headers", "")
+            assert "Location" in exposed
+            assert "X-Request-Id" in exposed
+            assert "Idempotency-Key" in exposed
+
+    @pytest.mark.asyncio
+    async def test_security_headers_include_cache_control(self):
+        adapter = _make_adapter()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            assert resp.headers.get("Cache-Control") == "no-store"

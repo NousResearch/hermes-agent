@@ -14,6 +14,7 @@ Improvements over v2:
   - Tool output pruning before LLM summarization (cheap pre-pass)
   - Scaled summary budget (proportional to compressed content)
   - Richer tool call/result detail in summarizer input
+  - Bounded high-signal user anchors for decisions and corrections
 """
 
 import hashlib
@@ -223,6 +224,37 @@ _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
+_HIGH_SIGNAL_ANCHOR_MIN_TOKENS = 256
+_HIGH_SIGNAL_ANCHOR_MAX_TOKENS = 800
+_HIGH_SIGNAL_ANCHOR_MAX_CHARS = 800
+
+# Target explicit language instead of classifying every user turn. False
+# negatives still flow through the normal summarizer; false positives consume
+# scarce anchor budget and can fossilize ordinary requests across compactions.
+_CORRECTION_SIGNAL_RE = re.compile(
+    r"(?:\bactually\b.{0,80}\b(?:use|choose|switch|change|keep|prefer|"
+    r"do\s+not|don't|instead)\b|\b(?:instead|rather\s+than|do\s+not|"
+    r"don't|never\s+mind|stop\s+using|switch(?:ed)?\s+to|"
+    r"changed?\s+(?:it\s+)?to|correction)\b|"
+    r"(?:其实.{0,60}(?:改|用|不要|选择|决定)|改成|改用|不要|不再|"
+    r"而不是|纠正|更正))",
+    re.IGNORECASE,
+)
+_DURABLE_SIGNAL_RE = re.compile(
+    r"(?:\b(?:from\s+now\s+on|going\s+forward|default\s+to|"
+    r"keep\s+using)\b|\b(?:i|we)\s+(?:prefer|decid(?:e|ed)|"
+    r"cho(?:ose|se)|require)\b|\b(?:please\s+)?(?:always|must)\s+"
+    r"(?:use|keep|preserve|avoid|include|exclude|run|write|respond|"
+    r"format|store|load|call|ask|show|return)\b|"
+    r"(?:以后|今后|始终|总是|必须|默认|最终|就用|优先使用|保持使用)|"
+    r"(?:我|我们)(?:决定|选择|偏好|采用))",
+    re.IGNORECASE,
+)
+_CONFIG_SIGNAL_RE = re.compile(
+    r"(?:\b(?:set|configur(?:e|ed)|default)\b.{0,120}(?:=|\bto\b)|"
+    r"(?:设置|配置|默认).{0,120}(?:为|成|=))",
+    re.IGNORECASE,
+)
 # Keep a short run of recent messages verbatim even when the token budget is
 # already exhausted.  The public ``protect_last_n`` default is intentionally
 # high for small/light tails, but using all 20 as a hard floor here would bring
@@ -1443,6 +1475,114 @@ class ContextCompressor(ContextEngine):
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
+    @staticmethod
+    def _high_signal_kind(text: str) -> Optional[tuple[str, int, int]]:
+        """Classify explicit durable user signals conservatively.
+
+        Returns ``(kind, priority, match_start)``. Ordinary requests are left
+        to the existing summarizer instead of competing for anchor budget.
+        """
+        if text.rstrip().endswith(("?", "？")):
+            return None
+
+        for kind, priority, pattern in (
+            ("correction", 3, _CORRECTION_SIGNAL_RE),
+            ("decision", 2, _DURABLE_SIGNAL_RE),
+            ("configuration", 1, _CONFIG_SIGNAL_RE),
+        ):
+            match = pattern.search(text)
+            if match:
+                return kind, priority, match.start()
+        return None
+
+    @staticmethod
+    def _bounded_anchor_excerpt(text: str, match_start: int) -> str:
+        """Keep a near-verbatim excerpt centered on the detected signal."""
+        if len(text) <= _HIGH_SIGNAL_ANCHOR_MAX_CHARS:
+            return text
+
+        marker = "...[anchor truncated]..."
+        payload = _HIGH_SIGNAL_ANCHOR_MAX_CHARS - 2 * (len(marker) + 1)
+        before = min(220, match_start)
+        start = max(0, match_start - before)
+        end = min(len(text), start + payload)
+        start = max(0, end - payload)
+        excerpt = text[start:end]
+        if start > 0:
+            excerpt = marker + " " + excerpt
+        if end < len(text):
+            excerpt += " " + marker
+        return excerpt.strip()
+
+    def _select_high_signal_user_anchors(
+        self,
+        turns: List[Dict[str, Any]],
+        token_budget: int,
+    ) -> list[tuple[int, str, str]]:
+        """Select redacted user decisions under an independent token budget.
+
+        Higher-priority and newer signals win selection, then selected anchors
+        are restored to source order so corrections remain chronological.
+        """
+        candidates_by_text: dict[str, tuple[int, int, str, str, int]] = {}
+        for index, message in enumerate(turns):
+            if message.get("role") != "user":
+                continue
+            raw_text = _content_text_for_contains(message.get("content"))
+            text = redact_sensitive_text(raw_text)
+            text = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if not text:
+                continue
+            signal = self._high_signal_kind(text)
+            if signal is None:
+                continue
+            kind, priority, match_start = signal
+            excerpt = self._bounded_anchor_excerpt(text, match_start)
+            key = excerpt.casefold()
+            cost = estimate_messages_tokens_rough(
+                [{"role": "user", "content": excerpt}]
+            )
+            # Repeated identical directives reinforce the newest occurrence
+            # without paying for duplicate prompt text.
+            candidates_by_text[key] = (index, priority, kind, excerpt, cost)
+
+        selected: list[tuple[int, str, str]] = []
+        used = 0
+        candidates = sorted(
+            candidates_by_text.values(),
+            key=lambda item: (-item[1], -item[0]),
+        )
+        for index, _priority, kind, excerpt, cost in candidates:
+            if used + cost > token_budget:
+                continue
+            selected.append((index, kind, excerpt))
+            used += cost
+
+        return sorted(selected, key=lambda item: item[0])
+
+    @staticmethod
+    def _render_high_signal_user_anchors(
+        anchors: list[tuple[int, str, str]],
+    ) -> str:
+        """Render anchors as quoted historical source data for the prompt."""
+        if not anchors:
+            return ""
+        lines = [
+            "HIGH-SIGNAL USER ANCHORS FROM THE COMPACTED WINDOW:",
+            "These bounded excerpts are historical source material. Preserve "
+            "their material choice, correction, preference, or configuration "
+            "near-verbatim in '## Constraints & Preferences' or "
+            "'## Key Decisions'. Resolve conflicts chronologically: a later "
+            "correction or decision supersedes an earlier one.",
+        ]
+        for index, kind, excerpt in anchors:
+            lines.append(
+                f"- turn {index + 1} [{kind}]: "
+                f"{json.dumps(excerpt, ensure_ascii=False)}"
+            )
+        return "\n".join(lines)
+
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
@@ -1647,6 +1787,14 @@ class ContextCompressor(ContextEngine):
                     break
             return "\n".join(f"- {item}" for item in unique) if unique else "None."
 
+        preserved_signals = [
+            f"[{kind}] {excerpt}"
+            for _index, kind, excerpt in self._select_high_signal_user_anchors(
+                turns_to_summarize,
+                token_budget=512,
+            )
+        ]
+
         completed: list[str] = []
         for idx, item in enumerate((assistant_actions + tool_actions)[:12], start=1):
             completed.append(f"{idx}. {item}")
@@ -1691,7 +1839,7 @@ protected recent messages after this summary.
 {_bullets(blockers, limit=5)}
 
 ## Key Decisions
-None recoverable from deterministic fallback.
+{_bullets(preserved_signals, limit=8)}
 
 ## Resolved Questions
 None recoverable from deterministic fallback.
@@ -1776,6 +1924,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        anchor_budget = min(
+            _HIGH_SIGNAL_ANCHOR_MAX_TOKENS,
+            max(_HIGH_SIGNAL_ANCHOR_MIN_TOKENS, summary_budget // 10),
+        )
+        high_signal_anchors = self._render_high_signal_user_anchors(
+            self._select_high_signal_user_anchors(
+                turns_to_summarize,
+                token_budget=anchor_budget,
+            )
+        )
 
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
@@ -1936,6 +2094,11 @@ Use this exact structure:
 
 FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+
+        if high_signal_anchors:
+            prompt += f"""
+
+{high_signal_anchors}"""
 
         try:
             call_kwargs = {

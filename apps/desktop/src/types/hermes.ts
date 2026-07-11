@@ -606,6 +606,7 @@ export interface SessionResumeResponse {
     attempt: number
     interrupted_at: number
   }
+  hydrating?: boolean
   inflight?: null | {
     assistant?: string
     /** Mid-turn redirect corrections, oldest first. The turn's original prompt

@@ -317,6 +317,7 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    defer_history = is_truthy_value(params.get("defer_history", False))
     # Desktop hydrates persisted transcripts through the authenticated REST
     # route in parallel. Suppress the duplicate WebSocket transcript only when
     # the caller explicitly requests it; other clients keep upstream behavior.
@@ -424,6 +425,12 @@ def _(rid, params: dict) -> dict:
                 omit_messages=omit_messages,
             )
             payload["resumed"] = target
+            if defer_history:
+                payload["messages"] = []
+                payload["message_count"] = int(
+                    session.get("resume_message_count") or payload["message_count"]
+                )
+                payload["hydrating"] = bool(session.get("resume_hydrating"))
             # A lazy watch session never owns a run loop, so its payload's running
             # flag is always False — overlay the child-run registry so a reconnecting
             # watch window keeps its busy indicator while the child is still mid-run.
@@ -509,6 +516,64 @@ def _(rid, params: dict) -> dict:
                     "session_key": target,
                     "started_at": record["created_at"],
                     "status": "streaming" if child_running else "idle",
+                },
+            )
+
+        # Desktop can ask for a bounded acknowledgement and hydrate the display
+        # transcript through the paginated REST endpoint. Register the runtime now,
+        # then load model history and initialize optional providers in background.
+        # Repeated requests reuse the record through the live fast path above.
+        if defer_history and not is_truthy_value(params.get("eager_build", False)):
+            sid = uuid.uuid4().hex[:8]
+            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
+            _enable_gateway_prompts()
+            overrides = _stored_session_runtime_overrides(found) or {}
+            model_override = overrides.get("model_override") or {}
+            cwd = profile_resume_cwd or _default_session_cwd()
+            record = _deferred_session_record(
+                target,
+                cols=cols,
+                cwd=cwd,
+                history=[],
+                lease=lease,
+                source=source,
+                close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                profile_home=profile_home,
+                model_override=overrides.get("model_override"),
+                resume_runtime_overrides=overrides or None,
+            )
+            record["resume_history_ready"] = threading.Event()
+            record["resume_hydrating"] = True
+            record["resume_message_count"] = int(found.get("message_count") or 0)
+            if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+                return _ok(rid, _reuse_live_payload(*live))
+
+            _schedule_resume_hydration(sid, target, db, close_db=owns_db)
+            # The hydration worker now owns a profile-scoped handle and closes it
+            # after the transcript read. The shared launch DB is process-owned.
+            if owns_db:
+                owns_db = False
+            _schedule_session_cap_enforcement()
+            return _ok(
+                rid,
+                {
+                    "session_id": sid,
+                    "resumed": target,
+                    "message_count": record["resume_message_count"],
+                    "messages": [],
+                    "hydrating": True,
+                    "info": _lazy_resume_info(
+                        cwd,
+                        model=model_override.get("model") or "",
+                        provider=overrides.get("provider_override") or "",
+                        profile=profile,
+                    ),
+                    "inflight": None,
+                    "running": False,
+                    "session_key": target,
+                    "started_at": record["created_at"],
+                    "status": "resuming",
                 },
             )
 

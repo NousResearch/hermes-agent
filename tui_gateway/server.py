@@ -6821,6 +6821,12 @@ def _(rid, params: dict) -> dict:
         if not bool(pet_cfg.get("enabled")):
             return _ok(rid, {"enabled": False})
 
+        # ``off`` is terminal-only: keep pet.info available for the desktop
+        # sprite, but do not build Unicode/graphics frames for the CLI/TUI.
+        configured_mode = str(pet_cfg.get("render_mode", "auto") or "auto").strip().lower()
+        if configured_mode == "off":
+            return _ok(rid, {"enabled": False})
+
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
         if pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})

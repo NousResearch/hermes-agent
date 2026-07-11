@@ -81,6 +81,18 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
 
+# Platform → env var name mapping for token fallback (mirrors
+# gateway/config.py _token_env_names). Used when send_message_tool runs
+# in a subprocess (e.g. MCP cron) where _apply_env_overrides did not run.
+_TOKEN_ENV_NAMES = {
+    "telegram": "TELEGRAM_BOT_TOKEN",
+    "discord": "DISCORD_BOT_TOKEN",
+    "slack": "SLACK_BOT_TOKEN",
+    "mattermost": "MATTERMOST_TOKEN",
+    "matrix": "MATRIX_ACCESS_TOKEN",
+    "weixin": "WEIXIN_TOKEN",
+}
+
 
 def _media_caption_split(text, media_files, *, max_caption_len):
     """Decide whether the accompanying text should ride on the media bubble.
@@ -426,6 +438,13 @@ def _handle_send(args):
                 return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
         else:
             return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+
+    # Fallback: if token is empty (e.g. MCP subprocess where _apply_env_overrides
+    # didn't run), load directly from .env like the gateway config loader does.
+    if pconfig.token is None or not pconfig.token.strip():
+        env_token = os.getenv(_TOKEN_ENV_NAMES.get(platform_name, ""), "").strip()
+        if env_token:
+            pconfig.token = env_token
 
     from gateway.platforms.base import BasePlatformAdapter
 

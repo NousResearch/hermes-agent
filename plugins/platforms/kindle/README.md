@@ -24,6 +24,9 @@ to this adapter's localhost `/ingest` endpoint. A bridge can support:
 - Vision OCR followed by an optional text-model proper-name cleanup pass.
 - Stable Hermes thread IDs for new and continued notebook entries.
 - Artifact/image/HTML annotation workspaces.
+- Notebook-consistent artifact controls: HTML/artifact surfaces should use the
+  same compact, icon-first menu language as the writing surface, with matching
+  quick intents such as summarize, tasks, email draft, and workpaper note.
 - Passwordless trusted-LAN operation or explicit browser authentication.
 - Away-from-LAN access through Tailscale Funnel with a permanent, high-entropy
   `/remote/<key>` bookmark path that does not depend on Kindle cookies, query

@@ -2762,8 +2762,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             else:
                 model_list = mdev_models
             print(f"  Found {len(model_list)} model(s) from models.dev registry")
-        elif curated and len(curated) >= 8:
-            # Curated list is substantial — use it directly, skip live probe
+        elif curated and (len(curated) >= 8 or provider_id in {"cline-api", "cline-pass"}):
+            # Substantial or explicitly no-discovery catalogs use curated data.
             model_list = curated
             print(
                 f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'

@@ -1,0 +1,5 @@
+name: cline-pass-provider
+kind: model-provider
+version: 1.0.0
+description: ClinePass subscription gateway
+author: Nous Research

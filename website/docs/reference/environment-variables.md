@@ -74,6 +74,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`; use `https://dashscope.aliyuncs.com/compatible-mode/v1` for mainland-China region) |
 | `ALIBABA_CODING_PLAN_API_KEY` | Qwen Coding Plan API key (`alibaba-coding-plan` provider) |
 | `ALIBABA_CODING_PLAN_BASE_URL` | Override the Qwen Coding Plan base URL |
+| `CLINE_API_KEY` | Cline API key for pay-as-you-go usage credits; also a ClinePass compatibility fallback |
+| `CLINEPASS_API_KEY` | ClinePass subscription API key; preferred when both Cline billing routes are configured |
 | `DEEPSEEK_API_KEY` | DeepSeek API key for direct DeepSeek access ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `NOVITA_API_KEY` | NovitaAI API key — AI-native cloud for Model API, Agent Sandbox, and GPU Cloud ([novita.ai/settings/key-management](https://novita.ai/settings/key-management)) |

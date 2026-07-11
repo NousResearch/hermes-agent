@@ -693,10 +693,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # so keep them apart in provider_data rather than merging.
         reasoning = getattr(msg, "reasoning", None)
         reasoning_content = getattr(msg, "reasoning_content", None)
-        if reasoning_content is None and hasattr(msg, "model_extra"):
+        if hasattr(msg, "model_extra"):
             model_extra = getattr(msg, "model_extra", None) or {}
-            if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
-                reasoning_content = model_extra["reasoning_content"]
+            if isinstance(model_extra, dict):
+                if reasoning is None and "reasoning" in model_extra:
+                    reasoning = model_extra["reasoning"]
+                if reasoning_content is None and "reasoning_content" in model_extra:
+                    reasoning_content = model_extra["reasoning_content"]
 
         provider_data: Dict[str, Any] = {}
         if reasoning_content is not None:

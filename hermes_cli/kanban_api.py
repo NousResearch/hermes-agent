@@ -97,7 +97,7 @@ def _resolve_board_slug(board: Optional[str]) -> str:
 def _resolve_board_id_or_name(value: str) -> str:
     candidate = value.strip()
     try:
-        slug = kanban_db._normalize_board_slug(candidate)
+        slug = kanban_db.normalize_board_slug(candidate)
     except ValueError:
         slug = None
     if slug and kanban_db.board_exists(slug):
@@ -360,7 +360,18 @@ def update_task(
     if not fields:
         raise HTTPException(status_code=400, detail="at least one field is required")
     with _connection(board) as conn:
-        _require_task(conn, task_id)
+        task = _require_task(conn, task_id)
+        scalar_fields = [f for f in ("title", "body", "priority") if f in fields]
+        # Reject title/body edits on a finished card up front, before writing
+        # anything (including a possible assignee change), so the request
+        # doesn't partially apply.
+        if task.status in {"done", "archived"} and (
+            "title" in scalar_fields or "body" in scalar_fields
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"cannot edit the title/body of a {task.status} task",
+            )
         if "assignee" in fields:
             try:
                 if not kanban_db.assign_task(conn, task_id, payload.assignee or None):
@@ -368,26 +379,18 @@ def update_task(
             except RuntimeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        scalar_fields: list[tuple[str, Any]] = []
-        if "title" in fields:
-            scalar_fields.append(("title", payload.title))
-        if "body" in fields:
-            scalar_fields.append(("body", payload.body))
-        if "priority" in fields:
-            scalar_fields.append(("priority", payload.priority))
         if scalar_fields:
-            with kanban_db.write_txn(conn):
-                assignments = ", ".join(f"{name} = ?" for name, _ in scalar_fields)
-                conn.execute(
-                    f"UPDATE tasks SET {assignments} WHERE id = ?",
-                    [value for _, value in scalar_fields] + [task_id],
-                )
-                kanban_db._append_event(
+            try:
+                kanban_db.edit_task_fields(
                     conn,
                     task_id,
-                    "edited",
-                    {"fields": [name for name, _ in scalar_fields]},
+                    fields=scalar_fields,
+                    title=payload.title,
+                    body=payload.body,
+                    priority=payload.priority,
                 )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _task_response(conn, task_id)
 
 

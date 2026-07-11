@@ -14064,6 +14064,18 @@ PTY_REGISTRY = PtySessionRegistry(
 )
 
 
+# Per-channel supersede registry for the legacy 1:1 socket<->PTY pump.
+# When a reconnect arrives for the same channel (browser tab reload),
+# the previous WebSocket for that channel is closed first, which triggers
+# its existing `finally` cleanup (closing the bridge). Without this, the
+# old PTY keeps running until its socket actually dies — and on WSL2
+# that can be indefinitely (the Windows↔Linux localhost relay holds
+# the TCP endpoint ESTABLISHED after the browser tab is gone). Issue
+# #62166 reports accumulated leaked node processes accumulating CPU
+# pressure; this supersede semantics makes cleanup event-driven.
+_LEGACY_PTY_BY_CHANNEL: dict[str, "WebSocket"] = {}
+
+
 async def _legacy_pump(ws: "WebSocket", bridge) -> None:
     """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
     bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
@@ -15379,6 +15391,25 @@ async def pty_ws(ws: WebSocket) -> None:
 
     if attach_token is None:
         # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
+        # Issue #62166: on reconnect for the same channel (browser tab
+        # reload), supersede the previous WebSocket so its `finally`
+        # cleanup runs immediately. WSL2 keeps the dead TCP endpoint
+        # alive, so without this the old PTY accumulates until the
+        # process exits. Last-connect-wins per channel.
+        if channel:
+            previous_ws = _LEGACY_PTY_BY_CHANNEL.get(channel)
+            if previous_ws is not None and previous_ws is not ws:
+                _log.info(
+                    "pty supersede: closing previous WS for channel=%s "
+                    "(reconnect)",
+                    channel,
+                )
+                try:
+                    await previous_ws.close(code=4400, reason="supersede")
+                except Exception:
+                    pass
+                # best-effort clear; the pump task will overwrite on its way out
+                _LEGACY_PTY_BY_CHANNEL.pop(channel, None)
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
@@ -15389,7 +15420,19 @@ async def pty_ws(ws: WebSocket) -> None:
             await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
-        await _legacy_pump(ws, bridge)
+        # Register this WS as the active handler for the channel so a
+        # subsequent reconnect can supersede it. Cleared on the way out
+        # below so a clean exit (vs. a supersede) doesn't leave a stale
+        # entry pointing at a closed socket.
+        if channel:
+            _LEGACY_PTY_BY_CHANNEL[channel] = ws
+        try:
+            await _legacy_pump(ws, bridge)
+        finally:
+            # Only clear if WE are still the registered handler — a
+            # supersede will have already overwritten the entry.
+            if channel and _LEGACY_PTY_BY_CHANNEL.get(channel) is ws:
+                _LEGACY_PTY_BY_CHANNEL.pop(channel, None)
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.

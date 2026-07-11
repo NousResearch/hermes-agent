@@ -108,6 +108,12 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("grok-4-fast-reasoning", 300),
     ("grok-4.20-reasoning", 300),
     ("grok-4-fast-non-reasoning", 180),
+    # MiniMax M2.x — reasoning models that emit ``reasoning_content``
+    # blocks before first content token (cf. #17924).  Extended
+    # thinking phases routinely exceed the default 180s chat-model
+    # stale-stream timeout, causing mid-think connection kills
+    # (observed: 180s kill on a 6-min audit task, #62353).
+    ("minimax-m2", 300),
 )
 
 

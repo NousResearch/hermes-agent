@@ -136,6 +136,22 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
+# The Architecture-First gate is deliberately an additive projection rather
+# than another task status. Task statuses are scheduler-owned and cannot be
+# the durable authorization source for graph writes.
+ARCHITECTURE_GATE_STATES = {
+    "open", "validated_awaiting_approval", "policy_accepted",
+    "human_approved", "invalidated", "rejected",
+}
+ARCHITECTURE_GATE_ACTIVE_STATES = {
+    "open", "validated_awaiting_approval", "policy_accepted", "human_approved",
+}
+ARCHITECTURE_GATE_APPROVED_STATES = {"policy_accepted", "human_approved"}
+ARCHITECTURE_GATE_POLICY_VERSION = "v1"
+ARCHITECTURE_GATE_CANONICALIZATION_VERSION = "v1"
+ARCHITECTURE_GATE_MODES = {"off", "shadow", "enforce"}
+ARCHITECTURE_GATE_REASON_OPEN = "architecture_gate_open"
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -1105,6 +1121,69 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class MutationContext:
+    """Trusted runtime identity for a Kanban mutation.
+
+    Boundary adapters construct this object; model tool arguments never do.
+    Unknown phases are intentionally protected while a gate is unresolved.
+    """
+
+    board_key: str
+    principal: str
+    actor_type: str
+    session_id: Optional[str] = None
+    request_scope_id: Optional[str] = None
+    workflow_key: Optional[str] = None
+    gate_id: Optional[str] = None
+    mode: str = "off"
+    phase: str = "protected"
+
+
+@dataclass(frozen=True)
+class ArchitectureGate:
+    gate_id: str
+    board_key: str
+    creator_principal: str
+    request_scope_id: Optional[str]
+    session_id: Optional[str]
+    workflow_key: Optional[str]
+    architect_task_id: str
+    accepted_run_id: Optional[int]
+    state: str
+    policy_version: str
+    canonicalization_version: str
+    accepted_snapshot: Optional[str]
+    design_digest: Optional[str]
+    enforcement_mode: str
+    row_version: int
+    created_at: int
+    updated_at: int
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "ArchitectureGate":
+        return cls(
+            gate_id=row["gate_id"], board_key=row["board_key"],
+            creator_principal=row["creator_principal"],
+            request_scope_id=row["request_scope_id"], session_id=row["session_id"],
+            workflow_key=row["workflow_key"], architect_task_id=row["architect_task_id"],
+            accepted_run_id=row["accepted_run_id"], state=row["state"],
+            policy_version=row["policy_version"],
+            canonicalization_version=row["canonicalization_version"],
+            accepted_snapshot=row["accepted_snapshot"], design_digest=row["design_digest"],
+            enforcement_mode=row["enforcement_mode"], row_version=int(row["row_version"]),
+            created_at=int(row["created_at"]), updated_at=int(row["updated_at"]),
+        )
+
+
+class ArchitectureGateError(ValueError):
+    """Stable policy denial safe to expose to callers and audit logs."""
+
+    def __init__(self, code: str = ARCHITECTURE_GATE_REASON_OPEN):
+        self.code = code
+        super().__init__(code)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1288,6 +1367,28 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Authoritative authorization projection for Architecture-First workflows.
+-- The accepted snapshot is canonical JSON, not mutable task metadata.
+CREATE TABLE IF NOT EXISTS architecture_gates (
+    gate_id                  TEXT PRIMARY KEY,
+    board_key                TEXT NOT NULL,
+    creator_principal        TEXT NOT NULL,
+    request_scope_id         TEXT,
+    session_id               TEXT,
+    workflow_key             TEXT,
+    architect_task_id        TEXT NOT NULL,
+    accepted_run_id          INTEGER,
+    state                    TEXT NOT NULL,
+    policy_version           TEXT NOT NULL,
+    canonicalization_version TEXT NOT NULL,
+    accepted_snapshot        TEXT,
+    design_digest            TEXT,
+    enforcement_mode         TEXT NOT NULL DEFAULT 'off',
+    row_version              INTEGER NOT NULL DEFAULT 0,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1298,6 +1399,14 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_architecture_gates_architect
+    ON architecture_gates(architect_task_id);
+CREATE INDEX IF NOT EXISTS idx_architecture_gates_workflow
+    ON architecture_gates(board_key, workflow_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_architecture_gates_active_scope
+    ON architecture_gates(board_key, creator_principal, request_scope_id)
+    WHERE state IN ('open', 'validated_awaiting_approval', 'policy_accepted', 'human_approved')
+      AND request_scope_id IS NOT NULL;
 """
 
 
@@ -2693,6 +2802,288 @@ def _block_forced_skill_validation_failure(
     return True
 
 
+# ---------------------------------------------------------------------------
+# Architecture-First authorization projection
+# ---------------------------------------------------------------------------
+
+def _architecture_gate_from_row(row: Optional[sqlite3.Row]) -> Optional[ArchitectureGate]:
+    return ArchitectureGate.from_row(row) if row is not None else None
+
+
+def get_architecture_gate(conn: sqlite3.Connection, gate_id: str) -> Optional[ArchitectureGate]:
+    return _architecture_gate_from_row(
+        conn.execute("SELECT * FROM architecture_gates WHERE gate_id = ?", (gate_id,)).fetchone()
+    )
+
+
+def get_architecture_gate_for_task(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[ArchitectureGate]:
+    """Resolve the nearest architecture gate from a task's parent ancestry."""
+    seen: set[str] = set()
+    stack = [task_id]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        gate = _architecture_gate_from_row(conn.execute(
+            "SELECT * FROM architecture_gates WHERE architect_task_id = ? "
+            "ORDER BY updated_at DESC LIMIT 1", (current,)
+        ).fetchone())
+        if gate is not None:
+            return gate
+        stack.extend(parent_ids(conn, current))
+    return None
+
+
+def _active_scope_gate(
+    conn: sqlite3.Connection, context: MutationContext, *, include_terminal: bool = False,
+) -> Optional[ArchitectureGate]:
+    if context.gate_id:
+        gate = get_architecture_gate(conn, context.gate_id)
+        if gate is None or gate.board_key != context.board_key or gate.creator_principal != context.principal:
+            raise ArchitectureGateError("architecture_gate_scope_mismatch")
+        return gate
+    predicates = ["board_key = ?", "creator_principal = ?"]
+    if not include_terminal:
+        predicates.append(
+            "state IN ('open', 'validated_awaiting_approval', 'policy_accepted', 'human_approved')"
+        )
+    params: list[Any] = [context.board_key, context.principal]
+    scopes: list[str] = []
+    if context.request_scope_id:
+        scopes.append("request_scope_id = ?")
+        params.append(context.request_scope_id)
+    if context.workflow_key:
+        scopes.append("workflow_key = ?")
+        params.append(context.workflow_key)
+    if not scopes:
+        return None
+    row = conn.execute(
+        "SELECT * FROM architecture_gates WHERE " + " AND ".join(predicates)
+        + " AND (" + " OR ".join(scopes) + ") ORDER BY updated_at DESC LIMIT 1",
+        params,
+    ).fetchone()
+    return _architecture_gate_from_row(row)
+
+
+def _gate_requires_enforcement(gate: Optional[ArchitectureGate]) -> bool:
+    return bool(
+        gate
+        and gate.enforcement_mode == "enforce"
+        and gate.state not in ARCHITECTURE_GATE_APPROVED_STATES
+    )
+
+
+def _new_gate_id() -> str:
+    return "g_" + secrets.token_hex(8)
+
+
+def _append_gate_audit(
+    conn: sqlite3.Connection, gate: ArchitectureGate, kind: str, reason: Optional[str] = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "gate_id": gate.gate_id,
+        "state": gate.state,
+        "mode": gate.enforcement_mode,
+    }
+    if reason:
+        payload["reason"] = reason
+    _append_event(conn, gate.architect_task_id, kind, payload)
+
+
+def _open_architecture_gate(
+    conn: sqlite3.Connection, task_id: str, context: MutationContext,
+) -> ArchitectureGate:
+    mode = context.mode.strip().lower()
+    if mode not in ARCHITECTURE_GATE_MODES:
+        raise ValueError(f"architecture gate mode must be one of {sorted(ARCHITECTURE_GATE_MODES)}")
+    now = int(time.time())
+    conn.execute(
+        """INSERT INTO architecture_gates (
+            gate_id, board_key, creator_principal, request_scope_id, session_id,
+            workflow_key, architect_task_id, state, policy_version,
+            canonicalization_version, enforcement_mode, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)""",
+        (
+            _new_gate_id(), context.board_key, context.principal,
+            context.request_scope_id, context.session_id, context.workflow_key,
+            task_id, ARCHITECTURE_GATE_POLICY_VERSION,
+            ARCHITECTURE_GATE_CANONICALIZATION_VERSION, mode, now, now,
+        ),
+    )
+    gate = get_architecture_gate_for_task(conn, task_id)
+    assert gate is not None
+    _append_gate_audit(conn, gate, "architecture_gate_opened")
+    return gate
+
+
+def _validate_json_value(value: Any) -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError("non-finite number in architecture handoff")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item)
+        return
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("architecture handoff keys must be strings")
+        for item in value.values():
+            _validate_json_value(item)
+        return
+    raise ValueError("architecture handoff contains unstable non-JSON value")
+
+
+def canonicalize_architecture_handoff(metadata: dict[str, Any]) -> str:
+    """Validate authority fields and return version-v1 canonical JSON."""
+    if not isinstance(metadata, dict):
+        raise ValueError("architecture handoff metadata must be an object")
+    allowed = {
+        "role", "design_depth", "chosen_approach", "alternatives_rejected", "slices",
+        "acceptance_criteria", "verification_plan", "human_approval_required", "rollout", "rollback",
+    }
+    unknown = set(metadata) - allowed
+    if unknown:
+        raise ValueError("unknown top-level authority fields: " + ", ".join(sorted(unknown)))
+    required = allowed
+    missing = required - set(metadata)
+    if missing:
+        raise ValueError("missing architecture handoff fields: " + ", ".join(sorted(missing)))
+    if metadata["role"] != "architect":
+        raise ValueError("architecture handoff role must be architect")
+    if metadata["design_depth"] not in {"none", "micro", "formal"}:
+        raise ValueError("invalid architecture design_depth")
+    if not isinstance(metadata["chosen_approach"], str) or not metadata["chosen_approach"].strip():
+        raise ValueError("architecture chosen_approach is required")
+    for field_name in ("alternatives_rejected", "slices", "acceptance_criteria", "verification_plan"):
+        if not isinstance(metadata[field_name], list):
+            raise ValueError(f"architecture {field_name} must be an array")
+    if not isinstance(metadata["human_approval_required"], bool):
+        raise ValueError("architecture human_approval_required must be boolean")
+    if not isinstance(metadata["rollout"], dict) or not metadata["rollout"]:
+        raise ValueError("architecture rollout must be a non-empty object")
+    if not isinstance(metadata["rollback"], dict) or not metadata["rollback"]:
+        raise ValueError("architecture rollback must be a non-empty object")
+    if metadata["design_depth"] == "formal":
+        if not metadata["slices"] or not metadata["acceptance_criteria"] or not metadata["verification_plan"]:
+            raise ValueError("formal architecture handoff requires slices, acceptance criteria, and verification")
+        if not any(isinstance(item, dict) and item.get("verification") for item in metadata["slices"]):
+            raise ValueError("formal architecture handoff requires a slice verification")
+    _validate_json_value(metadata)
+    return json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def architecture_handoff_digest(
+    *, policy_version: str, canonicalization_version: str, trusted_scope: dict[str, Any],
+    architect_task_id: str, accepted_run_id: int, canonical_handoff_json: str,
+) -> str:
+    domain = {
+        "policy_version": policy_version,
+        "canonicalization_version": canonicalization_version,
+        "trusted_scope": trusted_scope,
+        "architect_task_id": architect_task_id,
+        "accepted_run_id": int(accepted_run_id),
+        "canonical_handoff_json": canonical_handoff_json,
+    }
+    return hashlib.sha256(
+        json.dumps(domain, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    ).hexdigest()
+
+
+def accept_architecture_handoff(conn: sqlite3.Connection, gate_id: str) -> ArchitectureGate:
+    """Accept a completed architect run by immutable snapshot and CAS."""
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if gate is None:
+            raise ValueError("unknown architecture gate")
+        if gate.state != "open":
+            raise ArchitectureGateError("architecture_gate_not_open")
+        task = get_task(conn, gate.architect_task_id)
+        if task is None or task.assignee != "architect" or task.status != "done":
+            raise ValueError("architect task must be completed by architect")
+        run = conn.execute(
+            "SELECT id, outcome, metadata FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1", (gate.architect_task_id,),
+        ).fetchone()
+        if run is None or run["outcome"] != "completed" or not run["metadata"]:
+            raise ValueError("architect completed run metadata is required")
+        try:
+            metadata = json.loads(run["metadata"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("architect completed run metadata is malformed") from exc
+        canonical = canonicalize_architecture_handoff(metadata)
+        digest = architecture_handoff_digest(
+            policy_version=gate.policy_version,
+            canonicalization_version=gate.canonicalization_version,
+            trusted_scope={
+                "board_key": gate.board_key,
+                "creator_principal": gate.creator_principal,
+                "request_scope_id": gate.request_scope_id,
+                "session_id": gate.session_id,
+                "workflow_key": gate.workflow_key,
+            },
+            architect_task_id=gate.architect_task_id,
+            accepted_run_id=int(run["id"]),
+            canonical_handoff_json=canonical,
+        )
+        target_state = "validated_awaiting_approval" if metadata["human_approval_required"] else "policy_accepted"
+        cur = conn.execute(
+            """UPDATE architecture_gates SET accepted_run_id = ?, state = ?, accepted_snapshot = ?,
+               design_digest = ?, row_version = row_version + 1, updated_at = ?
+               WHERE gate_id = ? AND state = 'open' AND row_version = ?""",
+            (int(run["id"]), target_state, canonical, digest, int(time.time()), gate_id, gate.row_version),
+        )
+        if cur.rowcount != 1:
+            raise ArchitectureGateError("architecture_gate_cas_conflict")
+        accepted = get_architecture_gate(conn, gate_id)
+        assert accepted is not None
+        _append_gate_audit(conn, accepted, "handoff_validation_passed")
+        return accepted
+
+
+def invalidate_architecture_gate(conn: sqlite3.Connection, gate_id: str, *, reason: str) -> ArchitectureGate:
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if gate is None:
+            raise ValueError("unknown architecture gate")
+        cur = conn.execute(
+            """UPDATE architecture_gates SET state = 'invalidated', row_version = row_version + 1,
+               updated_at = ? WHERE gate_id = ? AND row_version = ?""",
+            (int(time.time()), gate_id, gate.row_version),
+        )
+        if cur.rowcount != 1:
+            raise ArchitectureGateError("architecture_gate_cas_conflict")
+        invalidated = get_architecture_gate(conn, gate_id)
+        assert invalidated is not None
+        _append_gate_audit(conn, invalidated, "approval_invalidated", reason)
+        return invalidated
+
+
+def _authorize_mutation(
+    conn: sqlite3.Connection, context: Optional[MutationContext], *, task_id: Optional[str] = None,
+) -> Optional[ArchitectureGate]:
+    if context is None or context.mode.strip().lower() == "off":
+        return None
+    gate = (
+        get_architecture_gate_for_task(conn, task_id)
+        if task_id
+        else _active_scope_gate(conn, context, include_terminal=True)
+    )
+    if gate is None:
+        return None
+    if context.mode.strip().lower() == "shadow" and gate.state not in ARCHITECTURE_GATE_APPROVED_STATES:
+        _append_gate_audit(conn, gate, "create_allowed", ARCHITECTURE_GATE_REASON_OPEN)
+        return gate
+    if _gate_requires_enforcement(gate) and context.phase != "architecture":
+        raise ArchitectureGateError(ARCHITECTURE_GATE_REASON_OPEN)
+    return gate
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2723,6 +3114,7 @@ def create_task(
     current_step_key: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    mutation_context: Optional[MutationContext] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2914,6 +3306,14 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                existing_gate: Optional[ArchitectureGate] = None
+                if mutation_context is not None:
+                    if mutation_context.phase == "architecture":
+                        existing_gate = _active_scope_gate(conn, mutation_context)
+                        if existing_gate is not None:
+                            return existing_gate.architect_task_id
+                    else:
+                        _authorize_mutation(conn, mutation_context)
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3030,6 +3430,8 @@ def create_task(
                         ),
                     },
                 )
+                if mutation_context is not None and mutation_context.phase == "architecture":
+                    _open_architecture_gate(conn, task_id, mutation_context)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -3186,10 +3588,22 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    mutation_context: Optional[MutationContext] = None,
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
     with write_txn(conn):
+        if mutation_context is not None:
+            gate = get_architecture_gate_for_task(conn, child_id) or get_architecture_gate_for_task(conn, parent_id)
+            if gate is not None and _gate_requires_enforcement(gate) and mutation_context.phase != "architecture":
+                raise ArchitectureGateError(ARCHITECTURE_GATE_REASON_OPEN)
+            if gate is not None and mutation_context.mode.strip().lower() == "shadow":
+                _append_gate_audit(conn, gate, "create_allowed", ARCHITECTURE_GATE_REASON_OPEN)
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
@@ -3787,6 +4201,21 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        gate = get_architecture_gate_for_task(conn, task_id)
+        if _gate_requires_enforcement(gate):
+            assert gate is not None
+            if gate.architect_task_id != task_id:
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_blocked",
+                    {"reason": ARCHITECTURE_GATE_REASON_OPEN, "gate_id": gate.gate_id},
+                )
+                return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4477,6 +4906,15 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
+        gate = get_architecture_gate_for_task(conn, task_id)
+        if gate is not None and gate.enforcement_mode == "enforce" and gate.architect_task_id != task_id:
+            task = get_task(conn, task_id)
+            if task is not None and task.current_run_id is not None and expected_run_id is None:
+                _append_event(conn, task_id, "completion_blocked", {"reason": "expected_run_required", "gate_id": gate.gate_id})
+                return False
+            if _gate_requires_enforcement(gate):
+                _append_event(conn, task_id, "completion_blocked", {"reason": ARCHITECTURE_GATE_REASON_OPEN, "gate_id": gate.gate_id})
+                return False
         if expected_run_id is None:
             cur = conn.execute(
                 """

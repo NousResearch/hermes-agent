@@ -14,6 +14,7 @@ import {
   toMiniMaxCloneVoicePayload,
   toMiniMaxMusicPayload,
   toMiniMaxTtsPayload,
+  videoLibraryClient,
   videoLibraryApiPath,
   videoStudioApiPath
 } from './moneyprinter-client'
@@ -130,6 +131,45 @@ describe('moneyprinter video studio client mapping', () => {
   it('keeps material-library API paths under the video-library namespace', () => {
     expect(videoLibraryApiPath('/assets')).toBe('/api/capabilities/video-library/assets')
     expect(videoLibraryApiPath('clips?tag=\u7ad6\u5c4f')).toBe('/api/capabilities/video-library/clips?tag=\u7ad6\u5c4f')
+  })
+
+  it('sends the selected library id on named-library requests', async () => {
+    const api = vi.fn().mockResolvedValue({ data: {}, error: null, ok: true })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+
+    await videoLibraryClient.listLibraries()
+    await videoLibraryClient.listAssets('beef-noodle')
+    await videoLibraryClient.listClips('beef-noodle', { limit: 5, query: '热气 牛肉' })
+    await videoLibraryClient.replaceClipTags('beef-noodle', 'clip-1', ['人工确认'])
+    await videoLibraryClient.createTimeline('beef-noodle', ['clip-1'], '9:16', [{ text: '后厨现煮' }])
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/capabilities/video-library/libraries' })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/capabilities/video-library/assets?library_id=beef-noodle' })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/capabilities/video-library/clips?library_id=beef-noodle&query=%E7%83%AD%E6%B0%94+%E7%89%9B%E8%82%89&limit=5'
+      })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ body: { libraryId: 'beef-noodle', tags: ['人工确认'] } })
+    )
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: {
+          aspect: '9:16',
+          clipIds: ['clip-1'],
+          libraryId: 'beef-noodle',
+          script: [{ text: '后厨现煮' }]
+        }
+      })
+    )
   })
 
   it('maps selected local materials to MoneyPrinter video_materials', () => {

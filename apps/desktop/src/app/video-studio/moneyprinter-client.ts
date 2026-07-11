@@ -50,10 +50,42 @@ export interface VideoLibraryClip {
   file_path: string
   id: string
   keyframe_path?: string
+  confidence?: number | null
+  materialized?: boolean
+  quality_score?: number | null
+  score?: number
+  source_file_path?: string
   start_seconds: number
   status: string
   tags: VideoLibraryTag[]
   updated_at: number
+}
+
+export interface VideoLibraryDescriptor {
+  id: string
+  mode: string
+  name: string
+  root: string
+  source_roots: string[]
+  taxonomy: string
+}
+
+export interface VideoLibraryStatus {
+  assets: number
+  clips: number
+  database_exists: boolean
+  failed: number
+  library_id: string
+  low_confidence: number
+  root: string
+  unusable: number
+}
+
+export interface VideoLibraryClipQuery {
+  assetId?: string
+  limit?: number
+  query?: string
+  tag?: string
 }
 
 export interface VideoLibraryAnalysisResult {
@@ -697,18 +729,29 @@ async function videoLibraryRequest<T>(
 }
 
 export const videoLibraryClient = {
-  analyzeAsset(assetId: string): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>> {
+  analyzeAsset(first: string, second?: string): Promise<MoneyPrinterResponse<VideoLibraryAnalysisResult>> {
+    const assetId = second || first
+    const libraryId = second ? first : ''
     return videoLibraryRequest<VideoLibraryAnalysisResult>(`/assets/${encodeURIComponent(assetId)}/analyze`, {
-      body: {},
+      body: libraryId ? { libraryId } : {},
       method: 'POST'
     })
   },
 
-  createTimeline(clipIds: string[], aspect: VideoAspect): Promise<MoneyPrinterResponse<VideoLibraryTimelineResult>> {
+  createTimeline(
+    libraryId: string,
+    clipIds: string[],
+    aspect: VideoAspect,
+    script: Array<Record<string, unknown>> = []
+  ): Promise<MoneyPrinterResponse<VideoLibraryTimelineResult>> {
     return videoLibraryRequest<VideoLibraryTimelineResult>('/timelines', {
-      body: { aspect, clipIds },
+      body: { aspect, clipIds, libraryId, script },
       method: 'POST'
     })
+  },
+
+  getLibraryStatus(libraryId: string): Promise<MoneyPrinterResponse<VideoLibraryStatus>> {
+    return videoLibraryRequest<VideoLibraryStatus>(`/libraries/${encodeURIComponent(libraryId)}/status`)
   },
 
   importAsset(sourcePath: string): Promise<MoneyPrinterResponse<{ asset: VideoLibraryAsset }>> {
@@ -718,27 +761,51 @@ export const videoLibraryClient = {
     })
   },
 
-  listAssets(): Promise<MoneyPrinterResponse<{ assets: VideoLibraryAsset[]; total: number }>> {
-    return videoLibraryRequest<{ assets: VideoLibraryAsset[]; total: number }>('/assets')
+  listAssets(libraryId = ''): Promise<MoneyPrinterResponse<{ assets: VideoLibraryAsset[]; total: number }>> {
+    const query = new URLSearchParams()
+    if (libraryId) query.set('library_id', libraryId)
+    const suffix = query.size ? `?${query.toString()}` : ''
+    return videoLibraryRequest<{ assets: VideoLibraryAsset[]; total: number }>(`/assets${suffix}`)
   },
 
-  listClips(assetId?: string): Promise<MoneyPrinterResponse<{ clips: VideoLibraryClip[]; total: number }>> {
-    const query = assetId ? `?asset_id=${encodeURIComponent(assetId)}` : ''
+  listClips(
+    libraryId = '',
+    options: VideoLibraryClipQuery = {}
+  ): Promise<MoneyPrinterResponse<{ clips: VideoLibraryClip[]; total: number }>> {
+    const query = new URLSearchParams()
+    if (libraryId) query.set('library_id', libraryId)
+    if (options.assetId) query.set('asset_id', options.assetId)
+    if (options.query) query.set('query', options.query)
+    if (options.tag) query.set('tag', options.tag)
+    if (options.limit) query.set('limit', String(options.limit))
+    const suffix = query.size ? `?${query.toString()}` : ''
 
-    return videoLibraryRequest<{ clips: VideoLibraryClip[]; total: number }>(`/clips${query}`)
+    return videoLibraryRequest<{ clips: VideoLibraryClip[]; total: number }>(`/clips${suffix}`)
+  },
+
+  listLibraries(): Promise<MoneyPrinterResponse<{ libraries: VideoLibraryDescriptor[] }>> {
+    return videoLibraryRequest<{ libraries: VideoLibraryDescriptor[] }>('/libraries')
   },
 
   replaceClipTags(
+    libraryId: string,
     clipId: string,
     tags: string[]
   ): Promise<MoneyPrinterResponse<{ clipId: string; tags: VideoLibraryTag[] }>> {
     return videoLibraryRequest<{ clipId: string; tags: VideoLibraryTag[] }>(
       `/clips/${encodeURIComponent(clipId)}/tags`,
       {
-        body: { tags },
+        body: { libraryId, tags },
         method: 'POST'
       }
     )
+  },
+
+  scanLibrary(libraryId: string, dryRun = false): Promise<MoneyPrinterResponse<Record<string, unknown>>> {
+    return videoLibraryRequest<Record<string, unknown>>(`/libraries/${encodeURIComponent(libraryId)}/scan`, {
+      body: { dryRun },
+      method: 'POST'
+    })
   }
 }
 

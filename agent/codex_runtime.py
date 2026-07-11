@@ -276,6 +276,11 @@ def _record_codex_app_server_compaction(
             compressor, "compression_count", 0
         ) + 1
         compressor.last_compression_rough_tokens = approx_tokens or 0
+        # The app server has already completed a real compaction boundary. Its
+        # usage update (when supplied) is therefore the same real-vs-real
+        # effectiveness verdict used by the normal compression path.
+        if hasattr(compressor, "_verify_compaction_cleared_threshold"):
+            compressor._verify_compaction_cleared_threshold = True
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens = -1
             compressor.last_completion_tokens = 0

@@ -5298,7 +5298,7 @@ def _(rid, params: dict) -> dict:
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                "profile_name": profile or _current_profile_name(),
             },
         },
     )
@@ -5306,7 +5306,16 @@ def _(rid, params: dict) -> dict:
 
 @method("session.list")
 def _(rid, params: dict) -> dict:
-    db = _get_db()
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile_home:
+        from hermes_state import SessionDB
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db", read_only=True)
+        except Exception as exc:
+            return _err(rid, 5006, f"profile state.db unavailable: {exc}")
+    else:
+        db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5006)
     try:
@@ -5365,7 +5374,16 @@ def _(rid, params: dict) -> dict:
     null-result shape (and logged) so callers don't have to special-
     case JSON-RPC error envelopes for what is a normal "no answer".
     """
-    db = _get_db()
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile_home:
+        from hermes_state import SessionDB
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db", read_only=True)
+        except Exception:
+            return _ok(rid, {"session_id": None})
+    else:
+        db = _get_db()
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
@@ -7819,7 +7837,18 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     history = list(session.get("history", []))
-    db = _get_db()
+    # Use the session's own profile db (global remote mode), not the launch
+    # profile's — otherwise history binds to the wrong state.db and a resume
+    # from another client sees a different row set (#62503).
+    profile_home = session.get("profile_home")
+    if profile_home:
+        from hermes_state import SessionDB
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db", read_only=True)
+        except Exception:
+            db = None
+    else:
+        db = _get_db()
     if db is not None and session.get("session_key"):
         try:
             history = db.get_messages_as_conversation(

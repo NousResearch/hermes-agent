@@ -1,13 +1,18 @@
 """OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
 
 This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Hermes keeps the ACP subprocess warm across turns on the same client
-instance (process reuse), opens a fresh ACP session per prompt (Hermes already
-embeds full conversation history), collects text chunks, and converts the
-result into the minimal shape Hermes expects from an OpenAI client.
+backend.
 
-Disable process reuse with ``HERMES_ACP_PROCESS_REUSE=0`` (falls back to
-spawn-per-request).
+Lifecycle (defaults on):
+- **Process reuse** — keep the ACP subprocess warm across turns.
+- **Session continuity** — when conversation history is a strict extension of
+  the previous request, keep the ACP ``sessionId`` and send only the new
+  messages (smaller prompts; tool-loop friendly).
+
+Disable with env:
+- ``HERMES_ACP_PROCESS_REUSE=0`` — spawn per request
+- ``HERMES_ACP_SESSION_REUSE=0`` — new ``session/new`` every prompt (still
+  reuses the process when process reuse is on)
 """
 
 from __future__ import annotations
@@ -42,6 +47,16 @@ _REUSE_DISABLE_VALUES = frozenset({"0", "false", "no", "off"})
 def _acp_process_reuse_enabled() -> bool:
     raw = os.getenv("HERMES_ACP_PROCESS_REUSE", "1").strip().lower()
     return raw not in _REUSE_DISABLE_VALUES
+
+
+def _acp_session_reuse_enabled() -> bool:
+    """Session continuity defaults to on whenever process reuse is on."""
+    raw = os.getenv("HERMES_ACP_SESSION_REUSE", "").strip().lower()
+    if raw in _REUSE_DISABLE_VALUES:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _acp_process_reuse_enabled()
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
@@ -144,18 +159,66 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _message_continuity_key(message: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable identity for prefix-matching conversation history."""
+    role = str(message.get("role") or "").strip().lower()
+    content = _render_message_content(message.get("content"))
+    tool_sig: tuple[Any, ...] = ()
+    raw_tcs = message.get("tool_calls")
+    if isinstance(raw_tcs, list) and raw_tcs:
+        names: list[str] = []
+        for tc in raw_tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                names.append(str(fn.get("name") or tc.get("name") or ""))
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn is not None else getattr(tc, "name", None)
+                names.append(str(name or ""))
+        tool_sig = tuple(names)
+    tool_call_id = str(message.get("tool_call_id") or "")
+    return (role, content, tool_sig, tool_call_id)
+
+
+def _common_message_prefix_len(
+    previous: list[dict[str, Any]] | None,
+    current: list[dict[str, Any]],
+) -> int:
+    if not previous:
+        return 0
+    n = 0
+    for left, right in zip(previous, current):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            break
+        if _message_continuity_key(left) != _message_continuity_key(right):
+            break
+        n += 1
+    return n
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
+    *,
+    continuation: bool = False,
 ) -> str:
-    sections: list[str] = [
-        "You are being used as the active ACP agent backend for Hermes.",
-        "Use ACP capabilities to complete tasks.",
-        "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
-        "If no tool is needed, answer normally.",
-    ]
+    sections: list[str] = []
+    if continuation:
+        sections.append(
+            "Continue the same ACP session. The messages below are NEW since "
+            "the previous prompt — do not restate earlier context unless needed."
+        )
+    else:
+        sections.extend(
+            [
+                "You are being used as the active ACP agent backend for Hermes.",
+                "Use ACP capabilities to complete tasks.",
+                "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+                "If no tool is needed, answer normally.",
+            ]
+        )
     if model:
         sections.append(f"Hermes requested model hint: {model}")
 
@@ -200,6 +263,11 @@ def _format_messages_as_prompt(
 
         content = message.get("content")
         rendered = _render_message_content(content)
+        # Keep tool-call-only assistant turns in the transcript for continuity.
+        if not rendered and role == "assistant" and message.get("tool_calls"):
+            rendered = "[tool_calls]"
+        if not rendered and role == "tool":
+            rendered = "[tool result]"
         if not rendered:
             continue
 
@@ -213,7 +281,8 @@ def _format_messages_as_prompt(
         transcript.append(f"{label}:\n{rendered}")
 
     if transcript:
-        sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
+        heading = "New messages:\n\n" if continuation else "Conversation transcript:\n\n"
+        sections.append(heading + "\n\n".join(transcript))
 
     sections.append("Continue the conversation from the latest user request.")
     return "\n\n".join(section.strip() for section in sections if section and section.strip())
@@ -456,6 +525,7 @@ class CopilotACPClient:
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._reuse_enabled = _acp_process_reuse_enabled()
+        self._session_reuse_enabled = _acp_session_reuse_enabled()
         # Transport state for process reuse (guarded by _rpc_lock).
         self._active_process: subprocess.Popen[str] | None = None
         self._active_process_lock = threading.Lock()
@@ -465,11 +535,43 @@ class CopilotACPClient:
         self._next_rpc_id = 0
         self._initialized = False
         self._spawn_count = 0  # test/metrics: how many times we Popen'd
+        # Session continuity state (same lock as transport).
+        self._session_id: str | None = None
+        self._session_history: list[dict[str, Any]] = []
+        self._session_count = 0  # test/metrics: session/new calls
+        self._session_continues = 0  # test/metrics: prompts reusing sessionId
 
     def close(self) -> None:
         """Tear down the ACP subprocess and mark the client closed."""
         with self._rpc_lock:
             self._reset_transport(mark_closed=True)
+
+    def interrupt(self) -> None:
+        """Abort any in-flight ACP RPC by killing the warm subprocess.
+
+        Does **not** wait on ``_rpc_lock`` so a blocked ``_rpc`` can observe
+        ``poll() != None`` and raise. Leaves the client reusable
+        (``is_closed`` stays False); the owning turn resets transport state.
+        """
+        with self._active_process_lock:
+            proc = self._active_process
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _reset_session_state(self) -> None:
+        self._session_id = None
+        self._session_history = []
 
     def _reset_transport(self, *, mark_closed: bool = False) -> None:
         """Kill any live process and clear reuse state. Caller holds ``_rpc_lock``."""
@@ -481,6 +583,7 @@ class CopilotACPClient:
         self._stderr_tail = None
         self._next_rpc_id = 0
         self._initialized = False
+        self._reset_session_state()
         if mark_closed:
             self.is_closed = True
         if proc is None:
@@ -513,12 +616,7 @@ class CopilotACPClient:
         stream: bool = False,
         **_: Any,
     ) -> Any:
-        prompt_text = _format_messages_as_prompt(
-            messages or [],
-            model=model,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
+        msg_list = [m for m in (messages or []) if isinstance(m, dict)]
         # Normalise timeout: run_agent.py may pass an httpx.Timeout object
         # (used natively by the OpenAI SDK) rather than a plain float.
         if timeout is None:
@@ -535,8 +633,11 @@ class CopilotACPClient:
             _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
             _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
 
-        response_text, reasoning_text = self._run_prompt(
-            prompt_text,
+        response_text, reasoning_text = self._run_conversation_prompt(
+            msg_list,
+            model=model,
+            tools=tools,
+            tool_choice=tool_choice,
             timeout_seconds=_effective_timeout,
         )
 
@@ -722,11 +823,62 @@ class CopilotACPClient:
         )
         self._initialized = True
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_conversation_prompt(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: Any,
+        timeout_seconds: float,
+    ) -> tuple[str, str]:
+        """Run one completion, reusing process and optionally ACP session."""
         label = self._acp_display_name
         with self._rpc_lock:
             try:
                 self._ensure_initialized(timeout_seconds=timeout_seconds)
+
+                prefix_len = 0
+                continue_session = False
+                if (
+                    self._session_reuse_enabled
+                    and self._session_id
+                    and self._process_alive()
+                    and self._initialized
+                ):
+                    prefix_len = _common_message_prefix_len(self._session_history, messages)
+                    if 0 < prefix_len < len(messages):
+                        continue_session = True
+
+                if continue_session:
+                    prompt_text = _format_messages_as_prompt(
+                        messages[prefix_len:],
+                        model=model,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        continuation=True,
+                    )
+                    session_id = self._session_id
+                    assert session_id is not None
+                    try:
+                        text, reasoning = self._session_prompt(
+                            session_id, prompt_text, timeout_seconds=timeout_seconds
+                        )
+                        self._session_continues += 1
+                        self._session_history = list(messages)
+                        return text, reasoning
+                    except Exception:
+                        # Session may have expired — fall through to a fresh
+                        # session/new with the full transcript on the same process.
+                        self._reset_session_state()
+
+                prompt_text = _format_messages_as_prompt(
+                    messages,
+                    model=model,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    continuation=False,
+                )
                 session = self._rpc(
                     "session/new",
                     {
@@ -738,25 +890,14 @@ class CopilotACPClient:
                 session_id = str(session.get("sessionId") or "").strip()
                 if not session_id:
                     raise RuntimeError(f"{label} did not return a sessionId.")
+                self._session_id = session_id
+                self._session_count += 1
 
-                text_parts: list[str] = []
-                reasoning_parts: list[str] = []
-                self._rpc(
-                    "session/prompt",
-                    {
-                        "sessionId": session_id,
-                        "prompt": [
-                            {
-                                "type": "text",
-                                "text": prompt_text,
-                            }
-                        ],
-                    },
-                    timeout_seconds=timeout_seconds,
-                    text_parts=text_parts,
-                    reasoning_parts=reasoning_parts,
+                text, reasoning = self._session_prompt(
+                    session_id, prompt_text, timeout_seconds=timeout_seconds
                 )
-                return "".join(text_parts), "".join(reasoning_parts)
+                self._session_history = list(messages)
+                return text, reasoning
             except Exception:
                 # Drop a possibly-poisoned transport so the next call gets a
                 # clean process rather than fighting a half-dead inbox.
@@ -765,6 +906,42 @@ class CopilotACPClient:
             finally:
                 if not self._reuse_enabled:
                     self._reset_transport(mark_closed=True)
+
+    def _session_prompt(
+        self,
+        session_id: str,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+    ) -> tuple[str, str]:
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        self._rpc(
+            "session/prompt",
+            {
+                "sessionId": session_id,
+                "prompt": [
+                    {
+                        "type": "text",
+                        "text": prompt_text,
+                    }
+                ],
+            },
+            timeout_seconds=timeout_seconds,
+            text_parts=text_parts,
+            reasoning_parts=reasoning_parts,
+        )
+        return "".join(text_parts), "".join(reasoning_parts)
+
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        """Low-level single-blob prompt (tests / callers that skip message lists)."""
+        return self._run_conversation_prompt(
+            [{"role": "user", "content": prompt_text}],
+            model=None,
+            tools=None,
+            tool_choice=None,
+            timeout_seconds=timeout_seconds,
+        )
 
     def _handle_server_message(
         self,

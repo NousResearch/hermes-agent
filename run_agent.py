@@ -2723,6 +2723,21 @@ class AIAgent:
                 child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
+        # Warm ACP subprocesses block on stdio RPC — kill them so /stop is
+        # immediate rather than waiting for Devin/Copilot to finish the turn.
+        try:
+            from agent.acp_client_factory import is_acp_provider
+
+            client = getattr(self, "client", None)
+            if client is not None and is_acp_provider(
+                getattr(self, "provider", None), getattr(self, "base_url", None)
+            ):
+                if hasattr(client, "interrupt"):
+                    client.interrupt()
+                elif hasattr(client, "close"):
+                    client.close()
+        except Exception as e:
+            logger.debug("Failed to interrupt ACP client: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 

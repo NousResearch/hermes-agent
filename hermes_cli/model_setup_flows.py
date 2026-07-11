@@ -1902,7 +1902,7 @@ def _model_flow_devin_acp(config, current_model=""):
     effective_base = status.get("base_url") or pconfig.inference_base_url
 
     print("  Devin CLI ACP delegates Hermes turns to `devin acp`.")
-    print("  Hermes keeps the ACP process warm across turns (new session each prompt).")
+    print("  Hermes keeps the ACP process warm and continues sessions when history grows.")
     print("  Authenticate with: devin auth login")
     print(f"  Command: {resolved_command}")
     print(f"  Backend marker: {effective_base}")

@@ -720,7 +720,28 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            try:
+                response_data = provider.search(query, limit)
+                if not response_data or not response_data.get("success", True):
+                    error_detail = response_data.get("error") if response_data else "Empty response"
+                    raise Exception(f"Provider search returned success=False: {error_detail}")
+            except Exception as search_exc:
+                if provider.name != "ddgs":
+                    logger.warning(
+                        "Web search via %s failed: %s. Falling back to ddgs.",
+                        provider.name, search_exc,
+                    )
+                    ddg_provider = _wsp_get_provider("ddgs")
+                    if ddg_provider and ddg_provider.supports_search():
+                        logger.info(
+                            "Web search via fallback ddgs: '%s' (limit: %d)",
+                            query, limit,
+                        )
+                        response_data = ddg_provider.search(query, limit)
+                    else:
+                        raise search_exc
+                else:
+                    raise search_exc
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

@@ -1659,6 +1659,16 @@ def _reap_orphaned_browser_sessions():
     # Also pick up cloud-provider sessions (browser-use/browserbase/firecrawl)
     socket_dirs += glob.glob(os.path.join(tmpdir, "agent-browser-hermes_*"))
 
+    # Daemon-independent sweep for Chromium that outlived its daemon.  This MUST
+    # run before the early return below: the whole leak scenario is that the
+    # daemon (and its socket dir) is already gone, so ``socket_dirs`` is often
+    # empty precisely when orphaned browsers are piling up.  The socket-dir loop
+    # can only ever see browsers whose daemon is still alive.
+    try:
+        _reap_orphaned_chromium_profiles()
+    except Exception as e:  # never let the profile sweep break daemon reaping
+        logger.warning("Chromium profile reap error: %s", e)
+
     if not socket_dirs:
         return
 
@@ -1749,6 +1759,101 @@ def _reap_orphaned_browser_sessions():
 
     if reaped:
         logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
+
+
+def _reap_orphaned_chromium_profiles():
+    """Reap headless Chromium orphaned from a dead ``agent-browser`` daemon.
+
+    The daemon-centric reaper (:func:`_reap_orphaned_browser_sessions`) finds
+    work by globbing daemon *socket* dirs (``agent-browser-{h_,cdp_,hermes_}*``)
+    and tree-killing the daemon, which cascades to its Chromium children *while
+    the daemon is alive*.  But ``agent-browser`` launches Chromium as a
+    **detached grandchild** with its own
+    ``--user-data-dir=<tmp>/agent-browser-chrome-<uuid>``.  When the daemon dies
+    uncleanly — gateway ``run --replace``, SIGKILL, or a crash, where neither the
+    ``atexit`` handler nor a signal handler runs (SIGTERM/SIGINT handlers were
+    deliberately removed) — that Chromium **reparents to init (PPID 1)** and its
+    socket dir is gone.  The survivor then has no socket dir, no live daemon, and
+    no ``_active_sessions`` entry, so the socket-dir sweep can never see it.
+    Across many restarts these accumulate and exhaust host memory (observed in
+    production: ~20 instances / ~200 procs / ~4.5 GB before an external
+    ``pkill``).
+
+    This sweep closes the gap by keying on the Chromium *profile dir* instead of
+    the daemon socket dir: for each ``agent-browser-chrome-*`` profile it finds
+    the live processes launched against it (via ``--user-data-dir``) and reaps
+    the ones reparented to init — i.e. whose launching daemon is gone.  A profile
+    dir referenced by no live process is removed as stale.
+
+    Safety mirrors :func:`_verify_reapable_browser_daemon`.  ``/tmp`` is
+    world-writable and the profile names are predictable, so we fail closed and
+    only reap a PID that (1) is a Chromium-family executable by name, (2) carries
+    this exact ``--user-data-dir=<profile>`` on its command line, and (3) has
+    been reparented to init (its real parent already exited).  A browser still
+    owned by a live daemon keeps that daemon as its parent (PPID != 1) and is
+    never touched, so an in-use session is safe.  Idempotent; safe to call from
+    any context (cleanup-thread startup, atexit, on demand).
+    """
+    import glob
+    try:
+        import psutil
+    except ImportError:  # psutil is a hard dep; defensive only
+        return
+
+    tmpdir = _socket_safe_tmpdir()
+    profile_dirs = glob.glob(os.path.join(tmpdir, "agent-browser-chrome-*"))
+    if not profile_dirs:
+        return
+
+    # Index profiles by normalized path, then make a single pass over the
+    # process table, matching each proc to a profile via its --user-data-dir.
+    wanted = {os.path.normpath(d): d for d in profile_dirs}
+    procs_by_profile: dict[str, list] = {d: [] for d in profile_dirs}
+    flag = "--user-data-dir="
+    for proc in psutil.process_iter(["pid", "name", "ppid", "cmdline"]):
+        for arg in (proc.info.get("cmdline") or []):
+            if not arg.startswith(flag):
+                continue
+            orig = wanted.get(os.path.normpath(arg[len(flag):]))
+            if orig is not None:
+                procs_by_profile[orig].append(proc)
+            break
+
+    reaped = 0
+    for profile_dir, procs in procs_by_profile.items():
+        remaining_live = 0
+        for proc in procs:
+            try:
+                if not proc.is_running():
+                    continue
+                name = (proc.info.get("name") or "").lower()
+                ppid = proc.info.get("ppid")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            # Fail closed unless this is clearly an ORPHANED Chromium: a
+            # chromium-family executable reparented to init.  Anything else that
+            # still references the profile keeps the dir alive for a later sweep.
+            if "chrom" not in name or ppid != 1:
+                remaining_live += 1
+                continue
+            try:
+                from tools.process_registry import ProcessRegistry
+                ProcessRegistry._terminate_host_pid(proc.pid)
+                logger.info("Reaped orphaned Chromium PID %s (profile %s)",
+                            proc.pid, os.path.basename(profile_dir))
+                reaped += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                remaining_live += 1  # couldn't signal it — retry next sweep
+
+        # Remove the profile dir only when nothing live still references it
+        # (it was already dead, or we just reaped every referencing proc).
+        if remaining_live == 0:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+
+    if reaped:
+        logger.info(
+            "Reaped %d orphaned Chromium process(es) from previous run(s)",
+            reaped)
 
 
 def _browser_cleanup_thread_worker():

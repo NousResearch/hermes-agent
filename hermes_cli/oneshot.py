@@ -417,6 +417,11 @@ def _run_agent(
     agent.tool_gen_callback = None
 
     result = agent.run_conversation(prompt)
+    # Shut down memory provider to prevent SIGABRT on interpreter shutdown (#60616)
+    try:
+        agent.shutdown_memory_provider()
+    except Exception:
+        pass
     return (result.get("final_response") or "", result)
 
 

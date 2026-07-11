@@ -120,6 +120,9 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 agent._session_db.update_token_counts(
                     agent.session_id,
                     model=agent.model,
+                    billing_provider=agent.provider,
+                    billing_base_url=agent.base_url,
+                    billing_mode="subscription_included",
                     api_call_count=1,
                 )
             except Exception as exc:

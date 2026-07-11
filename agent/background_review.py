@@ -171,6 +171,11 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "api_key": parent_runtime.get("api_key") or None,
         "base_url": parent_runtime.get("base_url") or None,
         "api_mode": parent_api_mode,
+        "credential_pool": getattr(agent, "_credential_pool", None),
+        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "max_tokens": getattr(agent, "max_tokens", None),
+        "command": getattr(agent, "acp_command", None),
+        "args": list(getattr(agent, "acp_args", []) or []),
         "routed": False,
     }
     try:
@@ -198,10 +203,15 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         )
         return {
             "provider": rp.get("provider") or task_provider,
-            "model": task_model,
+            "model": rp.get("model") or task_model,
             "api_key": rp.get("api_key"),
             "base_url": rp.get("base_url"),
             "api_mode": rp.get("api_mode"),
+            "credential_pool": rp.get("credential_pool"),
+            "request_overrides": dict(rp.get("request_overrides") or {}),
+            "max_tokens": rp.get("max_output_tokens"),
+            "command": rp.get("command"),
+            "args": list(rp.get("args") or []),
             "routed": True,
         }
     except Exception as e:
@@ -791,6 +801,12 @@ def _run_review_in_thread(
             # Match parent's toolset config so ``tools[]`` is byte-identical
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
+            _fork_kwargs: Dict[str, Any] = {}
+            if isinstance(_rt.get("max_tokens"), int):
+                _fork_kwargs["max_tokens"] = _rt["max_tokens"]
+            if isinstance(_rt.get("command"), str) and _rt["command"]:
+                _fork_kwargs["acp_command"] = _rt["command"]
+                _fork_kwargs["acp_args"] = _rt.get("args") or []
             review_agent = AIAgent(
                 model=_rt.get("model") or context["model"],
                 max_iterations=16,
@@ -800,11 +816,13 @@ def _run_review_in_thread(
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,
-                credential_pool=context["credential_pool"],
+                credential_pool=_rt.get("credential_pool"),
+                request_overrides=_rt.get("request_overrides") or {},
                 parent_session_id=context["session_id"],
                 enabled_toolsets=context["enabled_toolsets"],
                 disabled_toolsets=context["disabled_toolsets"],
                 skip_memory=True,
+                **_fork_kwargs,
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
@@ -1042,7 +1060,6 @@ def _capture_review_context(agent: Any) -> Dict[str, Any]:
         "model": getattr(agent, "model", ""),
         "platform": getattr(agent, "platform", None),
         "provider": getattr(agent, "provider", None),
-        "credential_pool": getattr(agent, "_credential_pool", None),
         "session_id": getattr(agent, "session_id", "") or "",
         "enabled_toolsets": list(enabled) if isinstance(enabled, (list, tuple)) else enabled,
         "disabled_toolsets": list(disabled) if isinstance(disabled, (list, tuple)) else disabled,

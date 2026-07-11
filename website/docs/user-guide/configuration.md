@@ -1170,7 +1170,7 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`)
 | `"xai-oauth"` | Force xAI Grok OAuth (browser login for SuperGrok or X Premium+ subscribers, no API key). Same OAuth token covers chat, TTS, image, video, and transcription. | `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
-Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
+Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. For example, `gmi` is valid once `GMI_API_KEY` is configured, and `fireworks` is valid once `FIREWORKS_API_KEY` is configured:
 
 ```yaml
 auxiliary:
@@ -1179,7 +1179,7 @@ auxiliary:
     model: "anthropic/claude-opus-4.6"
 ```
 
-For GMI auxiliary routing, use the exact model ID returned by GMI's `/v1/models` endpoint.
+For GMI auxiliary routing, use the exact model ID returned by GMI's `/v1/models` endpoint. Fireworks model IDs use the provider's native slash form, for example `accounts/fireworks/models/glm-5p2`.
 
 ### Common Setups
 

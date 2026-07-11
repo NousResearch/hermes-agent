@@ -568,24 +568,21 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         history = list(session.get("history", []))
 
     # ── Persist unflushed messages to SQLite ──────────────────────────
-    # Two sources, tried in order of freshness:
-    #   1. agent._session_messages — set by the last _persist_session()
-    #      call inside run_conversation().  This is the most recent
-    #      snapshot the agent thread wrote, and may include partial
-    #      turn data that hasn't reached session["history"] yet.
-    #   2. session["history"] — updated after run_conversation()
-    #      returns.  Stale when the agent is mid‑turn, but correct
-    #      when the turn completed before finalize.
-    # Best‑effort — the agent thread may still be mid‑turn, so only
-    # previously completed messages are guaranteed.
+    # Flush ``agent._session_messages`` via ``_persist_session``'s marker-based
+    # dedup (same contract as the gateway-shutdown flush, #13121). Do NOT pass
+    # ``conversation_history``: ``session["history"]`` and ``_session_messages``
+    # alias the SAME list once a turn completes, so passing it made
+    # ``_flush_messages_to_session_db`` treat every message as already-durable
+    # and skip it — a data-loss bug when finalize is the sole persist path after
+    # a WS disconnect/restart (e.g. the in-turn flush hit a transient SQLite
+    # failure). Markers persist the genuinely-unflushed tail without duplicating
+    # durable rows (including a resumed-but-not-run session's already-in-DB
+    # transcript, which stays in ``session["history"]`` only).
     if agent is not None and hasattr(agent, "_persist_session"):
-        snapshot = (
-            getattr(agent, "_session_messages", None)
-            or history
-        )
+        snapshot = getattr(agent, "_session_messages", None)
         if snapshot:
             try:
-                agent._persist_session(snapshot, conversation_history=history)
+                agent._persist_session(snapshot)
             except Exception:
                 pass
 
@@ -3671,6 +3668,19 @@ def _on_tool_progress(
         # the stable tool id and args. Emitting another id-less progress row
         # here makes the desktop live view diverge from hydrated history.
         return
+    if event_type == "tool.output_risk" and name:
+        metadata = _kwargs.get("risk_metadata")
+        if not isinstance(metadata, dict):
+            return
+        payload: dict[str, object] = {
+            "tool_id": str(_kwargs.get("tool_call_id") or ""),
+            "name": str(name),
+            "risk": str(metadata.get("risk") or "low"),
+            "findings": [str(item) for item in metadata.get("findings", [])],
+            "redacted": bool(metadata.get("redacted", False)),
+        }
+        _emit("tool.output_risk", sid, payload)
+        return
     if event_type == "reasoning.available" and preview:
         payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):
@@ -3862,6 +3872,9 @@ def _agent_cbs(sid: str) -> dict:
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        # Affection reaction (ily / <3 / good bot) → hearts. Core-detected, so
+        # the TUI heart and desktop floating hearts share one signal.
+        "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
         "reasoning_callback": lambda text: _emit(
             "reasoning.delta",
             sid,

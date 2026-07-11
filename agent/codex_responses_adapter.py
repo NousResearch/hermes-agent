@@ -600,7 +600,11 @@ def _chat_messages_to_responses_input(
 # Input preflight / validation
 # ---------------------------------------------------------------------------
 
-def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
+def _preflight_codex_input_items(
+    raw_items: Any,
+    *,
+    is_github_responses: bool = False,
+) -> List[Dict[str, Any]]:
     if not isinstance(raw_items, list):
         raise ValueError("Codex Responses input must be a list of input items.")
 
@@ -741,7 +745,11 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 "content": normalized_content,
             }
             item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
+            if (
+                not is_github_responses
+                and isinstance(item_id, str)
+                and item_id.strip()
+            ):
                 stripped_id = item_id.strip()
                 if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
                     normalized_item["id"] = stripped_id
@@ -816,6 +824,7 @@ def _preflight_codex_api_kwargs(
     api_kwargs: Any,
     *,
     allow_stream: bool = False,
+    is_github_responses: bool = False,
 ) -> Dict[str, Any]:
     if not isinstance(api_kwargs, dict):
         raise ValueError("Codex Responses request must be a dict.")
@@ -837,7 +846,10 @@ def _preflight_codex_api_kwargs(
         instructions = str(instructions)
     instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
 
-    normalized_input = _preflight_codex_input_items(api_kwargs.get("input"))
+    normalized_input = _preflight_codex_input_items(
+        api_kwargs.get("input"),
+        is_github_responses=is_github_responses,
+    )
 
     tools = api_kwargs.get("tools")
     normalized_tools = None

@@ -181,6 +181,34 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_github_preflight_drops_id_reintroduced_by_request_override(self, transport):
+        injected = {
+            "type": "message",
+            "role": "assistant",
+            "status": "in_progress",
+            "content": [{"type": "output_text", "text": "pong"}],
+            "id": "stale_short",
+            "phase": "final_answer",
+        }
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "continue"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"input": [injected]},
+        )
+
+        preflight = transport.preflight_kwargs(
+            kw,
+            is_github_responses=True,
+        )
+
+        message_item = preflight["input"][0]
+        assert "id" not in message_item
+        assert message_item["status"] == "in_progress"
+        assert message_item["phase"] == "final_answer"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
     def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
         messages = [
             {"role": "system", "content": "You are Hermes."},

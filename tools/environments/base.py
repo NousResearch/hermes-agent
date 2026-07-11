@@ -401,7 +401,7 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = f"{shlex.quote(self._snapshot_path)}.tmp.${{BASHPID}}"
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
             f"export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp}\n"

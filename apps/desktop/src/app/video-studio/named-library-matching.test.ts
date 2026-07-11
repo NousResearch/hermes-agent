@@ -6,6 +6,7 @@ import {
   clearLibraryMatches,
   confirmSegmentClip,
   emptyMatchState,
+  planAutomaticClipPool,
   segmentVideoScript,
   setSegmentCandidates,
   setSegmentError
@@ -27,6 +28,50 @@ const clip: VideoLibraryClip = {
 }
 
 describe('named library script matching', () => {
+  it('plans every primary beat before round-robin supplemental shots', () => {
+    const s1Primary = { ...clip, id: 's1-primary', asset_id: 'asset-1', score: 1 }
+    const s1Extra = { ...clip, id: 's1-extra', asset_id: 'asset-3', score: 0.7 }
+    const s2Primary = { ...clip, id: 's2-primary', asset_id: 'asset-2', score: 0.9 }
+    const s2Extra = { ...clip, id: 's2-extra', asset_id: 'asset-4', score: 0.6 }
+    const segments = [
+      { id: 'segment-1', text: '第一段' },
+      { id: 'segment-2', text: '第二段' }
+    ]
+
+    const pool = planAutomaticClipPool(segments, {
+      'segment-1': [s1Extra, s1Primary],
+      'segment-2': [s2Extra, s2Primary]
+    })
+
+    expect(pool.map(item => [item.round, item.segment.id, item.clip.id])).toEqual([
+      [0, 'segment-1', 's1-primary'],
+      [0, 'segment-2', 's2-primary'],
+      [1, 'segment-1', 's1-extra'],
+      [1, 'segment-2', 's2-extra']
+    ])
+  })
+
+  it('never repeats a clip and prefers a new source asset before a used asset', () => {
+    const shared = { ...clip, id: 'shared', asset_id: 'asset-1', score: 1 }
+    const sameAsset = { ...clip, id: 'same-asset', asset_id: 'asset-1', score: 0.95 }
+    const newForFirst = { ...clip, id: 'new-first', asset_id: 'asset-3', score: 0.6 }
+    const newForSecond = { ...clip, id: 'new-second', asset_id: 'asset-2', score: 0.8 }
+
+    const pool = planAutomaticClipPool(
+      [
+        { id: 'segment-1', text: '第一段' },
+        { id: 'segment-2', text: '第二段' }
+      ],
+      {
+        'segment-1': [shared, sameAsset, newForFirst],
+        'segment-2': [shared, newForSecond]
+      }
+    )
+
+    expect(pool.map(item => item.clip.id)).toEqual(['shared', 'new-second', 'new-first', 'same-asset'])
+    expect(new Set(pool.map(item => item.clip.id)).size).toBe(pool.length)
+  })
+
   it('automatically selects the best candidate while avoiding adjacent source repetition', () => {
     const repeated = { ...clip, id: 'clip-repeat', asset_id: 'asset-1', score: 0.99 }
     const diverse = { ...clip, id: 'clip-diverse', asset_id: 'asset-2', score: 0.8 }

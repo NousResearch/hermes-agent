@@ -11,6 +11,12 @@ export interface NamedLibraryMatchState {
   errorsBySegment: Record<string, string>
 }
 
+export interface PlannedSegmentClip {
+  clip: VideoLibraryClip
+  round: number
+  segment: ScriptSegment
+}
+
 function clipRank(clip: VideoLibraryClip): number {
   return (clip.score ?? 0) * 100 + (clip.quality_score ?? 0) * 10 + (clip.confidence ?? 0)
 }
@@ -20,21 +26,53 @@ export function automaticallySelectClips(
   candidatesBySegment: Record<string, VideoLibraryClip[]>
 ): Record<string, string> {
   const selected: Record<string, string> = {}
-  const usedAssets = new Set<string>()
 
-  for (const segment of segments) {
-    const ranked = [...(candidatesBySegment[segment.id] || [])].sort((left, right) => clipRank(right) - clipRank(left))
-    const clip = ranked.find(candidate => !usedAssets.has(candidate.asset_id)) || ranked[0]
-
-    if (!clip) {
-      continue
+  for (const item of planAutomaticClipPool(segments, candidatesBySegment)) {
+    if (item.round === 0) {
+      selected[item.segment.id] = item.clip.id
     }
-
-    selected[segment.id] = clip.id
-    usedAssets.add(clip.asset_id)
   }
 
   return selected
+}
+
+export function planAutomaticClipPool(
+  segments: ScriptSegment[],
+  candidatesBySegment: Record<string, VideoLibraryClip[]>
+): PlannedSegmentClip[] {
+  const rankedBySegment: Record<string, VideoLibraryClip[]> = {}
+
+  for (const segment of segments) {
+    rankedBySegment[segment.id] = [...(candidatesBySegment[segment.id] || [])].sort(
+      (left, right) => clipRank(right) - clipRank(left)
+    )
+  }
+
+  const planned: PlannedSegmentClip[] = []
+  const usedAssets = new Set<string>()
+  const usedClips = new Set<string>()
+
+  for (let round = 0; ; round += 1) {
+    let added = false
+
+    for (const segment of segments) {
+      const remaining = rankedBySegment[segment.id].filter(candidate => !usedClips.has(candidate.id))
+      const selected = remaining.find(candidate => !usedAssets.has(candidate.asset_id)) || remaining[0]
+
+      if (!selected) {
+        continue
+      }
+
+      planned.push({ clip: selected, round, segment })
+      usedClips.add(selected.id)
+      usedAssets.add(selected.asset_id)
+      added = true
+    }
+
+    if (!added) {
+      return planned
+    }
+  }
 }
 
 export function segmentVideoScript(script: string): ScriptSegment[] {

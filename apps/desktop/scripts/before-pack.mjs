@@ -93,10 +93,9 @@ export default async function beforePack(context) {
     const archName = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
     if (platform && archName) {
       if (archName === 'universal') {
-        console.warn(
-          '[before-pack] target arch is "universal" — node-pty has no universal prebuild; ' +
-            'staged binary will be whichever single-arch copy npm run build left behind. ' +
-            'lipo-merge x64/arm64 .node files manually if you need a true universal build.'
+        throw new Error(
+          'target arch is "universal", but node-pty has no verified universal payload; ' +
+            'build separate x64 and arm64 packages instead'
         )
       } else {
         await stageNodePty({ platform, arch: archName })

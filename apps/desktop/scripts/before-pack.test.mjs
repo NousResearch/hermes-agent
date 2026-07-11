@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { Arch } from 'electron-builder'
 
 import beforePack, { cleanStaleAppOutDir } from '../scripts/before-pack.mjs'
 
@@ -49,4 +50,11 @@ test('beforePack default export resolves even when cleanup throws', async () => 
   // context whose appOutDir is a file the hook will try (and be allowed) to
   // remove; the contract under test is that the hook never rejects.
   await assert.doesNotReject(beforePack({ appOutDir: '', electronPlatformName: 'linux' }))
+})
+
+test('beforePack rejects universal macOS packages without a verified universal payload', async () => {
+  await assert.rejects(
+    beforePack({ appOutDir: '', electronPlatformName: 'darwin', arch: Arch.universal }),
+    /no verified universal payload/
+  )
 })

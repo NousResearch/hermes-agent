@@ -1,25 +1,34 @@
 // rebuild-native.mjs — ensure host-native modules exist before packaging.
 import { rebuild } from '@electron/rebuild'
-import { resolve, dirname } from 'node:path'
+import { rmSync } from 'node:fs'
+import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMain } from './utils.mjs'
-import { findNodePtyNativePayload, isHostTarget } from './stage-native-deps.mjs'
+import {
+  assertNodePtyNativePayload,
+  findNodePtyNativePayload,
+  isHostTarget,
+  resolveNodePtyRoot
+} from './stage-native-deps.mjs'
 import packageJson from '../package.json' with { type: 'json' }
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workspaceRoot = resolve(projectRoot, '../..')
 
 export async function rebuildNodePty({ platform = process.platform, arch = process.arch } = {}) {
-  if (findNodePtyNativePayload({ platform, arch })) {
-    console.log(`[rebuild-native] node-pty native payload already exists for ${platform}-${arch}`)
-    return false
-  }
-
   if (!isHostTarget(platform, arch)) {
+    if (findNodePtyNativePayload({ platform, arch })) return false
     throw new Error(
       `cannot cross-compile node-pty for ${platform}-${arch} from ` +
         `${process.platform}-${process.arch}; install a target prebuild instead`
     )
   }
+
+  // A non-empty local binding may still target Node's ABI, the wrong CPU, or
+  // be corrupt. Remove local candidates and always rebuild for this Electron
+  // version so they cannot shadow a usable prebuild at runtime.
+  const nodePtyRoot = resolveNodePtyRoot()
+  rmSync(join(nodePtyRoot, 'build', 'Release'), { recursive: true, force: true })
+  rmSync(join(nodePtyRoot, 'build', 'Debug'), { recursive: true, force: true })
 
   console.log(`[rebuild-native] compiling node-pty for Electron ${packageJson.devDependencies.electron}`)
   await rebuild({
@@ -37,9 +46,7 @@ export async function rebuildNodePty({ platform = process.platform, arch = proce
     buildFromSource: true
   })
 
-  if (!findNodePtyNativePayload({ platform, arch })) {
-    throw new Error(`@electron/rebuild completed without producing node-pty for ${platform}-${arch}`)
-  }
+  assertNodePtyNativePayload(nodePtyRoot, { platform, arch })
   console.log(`[rebuild-native] node-pty ready for ${platform}-${arch}`)
   return true
 }

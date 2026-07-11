@@ -36,6 +36,29 @@ def _make_desktop_tree(tmp_path: Path) -> Path:
     return root
 
 
+def _native_binary_bytes(platform_name: str, arch: str = "x64") -> bytes:
+    if platform_name == "linux":
+        data = bytearray(64)
+        data[:4] = b"\x7fELF"
+        data[4] = 2 if arch in {"x64", "arm64"} else 1
+        data[5] = 1
+        machine = {"ia32": 3, "x64": 62, "arm": 40, "arm64": 183}[arch]
+        data[18:20] = machine.to_bytes(2, "little")
+        return bytes(data)
+    if platform_name == "win32":
+        data = bytearray(128)
+        data[:2] = b"MZ"
+        data[0x3C:0x40] = (64).to_bytes(4, "little")
+        data[64:68] = b"PE\0\0"
+        machine = {"ia32": 0x14C, "x64": 0x8664, "arm": 0x1C4, "arm64": 0xAA64}[arch]
+        data[68:70] = machine.to_bytes(2, "little")
+        return bytes(data)
+    if platform_name == "darwin":
+        cpu = {"ia32": 7, "x64": 0x01000007, "arm": 12, "arm64": 0x0100000C}[arch]
+        return bytes.fromhex("cffaedfe") + cpu.to_bytes(4, "little") + bytes(24)
+    raise AssertionError(f"unsupported fixture platform: {platform_name}")
+
+
 def _packaged_node_pty_payload(executable: Path, platform: str) -> Path:
     if platform == "darwin":
         resources_dir = executable.parent.parent / "Resources"
@@ -66,9 +89,15 @@ def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin")
     exe.write_text("", encoding="utf-8")
     binding = _packaged_node_pty_payload(exe, platform)
     binding.parent.mkdir(parents=True)
-    binding.write_bytes(b"native binding")
+    binding.write_bytes(_native_binary_bytes(platform))
+    node_pty_root = binding.parents[2]
+    (node_pty_root / "package.json").write_text('{"main":"lib/index.js"}', encoding="utf-8")
+    (node_pty_root / "lib").mkdir()
+    (node_pty_root / "lib" / "index.js").write_text("module.exports = {}", encoding="utf-8")
     if platform == "darwin":
-        (binding.parent / "spawn-helper").write_bytes(b"native helper")
+        helper = binding.parent / "spawn-helper"
+        helper.write_bytes(b"native helper")
+        helper.chmod(0o755)
     return exe
 
 
@@ -481,7 +510,7 @@ def test_desktop_build_needed_detects_missing_artifact(tmp_path, monkeypatch):
     ) is True
 
 
-@pytest.mark.parametrize("payload_bytes", [None, b""])
+@pytest.mark.parametrize("payload_bytes", [None, b"", b"not a native binary"])
 def test_desktop_build_needed_detects_incomplete_native_payload(
     tmp_path, monkeypatch, payload_bytes
 ):
@@ -499,6 +528,48 @@ def test_desktop_build_needed_detects_incomplete_native_payload(
     assert cli_main._desktop_build_needed(
         desktop_dir, root, source_mode=False
     ) is True
+
+
+def test_desktop_build_needed_rejects_wrong_architecture_payload(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    _packaged_node_pty_payload(packaged_exe, "linux").write_bytes(
+        _native_binary_bytes("linux", "arm64")
+    )
+    cli_main._write_desktop_build_stamp(root, source_mode=False)
+
+    assert cli_main._desktop_build_needed(desktop_dir, root, source_mode=False) is True
+
+
+def test_desktop_packaged_runtime_accepts_debug_fallback(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    release_binding = _packaged_node_pty_payload(packaged_exe, "linux")
+    debug_binding = release_binding.parents[1] / "Debug" / "pty.node"
+    debug_binding.parent.mkdir()
+    release_binding.rename(debug_binding)
+
+    assert cli_main._desktop_packaged_runtime_complete(packaged_exe) is True
+
+
+def test_desktop_packaged_runtime_requires_package_and_js_files(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    node_pty_root = _packaged_node_pty_payload(packaged_exe, "linux").parents[2]
+    (node_pty_root / "lib" / "index.js").unlink()
+
+    assert cli_main._desktop_packaged_runtime_complete(packaged_exe) is False
+
+
+def test_desktop_packaged_runtime_requires_executable_darwin_helper(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
+    helper = _packaged_node_pty_payload(packaged_exe, "darwin").parent / "spawn-helper"
+    helper.chmod(0o644)
+
+    assert cli_main._desktop_packaged_runtime_complete(packaged_exe) is False
 
 
 def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):
@@ -679,8 +750,10 @@ def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch,
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+    nixos_env = {"PYTHON": "/nix/store/python/bin/python3", "PATH": "/nix/store/bin"}
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._nixos_build_env", return_value=nixos_env), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
@@ -699,9 +772,11 @@ def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch,
     # public mirror.
     assert mock_dl.call_args_list[0].kwargs.get("mirror") is None
     assert mock_dl.call_args_list[1].kwargs["mirror"]
-    # Only the mirror-driven pack carries ELECTRON_MIRROR.
+    # Only the mirror-driven pack carries ELECTRON_MIRROR, and it must retain
+    # the NixOS Python selected for node-gyp.
     assert "ELECTRON_MIRROR" not in (mock_run.call_args_list[0].kwargs.get("env") or {})
     assert mock_run.call_args_list[1].kwargs["env"]["ELECTRON_MIRROR"]
+    assert mock_run.call_args_list[1].kwargs["env"]["PYTHON"] == nixos_env["PYTHON"]
     assert "Desktop GUI build failed" in capsys.readouterr().out
 
 

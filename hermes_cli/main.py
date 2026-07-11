@@ -5014,8 +5014,72 @@ def _desktop_node_runtime_arch() -> str:
     }.get(machine, machine)
 
 
+def _desktop_native_binary_matches_host(binding: Path) -> bool:
+    """Return whether a native module has this host's binary format and CPU."""
+    arch = _desktop_node_runtime_arch()
+    expected = {
+        "linux": {"ia32": 3, "x64": 62, "arm": 40, "arm64": 183},
+        "win32": {"ia32": 0x14C, "x64": 0x8664, "arm": 0x1C4, "arm64": 0xAA64},
+        "darwin": {"ia32": 7, "x64": 0x01000007, "arm": 12, "arm64": 0x0100000C},
+    }.get(sys.platform, {}).get(arch)
+    if expected is None:
+        return False
+
+    try:
+        data = binding.read_bytes()
+    except OSError:
+        return False
+
+    if sys.platform == "linux":
+        if len(data) < 20 or data[:4] != b"\x7fELF":
+            return False
+        byteorder = "little" if data[5] == 1 else "big"
+        machine = int.from_bytes(data[18:20], byteorder)
+        expected_class = 2 if arch in {"x64", "arm64"} else 1
+        return data[4] == expected_class and machine == expected
+
+    if sys.platform == "win32":
+        if len(data) < 64 or data[:2] != b"MZ":
+            return False
+        pe_offset = int.from_bytes(data[0x3C:0x40], "little")
+        if pe_offset + 6 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\0\0":
+            return False
+        return int.from_bytes(data[pe_offset + 4:pe_offset + 6], "little") == expected
+
+    if sys.platform == "darwin":
+        if len(data) < 8:
+            return False
+        magic = int.from_bytes(data[:4], "big")
+        thin_endian = {
+            0xFEEDFACE: "big",
+            0xCEFAEDFE: "little",
+            0xFEEDFACF: "big",
+            0xCFFAEDFE: "little",
+        }.get(magic)
+        if thin_endian:
+            return int.from_bytes(data[4:8], thin_endian) == expected
+
+        fat_layout = {
+            0xCAFEBABE: ("big", 20),
+            0xBEBAFECA: ("little", 20),
+            0xCAFEBABF: ("big", 32),
+            0xBFBAFECA: ("little", 32),
+        }.get(magic)
+        if not fat_layout:
+            return False
+        byteorder, width = fat_layout
+        count = int.from_bytes(data[4:8], byteorder)
+        for index in range(count):
+            offset = 8 + index * width
+            if offset + 4 > len(data):
+                return False
+            if int.from_bytes(data[offset:offset + 4], byteorder) == expected:
+                return True
+    return False
+
+
 def _desktop_packaged_runtime_complete(executable: Path) -> bool:
-    """Return True when the packaged app has the native payload node-pty loads."""
+    """Return True when the packaged app has a minimally compatible node-pty runtime."""
     if sys.platform == "darwin":
         resources_dir = executable.parent.parent / "Resources"
     else:
@@ -5028,19 +5092,27 @@ def _desktop_packaged_runtime_complete(executable: Path) -> bool:
         / "node_modules"
         / "node-pty"
     )
+    required_files = [node_pty_root / "package.json", node_pty_root / "lib" / "index.js"]
     payload_dirs = [
         node_pty_root / "build" / "Release",
+        node_pty_root / "build" / "Debug",
         node_pty_root / "prebuilds" / f"{sys.platform}-{_desktop_node_runtime_arch()}",
     ]
 
     try:
+        if any(not path.is_file() or path.stat().st_size <= 0 for path in required_files):
+            return False
         for payload_dir in payload_dirs:
             binding = payload_dir / "pty.node"
-            if not binding.is_file() or binding.stat().st_size <= 0:
+            if not _desktop_native_binary_matches_host(binding):
                 continue
             if sys.platform == "darwin":
                 helper = payload_dir / "spawn-helper"
-                if not helper.is_file() or helper.stat().st_size <= 0:
+                if (
+                    not helper.is_file()
+                    or helper.stat().st_size <= 0
+                    or not os.access(helper, os.X_OK)
+                ):
                     continue
             return True
     except OSError:
@@ -5846,7 +5918,7 @@ def cmd_gui(args: argparse.Namespace):
                       "GitHub looks blocked. Re-downloading via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
                 mirror = _ELECTRON_FALLBACK_MIRROR
-                mirror_env = dict(env)
+                mirror_env = dict(build_env)
                 mirror_env["ELECTRON_MIRROR"] = mirror
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)

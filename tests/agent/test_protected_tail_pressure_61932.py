@@ -140,6 +140,36 @@ class TestProtectedTailPressure61932:
         assert pruned[-1]["content"].startswith("Full structured report:")
         assert "U" * 100 in pruned[-1]["content"]
 
+    def test_pressure_last_resort_demotes_newest_oversized_tool_result(
+        self, compressor_128k
+    ):
+        """The newest tool body is demoted when it alone exceeds the ceiling."""
+        c = compressor_128k
+        old_pair = _unique_tool_pair(0, 1_000)
+        newest_pair = _unique_tool_pair(1, 4_000)
+        newest_content = newest_pair[1]["content"]
+        msgs = [
+            *old_pair,
+            *newest_pair,
+            {"role": "user", "content": "Use those results."},
+        ]
+
+        pruned, n = c._prune_old_tool_results(
+            msgs,
+            protect_tail_count=c.protect_last_n,
+            protect_tail_tokens=100,  # soft ceiling = 150 tokens
+        )
+
+        # The earlier pressure pass first demotes call_0.  The newest body
+        # remains over the soft ceiling by itself, forcing the documented
+        # absolute-last-resort branch to demote call_1 as well.
+        assert n == 2
+        assert pruned[1]["content"] != old_pair[1]["content"]
+        assert pruned[3]["content"] != newest_content
+        assert len(pruned[3]["content"]) < len(newest_content)
+        assert pruned[3]["tool_call_id"] == "call_1"
+        assert pruned[-1] == msgs[-1]
+
     def test_compress_escapes_cannot_compress_further_dead_end(
         self, compressor_128k
     ):

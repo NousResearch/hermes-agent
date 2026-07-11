@@ -1371,7 +1371,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(ok).toBe(true)
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(requestGateway).toHaveBeenCalledTimes(1)
-    const [method, params] = requestGateway.mock.calls[0]
+    const [method, params] = requestGateway.mock.calls[0] as unknown as [string, Record<string, unknown>]
     expect(method).toBe('prompt.submit')
     expect(params).toMatchObject({ session_id: NEW_RUNTIME })
   })

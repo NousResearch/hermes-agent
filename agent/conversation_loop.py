@@ -882,6 +882,41 @@ def run_conversation(
             )
             if projection.messages:
                 messages.extend(projection.messages)
+                # Close any dangling tool_calls with synthetic results so the
+                # persisted transcript stays provider-valid for the next turn
+                # (assistant(tool_calls) must be followed by its tool rows).
+                _completed, _unresolved = _external_tool_effect_state(
+                    projection.messages
+                )
+                if _unresolved:
+                    answered = {
+                        str(m.get("tool_call_id") or "")
+                        for m in projection.messages
+                        if isinstance(m, dict) and m.get("role") == "tool"
+                    }
+                    for _msg in projection.messages:
+                        if not isinstance(_msg, dict):
+                            continue
+                        for _call in _msg.get("tool_calls") or []:
+                            _call_id = (
+                                str(_call.get("id") or "")
+                                if isinstance(_call, dict)
+                                else ""
+                            )
+                            if _call_id and _call_id not in answered:
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": _call_id,
+                                        "content": json.dumps(
+                                            {
+                                                "error": "Tool outcome unknown: the external runtime stopped before this call resolved. Inspect durable state before retrying.",
+                                                "status": "unresolved",
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    }
+                                )
             messages.append({"role": "assistant", "content": error})
             return finalize_external_turn(
                 error,

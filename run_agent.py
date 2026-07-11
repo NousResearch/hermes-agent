@@ -413,6 +413,11 @@ class AIAgent:
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
 
+    # Class-level default so agents constructed outside initialize_agent
+    # (tests, __new__-based fakes, legacy host code) always carry a runtime
+    # identity. initialize_agent overrides it via resolve_runtime_identity.
+    runtime = "hermes"
+
     @property
     def base_url(self) -> str:
         return self._base_url

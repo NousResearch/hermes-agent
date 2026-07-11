@@ -451,6 +451,25 @@ def test_unresolved_tool_side_effect_fails_closed_without_fallback():
     assert result["failed"] is True
     assert agent._fallback_index == 0
     assert any(message.get("tool_calls") for message in result["messages"])
+    # The persisted transcript must stay provider-valid: every tool_call id
+    # gets a (synthetic) tool result, so no assistant(tool_calls) dangles.
+    call_ids = {
+        call["id"]
+        for message in result["messages"]
+        for call in message.get("tool_calls") or []
+    }
+    result_ids = {
+        message.get("tool_call_id")
+        for message in result["messages"]
+        if message.get("role") == "tool"
+    }
+    assert call_ids <= result_ids
+    synthetic = next(
+        message
+        for message in result["messages"]
+        if message.get("role") == "tool" and message.get("tool_call_id") == "call-1"
+    )
+    assert "unresolved" in synthetic["content"]
 
 
 def test_completed_external_side_effect_uses_safe_continuation_on_next_runtime():

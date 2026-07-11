@@ -307,7 +307,10 @@ def record_claude_subscription_usage(agent: Any, usage: dict[str, Any] | None) -
     included = bool(attestation and getattr(attestation, "included_usage", False))
     raw = dict(usage or {})
     _emit_runtime_event(
-        agent, "runtime_billing_mode", billing_mode="subscription_included"
+        agent,
+        "runtime_billing_mode",
+        billing_mode="subscription_included" if included else "unattested",
+        cost_status="included" if included else "unknown",
     )
 
     def _int(name: str) -> int:

@@ -36,18 +36,46 @@ def _make_desktop_tree(tmp_path: Path) -> Path:
     return root
 
 
-def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin") -> Path:
+def _make_packaged_executable(
+    root: Path,
+    monkeypatch,
+    platform: str = "darwin",
+    with_native_deps: bool = True,
+) -> Path:
     monkeypatch.setattr(cli_main.sys, "platform", platform)
     desktop_dir = root / "apps" / "desktop"
     if platform == "darwin":
         exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
+        unpacked_resources = (
+            desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "Resources"
+        )
     elif platform == "win32":
         exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
+        unpacked_resources = desktop_dir / "release" / "win-unpacked" / "resources"
     else:
         exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
+        unpacked_resources = desktop_dir / "release" / "linux-unpacked" / "resources"
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
+    if with_native_deps:
+        _stage_node_pty_in(unpacked_resources)
     return exe
+
+
+def _stage_node_pty_in(unpacked_resources: Path) -> None:
+    """Create a realistic node-pty payload inside ``unpacked_resources`` so
+    ``_desktop_native_deps_present`` returns True. Mirrors the layout
+    ``scripts/stage-native-deps.mjs`` writes: ``dist/node_modules/node-pty/``
+    with ``lib/index.js`` and a ``build/Release/pty.node`` binary.
+    """
+    node_pty = unpacked_resources / "dist" / "node_modules" / "node-pty"
+    (node_pty / "lib").mkdir(parents=True, exist_ok=True)
+    (node_pty / "lib" / "index.js").write_text(
+        "// stubbed node-pty entry", encoding="utf-8"
+    )
+    build_release = node_pty / "build" / "Release"
+    build_release.mkdir(parents=True, exist_ok=True)
+    (build_release / "pty.node").write_bytes(b"")
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
@@ -400,6 +428,87 @@ def test_desktop_build_stamp_round_trip(tmp_path, monkeypatch):
     assert cli_main._desktop_build_needed(
         root / "apps" / "desktop", root, source_mode=False
     ) is False
+
+
+def test_desktop_build_needed_when_native_deps_missing(tmp_path, monkeypatch):
+    """Issue #62462: a packaged artifact that is missing pty.node must force
+    a rebuild even when the content stamp is fresh. Otherwise ``hermes desktop``
+    silently launches an Electron that crashes on startup with
+    ``Cannot find module pty.node``.
+    """
+    root = _make_desktop_tree(tmp_path)
+    (root / "package.json").write_text("{}", encoding="utf-8")
+    (root / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    # Create the packaged executable but DELIBERATELY skip the native deps
+    # layout — simulates a broken build that left the unpacked tree without
+    # node-pty's native binary.
+    _make_packaged_executable(root, monkeypatch, with_native_deps=False)
+    # Stamp says up-to-date
+    cli_main._write_desktop_build_stamp(root, source_mode=False)
+    assert cli_main._desktop_build_needed(
+        root / "apps" / "desktop", root, source_mode=False
+    ) is True, "missing pty.node must force rebuild even when stamp is fresh"
+
+
+def test_desktop_native_deps_present_accepts_prebuild_layout(tmp_path, monkeypatch):
+    """A node-pty layout that only ships a ``prebuilds/<platform>-<arch>/``
+    payload (no ``build/Release/``) is still valid — that's how prebuild-install
+    delivers the binary when @electron/rebuild isn't run.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    unpacked = desktop_dir / "release" / "linux-unpacked" / "resources"
+    node_pty = unpacked / "dist" / "node_modules" / "node-pty"
+    (node_pty / "lib").mkdir(parents=True)
+    (node_pty / "lib" / "index.js").write_text("", encoding="utf-8")
+    prebuilds = node_pty / "prebuilds" / "linux-x64"
+    prebuilds.mkdir(parents=True)
+    (prebuilds / "pty.node").write_bytes(b"")
+    assert (
+        cli_main._desktop_native_deps_present(desktop_dir, source_mode=False)
+        is True
+    )
+
+
+def test_desktop_native_deps_present_rejects_empty_lib(tmp_path, monkeypatch):
+    """Defensive: native binary present but ``lib/index.js`` missing must NOT
+    pass the gate. Guards against a future layout change that silently drops
+    the JS half of node-pty.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    unpacked = desktop_dir / "release" / "linux-unpacked" / "resources"
+    node_pty = unpacked / "dist" / "node_modules" / "node-pty"
+    build_release = node_pty / "build" / "Release"
+    build_release.mkdir(parents=True)
+    (build_release / "pty.node").write_bytes(b"")
+    # No lib/index.js — should fail
+    assert (
+        cli_main._desktop_native_deps_present(desktop_dir, source_mode=False)
+        is False
+    )
+
+
+def test_native_arch_suffix_matches_node_pty_layout():
+    """The arch suffix we hand to ``prebuilds/<dir>`` must match what
+    node-pty publishes (linux-x64, linux-arm64, darwin-x64, darwin-arm64,
+    win32-x64). ``linux-armv7l`` is included for completeness even though
+    we no longer ship armv7l builds — guards a future regression where a
+    rename silently misroutes prebuild lookups.
+    """
+    assert cli_main._native_arch_suffix("linux", machine_suffix=False) in (
+        "linux-x64",
+        "linux-arm64",
+        "linux-armv7l",
+    )
+    assert cli_main._native_arch_suffix("darwin", machine_suffix=False) in (
+        "darwin-x64",
+        "darwin-arm64",
+    )
+    assert cli_main._native_arch_suffix("win32", machine_suffix=False) == "win32-x64"
+    # Anything exotic returns None — caller falls back to build/Release only.
+    assert cli_main._native_arch_suffix("freebsd", machine_suffix=False) is None
 
 
 def test_compute_desktop_content_hash_works_without_gitignore(tmp_path, monkeypatch):

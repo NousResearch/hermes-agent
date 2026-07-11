@@ -5064,12 +5064,139 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+def _desktop_native_deps_present(desktop_dir: Path, *, source_mode: bool) -> bool:
+    """Return True when the desktop build artifact ships the runtime
+    native deps needed by Electron (currently: ``node-pty``'s ``pty.node``).
+
+    Used as a second gate alongside the content-hash stamp. The stamp only
+    proves the source tree is unchanged; it does NOT prove the packaged
+    artifact actually carries a usable native binary. Without this check,
+    a previously-built (but broken) artifact can satisfy the stamp forever
+    and crash Electron at launch with "Cannot find module pty.node"
+    (see issue #62462).
+
+    Source mode looks at ``dist/node_modules/node-pty/``; packaged mode
+    looks at the ``app.asar.unpacked`` mirror electron-builder writes
+    alongside the packaged executable. Both follow the same layout that
+    ``scripts/stage-native-deps.mjs`` produces.
+    """
+    if source_mode:
+        node_pty_root = desktop_dir / "dist" / "node_modules" / "node-pty"
+        rel_arch = _native_arch_suffix(sys.platform, machine_suffix=True)
+    else:
+        unpacked_root = _desktop_unpacked_resources_root(desktop_dir)
+        if unpacked_root is None:
+            return False
+        node_pty_root = unpacked_root / "dist" / "node_modules" / "node-pty"
+        rel_arch = _native_arch_suffix(sys.platform, machine_suffix=False)
+
+    if not node_pty_root.is_dir():
+        return False
+
+    # The renderer's integrated terminal needs node-pty; the loader looks in
+    # build/Release/ and prebuilds/<platform>-<arch>/. Either is acceptable
+    # (prebuild-install OR @electron/rebuild). Also require lib/index.js so
+    # a future layout change doesn't silently regress.
+    lib_index = node_pty_root / "lib" / "index.js"
+    if not lib_index.is_file():
+        return False
+
+    def _dir_has_native(d: Path) -> bool:
+        if not d.is_dir():
+            return False
+        try:
+            for entry in d.iterdir():
+                if entry.name.endswith(".node"):
+                    return True
+                if entry.name == "spawn-helper":
+                    return True
+        except OSError:
+            return False
+        return False
+
+    build_release = node_pty_root / "build" / "Release"
+    prebuilds = node_pty_root / "prebuilds" / rel_arch if rel_arch else None
+    return _dir_has_native(build_release) or (
+        prebuilds is not None and _dir_has_native(prebuilds)
+    )
+
+
+def _native_arch_suffix(platform_name: str, *, machine_suffix: bool) -> Optional[str]:
+    """Return the ``<platform>-<arch>`` directory name node-pty uses for
+    prebuilds, e.g. ``linux-x64`` / ``darwin-arm64`` / ``win32-x64``.
+
+    ``machine_suffix=False`` returns ``None`` when the host arch can't be
+    determined cheaply (e.g. exotic arches); the caller should fall back
+    to checking ``build/Release/`` only.
+    """
+    if platform_name.startswith("linux"):
+        arch = "x64"
+        try:
+            import platform as _platform
+            m = _platform.machine().lower()
+            if m in ("aarch64", "arm64"):
+                arch = "arm64"
+            elif m.startswith("arm"):
+                arch = "armv7l"
+        except Exception:
+            pass
+        return f"linux-{arch}"
+    if platform_name == "darwin":
+        arch = "arm64"
+        try:
+            import platform as _platform
+            if _platform.machine().lower() in ("x86_64",):
+                arch = "x64"
+        except Exception:
+            pass
+        return f"darwin-{arch}"
+    if platform_name == "win32":
+        return "win32-x64"
+    return None
+
+
+def _desktop_unpacked_resources_root(desktop_dir: Path) -> Optional[Path]:
+    """Locate the packaged app's ``resources/`` directory (next to the
+    unpacked Electron binary). Returns ``None`` when the unpacked tree
+    isn't present.
+
+    Centralized here so native-deps verification stays in sync with
+    ``_desktop_packaged_executable``'s idea of what counts as a packaged
+    build.
+    """
+    release_dir = desktop_dir / "release"
+    if sys.platform == "darwin":
+        # macOS: .../mac/Hermes.app/Contents/Resources/
+        bundles = list(release_dir.glob("mac*/Hermes.app"))
+        if not bundles:
+            return None
+        return max(bundles, key=lambda p: p.stat().st_mtime) / "Contents" / "Resources"
+    if sys.platform == "win32":
+        for name in ("win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked"):
+            p = release_dir / name / "resources"
+            if p.is_dir():
+                return p
+        return None
+    # Linux: release/<arch>-unpacked/resources/
+    for name in (
+        "linux-unpacked",
+        "linux-arm64-unpacked",
+        "linux-x64-unpacked",
+    ):
+        p = release_dir / name / "resources"
+        if p.is_dir():
+            return p
+    return None
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """Return True when the desktop build output is stale or missing.
 
     Compares the current content hash against the saved stamp. Also returns
     True if the expected build artifact doesn't exist (e.g. first run after
-    ``hermes update`` that pulled new source but hasn't built yet).
+    ``hermes update`` that pulled new source but hasn't built yet), or if
+    a previously-built artifact is missing the runtime native deps that
+    Electron needs to launch (node-pty's ``pty.node`` — see issue #62462).
     """
     # If there's no build output at all, we definitely need to build
     if source_mode:
@@ -5078,6 +5205,14 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     else:
         if _desktop_packaged_executable(desktop_dir) is None:
             return True
+
+    # A previously-built artifact that looks complete on disk but is missing
+    # the native modules Electron loads on startup is worse than no artifact
+    # at all: it passes the stamp check, gets launched, and crashes with
+    # "Cannot find module pty.node" inside the main process. Detect and
+    # force a rebuild.
+    if not _desktop_native_deps_present(desktop_dir, source_mode=source_mode):
+        return True
 
     stamp_file = _desktop_stamp_path()
     if not stamp_file.is_file():

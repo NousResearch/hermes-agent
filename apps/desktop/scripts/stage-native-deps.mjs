@@ -126,6 +126,36 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
     )
   }
 
+  // Verify the staged payload actually contains a native binary. Either
+  // build/Release/ (compiled from source) or prebuilds/<platform>-<arch>/
+  // (downloaded prebuild) must hold at least one *.node file. Without this
+  // guard, a build with no matching prebuild AND no compiled output would
+  // produce a "successful" pack that crashes Electron on first launch with
+  // "Cannot find module pty.node" (see issue #62462). Fail loudly here so
+  // the user gets a clear remediation path instead of a runtime crash.
+  const buildReleaseDir = join(destRoot, 'build', 'Release')
+  const prebuildArchDir = join(destRoot, 'prebuilds', `${platform}-${arch}`)
+  const hasNativeBinary = (dir) => {
+    if (!existsSync(dir)) return false
+    try {
+      return readdirSync(dir).some(
+        (name) => name.endsWith('.node') || name === 'spawn-helper'
+      )
+    } catch {
+      return false
+    }
+  }
+  if (!hasNativeBinary(buildReleaseDir) && !hasNativeBinary(prebuildArchDir)) {
+    throw new Error(
+      `[stage-native-deps] no node-pty native binary staged for ${platform}-${arch}. ` +
+        `Looked in build/Release/ and prebuilds/${platform}-${arch}/. ` +
+        `Either node-pty has no published prebuild for this target, or ` +
+        `@electron/rebuild was not run. Run ` +
+        `"npx @electron/rebuild -w node-pty --platform ${platform} --arch ${arch}" ` +
+        `or install a matching prebuild before repacking.`
+    )
+  }
+
   console.log(`[stage-native-deps] staged node-pty (${platform}-${arch}) -> ${destRoot}`)
   return destRoot
 }

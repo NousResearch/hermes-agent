@@ -137,6 +137,31 @@ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
+# ---------------------------------------------------------------------------
+# Task admission contract (HERMES-ORCH-001A — storage only)
+# ---------------------------------------------------------------------------
+# Versioned JSON blob stored on ``tasks.contract``. ORCH-001A adds schema,
+# migration, ser/de, and structural validation only. Dispatch/admission
+# enforcement is intentionally deferred to a later ORCH-001 slice.
+TASK_CONTRACT_VERSION = 1
+TASK_CONTRACT_V1_KEYS = (
+    "version",
+    "scope",
+    "allowed_files",
+    "forbidden_files",
+    "base_commit",
+    "required_evidence",
+    "required_commands",
+    "allow_child_creation",
+    "forbidden_git_actions",
+    "notification_verified",
+)
+TASK_CONTRACT_V1_KEY_SET = frozenset(TASK_CONTRACT_V1_KEYS)
+
+
+class TaskContractError(ValueError):
+    """Raised when a task-contract payload fails structural validation."""
+
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
@@ -915,6 +940,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Versioned task-admission contract (JSON object) or None for legacy
+    # tasks that predate HERMES-ORCH-001. Storage/ser-de only in ORCH-001A —
+    # dispatcher admission gates land in a later slice.
+    contract: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -928,6 +957,15 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        # Contract: NULL/missing = legacy (readable without a contract).
+        # Soft-parse so a corrupt hand-edited blob cannot break task listing;
+        # writers always go through :func:`normalize_task_contract`.
+        contract_value: Optional[dict] = None
+        if "contract" in keys and row["contract"]:
+            try:
+                contract_value = deserialize_task_contract(row["contract"])
+            except Exception:
+                contract_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -999,6 +1037,7 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            contract=contract_value,
         )
 
 
@@ -1090,6 +1129,173 @@ class Event:
 
 
 # ---------------------------------------------------------------------------
+# Task-contract ser/de (HERMES-ORCH-001A)
+# ---------------------------------------------------------------------------
+
+
+def _require_str_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise TaskContractError(f"task contract field {field!r} must be a list of strings")
+    out: list[str] = []
+    for i, item in enumerate(value):
+        if not isinstance(item, str):
+            raise TaskContractError(
+                f"task contract field {field!r}[{i}] must be a string, got {type(item).__name__}"
+            )
+        out.append(item)
+    return out
+
+
+def normalize_task_contract(contract: Any) -> dict[str, Any]:
+    """Validate and return a canonical version-1 task contract dict.
+
+    Raises :class:`TaskContractError` on any structural problem. Does not
+    consult the DB or enforce admission/dispatch policy.
+    """
+    if not isinstance(contract, dict):
+        raise TaskContractError(
+            f"task contract must be a JSON object, got {type(contract).__name__}"
+        )
+    unknown = set(contract.keys()) - TASK_CONTRACT_V1_KEY_SET
+    if unknown:
+        raise TaskContractError(
+            f"task contract has unknown field(s): {', '.join(sorted(unknown))}"
+        )
+    missing = [k for k in TASK_CONTRACT_V1_KEYS if k not in contract]
+    if missing:
+        raise TaskContractError(
+            f"task contract missing required field(s): {', '.join(missing)}"
+        )
+
+    version = contract["version"]
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise TaskContractError(
+            f"task contract version must be an int, got {type(version).__name__}"
+        )
+    if version != TASK_CONTRACT_VERSION:
+        raise TaskContractError(
+            f"unsupported task contract version {version}; "
+            f"only version {TASK_CONTRACT_VERSION} is supported"
+        )
+
+    scope = contract["scope"]
+    if not isinstance(scope, str) or not scope.strip():
+        raise TaskContractError("task contract field 'scope' must be a non-empty string")
+
+    base_commit = contract["base_commit"]
+    if not isinstance(base_commit, str) or not base_commit.strip():
+        raise TaskContractError(
+            "task contract field 'base_commit' must be a non-empty string"
+        )
+
+    allow_child = contract["allow_child_creation"]
+    if not isinstance(allow_child, bool):
+        raise TaskContractError(
+            "task contract field 'allow_child_creation' must be a bool"
+        )
+
+    notification_verified = contract["notification_verified"]
+    if not isinstance(notification_verified, bool):
+        raise TaskContractError(
+            "task contract field 'notification_verified' must be a bool"
+        )
+
+    # Canonical key order for exact round-trips (serialize uses sort_keys too).
+    return {
+        "version": TASK_CONTRACT_VERSION,
+        "scope": scope.strip(),
+        "allowed_files": _require_str_list(contract["allowed_files"], "allowed_files"),
+        "forbidden_files": _require_str_list(
+            contract["forbidden_files"], "forbidden_files"
+        ),
+        "base_commit": base_commit.strip(),
+        "required_evidence": _require_str_list(
+            contract["required_evidence"], "required_evidence"
+        ),
+        "required_commands": _require_str_list(
+            contract["required_commands"], "required_commands"
+        ),
+        "allow_child_creation": allow_child,
+        "forbidden_git_actions": _require_str_list(
+            contract["forbidden_git_actions"], "forbidden_git_actions"
+        ),
+        "notification_verified": notification_verified,
+    }
+
+
+def serialize_task_contract(contract: Any) -> str:
+    """Normalize ``contract`` and return stable JSON for storage."""
+    normalized = normalize_task_contract(contract)
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def deserialize_task_contract(blob: Optional[str]) -> Optional[dict[str, Any]]:
+    """Parse a stored contract JSON blob.
+
+    Returns ``None`` for NULL/empty legacy rows. Raises
+    :class:`TaskContractError` for invalid JSON or invalid structure.
+    """
+    if blob is None:
+        return None
+    if not isinstance(blob, str):
+        raise TaskContractError(
+            f"task contract blob must be a string, got {type(blob).__name__}"
+        )
+    text = blob.strip()
+    if not text:
+        return None
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise TaskContractError(f"task contract is not valid JSON: {exc}") from exc
+    return normalize_task_contract(raw)
+
+
+def set_task_contract(
+    conn: sqlite3.Connection,
+    task_id: str,
+    contract: Any,
+) -> dict[str, Any]:
+    """Validate and persist a version-1 contract on ``task_id``.
+
+    Returns the canonical contract dict that was stored. Raises
+    :class:`TaskContractError` for invalid structure and :class:`ValueError`
+    if the task does not exist. Does not change task status or admission.
+    """
+    normalized = normalize_task_contract(contract)
+    blob = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET contract = ? WHERE id = ?",
+            (blob, task_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"unknown task: {task_id}")
+    return normalized
+
+
+def get_task_contract(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    """Return the task's normalized contract, or ``None`` for legacy/absent.
+
+    Raises :class:`ValueError` if the task row is missing, and
+    :class:`TaskContractError` if a stored blob fails structural validation.
+    """
+    row = conn.execute(
+        "SELECT contract FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown task: {task_id}")
+    keys = set(row.keys())
+    if "contract" not in keys:
+        return None
+    return deserialize_task_contract(row["contract"])
+
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
@@ -1176,7 +1382,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Versioned task-admission contract (JSON object). NULL = legacy task
+    -- without a machine-readable contract (pre-HERMES-ORCH-001). ORCH-001A
+    -- only persists/validates structure; admission enforcement is later.
+    contract             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2039,6 +2249,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    # Refresh before contract migration so partial-migration DBs stay idempotent.
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "contract" not in cols:
+        # Versioned task-admission contract JSON (HERMES-ORCH-001A).
+        # NULL on legacy rows — tasks remain readable without a contract.
+        _add_column_if_missing(conn, "tasks", "contract", "contract TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2499,6 +2716,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    contract: Optional[dict] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2522,6 +2740,11 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``contract`` is an optional version-1 task-admission contract
+    (HERMES-ORCH-001A). When provided it is structurally validated and
+    stored as JSON; when omitted the task remains a legacy un-contracted
+    card. This path does not enforce admission/dispatch gates.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2582,6 +2805,12 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
+
+    # Validate optional task-admission contract up front so a bad payload
+    # never partially writes the task. NULL remains the legacy default.
+    contract_blob: Optional[str] = None
+    if contract is not None:
+        contract_blob = serialize_task_contract(contract)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2727,8 +2956,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2751,6 +2981,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        contract_blob,
                     ),
                 )
                 for pid in parents:

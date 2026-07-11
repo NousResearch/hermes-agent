@@ -9,6 +9,13 @@
  * ผล:  exit 0 = ทุกหน้า 0 fail · exit 1 = มีข้อความตก WCAG AA · exit 2 = ใช้ผิด/เปิดหน้าไม่ได้
  * ได้ไฟล์ภาพ <หน้า>-contrast-audit.png ทุกหน้าไว้ดูด้วยตา
  *
+ * ⚠ ข้อจำกัดสำคัญ (ต้องรู้ก่อนใช้กับงานหลังบ้าน/admin):
+ *   ตรวจแค่ element ที่ "แสดงบนหน้า" ตอนโหลด (ข้าม element ที่ offsetParent=null คือถูกซ่อน)
+ *   งาน admin ที่มี modal / drawer / แท็บ / 5 UI states (ว่าง/โหลด/ผิดพลาด/บางส่วน/สมบูรณ์) ที่ซ่อนอยู่
+ *   จะ "ไม่ถูกตรวจ" ถ้าไม่เปิดให้แสดงก่อน → contrast ตรงนั้นอาจพังโดยไม่มีใครจับ
+ *   วิธีชัวร์: ทำหน้า/ไฟล์ HTML แยกต่อ state (หรือตั้งให้เปิด default) แล้วส่งทุกไฟล์เข้า runner:
+ *     node contrast-audit-run.mjs admin-empty.html admin-error.html admin-modal.html ...
+ *
  * ต้องมี playwright (npm i playwright) — ถ้าไม่มีจะบอกวิธีติดตั้ง ไม่ crash งง ๆ
  */
 import { readFileSync } from 'node:fs';

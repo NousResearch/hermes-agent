@@ -8,6 +8,6 @@
     "postinstall": "echo 'ถ้ายังไม่มี chromium: npx playwright install chromium'"
   },
   "dependencies": {
-    "playwright": "^1.40.0"
+    "playwright": "^1.61.1"
   }
 }

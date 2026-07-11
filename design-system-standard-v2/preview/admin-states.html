@@ -1,0 +1,87 @@
+<!-- ⚠ EXAMPLE ONLY / ตัวอย่างเท่านั้น: หน้านี้โชว์ "5 UI states ของงานหลังบ้าน" พร้อมกันในหน้าเดียว (ไม่ซ่อน) เพื่อให้ contrast-audit ตรวจครบทุก state · สี/แบรนด์เป็นชุดกลาง (dark) เปลี่ยนตามโปรเจกต์ตอน adopt · ห้ามลอกสีไปใช้ตรง ๆ -->
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · 5 UI States (ตัวอย่าง)</title>
+<style>
+  :root{
+    --bg-canvas:#0e0e11; --bg-surface:#16161a; --bg-inset:#1c1c21;
+    --text-default:#f4f4f6; --text-muted:#a4a4ae; --text-dim:#94949e;
+    --hairline:rgba(255,255,255,.07); --hairline-strong:rgba(255,255,255,.14);
+    --action:#c9221a; --action-text:#ffffff;
+    --success-text:#43e5b5; --warning-text:#ffc966; --danger-text:#ff8a80;
+    --radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg-canvas);color:var(--text-default);
+    font:400 16px/1.55 'Noto Sans Thai',system-ui,-apple-system,sans-serif;padding:32px;max-width:920px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--text-muted);margin:0 0 28px;font-size:16px}
+  .state{background:var(--bg-surface);border:1px solid var(--hairline-strong);border-radius:var(--radius);padding:22px;margin-bottom:22px}
+  .state h2{font-size:16px;margin:0 0 4px;color:var(--text-default)}
+  .state .lb{color:var(--text-muted);font-size:16px;margin:0 0 16px}
+  table{width:100%;border-collapse:collapse;font-size:16px}
+  th{text-align:left;color:var(--text-muted);font-weight:600;font-size:16px;padding:8px 12px;border-bottom:1px solid var(--hairline-strong)}
+  td{padding:10px 12px;border-bottom:1px solid var(--hairline);color:var(--text-default)}
+  .empty{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:16px}
+  .skel{height:16px;background:var(--bg-inset);border-radius:6px;margin:10px 0}
+  .skel.w60{width:60%} .skel.w40{width:40%}
+  .err{background:rgba(236,44,35,.12);border:1px solid rgba(236,44,35,.4);border-radius:8px;padding:14px 16px;color:var(--danger-text);font-size:16px}
+  .partial-note{color:var(--warning-text);font-size:16px;margin-top:12px}
+  .ok{color:var(--success-text);font-weight:600}
+  .btn{background:var(--action);color:var(--action-text);border:0;border-radius:8px;padding:11px 20px;font-size:16px;font-weight:600;cursor:pointer;margin-top:12px}
+  .chip{display:inline-block;font-size:16px;padding:2px 12px;border-radius:99px;background:var(--bg-inset);color:var(--text-muted)}
+</style>
+
+<h1>งานหลังบ้าน · 5 สถานะของตาราง (ตัวอย่าง)</h1>
+<p class="sub">EXAMPLE ONLY — โชว์ทุกสถานะพร้อมกันในหน้าเดียว เพื่อให้ตัวตรวจ contrast ตรวจครบทุกสถานะ (ไม่มีสถานะไหนซ่อน)</p>
+
+<section class="state">
+  <h2>1. ว่าง (Empty)</h2>
+  <p class="lb">ยังไม่มีข้อมูลในตาราง — บอกทางออกให้ผู้ใช้</p>
+  <div class="empty">
+    ยังไม่มีรายการรถในระบบ<br>
+    <button class="btn">เพิ่มรายการแรก</button>
+  </div>
+</section>
+
+<section class="state">
+  <h2>2. กำลังโหลด (Loading)</h2>
+  <p class="lb">โครงร่างจาง ๆ ระหว่างรอข้อมูล</p>
+  <div class="skel"></div>
+  <div class="skel w60"></div>
+  <div class="skel w40"></div>
+</section>
+
+<section class="state">
+  <h2>3. ผิดพลาด (Error)</h2>
+  <p class="lb">บอกว่าเกิดอะไร + ทำอะไรต่อได้</p>
+  <div class="err">โหลดข้อมูลไม่สำเร็จ — เครือข่ายมีปัญหา ลองใหม่อีกครั้ง</div>
+  <button class="btn">ลองใหม่</button>
+</section>
+
+<section class="state">
+  <h2>4. มีบางส่วน (Partial)</h2>
+  <p class="lb">แสดงเท่าที่มี + บอกว่ายังไม่ครบ</p>
+  <table>
+    <thead><tr><th>ทะเบียน</th><th>คนขับ</th><th>สถานะ</th></tr></thead>
+    <tbody>
+      <tr><td>1กก-1234</td><td>สมชาย</td><td><span class="ok">พร้อมวิ่ง</span></td></tr>
+      <tr><td>2ขข-5678</td><td>สมหญิง</td><td><span class="chip">รอตรวจ</span></td></tr>
+    </tbody>
+  </table>
+  <p class="partial-note">โหลดได้ 2 จาก 240 รายการ — กำลังโหลดที่เหลือ</p>
+</section>
+
+<section class="state">
+  <h2>5. สมบูรณ์ (Complete)</h2>
+  <p class="lb">ข้อมูลครบ พร้อมใช้งาน</p>
+  <table>
+    <thead><tr><th>ทะเบียน</th><th>คนขับ</th><th>ค่าใช้จ่ายเดือนนี้</th><th>สถานะ</th></tr></thead>
+    <tbody>
+      <tr><td>1กก-1234</td><td>สมชาย</td><td>12,400 บาท</td><td><span class="ok">พร้อมวิ่ง</span></td></tr>
+      <tr><td>2ขข-5678</td><td>สมหญิง</td><td>9,800 บาท</td><td><span class="ok">พร้อมวิ่ง</span></td></tr>
+      <tr><td>3คค-9012</td><td>สมปอง</td><td>15,100 บาท</td><td><span class="chip">รอตรวจ</span></td></tr>
+    </tbody>
+  </table>
+</section>

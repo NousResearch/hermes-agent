@@ -110,7 +110,12 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
-  const hasCommand = request.command.trim().length > 0
+  // Plugin approvals set `command` to a synthetic label like
+  // "<terminal> (plugin approval rule)" — the real info lives in `description`.
+  // Hide the command expander in that case and let `description` carry the text.
+  const isSyntheticCommand = request.command.trim().startsWith('<')
+  const hasCommand = !isSyntheticCommand && request.command.trim().length > 0
+  const hasDescription = request.description.trim().length > 0
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -171,6 +176,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
       data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
     >
+      {hasDescription && (
+        <p className="mb-1.5 text-xs text-(--ui-text-tertiary)">{request.description.trim()}</p>
+      )}
       <div className="flex items-center gap-2.5">
         <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
           <Button
@@ -255,7 +263,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
             <DialogDescription>{copy.alwaysDescription(request.description)}</DialogDescription>
           </DialogHeader>
 
-          {request.command.trim() && (
+          {hasCommand && (
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
               {request.command.trim()}
             </pre>

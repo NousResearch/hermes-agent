@@ -156,6 +156,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
         "command": "sleep 1",
         "cwd": "/workspace/live",
         "task_id": task_id,
+        "owner_task_id": task_id,
         "session_key": task_id,
         "env_vars": {},
         "use_pty": False,

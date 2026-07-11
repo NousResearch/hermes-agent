@@ -6,6 +6,8 @@ import os
 import platform
 import re
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,33 @@ from agent.claude_subscription_env import build_claude_subscription_env
 from agent.claude_workspace_terminal import build_workspace_seatbelt_profile
 from agent.claude_workspace_files import WorkspaceFileBroker
 from hermes_constants import get_hermes_home, get_host_user_home
+
+
+_runtime_events_logger = logging.getLogger("hermes.runtime_events")
+
+
+def _emit_runtime_event(agent: Any, event: str, **fields: Any) -> None:
+    """Log a structured external-runtime event and surface significant state."""
+
+    payload = {
+        "event": event,
+        "ts": time.time(),
+        "provider": str(getattr(agent, "provider", "") or ""),
+        "model": str(getattr(agent, "model", "") or ""),
+        "runtime": str(getattr(agent, "runtime", "hermes") or "hermes"),
+        **fields,
+    }
+    _runtime_events_logger.info(json.dumps(payload, default=str, sort_keys=True))
+    status = {
+        "runtime_attempt_failure": f"Runtime attempt failed: {fields.get('reason', 'unknown')}",
+        "runtime_circuit_open": "Runtime circuit opened; trying fallback.",
+        "runtime_fallback_activated": "Runtime fallback activated.",
+    }.get(event)
+    if status:
+        try:
+            agent._emit_status(status)
+        except Exception:
+            pass
 
 
 def _claude_effort(agent: Any) -> str | None:
@@ -277,6 +306,9 @@ def record_claude_subscription_usage(agent: Any, usage: dict[str, Any] | None) -
     attestation = getattr(agent, "_claude_max_attestation", None)
     included = bool(attestation and getattr(attestation, "included_usage", False))
     raw = dict(usage or {})
+    _emit_runtime_event(
+        agent, "runtime_billing_mode", billing_mode="subscription_included"
+    )
 
     def _int(name: str) -> int:
         try:
@@ -350,6 +382,7 @@ def record_claude_subscription_usage(agent: Any, usage: dict[str, Any] | None) -
 
 
 __all__ = [
+    "_emit_runtime_event",
     "prepare_claude_agent_sdk_runtime",
     "record_claude_subscription_usage",
     "run_claude_agent_sdk_attempt",

@@ -672,6 +672,28 @@ def run_conversation(
     fallback_moa_guidance = (_prepared_context or {}).get("moa_guidance")
     current_moa_guidance = None
     external_user_message = user_message
+
+    def finalize_external_turn(final_response, *, failed, exit_reason, **extras):
+        from agent.turn_finalizer import finalize_turn
+
+        result = finalize_turn(
+            agent,
+            final_response=final_response,
+            api_call_count=api_call_count,
+            interrupted=False,
+            failed=failed,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            _should_review_memory=_should_review_memory,
+            _turn_exit_reason=exit_reason,
+        )
+        result.update(extras)
+        return result
+
     if (
         moa_config
         and getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME
@@ -708,6 +730,8 @@ def run_conversation(
 
     while getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
         active_runtime = getattr(agent, "runtime", HERMES_RUNTIME)
+        from agent.external_runtime import _emit_runtime_event
+
         if active_runtime == CODEX_APP_SERVER_RUNTIME:
             message_count_before = len(messages)
             result = agent._run_codex_app_server_turn(
@@ -738,7 +762,23 @@ def run_conversation(
                 provider=str(getattr(agent, "provider", "") or ""),
                 model=str(getattr(agent, "model", "") or ""),
             )
+            from_provider, from_model, from_runtime = (
+                agent.provider,
+                agent.model,
+                active_runtime,
+            )
             if agent._try_activate_fallback(reason=classified.reason):
+                _emit_runtime_event(
+                    agent,
+                    "runtime_fallback_activated",
+                    reason=classified.reason.value,
+                    from_provider=from_provider,
+                    from_model=from_model,
+                    from_runtime=from_runtime,
+                    to_provider=agent.provider,
+                    to_model=agent.model,
+                    to_runtime=getattr(agent, "runtime", HERMES_RUNTIME),
+                )
                 if completed_effect and getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
                     external_user_message = (
                         "Continue the existing task from its current durable state. "
@@ -756,16 +796,13 @@ def run_conversation(
         if active_runtime != CLAUDE_AGENT_SDK_RUNTIME:
             error = f"Unsupported agent runtime: {active_runtime}"
             messages.append({"role": "assistant", "content": error})
-            return {
-                "final_response": error,
-                "messages": messages,
-                "api_calls": api_call_count,
-                "completed": False,
-                "failed": True,
-                "partial": False,
-                "error": error,
-                "agent_persisted": True,
-            }
+            return finalize_external_turn(
+                error,
+                failed=True,
+                exit_reason="unsupported_runtime",
+                error=error,
+                agent_persisted=True,
+            )
 
         from agent.claude_agent_runtime import ClaudeProjection, RuntimeFailure
         from agent.external_runtime import (
@@ -778,6 +815,7 @@ def run_conversation(
             runtime_circuit_open_until,
         )
 
+        _emit_runtime_event(agent, "runtime_attempt_start")
         preflight_failure = prepare_claude_agent_sdk_runtime(agent)
         circuit_until = (
             None if preflight_failure is not None else runtime_circuit_open_until(agent)
@@ -806,56 +844,35 @@ def run_conversation(
                 agent._emit_warning(warning)
             except Exception:
                 logger.warning("%s", warning)
+        usage_result = (
+            record_claude_subscription_usage(agent, projection.usage)
+            if failure is None or projection.usage is not None
+            else {}
+        )
+        if failure is not None:
+            _emit_runtime_event(
+                agent,
+                "runtime_attempt_failure",
+                reason=failure.reason.value,
+                replay_safe=failure.replay_safe,
+            )
         if failure is None:
-            should_review_skills = False
+            if projection.messages:
+                messages.extend(projection.messages)
             if (
                 agent._skill_nudge_interval > 0
                 and "skill_manage" in agent.valid_tool_names
             ):
                 agent._iters_since_skill += 1
-                if agent._iters_since_skill >= agent._skill_nudge_interval:
-                    should_review_skills = True
-                    agent._iters_since_skill = 0
-            if projection.messages:
-                messages.extend(projection.messages)
-            usage_result = record_claude_subscription_usage(agent, projection.usage)
-            if getattr(agent, "_session_db", None) is not None:
-                try:
-                    agent._flush_messages_to_session_db(messages)
-                except Exception:
-                    logger.debug("Claude projected-message flush failed", exc_info=True)
-            try:
-                agent._sync_external_memory_for_turn(
-                    original_user_message=original_user_message,
-                    final_response=projection.final_text,
-                    interrupted=False,
-                    messages=messages,
-                )
-            except Exception:
-                logger.debug("Claude external memory sync failed", exc_info=True)
-            if projection.final_text and (
-                _should_review_memory or should_review_skills
-            ):
-                try:
-                    agent._spawn_background_review(
-                        messages_snapshot=list(messages),
-                        review_memory=_should_review_memory,
-                        review_skills=should_review_skills,
-                    )
-                except Exception:
-                    logger.debug("Claude background review failed", exc_info=True)
-            return {
-                "final_response": projection.final_text,
-                "messages": messages,
-                "api_calls": api_call_count,
-                "completed": True,
-                "failed": False,
-                "partial": False,
-                "error": None,
-                "agent_persisted": True,
-                "claude_session_id": projection.session_id,
+            return finalize_external_turn(
+                projection.final_text,
+                failed=False,
+                exit_reason="claude_success",
+                claude_session_id=projection.session_id,
+                error=None,
+                agent_persisted=True,
                 **usage_result,
-            }
+            )
 
         if not failure.replay_safe:
             error = (
@@ -863,23 +880,17 @@ def run_conversation(
                 "automatic fallback was blocked to avoid replaying it. "
                 f"{failure.message}"
             )
+            if projection.messages:
+                messages.extend(projection.messages)
             messages.append({"role": "assistant", "content": error})
-            if getattr(agent, "_session_db", None) is not None:
-                try:
-                    agent._flush_messages_to_session_db(messages)
-                except Exception:
-                    logger.debug("Claude unsafe-failure flush failed", exc_info=True)
-            return {
-                "final_response": error,
-                "messages": messages,
-                "api_calls": api_call_count,
-                "completed": False,
-                "failed": True,
-                "partial": False,
-                "error": failure.message,
-                "failure_reason": failure.reason.value,
-                "agent_persisted": True,
-            }
+            return finalize_external_turn(
+                error,
+                failed=True,
+                exit_reason="claude_replay_unsafe",
+                error=failure.message,
+                failure_reason=failure.reason.value,
+                agent_persisted=True,
+            )
 
         # Completed assistant/tool pairs are safe to continue through Hermes'
         # native loop. They are not safe to replay into a fresh external
@@ -894,9 +905,26 @@ def run_conversation(
             FailoverReason.overloaded,
             FailoverReason.server_error,
         }:
-            open_runtime_circuit(agent, reset_at=failure.reset_at)
+            reset_at = open_runtime_circuit(agent, reset_at=failure.reset_at)
+            _emit_runtime_event(agent, "runtime_circuit_open", reset_at=reset_at)
 
+        from_provider, from_model, from_runtime = (
+            agent.provider,
+            agent.model,
+            active_runtime,
+        )
         if agent._try_activate_fallback(reason=failure.reason):
+            _emit_runtime_event(
+                agent,
+                "runtime_fallback_activated",
+                reason=failure.reason.value,
+                from_provider=from_provider,
+                from_model=from_model,
+                from_runtime=from_runtime,
+                to_provider=agent.provider,
+                to_model=agent.model,
+                to_runtime=getattr(agent, "runtime", HERMES_RUNTIME),
+            )
             has_tool_side_effect = any(
                 isinstance(message, dict) and message.get("tool_calls")
                 for message in projection.messages
@@ -921,17 +949,14 @@ def run_conversation(
 
         error = f"Claude runtime failed and no fallback was available: {failure.message}"
         messages.append({"role": "assistant", "content": error})
-        return {
-            "final_response": error,
-            "messages": messages,
-            "api_calls": api_call_count,
-            "completed": False,
-            "failed": True,
-            "partial": False,
-            "error": failure.message,
-            "failure_reason": failure.reason.value,
-            "agent_persisted": True,
-        }
+        return finalize_external_turn(
+            error,
+            failed=True,
+            exit_reason="claude_fallback_exhausted",
+            error=failure.message,
+            failure_reason=failure.reason.value,
+            agent_persisted=True,
+        )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:

@@ -1224,9 +1224,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # same shim/proxy URL also dedup. See issue #22548.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     current_model = (getattr(agent, "model", "") or "").strip()
+    from agent.runtime_target import resolve_runtime_identity
+
+    fb_runtime = resolve_runtime_identity(
+        provider=fb_provider,
+        api_mode=str(fb.get("api_mode") or ""),
+        route_config=fb,
+    )
+    current_runtime = str(getattr(agent, "runtime", "hermes") or "hermes")
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-    if fb_provider == current_provider and fb_model == current_model:
+    if (
+        fb_provider == current_provider
+        and fb_model == current_model
+        and fb_runtime == current_runtime
+    ):
         logger.warning(
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
@@ -1237,6 +1249,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         and current_base_url
         and fb_base_url_for_dedup == current_base_url
         and fb_model == current_model
+        and fb_runtime == current_runtime
     ):
         logger.warning(
             "Fallback skip: chain entry base_url %s matches current backend",

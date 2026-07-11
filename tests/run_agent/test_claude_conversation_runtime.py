@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -91,6 +92,27 @@ def test_claude_runtime_completes_without_duplicating_user_turn():
     attempt.assert_called_once()
 
 
+def test_claude_success_honors_kanban_delivery_withholding():
+    agent = _agent()
+    agent._kanban_delivery_policy = SimpleNamespace(
+        withholding=True,
+        receipt="Kanban receipt",
+        final=lambda _response: "Kanban receipt",
+    )
+    projection = ClaudeProjection(
+        messages=[{"role": "assistant", "content": "raw model prose"}],
+        final_text="raw model prose",
+    )
+
+    with patch(
+        "agent.external_runtime.run_claude_agent_sdk_attempt",
+        return_value=projection,
+    ):
+        result = agent.run_conversation("do the card")
+
+    assert result["final_response"] == "Kanban receipt"
+
+
 def test_rate_limit_falls_through_to_codex_in_same_worker():
     agent = _agent(
         fallback_model={
@@ -130,6 +152,96 @@ def test_rate_limit_falls_through_to_codex_in_same_worker():
     assert result["api_calls"] == 2
     assert agent.runtime == "codex_app_server"
     assert sum(message.get("role") == "user" for message in result["messages"]) == 1
+
+
+def test_billing_failure_opens_circuit_falls_back_and_records_usage(caplog):
+    agent = _agent(
+        fallback_model={
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "runtime": "codex_app_server",
+        }
+    )
+    rejected = ClaudeProjection(
+        usage={"input_tokens": 7, "output_tokens": 3},
+        failure=RuntimeFailure(FailoverReason.billing, "subscription limit"),
+    )
+
+    def fake_codex_turn(self, user_input, **kwargs):
+        return TurnResult(final_text="recovered", projected_messages=[])
+
+    with (
+        patch(
+            "agent.external_runtime.run_claude_agent_sdk_attempt",
+            return_value=rejected,
+        ),
+        patch(
+            "agent.runtime_circuit.open_runtime_circuit",
+            return_value=1_900_000_000,
+        ) as open_circuit,
+        patch.object(CodexAppServerSession, "run_turn", fake_codex_turn),
+        patch.object(CodexAppServerSession, "ensure_started", return_value="thread"),
+    ):
+        result = agent.run_conversation("do the card")
+
+    assert result["completed"] is True
+    assert agent.runtime == "codex_app_server"
+    assert agent.session_input_tokens == 7
+    assert agent.session_output_tokens == 3
+    open_circuit.assert_called_once()
+    events = {
+        payload["event"]: payload
+        for record in caplog.records
+        if record.name == "hermes.runtime_events"
+        for payload in [json.loads(record.message)]
+    }
+    assert {
+        "runtime_attempt_start",
+        "runtime_attempt_failure",
+        "runtime_circuit_open",
+        "runtime_fallback_activated",
+        "runtime_billing_mode",
+    } <= events.keys()
+    assert events["runtime_attempt_failure"]["reason"] == "billing"
+    assert events["runtime_attempt_failure"]["replay_safe"] is True
+    assert events["runtime_circuit_open"]["reset_at"] == 1_900_000_000
+    fallback_event = events["runtime_fallback_activated"]
+    assert fallback_event["from_provider"] == "anthropic"
+    assert fallback_event["from_model"] == "claude-sonnet-4-6"
+    assert fallback_event["from_runtime"] == "claude_agent_sdk"
+    assert fallback_event["to_provider"] == "openai-codex"
+    assert fallback_event["to_model"] == "gpt-5.4"
+    assert fallback_event["to_runtime"] == "codex_app_server"
+    assert events["runtime_billing_mode"]["billing_mode"] == "subscription_included"
+
+
+def test_auth_failure_activates_fallback():
+    agent = _agent(
+        fallback_model={
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "runtime": "codex_app_server",
+        }
+    )
+    rejected = ClaudeProjection(
+        failure=RuntimeFailure(FailoverReason.auth, "subscription expired")
+    )
+
+    def fake_codex_turn(self, user_input, **kwargs):
+        return TurnResult(final_text="recovered", projected_messages=[])
+
+    with (
+        patch(
+            "agent.external_runtime.run_claude_agent_sdk_attempt",
+            return_value=rejected,
+        ),
+        patch.object(CodexAppServerSession, "run_turn", fake_codex_turn),
+        patch.object(CodexAppServerSession, "ensure_started", return_value="thread"),
+    ):
+        result = agent.run_conversation("do the card")
+
+    assert result["completed"] is True
+    assert agent.runtime == "codex_app_server"
 
 
 def test_rate_limit_falls_through_to_native_hermes_in_same_worker():
@@ -191,6 +303,30 @@ def test_rate_limit_falls_through_to_native_hermes_in_same_worker():
     assert "Provider: custom" in sent[0]["content"]
     assert "[one advisor result]" in sent[-1]["content"]
     aggregate.assert_called_once()
+
+
+def test_same_provider_model_native_runtime_fallback_is_not_deduped():
+    agent = _agent(
+        fallback_model={
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "runtime": "hermes",
+        }
+    )
+    fallback_client = MagicMock()
+    fallback_client.base_url = "https://api.anthropic.com"
+    fallback_client.api_key = "fallback-key"
+    fallback_client._custom_headers = None
+    fallback_client.default_headers = None
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(fallback_client, "claude-sonnet-4-6"),
+    ):
+        activated = agent._try_activate_fallback(FailoverReason.auth)
+
+    assert activated is True
+    assert agent.runtime == "hermes"
 
 
 def test_native_moa_reruns_after_tool_result_but_reuses_fallback_bridge_once():
@@ -314,7 +450,7 @@ def test_unresolved_tool_side_effect_fails_closed_without_fallback():
     assert result["completed"] is False
     assert result["failed"] is True
     assert agent._fallback_index == 0
-    assert not any(message.get("tool_calls") for message in result["messages"])
+    assert any(message.get("tool_calls") for message in result["messages"])
 
 
 def test_completed_external_side_effect_uses_safe_continuation_on_next_runtime():

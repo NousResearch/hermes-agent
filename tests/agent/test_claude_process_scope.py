@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import json
+import time
 
 import pytest
 
@@ -69,7 +70,16 @@ def test_worker_process_broker_controls_own_background_process_end_to_end(tmp_pa
     listed = json.loads(owner.handle({"action": "list"}))
 
     assert result["status"] == "exited"
-    assert "owned-output" in result["output"]
+    # The reader thread may still be draining the pipe right after exit;
+    # poll the log briefly instead of racing it.
+    output = result["output"]
+    deadline = time.time() + 5
+    while "owned-output" not in output and time.time() < deadline:
+        time.sleep(0.05)
+        output = json.loads(
+            owner.handle({"action": "log", "session_id": session.id})
+        ).get("output", "")
+    assert "owned-output" in output
     assert [item["session_id"] for item in listed["processes"]] == [session.id]
     with pytest.raises(RuntimeError, match="does not belong"):
         sibling.handle({"action": "log", "session_id": session.id})

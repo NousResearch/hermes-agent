@@ -108,11 +108,9 @@ def test_merge_is_bounded_deduplicated_and_always_keeps_latest_signal():
         [latest],
     )
 
-    cost = sum(
-        estimate_messages_tokens_rough(
-            [{"role": "user", "content": f"[{kind}] {text}"}]
-        )
-        for kind, text in merged
+    serialized = ContextCompressor._serialize_fidelity_ledger(merged)
+    cost = estimate_messages_tokens_rough(
+        [{"role": "user", "content": serialized}]
     )
     assert latest in merged
     assert len(merged) <= _FIDELITY_LEDGER_MAX_ENTRIES
@@ -120,19 +118,33 @@ def test_merge_is_bounded_deduplicated_and_always_keeps_latest_signal():
     assert sum(text == existing[0][1] for _kind, text in merged) <= 1
 
 
+def test_merge_budget_counts_serialized_envelope_overhead():
+    entry = ("decision", "We decided to preserve this bounded requirement.")
+    entry_only_cost = estimate_messages_tokens_rough(
+        [{"role": "user", "content": f"[{entry[0]}] {entry[1]}"}]
+    )
+    serialized_cost = ContextCompressor._fidelity_ledger_token_cost([entry])
+
+    assert serialized_cost > entry_only_cost
+    assert ContextCompressor._merge_fidelity_ledger(
+        [],
+        [entry],
+        token_budget=entry_only_cost,
+    ) == []
+
+
 def test_repeated_compaction_benchmark_retains_all_decisions_without_extra_calls():
-    """A deliberately lossy summarizer cannot erase deterministic ledger state."""
+    """The public compression path survives a deliberately lossy summarizer."""
     compressor = _compressor()
-    rounds = [
-        [{"role": "user", "content": "We decided to use SQLite."}],
-        [{"role": "user", "content": "Actually, use Postgres instead."}],
-        [{"role": "user", "content": "Configure the timeout to 30 seconds."}],
-    ]
-    expected = {
+    compressor.protect_first_n = 0
+    compressor.protect_last_n = 2
+    compressor.tail_token_budget = 120
+    signals = [
         "We decided to use SQLite.",
         "Actually, use Postgres instead.",
         "Configure the timeout to 30 seconds.",
-    }
+    ]
+    messages = []
 
     with patch(
         "agent.context_compressor.call_llm",
@@ -142,19 +154,46 @@ def test_repeated_compaction_benchmark_retains_all_decisions_without_extra_calls
             _response("Lossy narrative three."),
         ],
     ) as mock_call:
-        summaries = [compressor._generate_summary(turns) for turns in rounds]
+        for round_index, signal in enumerate(signals):
+            messages.extend(
+                [
+                    {"role": "user", "content": signal},
+                    {"role": "assistant", "content": "Decision acknowledged."},
+                ]
+            )
+            messages.extend(
+                {
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": (
+                        f"round {round_index} context {index} " + "detail " * 80
+                    ),
+                }
+                for index in range(8)
+            )
+            messages = compressor.compress(
+                messages,
+                current_tokens=90_000,
+                force=True,
+            )
 
-    narrative, entries = compressor._split_fidelity_ledger(
-        compressor._previous_summary or ""
+    summary_messages = [
+        message
+        for message in messages
+        if SUMMARY_PREFIX in str(message.get("content", ""))
+    ]
+    assert len(summary_messages) == 1
+    summary_body = compressor._strip_summary_prefix(
+        str(summary_messages[0]["content"])
     )
-    retained = {text for _kind, text in entries} & expected
-    retention_rate = len(retained) / len(expected)
+    narrative, entries = compressor._split_fidelity_ledger(summary_body)
+    retained = {text for _kind, text in entries} & set(signals)
+    retention_rate = len(retained) / len(signals)
 
-    assert mock_call.call_count == len(rounds)
+    assert mock_call.call_count == len(signals)
     assert retention_rate == 1.0
     assert narrative == "Lossy narrative three."
     assert entries[-1] == ("configuration", "Configure the timeout to 30 seconds.")
-    assert all(summary.count(_FIDELITY_LEDGER_START) == 1 for summary in summaries)
+    assert summary_body.count(_FIDELITY_LEDGER_START) == 1
 
 
 def test_fallback_merges_prior_ledger_and_truncates_narrative_first():
@@ -193,31 +232,53 @@ def test_persisted_handoff_rehydrates_ledger_after_restart():
         )
 
     restarted = _compressor()
-    summary_index, summary_body = restarted._find_latest_context_summary(
-        [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": persisted},
-        ],
-        1,
-        2,
+    restarted.protect_first_n = 1
+    restarted.protect_last_n = 2
+    restarted.tail_token_budget = 120
+    resumed_messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": persisted},
+        {"role": "assistant", "content": "Handoff acknowledged."},
+        {"role": "user", "content": "Actually, use footnote citations."},
+        {"role": "assistant", "content": "Correction acknowledged."},
+    ]
+    resumed_messages.extend(
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"resumed context {index} " + "detail " * 80,
+        }
+        for index in range(8)
     )
-    assert summary_index == 1
-    assert summary_body.startswith("Initial narrative.")
-    restarted._previous_summary = summary_body
 
     with patch(
         "agent.context_compressor.call_llm",
         return_value=_response("Resumed narrative."),
-    ):
-        resumed = restarted._generate_summary(
-            [{"role": "user", "content": "Actually, use footnote citations."}]
+    ) as mock_call:
+        resumed_messages = restarted.compress(
+            resumed_messages,
+            current_tokens=90_000,
+            force=True,
         )
 
-    body = resumed.removeprefix(SUMMARY_PREFIX).strip()
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert prompt.count("We decided to keep citations inline.") == 1
+    assert "Actually, use footnote citations." in prompt
+    summaries = [
+        str(message.get("content", ""))
+        for message in resumed_messages
+        if SUMMARY_PREFIX in str(message.get("content", ""))
+    ]
+    # The existing protected-head policy keeps the persisted handoff alongside
+    # its updated successor. The later handoff is the authoritative one.
+    body = next(
+        restarted._strip_summary_prefix(summary)
+        for summary in summaries
+        if "Resumed narrative." in summary
+    )
     narrative, entries = restarted._split_fidelity_ledger(body)
     assert narrative == "Resumed narrative."
     assert entries == [
         ("decision", "We decided to keep citations inline."),
         ("correction", "Actually, use footnote citations."),
     ]
-    assert resumed.count(_FIDELITY_LEDGER_START) == 1
+    assert body.count(_FIDELITY_LEDGER_START) == 1

@@ -1664,7 +1664,7 @@ class ContextCompressor(ContextEngine):
         token_budget: int = _FIDELITY_LEDGER_TOKEN_BUDGET,
     ) -> list[tuple[str, str]]:
         """Merge exact anchors, preserving chronology under a hard budget."""
-        deduped: dict[str, tuple[int, str, str, int]] = {}
+        deduped: dict[str, tuple[int, str, str]] = {}
         for sequence, (kind, raw_value) in enumerate(existing + new):
             if kind not in _FIDELITY_KIND_PRIORITY or not isinstance(raw_value, str):
                 continue
@@ -1674,10 +1674,7 @@ class ContextCompressor(ContextEngine):
             key = re.sub(r"\s+", " ", value).strip().casefold()
             if key in deduped:
                 del deduped[key]
-            cost = estimate_messages_tokens_rough(
-                [{"role": "user", "content": f"[{kind}] {value}"}]
-            )
-            deduped[key] = (sequence, kind, value, cost)
+            deduped[key] = (sequence, kind, value)
 
         candidates = list(deduped.values())
         if not candidates:
@@ -1689,15 +1686,18 @@ class ContextCompressor(ContextEngine):
         )
 
         selected: list[tuple[int, str, str]] = []
-        used = 0
-        for sequence, kind, value, cost in ranked:
-            if used + cost > token_budget:
+        for sequence, kind, value in ranked:
+            trial = selected + [(sequence, kind, value)]
+            trial.sort(key=lambda item: item[0])
+            trial_entries = [
+                (trial_kind, trial_value)
+                for _trial_sequence, trial_kind, trial_value in trial
+            ]
+            if cls._fidelity_ledger_token_cost(trial_entries) > token_budget:
                 continue
-            selected.append((sequence, kind, value))
-            used += cost
+            selected = trial
             if len(selected) >= _FIDELITY_LEDGER_MAX_ENTRIES:
                 break
-        selected.sort(key=lambda item: item[0])
         return [(kind, value) for _sequence, kind, value in selected]
 
     @classmethod
@@ -1717,6 +1717,19 @@ class ContextCompressor(ContextEngine):
         }
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return f"{_FIDELITY_LEDGER_START}\n{encoded}\n{_FIDELITY_LEDGER_END}"
+
+    @classmethod
+    def _fidelity_ledger_token_cost(
+        cls,
+        entries: list[tuple[str, str]],
+    ) -> int:
+        """Estimate the complete persisted block, including format overhead."""
+        ledger = cls._serialize_fidelity_ledger(entries)
+        if not ledger:
+            return 0
+        return estimate_messages_tokens_rough(
+            [{"role": "user", "content": ledger}]
+        )
 
     @classmethod
     def _append_fidelity_ledger(

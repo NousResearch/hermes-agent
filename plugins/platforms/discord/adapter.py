@@ -798,6 +798,13 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        # WebSocket-level liveness: track the last time ANY WS packet was
+        # received (including heartbeats).  Discord sends heartbeats every
+        # ~41 s, so if nothing arrives for > 1 min the WS is definitively
+        # dead even though the REST API may still be reachable.  Combined
+        # with the REST probe below, this closes the blind spot where the
+        # adapter sits in a zombie state (REST alive, WS dead).
+        self._last_ws_event_time: float = 0.0
         # REST-level liveness probe.  discord.py's WS reconnect handles clean
         # drops, but a dead proxy / NAT can wedge the socket without delivering
         # a RST — sends time out forever and ``client.start()`` never exits, so
@@ -1028,6 +1035,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
 
             @self._client.event
+            async def on_socket_raw_receive(payload: dict) -> None:
+                # Track the last time ANY WebSocket packet arrived (heartbeats,
+                # dispatches, presence updates, etc.).  Discord sends heartbeats
+                # every ~41 s, so a gap > 60 s means the WS is dead.
+                adapter_self._last_ws_event_time = time.monotonic()
+
+            @self._client.event
             async def on_message(message: DiscordMessage):
                 # Block until _resolve_allowed_usernames has swapped
                 # any raw usernames in DISCORD_ALLOWED_USERS for numeric
@@ -1247,9 +1261,19 @@ class DiscordAdapter(BasePlatformAdapter):
         delivery and lets us detect the wedge.  After ``threshold`` consecutive
         failures we close the client, set a retryable fatal error, and hand
         control back to the gateway's platform reconnect watcher.
+
+        Additionally, we track the last time ANY WebSocket packet was received
+        (including heartbeats — Discord sends them every ~41 s).  If no WS
+        packet has arrived for > ``ws_silence_threshold`` seconds, the WS is
+        definitively dead even though REST may still be reachable.  This closes
+        the zombie blind spot where the adapter can send (REST) but cannot
+        receive (WS).
         """
         interval = self._liveness_interval_seconds
         threshold = self._liveness_failure_threshold
+        ws_silence_threshold = env_float(
+            "HERMES_DISCORD_LIVENESS_WS_SILENCE_SECONDS", 60.0
+        )
         fails = 0
         while self._running:
             try:
@@ -1264,6 +1288,42 @@ class DiscordAdapter(BasePlatformAdapter):
             user = getattr(client, "user", None)
             if user is None:
                 continue
+
+            # ── WebSocket silence check (new) ──
+            # If _last_ws_event_time was never set (0.0) we skip this check
+            # until the first WS packet arrives — avoids a false positive on
+            # cold start before on_ready fires.
+            if (
+                ws_silence_threshold > 0
+                and self._last_ws_event_time > 0
+                and (time.monotonic() - self._last_ws_event_time) > ws_silence_threshold
+            ):
+                silence_secs = time.monotonic() - self._last_ws_event_time
+                logger.error(
+                    "[%s] Discord WebSocket silent for %.0fs (threshold %.0fs) "
+                    "while REST is reachable — WS is zombie, forcing reconnect",
+                    self.name, silence_secs, ws_silence_threshold,
+                )
+                try:
+                    await client.close()
+                except Exception:
+                    logger.debug(
+                        "[%s] Error closing zombie Discord client", self.name, exc_info=True,
+                    )
+                self._set_fatal_error(
+                    "ws_silence",
+                    f"Discord WebSocket silent for {silence_secs:.0f}s (threshold {ws_silence_threshold:.0f}s)",
+                    retryable=True,
+                )
+                try:
+                    await self._notify_fatal_error()
+                except Exception:
+                    logger.debug(
+                        "[%s] Fatal-error handler raised", self.name, exc_info=True,
+                    )
+                return
+
+            # ── REST probe (existing) ──
             try:
                 await client.fetch_user(user.id)
                 fails = 0

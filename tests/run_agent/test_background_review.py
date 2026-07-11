@@ -473,3 +473,151 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_background_review_surfaces_terminal_failure(monkeypatch):
+    """When run_conversation returns {failed: True}, the auxiliary failure is emitted.
+
+    Regression for #61962: the review fork discarded the return value of
+    run_conversation(), so terminal failures (content-policy rejection,
+    context overflow with compression disabled, etc.) were silently swallowed.
+    """
+    emitted: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            return {"failed": True, "error": "context overflow with compression disabled"}
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._emit_auxiliary_failure = lambda task, exc: (
+        emitted.update({"task": task, "error": str(exc)})
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert emitted["task"] == "background review"
+    assert "context overflow" in emitted["error"]
+
+
+def test_background_review_no_failure_when_run_conversation_succeeds(monkeypatch):
+    """Normal successful run_conversation result does not trigger an auxiliary failure."""
+    emitted: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            return {"final_response": "ok", "completed": True}
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._emit_auxiliary_failure = lambda task, exc: (
+        emitted.update({"called": True})
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert not emitted
+
+
+def test_background_review_failure_still_runs_summarization(monkeypatch):
+    """Even when the review fails, any partial tool results are still summarized.
+
+    The issue report notes: "earlier successful memory/skill writes are
+    real and must still be summarized." The failure warning is emitted,
+    but the summarization path still runs on whatever _session_messages
+    exist.
+    """
+    import json
+    import agent.background_review as bg_review
+
+    review_tool_message = {
+        "role": "tool",
+        "tool_call_id": "call_bg",
+        "content": json.dumps(
+            {"success": True, "message": "Entry added", "target": "memory"}
+        ),
+    }
+    captured: dict = {}
+    events: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append("run_conversation")
+            self._session_messages = [review_tool_message]
+            return {"failed": True, "error": "content_policy_blocked: refusal"}
+
+        def shutdown_memory_provider(self):
+            events.append("shutdown_memory_provider")
+
+        def close(self):
+            events.append("close")
+            self._session_messages = []
+
+    def fake_summarize(review_messages, prior_snapshot, notification_mode="on"):
+        events.append("summarize")
+        captured["review_messages"] = list(review_messages)
+        return ["Memory updated"]
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        bg_review,
+        "summarize_background_review_actions",
+        fake_summarize,
+    )
+
+    agent = _bare_agent()
+    emitted_failures: list = []
+    agent._emit_auxiliary_failure = lambda task, exc: (
+        emitted_failures.append((task, str(exc)))
+    )
+    printed: list = []
+    agent._safe_print = lambda msg: printed.append(msg)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    # Failure was surfaced.
+    assert len(emitted_failures) == 1
+    assert emitted_failures[0][0] == "background review"
+    # Summarization still ran and saw the partial tool result.
+    assert "summarize" in events
+    assert captured["review_messages"] == [review_tool_message]
+    # The summary was printed to the user.
+    assert any("Memory updated" in msg for msg in printed)

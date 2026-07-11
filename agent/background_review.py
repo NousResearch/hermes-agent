@@ -835,7 +835,7 @@ def _run_review_in_thread(
                     _digest_history(messages_snapshot) if _routed
                     else messages_snapshot
                 )
-                review_agent.run_conversation(
+                result = review_agent.run_conversation(
                     user_message=(
                         prompt
                         + "\n\nYou can only call memory and skill "
@@ -844,6 +844,20 @@ def _run_review_in_thread(
                     ),
                     conversation_history=_review_history,
                 )
+                # run_conversation can return a terminal failure (content-policy
+                # rejection, context overflow with compression disabled, etc.)
+                # as a dict with ``failed: True`` rather than raising. The
+                # review fork sets ``suppress_status_output = True`` and runs
+                # inside thread_scoped_silence(), so the loop's own failure
+                # messages are intentionally hidden — the return value is the
+                # ONLY signal. Surface it so the user sees the failure instead
+                # of a silent incomplete review (#61962).
+                if result and result.get("failed"):
+                    _detail = result.get("error", "review failed with no error detail")
+                    agent._emit_auxiliary_failure(
+                        "background review",
+                        RuntimeError(_detail),
+                    )
             finally:
                 clear_thread_tool_whitelist()
 

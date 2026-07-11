@@ -67,9 +67,9 @@ class ResponsesApiTransport(ProviderTransport):
         """Classify the current Responses endpoint from transport params."""
         from agent.codex_responses_adapter import _classify_responses_issuer
         return _classify_responses_issuer(
-            is_xai_responses=bool(params.get("is_xai_responses")),
-            is_github_responses=bool(params.get("is_github_responses")),
-            is_codex_backend=bool(params.get("is_codex_backend")),
+            is_xai_responses=params.get("is_xai_responses") is True,
+            is_github_responses=params.get("is_github_responses") is True,
+            is_codex_backend=params.get("is_codex_backend") is True,
             base_url=params.get("base_url"),
         )
 
@@ -80,8 +80,8 @@ class ResponsesApiTransport(ProviderTransport):
         self._last_issuer_kind = issuer
         return _chat_messages_to_responses_input(
             messages,
-            is_xai_responses=bool(kwargs.get("is_xai_responses")),
-            is_github_responses=bool(kwargs.get("is_github_responses")),
+            is_xai_responses=kwargs.get("is_xai_responses") is True,
+            is_github_responses=kwargs.get("is_github_responses") is True,
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
@@ -138,9 +138,9 @@ class ResponsesApiTransport(ProviderTransport):
         if not instructions:
             instructions = DEFAULT_AGENT_IDENTITY
 
-        is_github_responses = params.get("is_github_responses", False)
-        is_codex_backend = params.get("is_codex_backend", False)
-        is_xai_responses = params.get("is_xai_responses", False)
+        is_github_responses = params.get("is_github_responses") is True
+        is_codex_backend = params.get("is_codex_backend") is True
+        is_xai_responses = params.get("is_xai_responses") is True
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )

@@ -18,14 +18,13 @@ def url_origin(url: str) -> tuple[str, str, int | None]:
     """Return a normalized (scheme, hostname, effective port) origin."""
     parsed = urllib.parse.urlparse(url)
     scheme = (parsed.scheme or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
+    # Accessing ``parsed.port`` validates malformed/non-numeric ports. Let the
+    # ValueError fail the request closed instead of collapsing it to a default.
+    port = parsed.port
     return (
         scheme,
         (parsed.hostname or "").lower().rstrip("."),
-        port or _DEFAULT_PORTS.get(scheme),
+        port if port is not None else _DEFAULT_PORTS.get(scheme),
     )
 
 

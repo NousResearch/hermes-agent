@@ -2556,6 +2556,11 @@ def estimate_request_tokens_rough(
     tools enabled, schemas alone can add 20-30K tokens — a significant
     blind spot when only counting messages. Image content is counted
     at a flat per-image cost (see estimate_messages_tokens_rough).
+
+    Note: A 15% safety margin is applied to the raw count because the
+    character-count heuristic can underestimate the true token count by
+    20-30%. This margin ensures auto-compression fires early enough to
+    prevent requests from exceeding context_length after 3 retries.
     """
     total = 0
     if system_prompt:
@@ -2564,7 +2569,11 @@ def estimate_request_tokens_rough(
         total += estimate_messages_tokens_rough(messages)
     if tools:
         total += _estimate_tools_tokens_rough(tools)
-    return total
+    # Safety margin: rough character-count estimate can underestimate
+    # true prompt_tokens by 20-30%, causing auto-compression to fire
+    # too late.  The 15% cushion triggers compression earlier so that
+    # after 3 retries the request stays within context_length.
+    return int(total * 1.15)
 
 
 # NOTE: tool schemas can be large. Avoid repeated `str(tools)` conversions,

@@ -70,7 +70,9 @@ def _secure_opener_from_installed_policy(original_url: str):
         if not isinstance(handler, urllib.request.HTTPRedirectHandler)
     ]
     handlers.append(SafeCredentialRedirectHandler(original_url))
-    return urllib.request.build_opener(*handlers)
+    secured = urllib.request.build_opener(*handlers)
+    secured.addheaders = list(getattr(installed, "addheaders", ()))
+    return secured
 
 
 def open_credentialed_url(

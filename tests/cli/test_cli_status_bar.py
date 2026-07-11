@@ -105,6 +105,26 @@ class TestCLIStatusBar:
         assert "-1" not in text
         assert "0/200K" in text
 
+    def test_status_bar_context_tokens_promote_unit_on_rounding_overflow(self):
+        """The status bar's compact token formatter must not emit a mantissa
+        that rounds up into the next unit: 999_999 context tokens rounds to
+        "1000K" and should render as "1M". Regression for the CLI status-bar
+        call path (cli.format_token_count_compact at cli.py:5100).
+        """
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=999_999,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+        assert "1000K" not in text
+        assert "1M/200K" in text
+
     def test_input_height_counts_prompt_only_on_first_wrapped_row(self):
         # Regression for prompt_toolkit classic CLI resize glitches: the prompt
         # is inserted by BeforeInput only on logical line 0. At three terminal

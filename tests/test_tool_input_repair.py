@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Unit tests for tool_input_repair module."""
 
-import pytest
+from unittest.mock import patch
 
 from agent.tool_input_repair import (
     FIELD_ALIAS_MAP,
-    validate_tool_args,
-    repair_tool_args,
-    _rename_aliased_fields,
     append_repair_note,
+    emit_repair_telemetry,
+    format_error_for_model,
+    repair_tool_args,
+    validate_tool_args,
+    _rename_aliased_fields,
 )
 
 
@@ -31,8 +33,23 @@ class TestValidateToolArgs:
         """Unknown fields should not be flagged (tools may handle them)."""
         args = {"path": "/etc/hosts", "unknown_field": "value"}
         errors = validate_tool_args("read_file", args)
-        # We only check for missing required fields, not unknown fields
         assert errors == []
+
+    def test_nullish_optional_field_is_reported_when_schema_known(self):
+        schema = {
+            "name": "test_tool",
+            "parameters": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+            },
+        }
+        with patch("agent.tool_input_repair._get_tool_schema", return_value=schema):
+            errors = validate_tool_args("test_tool", {"path": "/tmp", "note": "undefined"})
+        assert any("null/undefined" in err for err in errors)
 
 
 class TestRenameAliasedFields:
@@ -68,10 +85,101 @@ class TestRenameAliasedFields:
         """Multiple aliases for same tool should all be renamed."""
         args = {"file_path": "/etc/hosts", "filePath": "/etc/passwd"}
         result = _rename_aliased_fields("read_file", args)
-        # Both aliases map to "path", last one wins in dict
         assert "path" in result
         assert "file_path" not in result
         assert "filePath" not in result
+
+
+class TestRepairRules:
+    """Focused coverage for the structural repair rules beyond aliases."""
+
+    def _schema(self, properties, required=None):
+        return {
+            "name": "test_tool",
+            "parameters": {
+                "type": "object",
+                "required": required or [],
+                "properties": properties,
+            },
+        }
+
+    def test_drop_null_or_undefined_field(self):
+        schema = self._schema(
+            {
+                "path": {"type": "string"},
+                "note": {"type": "string"},
+            },
+            required=["path"],
+        )
+        with patch("agent.tool_input_repair._get_tool_schema", return_value=schema):
+            repaired = repair_tool_args(
+                "test_tool",
+                {"path": "/tmp/file.txt", "note": "undefined"},
+                ["synthetic validation error"],
+            )
+        assert repaired == {"path": "/tmp/file.txt"}
+
+    def test_drop_empty_object_placeholder(self):
+        schema = self._schema(
+            {
+                "path": {"type": "string"},
+                "extra": {"type": "string"},
+            },
+            required=["path"],
+        )
+        with patch("agent.tool_input_repair._get_tool_schema", return_value=schema):
+            repaired = repair_tool_args(
+                "test_tool",
+                {"path": "/tmp/file.txt", "extra": {}},
+                ["synthetic validation error"],
+            )
+        assert repaired == {"path": "/tmp/file.txt"}
+
+    def test_parse_json_stringified_array(self):
+        schema = self._schema(
+            {
+                "urls": {"type": "array", "items": {"type": "string"}},
+            },
+            required=["urls"],
+        )
+        with patch("agent.tool_input_repair._get_tool_schema", return_value=schema):
+            repaired = repair_tool_args(
+                "test_tool",
+                {"urls": '["https://a.example", "https://b.example"]'},
+                ["synthetic validation error"],
+            )
+        assert repaired == {"urls": ["https://a.example", "https://b.example"]}
+
+    def test_wrap_bare_string_as_array(self):
+        schema = self._schema(
+            {
+                "urls": {"type": "array", "items": {"type": "string"}},
+            },
+            required=["urls"],
+        )
+        with patch("agent.tool_input_repair._get_tool_schema", return_value=schema):
+            repaired = repair_tool_args(
+                "test_tool",
+                {"urls": "https://a.example"},
+                ["synthetic validation error"],
+            )
+        assert repaired == {"urls": ["https://a.example"]}
+
+    def test_wrap_root_string_as_object(self):
+        schema = self._schema(
+            {
+                "name": {"type": "string"},
+                "count": {"type": "integer"},
+            },
+            required=["name"],
+        )
+        with patch("agent.tool_input_repair._get_tool_schema", return_value=schema):
+            repaired = repair_tool_args(
+                "test_tool",
+                '{"name":"widgets","count":3}',
+                ["synthetic validation error"],
+            )
+        assert repaired == {"name": "widgets", "count": 3}
 
 
 class TestRepairToolArgs:
@@ -86,12 +194,10 @@ class TestRepairToolArgs:
     def test_alias_triggers_repair(self):
         """Missing required field due to alias should trigger repair."""
         args = {"file_path": "/etc/hosts"}
-        # This would fail validation because "path" is required
         errors = validate_tool_args("read_file", args)
         assert len(errors) > 0
 
         result = repair_tool_args("read_file", args, errors)
-        # After repair, should have canonical field
         assert "path" in result
         assert "file_path" not in result
 
@@ -106,7 +212,7 @@ class TestRepairToolArgs:
         """File content strings should never be mutated by repair rules."""
         args = {
             "path": "/tmp/test.txt",
-            "content": "Hello [world](http://example.com)"
+            "content": "Hello [world](http://example.com)",
         }
         errors = validate_tool_args("write_file", args)
         result = repair_tool_args("write_file", args, errors)
@@ -182,41 +288,28 @@ class TestIntegration:
     def test_full_repair_flow_alias_only(self):
         """Full flow: alias triggers repair, validation passes after."""
         args = {"file_path": "/etc/hosts", "offset": 1}
-        # Validate: should fail due to missing "path"
         errors = validate_tool_args("read_file", args)
         assert len(errors) > 0
 
-        # Repair: should rename file_path → path
         repaired = repair_tool_args("read_file", args, errors)
-
-        # Re-validate: should pass
         new_errors = validate_tool_args("read_file", repaired)
         assert new_errors == []
-
-        # Verify the rename happened
         assert repaired == {"path": "/etc/hosts", "offset": 1}
 
     def test_full_repair_flow_no_alias_unchanged(self):
         """Full flow: no aliases present, args unchanged."""
         args = {"path": "/etc/hosts", "offset": 1}
         errors = validate_tool_args("read_file", args)
-        # Should pass validation (no errors)
         assert errors == []
 
         repaired = repair_tool_args("read_file", args, errors)
-
-        # Should be unchanged
         assert repaired == args
 
     def test_full_repair_flow_both_canonical_and_alias(self):
         """Full flow: valid input with canonical field is untouched."""
         args = {"path": "/etc/hosts", "file_path": "/etc/passwd", "offset": 1}
         errors = validate_tool_args("read_file", args)
-        # Should pass validation (has canonical field)
         assert errors == []
 
         repaired = repair_tool_args("read_file", args, errors)
-
-        # Valid input is untouched - redundant alias stays
-        # (per acceptance criteria: "Valid inputs must be untouched")
         assert repaired == args

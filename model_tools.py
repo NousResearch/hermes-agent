@@ -1037,6 +1037,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    model: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1075,11 +1076,25 @@ def handle_function_call(
     _args_repaired = False
     _repair_applied = []
     try:
-        from agent.tool_input_repair import validate_tool_args, repair_tool_args, append_repair_note
+        from agent.tool_input_repair import (
+            validate_tool_args,
+            repair_tool_args,
+            append_repair_note,
+            format_error_for_model,
+            emit_repair_telemetry,
+            _validation_issue_codes,
+        )
 
         # Validate against schema
         validation_errors = validate_tool_args(function_name, function_args)
         if validation_errors:
+            emit_repair_telemetry(
+                event="tool_input_invalid:tool",
+                tool_name=function_name,
+                model=model or "",
+                rule_fired="validate_tool_args",
+                issue_codes=_validation_issue_codes(validation_errors),
+            )
             # Validation failed: attempt repair
             logger.debug(
                 "handle_function_call: %s validation failed: %s; attempting repair",
@@ -1104,6 +1119,21 @@ def handle_function_call(
                     "handle_function_call: %s args repaired: %s",
                     function_name, ", ".join(_repair_applied)
                 )
+                emit_repair_telemetry(
+                    event="tool_input_repaired:tool",
+                    tool_name=function_name,
+                    model=model or "",
+                    rule_fired="repair_tool_args",
+                    issue_codes=_validation_issue_codes(validation_errors),
+                    repairs=list(_repair_applied),
+                )
+            elif new_errors:
+                model_error = format_error_for_model(function_name, new_errors)
+                logger.info(
+                    "handle_function_call: %s validation failed after repair: %s",
+                    function_name, model_error.replace("\n", " | ")
+                )
+                return json.dumps({"error": model_error}, ensure_ascii=False)
     except Exception as _repair_err:
         # Repair layer must never break normal tool dispatch
         logger.debug("handle_function_call: tool_input_repair error: %s", _repair_err)

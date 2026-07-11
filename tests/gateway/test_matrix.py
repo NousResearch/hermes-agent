@@ -585,6 +585,100 @@ class TestMatrixDmDetection:
             "!room_b:ex.org": False,
         }
 
+    @pytest.mark.asyncio
+    async def test_direct_invite_is_persisted_to_m_direct(self):
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+        self.adapter._client.get_account_data = AsyncMock(
+            return_value=MagicMock(content={"@alice:ex.org": ["!old:ex.org"]})
+        )
+        self.adapter._client.set_account_data = AsyncMock()
+
+        event = types.SimpleNamespace(
+            room_id="!new:ex.org",
+            sender="@alice:ex.org",
+            content={"membership": "invite", "is_direct": True},
+        )
+
+        await self.adapter._on_invite(event)
+
+        self.adapter._client.set_account_data.assert_awaited_once_with(
+            "m.direct",
+            {"@alice:ex.org": ["!old:ex.org", "!new:ex.org"]},
+        )
+        assert self.adapter._dm_rooms["!new:ex.org"] is True
+
+    @pytest.mark.asyncio
+    async def test_pending_direct_invite_is_persisted_to_m_direct(self):
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+        self.adapter._client.get_account_data = AsyncMock(
+            return_value=MagicMock(content={})
+        )
+        self.adapter._client.set_account_data = AsyncMock()
+
+        await self.adapter._join_pending_invites({
+            "rooms": {
+                "invite": {
+                    "!new:ex.org": {
+                        "invite_state": {
+                            "events": [{
+                                "type": "m.room.member",
+                                "sender": "@alice:ex.org",
+                                "content": {"membership": "invite", "is_direct": True},
+                            }]
+                        }
+                    }
+                }
+            }
+        })
+
+        self.adapter._client.set_account_data.assert_awaited_once_with(
+            "m.direct",
+            {"@alice:ex.org": ["!new:ex.org"]},
+        )
+        assert self.adapter._dm_rooms["!new:ex.org"] is True
+
+    @pytest.mark.asyncio
+    async def test_group_invite_does_not_modify_m_direct(self):
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+        self.adapter._client.get_account_data = AsyncMock(
+            return_value=MagicMock(content={})
+        )
+        self.adapter._client.set_account_data = AsyncMock()
+
+        event = types.SimpleNamespace(
+            room_id="!group:ex.org",
+            sender="@alice:ex.org",
+            content={"membership": "invite", "is_direct": False},
+        )
+
+        await self.adapter._on_invite(event)
+
+        self.adapter._client.set_account_data.assert_not_awaited()
+        assert self.adapter._dm_rooms.get("!group:ex.org") is not True
+
+    @pytest.mark.asyncio
+    async def test_direct_invite_read_failure_does_not_overwrite_m_direct(self):
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+        self.adapter._client.get_account_data = AsyncMock(
+            side_effect=RuntimeError("account data unavailable")
+        )
+        self.adapter._client.set_account_data = AsyncMock()
+
+        event = types.SimpleNamespace(
+            room_id="!new:ex.org",
+            sender="@alice:ex.org",
+            content={"membership": "invite", "is_direct": True},
+        )
+
+        await self.adapter._on_invite(event)
+
+        self.adapter._client.set_account_data.assert_not_awaited()
+        assert self.adapter._dm_rooms.get("!new:ex.org") is not True
+
 
 # ---------------------------------------------------------------------------
 # Reply fallback stripping

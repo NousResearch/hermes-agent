@@ -2875,18 +2875,74 @@ class MatrixAdapter(BasePlatformAdapter):
         """Auto-join rooms when invited."""
 
         room_id = str(getattr(event, "room_id", ""))
+        sender = str(getattr(event, "sender", ""))
+        content = getattr(event, "content", None)
+        is_direct = bool(
+            getattr(content, "is_direct", False)
+            or (isinstance(content, dict) and content.get("is_direct"))
+        )
 
         logger.info(
             "Matrix: invited to %s — joining",
             room_id,
         )
-        await self._join_room_by_id(room_id)
+        await self._join_room_by_id(
+            room_id,
+            direct_user_id=sender if is_direct else None,
+        )
 
-    async def _join_room_by_id(self, room_id: str) -> bool:
+    async def _mark_room_direct(self, room_id: str, user_id: str) -> None:
+        """Persist a direct-room invite in this account's ``m.direct`` data."""
+        if not self._client or not room_id or not user_id:
+            return
+
+        direct_data: Dict[str, Any] = {}
+        try:
+            resp = await self._client.get_account_data("m.direct")
+            content = getattr(resp, "content", resp)
+            if isinstance(content, dict):
+                direct_data = dict(content)
+        except Exception as exc:
+            logger.warning(
+                "Matrix: could not read m.direct before registering %s: %s",
+                room_id,
+                exc,
+            )
+            return
+
+        rooms = direct_data.get(user_id)
+        user_rooms = list(rooms) if isinstance(rooms, list) else []
+        if room_id not in user_rooms:
+            user_rooms.append(room_id)
+            direct_data[user_id] = user_rooms
+            try:
+                await self._client.set_account_data("m.direct", direct_data)
+            except Exception as exc:
+                logger.warning(
+                    "Matrix: could not persist direct room %s for %s: %s",
+                    room_id,
+                    user_id,
+                    exc,
+                )
+                return
+
+        self._dm_rooms[room_id] = True
+        self._room_identities.pop(room_id, None)
+        self._room_identity_cached_at.pop(room_id, None)
+        logger.info("Matrix: registered %s as a direct room with %s", room_id, user_id)
+
+    async def _join_room_by_id(
+        self,
+        room_id: str,
+        *,
+        direct_user_id: Optional[str] = None,
+    ) -> bool:
         """Join a room by ID and refresh local caches on success."""
         if not room_id:
             return False
         if room_id in self._joined_rooms:
+            if direct_user_id:
+                await self._mark_room_direct(room_id, direct_user_id)
             return True
         try:
             await self._client.join_room(RoomID(room_id))
@@ -2895,6 +2951,8 @@ class MatrixAdapter(BasePlatformAdapter):
             self._room_identity_cached_at.pop(room_id, None)
             logger.info("Matrix: joined %s", room_id)
             await self._refresh_dm_cache()
+            if direct_user_id:
+                await self._mark_room_direct(room_id, direct_user_id)
             return True
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
@@ -2906,11 +2964,28 @@ class MatrixAdapter(BasePlatformAdapter):
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
-        for room_id in invites:
+        for room_id, invite_data in invites.items():
             if room_id in self._joined_rooms:
                 continue
+            direct_user_id = None
+            invite_state = (
+                invite_data.get("invite_state", {})
+                if isinstance(invite_data, dict)
+                else {}
+            )
+            events = invite_state.get("events", []) if isinstance(invite_state, dict) else []
+            for event in events:
+                if not isinstance(event, dict) or event.get("type") != "m.room.member":
+                    continue
+                content = event.get("content", {})
+                if isinstance(content, dict) and content.get("is_direct"):
+                    direct_user_id = str(event.get("sender", "")) or None
+                    break
             logger.info("Matrix: reconciling pending invite for %s", room_id)
-            await self._join_room_by_id(str(room_id))
+            await self._join_room_by_id(
+                str(room_id),
+                direct_user_id=direct_user_id,
+            )
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)

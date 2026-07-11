@@ -1261,6 +1261,94 @@ class TelegramAdapter(BasePlatformAdapter):
                 stack.append(context)
         return False
 
+    @classmethod
+    def _should_retry_media_upload(cls, error: Exception) -> bool:
+        """Return True when a failed media upload is safe to retry.
+
+        PTB normally wraps httpx transport failures in ``NetworkError``, but
+        tests and custom request transports can surface the original httpx
+        exception. Generic timeouts are deliberately excluded because the
+        upload may already have reached Telegram; connect/pool timeouts are
+        safe because the request was not sent.
+        """
+        if cls._looks_like_connect_timeout(error) or cls._looks_like_pool_timeout(
+            error
+        ):
+            return True
+
+        seen: set[int] = set()
+        stack: list[BaseException] = [error]
+        while stack:
+            cur = stack.pop()
+            ident = id(cur)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            name = cur.__class__.__name__.lower()
+            if name in {
+                "readerror",
+                "writeerror",
+                "connecterror",
+                "remoteprotocolerror",
+            }:
+                return True
+            if name == "timedout":
+                return False
+            cause = getattr(cur, "__cause__", None)
+            context = getattr(cur, "__context__", None)
+            if cause is not None:
+                stack.append(cause)
+            if context is not None:
+                stack.append(context)
+
+        return cls._looks_like_network_error(error)
+
+    async def _send_media_upload_with_retry(
+        self,
+        send_fn: Any,
+        send_kwargs: Dict[str, Any],
+        file_arg: str,
+        file_path: str,
+        metadata: Optional[Dict[str, Any]],
+        reply_to_message_id: Optional[int],
+        media_label: str,
+    ) -> Any:
+        """Send local media, reopening the file for transient retries."""
+        for upload_attempt in range(3):
+            try:
+                # A failed multipart upload can leave the stream at EOF, so
+                # every retry must give PTB/httpx a fresh file handle.
+                with open(file_path, "rb") as media_file:
+                    attempt_kwargs = dict(send_kwargs)
+                    attempt_kwargs[file_arg] = media_file
+                    return await self._send_with_dm_topic_reply_anchor_retry(
+                        send_fn,
+                        attempt_kwargs,
+                        metadata,
+                        reply_to_message_id,
+                        media_label,
+                        reset_media=lambda: media_file.seek(0),
+                    )
+            except Exception as upload_error:
+                if (
+                    upload_attempt >= 2
+                    or not self._should_retry_media_upload(upload_error)
+                ):
+                    raise
+                wait = 2 ** upload_attempt
+                logger.warning(
+                    "[%s] Transient Telegram %s upload error "
+                    "(attempt %d/3), retrying in %ds: %s",
+                    self.name,
+                    media_label,
+                    upload_attempt + 1,
+                    wait,
+                    _redact_telegram_error_text(upload_error),
+                )
+                await asyncio.sleep(wait)
+
+        raise RuntimeError(f"Telegram {media_label} upload retry loop exhausted")
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -6163,23 +6251,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
 
-            with open(file_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_document,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "document": f,
-                        "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "document",
-                    reset_media=lambda: f.seek(0),
-                )
+            msg = await self._send_media_upload_with_retry(
+                self._bot.send_document,
+                {
+                    "chat_id": normalize_telegram_chat_id(chat_id),
+                    "filename": display_name,
+                    "caption": caption[:1024] if caption else None,
+                    "reply_to_message_id": reply_to_id,
+                    **thread_kwargs,
+                    **self._notification_kwargs(metadata),
+                },
+                "document",
+                file_path,
+                metadata,
+                reply_to_id,
+                "document",
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(
@@ -6214,22 +6301,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_video,
-                    {
-                        "chat_id": normalize_telegram_chat_id(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "video",
-                    reset_media=lambda: f.seek(0),
-                )
+            msg = await self._send_media_upload_with_retry(
+                self._bot.send_video,
+                {
+                    "chat_id": normalize_telegram_chat_id(chat_id),
+                    "caption": caption[:1024] if caption else None,
+                    "reply_to_message_id": reply_to_id,
+                    **thread_kwargs,
+                    **self._notification_kwargs(metadata),
+                },
+                "video",
+                video_path,
+                metadata,
+                reply_to_id,
+                "video",
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(

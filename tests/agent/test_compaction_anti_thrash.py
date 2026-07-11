@@ -70,6 +70,7 @@ def _turn(cc, msgs, real_prompt_tokens):
     if not cc.should_compress(real_prompt_tokens):
         return msgs, False
     msgs = cc.compress(msgs, current_tokens=real_prompt_tokens)
+    cc._verify_compaction_cleared_threshold = True
     cc.update_from_response({"prompt_tokens": real_prompt_tokens})
     return msgs, True
 
@@ -180,6 +181,7 @@ class TestFutilityGuard:
         assert cc.should_compress(real_prompt)
         msgs = cc.compress(msgs, current_tokens=real_prompt)
         real_after = floor + int(skew * estimate_messages_tokens_rough(msgs))
+        cc._verify_compaction_cleared_threshold = True
         cc.update_from_response({"prompt_tokens": real_after})  # provider's real count
 
         assert real_after < cc.threshold_tokens, "compaction really did clear it"
@@ -198,6 +200,7 @@ class TestFutilityGuard:
 
         assert cc.should_compress(33_564)
         cc.compress(msgs, current_tokens=33_564)
+        cc._verify_compaction_cleared_threshold = True
         assert cc._ineffective_compression_count == 0, "no verdict before real usage"
 
         cc.update_from_response({"prompt_tokens": 33_564})  # still over

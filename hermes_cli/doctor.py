@@ -744,16 +744,22 @@ def run_doctor(args):
             provider = provider_raw.lower()
             default_model = (model_section.get("default") or model_section.get("model") or "").strip()
 
+            # Runtime-only providers intentionally do not have an auth/catalog
+            # entry because they do not speak to an inference endpoint directly.
+            virtual_provider_ids = {"moa"}
             known_providers: set = set()
             try:
                 from hermes_cli.auth import (
                     PROVIDER_REGISTRY,
                     resolve_provider as _resolve_auth_provider,
                 )
-                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {
+                    "openrouter", "custom", "auto"
+                }
             except Exception:
                 _resolve_auth_provider = None
                 pass
+            known_providers.update(virtual_provider_ids)
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
@@ -795,7 +801,7 @@ def run_doctor(args):
             if (
                 provider
                 and _resolve_auth_provider is not None
-                and provider not in {"auto", "custom"}
+                and provider not in ({"auto", "custom"} | virtual_provider_ids)
             ):
                 try:
                     runtime_provider = _resolve_auth_provider(provider)
@@ -803,16 +809,18 @@ def run_doctor(args):
                 except Exception:
                     runtime_provider = provider
 
-            catalog_provider = provider
+            catalog_provider = provider if provider in virtual_provider_ids else None
             if (
                 provider
                 and _resolve_provider_full is not None
-                and provider not in {"auto", "custom"}
+                and provider not in ({"auto", "custom"} | virtual_provider_ids)
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
                 catalog_provider = provider_def.id if provider_def is not None else None
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
+            elif provider in {"auto", "custom"}:
+                catalog_provider = provider
 
             if provider and provider != "auto":
                 if catalog_provider is None or (

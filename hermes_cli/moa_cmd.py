@@ -64,7 +64,19 @@ def _print_config(config: dict[str, Any]) -> None:
     cfg = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
     print("Mixture of Agents presets")
     print(f"Default: {cfg['default_preset']}")
-    active = cfg.get("active_preset") or "(off)"
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    if (
+        isinstance(model_cfg, dict)
+        and str(model_cfg.get("provider") or "").strip().lower() == "moa"
+    ):
+        active = str(
+            model_cfg.get("default")
+            or model_cfg.get("model")
+            or cfg["default_preset"]
+        ).strip()
+    else:
+        legacy_active = str(cfg.get("active_preset") or "").strip()
+        active = f"{legacy_active} (legacy)" if legacy_active else "(off)"
     print(f"Active in config: {active}")
     for name, preset in cfg["presets"].items():
         marker = "*" if name == cfg["default_preset"] else " "

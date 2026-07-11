@@ -1661,6 +1661,18 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
 
     if is_acp_provider(agent.provider, client_kwargs.get("base_url")):
         client = create_acp_client(provider=agent.provider, **client_kwargs)
+        # Wire tool_call / tool_call_update → Desktop/TUI activity strip so
+        # long Devin/Copilot ACP turns don't look frozen after the first text.
+        bind = getattr(client, "bind_agent_activity", None)
+        if callable(bind):
+            try:
+                bind(agent)
+            except Exception:
+                _ra().logger.debug(
+                    "ACP bind_agent_activity failed for %s",
+                    agent.provider,
+                    exc_info=True,
+                )
         _ra().logger.info(
             "ACP client created for %s (%s, shared=%s) %s",
             agent.provider,

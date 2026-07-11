@@ -1830,20 +1830,23 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
-            # Use live OAuth-backed discovery so the gateway /model picker
-            # matches what the user's authenticated Codex/Copilot backend
-            # actually serves — including ChatGPT-Pro-only Codex slugs
-            # (e.g. gpt-5.3-codex-spark) that aren't in the static curated
-            # catalog. ``cached_provider_model_ids()`` falls back to the
-            # curated list when the live endpoint is unreachable, so this
-            # is safe for unauthenticated and offline cases too.
+        if hermes_slug in {"openai-codex", "copilot", "copilot-acp", "devin-acp"}:
+            # Use live discovery so the gateway /model picker matches what
+            # the authenticated backend serves. Copilot/Codex hit OAuth
+            # /models; Devin CLI has no REST catalog but exposes an
+            # "Available:" list via a cheap invalid-``--model`` probe
+            # (see ``fetch_devin_cli_models``). ``cached_provider_model_ids``
+            # falls back to curated when live fails.
             model_ids = cached_provider_model_ids(hermes_slug)
         elif overlay.auth_type == "external_process":
-            # ACP backends don't expose a REST /models catalog — use the
-            # curated singleton (e.g. ["devin-acp"]) so the picker has a
-            # selectable row once the local CLI is ready.
-            model_ids = curated.get(hermes_slug, []) or [hermes_slug]
+            # Other external-process backends: try the shared cache path
+            # first (providers can plug live discovery into
+            # provider_model_ids), then curated / slug singleton.
+            model_ids = (
+                cached_provider_model_ids(hermes_slug)
+                or curated.get(hermes_slug, [])
+                or [hermes_slug]
+            )
         # For aws_sdk providers (bedrock), use live discovery so the list
         # reflects the active region (eu.*, ap.*) not the static us.* list.
         elif overlay.auth_type == "aws_sdk":

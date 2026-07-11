@@ -1925,10 +1925,20 @@ def _model_flow_devin_acp(config, current_model=""):
         return
 
     effective_base = creds.get("base_url") or effective_base
-    model_list = _PROVIDER_MODELS.get("devin-acp", ["devin-acp"])
+    # Prefer live Devin CLI discovery (invalid --model → Available: …), then
+    # curated snapshot so the CLI `hermes model` flow matches Desktop picker.
+    try:
+        from hermes_cli.models import cached_provider_model_ids
+
+        model_list = cached_provider_model_ids(provider_id) or _PROVIDER_MODELS.get(
+            "devin-acp", ["devin-acp"]
+        )
+    except Exception:
+        model_list = _PROVIDER_MODELS.get("devin-acp", ["devin-acp"])
+    default_pick = current_model or (model_list[0] if model_list else "devin-acp")
     selected = _prompt_model_selection(
         model_list,
-        current_model=current_model or "devin-acp",
+        current_model=default_pick,
         confirm_provider=provider_id,
         confirm_base_url=effective_base,
         confirm_api_key="",

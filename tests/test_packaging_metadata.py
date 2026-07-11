@@ -1,6 +1,10 @@
 import ast
 import re
+import shutil
+import subprocess
+import tarfile
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -154,6 +158,204 @@ def test_bundled_plugin_manifests_ship_in_both_wheel_and_sdist():
     assert "recursive-include plugins" in manifest and "plugin.yaml" in manifest, (
         "MANIFEST.in must recursive-include plugins plugin.yaml/plugin.yml (sdist)"
     )
+
+
+def test_telegram_mini_app_assets_ship_in_both_wheel_and_sdist():
+    """The first-party Telegram Mini App must survive every install path.
+
+    The Mini App is package data beneath the Telegram plugin. A source checkout
+    can serve these assets even when packaging metadata is wrong, so verify the
+    wheel and sdist declarations independently and require the runtime assets.
+    """
+    static = REPO_ROOT / "plugins/platforms/telegram/mini_app/static"
+    required = {
+        "index.html",
+        "app.css",
+        "app.js",
+        "assets/collapse-bold.woff2",
+        "assets/collapse-regular.woff2",
+        "assets/courier-prime.woff2",
+        "assets/hermes-logo.webp",
+        "assets/mondwest-regular.woff2",
+        "assets/rules-expanded-bold.woff2",
+        "assets/rules-expanded-regular.woff2",
+    }
+    actual = {
+        str(path.relative_to(static)) for path in static.rglob("*") if path.is_file()
+    }
+    assert required <= actual
+    assert not any(
+        "dashboard" in path.lower() or "mock" in path.lower() or path.startswith("qa/")
+        for path in actual
+    )
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    plugin_data = data["tool"]["setuptools"]["package-data"].get("plugins", [])
+    assert "*/telegram/mini_app/static/*" in plugin_data
+    assert "*/telegram/mini_app/static/**/*" in plugin_data
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include plugins/platforms/telegram/mini_app/static *" in manifest
+
+
+def test_built_distributions_include_telegram_mini_app_runtime(tmp_path):
+    """Build and inspect both distribution formats, not metadata strings alone."""
+    source = tmp_path / "source"
+    source.mkdir()
+    for filename in ("pyproject.toml", "MANIFEST.in", "README.md", "LICENSE"):
+        shutil.copy2(REPO_ROOT / filename, source / filename)
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    for module in metadata["tool"]["setuptools"]["py-modules"]:
+        shutil.copy2(REPO_ROOT / f"{module}.py", source / f"{module}.py")
+    for directory in (
+        "agent",
+        "tools",
+        "hermes_cli",
+        "gateway",
+        "tui_gateway",
+        "cron",
+        "acp_adapter",
+        "plugins",
+        "providers",
+        "locales",
+        "optional-mcps",
+    ):
+        shutil.copytree(
+            REPO_ROOT / directory,
+            source / directory,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
+
+    dist = tmp_path / "dist"
+    uv = shutil.which("uv")
+    assert uv, "uv is required to prove wheel/sdist packaging contracts"
+    build = subprocess.run(
+        [
+            uv,
+            "build",
+            "--wheel",
+            "--sdist",
+            "--no-build-isolation",
+            "--offline",
+            "--cache-dir",
+            str(tmp_path / "uv-cache"),
+            "--out-dir",
+            str(dist),
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert build.returncode == 0, f"uv build failed:\n{build.stderr}"
+
+    wheel = next(dist.glob("*.whl"))
+    sdist = next(dist.glob("*.tar.gz"))
+    with zipfile.ZipFile(wheel) as archive:
+        wheel_files = set(archive.namelist())
+    with tarfile.open(sdist, "r:gz") as archive:
+        sdist_files = {
+            member.name for member in archive.getmembers() if member.isfile()
+        }
+
+    required_payload = {
+        "plugins/platforms/telegram/mini_app/__init__.py",
+        "plugins/platforms/telegram/mini_app/app.py",
+        "plugins/platforms/telegram/mini_app/auth.py",
+        "plugins/platforms/telegram/mini_app/cli.py",
+        "plugins/platforms/telegram/mini_app/projection.py",
+        "plugins/platforms/telegram/mini_app/run.py",
+        "plugins/platforms/telegram/mini_app/service.py",
+        "plugins/platforms/telegram/mini_app/static/index.html",
+        "plugins/platforms/telegram/mini_app/static/app.css",
+        "plugins/platforms/telegram/mini_app/static/app.js",
+        "plugins/platforms/telegram/mini_app/static/assets/hermes-logo.webp",
+    }
+    assert required_payload <= wheel_files
+    assert all(
+        any(name.endswith(path) for name in sdist_files) for path in required_payload
+    )
+    assert not any(
+        "mini_app/static" in name
+        and ("dashboard" in name.lower() or "mock" in name.lower() or "/qa/" in name)
+        for name in wheel_files | sdist_files
+    )
+
+
+def test_telegram_mini_app_frontend_remains_read_only():
+    """Reject accidental reintroduction of the raw Dashboard capability set."""
+    static = REPO_ROOT / "plugins/platforms/telegram/mini_app/static"
+    app = (static / "app.js").read_text(encoding="utf-8")
+    index = (static / "index.html").read_text(encoding="utf-8")
+
+    forbidden = (
+        "/dashboard",
+        "/api/pty",
+        "/api/hermes/update",
+        "data-delete-session",
+        "method:'DELETE'",
+        "method:'PUT'",
+        "method:'PATCH'",
+    )
+    for capability in forbidden:
+        assert capability not in app
+        assert capability not in index
+    assert not (static / "dashboard-bridge.js").exists()
+
+    # Authentication exchange is the browser's only POST. All data reads go
+    # through a fixed frontend allowlist and same-origin credentials.
+    assert app.count("method:'POST'") == 1
+    assert "fetch('/api/auth/session'," in app
+    assert "const READ_ONLY_ENDPOINTS = [" in app
+    assert "Capacity" not in app
+    assert "accounts." not in app
+    assert "accountTimer" not in app
+    assert "accountLimit" not in app
+    assert "api('/api/live-usage')" not in app
+    assert "provider" not in app.lower()
+    assert "typeof x.enabled==='boolean'" in app
+    assert "label:'Catalog'" in app
+    assert ".filter(x=>x.enabled)" not in app
+    allowed_reads = {
+        "/api/me",
+        "/api/status",
+        "/api/live-usage?include_accounts=false",
+        "/api/swarm/board",
+        "/api/memory",
+        "/api/sessions?limit=30",
+        "/api/tools/toolsets",
+        "/api/skills",
+    }
+    literal_reads = set(re.findall(r"\bapi\('([^']+)'", app))
+    assert literal_reads
+    assert literal_reads <= allowed_reads
+
+    # A cache revision can be changed deliberately, but CSS and JS must always
+    # use the same deterministic value so a deploy cannot mix revisions.
+    css_revision = re.search(r'/static/app\.css\?v=([^"\']+)', index)
+    js_revision = re.search(r'/static/app\.js\?v=([^"\']+)', index)
+    assert css_revision and js_revision
+    assert css_revision.group(1) == js_revision.group(1)
+
+    # Only tiny display preferences persist. Legacy snapshots contained
+    # memory/session/usage data and must be actively purged.
+    assert "localStorage.removeItem('hermesMiniSnapshot')" in app
+    preference_write = next(
+        line
+        for line in app.splitlines()
+        if "localStorage.setItem('hermesMiniPreferences'" in line
+    )
+    sensitive_state = (
+        "memory:state",
+        "sessions:state",
+        "preview:state",
+        "result:state",
+        "live:state",
+        "status:state",
+        "tools:state",
+        "skills:state",
+    )
+    for state_name in sensitive_state:
+        assert state_name not in preference_write
 
 
 # Minimum non-vulnerable Starlette: CVE-2026-48710 ("BadHost") was fixed in

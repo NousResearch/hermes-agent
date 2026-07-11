@@ -342,6 +342,11 @@ plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",
+  # Telegram's first-party Mini App is packaged inside the Telegram plugin.
+  # These files are served by the dedicated read-only Mini App service; they
+  # are not a bridge to the unrestricted Hermes Dashboard.
+  "*/telegram/mini_app/static/*",
+  "*/telegram/mini_app/static/**/*",
   # Plugin discovery (hermes_cli/plugins.py) reads a plugin.yaml/plugin.yml
   # manifest from each bundled plugin directory to register it. Wheels only
   # carry files declared here, so without this glob the wheel ships every

@@ -7,6 +7,9 @@ graft locales
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# The Telegram Mini App's immutable browser assets must also reach source
+# distributions. Wheels are covered by [tool.setuptools.package-data].
+recursive-include plugins/platforms/telegram/mini_app/static *
 # Gateway assets include images plus YAML catalogs such as status_phrases.yaml.
 recursive-include gateway/assets *
 global-exclude __pycache__

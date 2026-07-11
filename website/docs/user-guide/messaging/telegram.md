@@ -194,6 +194,126 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Telegram Mini App (Optional)
+
+Hermes can add a mobile, Telegram-authenticated **read-only** control surface
+to your bot. It shows selected status, swarm, memory, session, toolset, and
+skill summaries. The Mini App reads narrowly projected local Hermes state
+directly; it does not depend on the Hermes Dashboard service or proxy Dashboard
+responses.
+
+The Mini App is deliberately a separate loopback service. Your public HTTPS
+ingress must forward only to that service's listen port. Do **not** proxy the
+Hermes Dashboard, API Server, PTY, configuration, update, provider, or raw
+session endpoints through the Mini App hostname.
+
+### Prerequisites
+
+- Complete `hermes gateway setup` for Telegram first.
+- Find each owner's numeric Telegram user ID (Step 4 above).
+- Provide a stable public HTTPS URL. Hermes does not create or manage a tunnel;
+  use your existing reverse proxy or tunnel and forward it only to the Mini
+  App's loopback port.
+
+### Setup
+
+Run setup on Linux, macOS, or another supported POSIX platform to create the
+dedicated private credentials, save the lifecycle mirror, and publish the
+Telegram menu button:
+
+```bash
+hermes gateway mini-app setup \
+  --public-url https://hermes.example.com \
+  --owner 123456789
+```
+
+Repeat `--owner` to authorize another Telegram account. Setup fails closed
+without at least one explicit owner and registers the HTTPS URL as the bot's
+Mini App menu button.
+
+Setup also writes this generated lifecycle mirror to
+`~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      mini_app:
+        enabled: true
+        public_url: https://hermes.example.com
+        listen_port: 8787
+```
+
+Do not edit this block to reconfigure a running Mini App; rerun `setup` so its
+private runtime state, Telegram menu backup, and this mirror stay
+transactionally consistent. Credentials are not stored in the block. The
+Linux systemd service receives
+a dedicated owner-only environment file containing only the Telegram bot token
+and explicit owner IDs; it never inherits the complete Hermes provider
+environment.
+
+Manage the service with:
+
+```bash
+hermes gateway mini-app status
+hermes gateway mini-app start
+hermes gateway mini-app stop
+hermes gateway mini-app restart
+hermes gateway mini-app uninstall
+```
+
+`uninstall` restores the previous global and owner-specific Telegram menu
+buttons, removes the generated `mini_app` configuration mirror, and only then
+deletes the dedicated service files. If its token, owner list, or menu backup
+is incomplete, it stops without deleting the recovery material.
+
+The Linux service exposes an exact read-only snapshot of the active session
+database, selected Kanban database, gateway status, memories, and skills into
+an otherwise empty home/data namespace. Existing mounted files stay live while
+their inode is unchanged. If a DB/WAL/status file is newly created or replaced,
+run `hermes gateway mini-app restart` to rebuild that mounted view; until then
+the new file remains hidden or the previous mounted inode may appear stale.
+
+On Linux with systemd, setup installs, starts, and verifies the supervised
+service before publishing the menu. On macOS and other POSIX systems without
+the supported systemd installation, setup configures the private runtime files
+and menu but deliberately does not start a process or probe public ingress.
+Windows foreground service is not supported in this release. Start a clean
+foreground process with:
+
+```bash
+hermes gateway mini-app serve
+```
+
+Foreground `serve` is an explicitly manual, unsandboxed mode. It re-executes a
+clean Mini App runner that loads only the setup-generated dedicated credentials
+and binds to loopback, but Hermes does not install a supervisor, apply the Linux
+systemd sandbox, verify the public URL, or keep it running after the shell exits
+on those platforms. Use your own process sandbox/supervisor and verify the
+stable HTTPS reverse proxy before treating it as a persistent deployment. The
+`start`, `stop`, `restart`, and `status` lifecycle commands manage only the
+supported Linux systemd installation.
+
+### Security boundary
+
+The HTML, CSS, JavaScript, fonts, and artwork are public so Telegram can load
+them. Private API responses require a valid, recent Telegram Mini App launch
+from an allowlisted owner. The launch proof is exchanged once for a short-lived
+`Secure`, `HttpOnly`, same-site session cookie; it is not kept as a reusable
+browser bearer token.
+
+The browser uses a fixed read-only endpoint allowlist backed by direct internal
+projections. It cannot execute shell commands, open a PTY, change configuration,
+read provider quotas, update Hermes, delete sessions, or proxy arbitrary paths.
+The raw Dashboard and API Server are unrelated services and must remain bound
+to loopback or private networking even when the Mini App is public.
+
+:::warning
+A public HTTPS URL is routing, not authorization. Never expose the Dashboard
+port as a shortcut, and never put the Telegram bot token in a URL, JavaScript,
+or browser storage.
+:::
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are

@@ -557,6 +557,7 @@ def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
 
+@pytest.mark.asyncio
 async def test_finished_notification_strips_ansi_output(monkeypatch, tmp_path):
     """Salvage of #13122 by @euyua9: finished notifications must strip ANSI."""
     import tools.process_registry as pr_module
@@ -584,6 +585,7 @@ async def test_finished_notification_strips_ansi_output(monkeypatch, tmp_path):
     assert "\x1b[" not in sent_message
     assert "error line" in sent_message
 
+@pytest.mark.asyncio
 async def test_running_notification_strips_ansi_output(monkeypatch, tmp_path):
     """Salvage of #13122 by @euyua9: running status updates must strip ANSI."""
     import tools.process_registry as pr_module

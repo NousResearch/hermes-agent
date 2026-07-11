@@ -10016,6 +10016,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # Append user args to the exec command so scripts
+                            # receive the query. shlex.quote prevents shell
+                            # injection from user input.
+                            import shlex as _shlex
+                            _user_args = event.get_command_args().strip()
+                            if _user_args:
+                                exec_cmd = f"{exec_cmd} {_shlex.quote(_user_args)}"
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the gateway process which
                             # has all API keys in os.environ.

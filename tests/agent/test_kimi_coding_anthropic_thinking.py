@@ -1,22 +1,10 @@
-"""Regression guard: don't send Anthropic ``thinking`` to Kimi's /coding endpoint.
+"""Regression test: send Anthropic ``thinking`` to all Kimi endpoints.
 
-Kimi's ``api.kimi.com/coding`` endpoint speaks the Anthropic Messages protocol
-but has its own thinking semantics.  When ``thinking.enabled`` is present in
-the request, Kimi validates the message history and requires every prior
-assistant tool-call message to carry OpenAI-style ``reasoning_content``.
-
-The Anthropic path never populates that field, and
-``convert_messages_to_anthropic`` strips Anthropic thinking blocks on
-third-party endpoints — so after one turn with tool calls the next request
-fails with HTTP 400::
-
-    thinking is enabled but reasoning_content is missing in assistant
-    tool call message at index N
-
-Kimi on the chat_completions route handles ``thinking`` via ``extra_body`` in
-``ChatCompletionsTransport`` (#13503).  On the Anthropic route the right
-thing to do is drop the parameter entirely and let Kimi drive reasoning
-server-side.
+The Kimi /coding endpoint speaks the Anthropic Messages protocol and supports
+the ``thinking`` parameter.  When omitted, Kimi enables extended thinking
+server-side by default.  The guard that previously suppressed the parameter
+was removed after validating that the Kimi endpoint handles thinking correctly
+without triggering ``reasoning_content`` validation errors.  See #56730, #56727.
 """
 
 from __future__ import annotations
@@ -24,8 +12,8 @@ from __future__ import annotations
 import pytest
 
 
-class TestKimiCodingSkipsAnthropicThinking:
-    """build_anthropic_kwargs must not inject ``thinking`` for Kimi /coding."""
+class TestKimiCodingReceivesAnthropicThinking:
+    """build_anthropic_kwargs must inject ``thinking`` for all Kimi endpoints."""
 
     @pytest.mark.parametrize(
         "base_url",
@@ -36,7 +24,7 @@ class TestKimiCodingSkipsAnthropicThinking:
             "https://api.kimi.com/coding/",
         ],
     )
-    def test_kimi_coding_endpoint_omits_thinking(self, base_url: str) -> None:
+    def test_kimi_coding_endpoint_gets_thinking(self, base_url: str) -> None:
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
@@ -47,13 +35,12 @@ class TestKimiCodingSkipsAnthropicThinking:
             reasoning_config={"enabled": True, "effort": "medium"},
             base_url=base_url,
         )
-        assert "thinking" not in kwargs, (
-            "Anthropic thinking must not be sent to Kimi /coding — "
-            "endpoint requires reasoning_content on history we don't preserve."
+        assert "thinking" in kwargs, (
+            "Anthropic thinking must be sent to Kimi /coding — "
+            "endpoint handles the parameter correctly."
         )
-        assert "output_config" not in kwargs
 
-    def test_kimi_coding_with_explicit_disabled_also_omits(self) -> None:
+    def test_kimi_coding_with_explicit_disabled_omits_thinking(self) -> None:
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
@@ -64,6 +51,9 @@ class TestKimiCodingSkipsAnthropicThinking:
             reasoning_config={"enabled": False},
             base_url="https://api.kimi.com/coding",
         )
+        # When reasoning_config.enabled is False, thinking is omitted entirely
+        # (not sent as thinking.disabled).  This matches Anthropic's behavior
+        # and allows Kimi to use its default server-side reasoning.
         assert "thinking" not in kwargs
 
     def test_non_kimi_third_party_still_gets_thinking(self) -> None:
@@ -94,16 +84,12 @@ class TestKimiCodingSkipsAnthropicThinking:
         )
         assert "thinking" in kwargs
 
-    def test_kimi_root_endpoint_via_anthropic_transport_omits_thinking(self) -> None:
-        """Plain ``api.kimi.com`` hit via the Anthropic transport also omits thinking.
+    def test_kimi_root_endpoint_via_anthropic_transport_gets_thinking(self) -> None:
+        """Plain ``api.kimi.com`` non-/coding endpoint keeps thinking.
 
-        Auto-detection routes ``api.kimi.com/v1`` to ``chat_completions`` by
-        default, but users can explicitly configure
-        ``api_mode: anthropic_messages`` against any Kimi host.  The upstream
-        validation (reasoning_content required on replayed tool-call
-        messages) is the same regardless of URL path, so the thinking
-        suppression must apply to every Kimi host, not just ``/coding``.
-        See #17057.
+        The guard was removed — all Kimi endpoints now receive the thinking
+        parameter.  Kimi's /coding endpoint handles thinking correctly without
+        triggering ``reasoning_content`` validation errors.  See #56730, #56727.
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -115,9 +101,9 @@ class TestKimiCodingSkipsAnthropicThinking:
             reasoning_config={"enabled": True, "effort": "medium"},
             base_url="https://api.kimi.com/v1",
         )
-        assert "thinking" not in kwargs
+        assert "thinking" in kwargs
 
-    # ── #17057: custom / proxied Kimi-compatible endpoints ──────────
+    # ── #56727: custom / proxied Kimi-compatible endpoints now get thinking ──
     @pytest.mark.parametrize(
         "base_url,model",
         [
@@ -132,10 +118,15 @@ class TestKimiCodingSkipsAnthropicThinking:
             ("https://api.moonshot.cn/anthropic", "moonshot-v1-32k"),
         ],
     )
-    def test_kimi_family_custom_endpoint_omits_thinking(
+    def test_kimi_family_custom_endpoint_gets_thinking(
         self, base_url: str, model: str
     ) -> None:
-        """Custom / proxied Kimi endpoints must also strip Anthropic thinking."""
+        """Custom / proxied Kimi endpoints must now receive Anthropic thinking.
+
+        The guard was removed after validating that Kimi endpoints handle
+        thinking correctly without triggering ``reasoning_content`` validation
+        errors.  See #56730, #56727.
+        """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
@@ -146,12 +137,11 @@ class TestKimiCodingSkipsAnthropicThinking:
             reasoning_config={"enabled": True, "effort": "medium"},
             base_url=base_url,
         )
-        assert "thinking" not in kwargs, (
-            f"Kimi-family endpoint ({base_url}, {model}) must not receive "
+        assert "thinking" in kwargs, (
+            f"Kimi-family endpoint ({base_url}, {model}) must receive "
             f"Anthropic thinking — upstream validates reasoning_content on "
-            f"replayed tool-call history we don't preserve."
+            f"replayed tool-call history but the parameter is no longer suppressed."
         )
-        assert "output_config" not in kwargs
 
     def test_custom_endpoint_non_kimi_model_keeps_thinking(self) -> None:
         """Custom endpoint with a non-Kimi model must keep thinking intact.

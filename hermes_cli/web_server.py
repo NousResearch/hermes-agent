@@ -7853,6 +7853,40 @@ async def update_messaging_platform(
             status_code=404, detail=f"Unknown messaging platform: {platform_id}"
         )
 
+    # Guard: a port-binding platform (webhook / api_server / feishu / ...)
+    # cannot be enabled or configured on a *secondary* profile while the
+    # gateway runs with gateway.multiplex_profiles on — the default profile's
+    # single shared listener already serves every profile. The gateway rejects
+    # this topology as fatal at startup; rejecting here (before any .env or
+    # config.yaml write) keeps the dashboard/API from persisting a config that
+    # only fails on the next restart. Disabling/clearing an already-invalid
+    # setting stays allowed so users can recover. Uses the shared policy in
+    # gateway/config.py so the two checks cannot drift. See issue #62791.
+    effective_profile = (body.profile or profile or "default") or "default"
+    effective_profile = effective_profile.strip()
+    if effective_profile.lower() in ("", "current"):
+        effective_profile = "default"
+    _mutates_port_binding = (
+        body.enabled is True
+        or bool(body.env)
+        or bool(body.clear_env)
+    )
+    if _mutates_port_binding:
+        from gateway.config import port_binding_allowed_on_profile
+
+        if not port_binding_allowed_on_profile(platform_id, effective_profile):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot configure the port-binding platform "
+                    f"'{platform_id}' on profile '{effective_profile}' while "
+                    f"gateway.multiplex_profiles is enabled. Port-binding "
+                    f"channels must be configured only on the default profile "
+                    f"(they are served for every profile through the shared "
+                    f"listener). Disable or clear the setting to recover."
+                ),
+            )
+
     allowed_env = set(entry["env_vars"])
     try:
         with _profile_scope(body.profile or profile):

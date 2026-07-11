@@ -74,6 +74,85 @@ def _env_multiplex_profiles_override() -> "bool | None":
     return None
 
 
+# Platforms that bind their own HTTP listener (webhook receiver, API server,
+# callback endpoint, etc.). Under a multiplexed gateway the default profile's
+# single shared listener already serves every profile via the /p/<profile>/
+# URL prefix, so a secondary profile binding its own port can only collide.
+# This is the SINGLE SOURCE OF TRUTH for that classification: gateway/run.py
+# rejects these at startup (defense in depth) and hermes_cli/web_server.py
+# rejects persisting them on a secondary profile via the dashboard/API. Keep
+# the two in sync through this constant — never re-enumerate the list at a
+# call site.
+_PORT_BINDING_PLATFORM_VALUES = frozenset(
+    {
+        "webhook",
+        "api_server",
+        "msgraph_webhook",
+        "feishu",
+        "wecom_callback",
+        "bluebubbles",
+        "sms",
+        "whatsapp_cloud",
+        "line",
+    }
+)
+
+
+def is_port_binding_platform(platform_value: str) -> bool:
+    """Return True when ``platform_value`` binds its own HTTP listener.
+
+    See :data:`_PORT_BINDING_PLATFORM_VALUES` for the rationale and the
+    requirement that this stay the single source of truth.
+    """
+    return platform_value in _PORT_BINDING_PLATFORM_VALUES
+
+
+def multiplex_profiles_enabled() -> bool:
+    """Return whether the gateway is running with profile multiplexing on.
+
+    Resolves the same 3-tier chain the gateway uses at startup
+    (env override > config.yaml gateway.multiplex_profiles > default False),
+    but reads the *default* profile's config — multiplexing is a property of
+    the shared gateway, owned by the default profile, so a secondary profile's
+    own config.yaml must not be consulted here.
+    """
+    from hermes_cli.config import load_config
+
+    try:
+        cfg = load_config()
+    except Exception:
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    raw = cfg.get("multiplex_profiles")
+    if raw is None:
+        nested = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        raw = nested.get("multiplex_profiles") if isinstance(nested, dict) else None
+    value = _coerce_bool(raw, False)
+    env_override = _env_multiplex_profiles_override()
+    if env_override is not None:
+        return env_override
+    return value
+
+
+def port_binding_allowed_on_profile(platform_value: str, profile_name: str) -> bool:
+    """Policy: may ``platform_value`` bind on ``profile_name`` right now?
+
+    Returns ``False`` when a port-binding platform is being enabled on a
+    *secondary* profile while multiplexing is enabled — the topology the
+    gateway rejects as fatal at startup. The default profile owns the shared
+    listener, so it is always allowed. Non-port-binding platforms are always
+    allowed. This is the shared check the dashboard/API must call before
+    persisting any platform enable/configure mutation.
+    """
+    if not is_port_binding_platform(platform_value):
+        return True
+    if not multiplex_profiles_enabled():
+        return True
+    # Secondary profile (anything but the default) under multiplexing.
+    return (profile_name or "default").strip().lower() == "default"
+
+
 def _coerce_float(value: Any, default: float) -> float:
     """Coerce numeric config values, falling back on malformed input."""
     if value is None:

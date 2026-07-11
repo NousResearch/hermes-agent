@@ -221,3 +221,96 @@ class TestProfileScopedMessagingWrites:
             encoding="utf-8"
         )
         assert "TELEGRAM_BOT_TOKEN=root-token" in root_env
+
+
+class TestPortBindingBlockedOnSecondaryMultiplexedProfile:
+    """Regression for #62791: the dashboard/API must not persist a
+    port-binding platform (api_server / webhook / feishu / ...) on a secondary
+    profile while gateway.multiplex_profiles is enabled -- the gateway rejects
+    that topology as fatal only at the next restart, taking every profile down.
+    """
+
+    @staticmethod
+    def _enable_multiplex(isolated_profiles):
+        default_cfg = isolated_profiles["default"] / "config.yaml"
+        default_cfg.write_text(
+            "multiplex_profiles: true\n", encoding="utf-8"
+        )
+
+    def test_secondary_port_binding_enable_rejected_409(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        self._enable_multiplex(isolated_profiles)
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+
+        before = (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True, "env": {"API_SERVER_PORT": "8000"}},
+        )
+        assert resp.status_code == 409
+
+        # Nothing was persisted -- neither .env nor config.yaml changed.
+        after = (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+        assert after == before
+        worker_env = (
+            isolated_profiles["worker_alpha"] / ".env"
+        ).read_text(encoding="utf-8")
+        assert "API_SERVER_PORT" not in worker_env
+
+    def test_secondary_port_binding_clear_still_allowed(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        # An already-invalid (pre-existing) enable must remain clearable so
+        # users can recover.
+        self._enable_multiplex(isolated_profiles)
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
+            "platforms:\n  api_server:\n    enabled: true\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.web_server.remove_env_value", lambda k: None
+        )
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "worker_alpha"},
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200
+
+    def test_default_profile_port_binding_allowed_under_multiplex(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        self._enable_multiplex(isolated_profiles)
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            json={"enabled": True, "env": {"API_SERVER_PORT": "8000"}},
+        )
+        assert resp.status_code == 200
+
+    def test_secondary_port_binding_allowed_when_multiplex_off(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        # multiplex_profiles absent/False -> secondary port-binding is fine.
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        resp = client.put(
+            "/api/messaging/platforms/api_server",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True, "env": {"API_SERVER_PORT": "8000"}},
+        )
+        assert resp.status_code == 200
+
+    def test_secondary_non_port_binding_unaffected(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        self._enable_multiplex(isolated_profiles)
+        monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+        # telegram is not port-binding -> secondary profile enable is allowed.
+        resp = client.put(
+            "/api/messaging/platforms/telegram",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": "wt"}},
+        )
+        assert resp.status_code == 200

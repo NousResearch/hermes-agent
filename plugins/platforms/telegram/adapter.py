@@ -1379,7 +1379,13 @@ class TelegramAdapter(BasePlatformAdapter):
         leaves overlapping draft/overlay glyph artifacts for CJK text (#47653).
         The legacy MarkdownV2 path renders the same text cleanly, so skip rich
         delivery up front until affected clients age out.
+
+        Users who want rich rendering (tables, task lists, etc.) for CJK
+        content can disable this guard via ``extra.cjk_rich_guard: false``
+        in the Telegram platform config.
         """
+        if not self.config.extra.get("cjk_rich_guard", True):
+            return False
         return bool(content and self._RICH_CJK_RE.search(content))
 
     def _needs_rich_rendering(self, content: str) -> bool:

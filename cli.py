@@ -4970,6 +4970,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _pet_start_anim(self) -> None:
         if self._pet_anim_running:
             return
+        # Do not start the animation thread when stdout is not an interactive
+        # TTY (Docker, pipe, redirect).  The _pet_anim_loop calls
+        # app.invalidate() on a timer; in a non-TTY context that causes the
+        # prompt_toolkit Application to flush ANSI escape sequences to stdout
+        # on every tick, flooding the container log at ~68 lines/second and
+        # growing json-file logs at ~4 GB/day (issue #61964).
+        import sys
+        if not getattr(sys.stdout, "isatty", lambda: False)():
+            return
         self._pet_resolve_config()
         self._pet_anim_running = True
         self._pet_anim_thread = threading.Thread(target=self._pet_anim_loop, daemon=True)

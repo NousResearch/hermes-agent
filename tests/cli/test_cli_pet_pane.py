@@ -134,3 +134,28 @@ def test_pet_resolve_config_enables_and_disables(boba_like):
     cli_obj._pet_resolve_config()
     assert cli_obj._pet_enabled is False
     assert cli_obj._pet_renderer is None
+
+
+def test_pet_start_anim_does_not_start_in_non_tty(monkeypatch):
+    """_pet_start_anim must not spawn the animation thread when stdout is
+    not an interactive TTY (e.g. Docker json-file log driver, pipe, CI).
+
+    Without this guard the _pet_anim_loop calls app.invalidate() on a timer,
+    flushing ANSI escape sequences to stdout at ~68 lines/second and growing
+    container logs at ~4 GB/day (issue #61964).
+    """
+    # Simulate a non-TTY stdout (pipe / Docker log driver).
+    monkeypatch.setattr(
+        "sys.stdout",
+        type("_Pipe", (), {"isatty": lambda self: False})(),
+    )
+
+    cli_obj = _make_cli()
+    cli_obj._pet_anim_running = False
+    cli_obj._pet_anim_thread = None
+
+    cli_obj._pet_start_anim()
+
+    # The thread must never have been created.
+    assert cli_obj._pet_anim_thread is None
+    assert cli_obj._pet_anim_running is False

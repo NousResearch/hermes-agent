@@ -24,6 +24,7 @@ interface RouteResumeOptions {
   // signal the effect below uses to reset the attempt counter.
   resumeExhaustedSessionId: string | null
   routedSessionId: string | null
+  routingReady: boolean
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -77,6 +78,7 @@ export function useRouteResume({
   resumeFailedSessionId,
   resumeExhaustedSessionId,
   routedSessionId,
+  routingReady,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
@@ -85,6 +87,7 @@ export function useRouteResume({
   const lastPathnameRef = useRef<string | null>(null)
   const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)
+  const wasRoutingReadyRef = useRef(routingReady)
   // Per-session retry bookkeeping for the bounded auto-retry effect below. Keyed
   // by the session id we're retrying so switching chats resets the counter.
   const retrySessionIdRef = useRef<string | null>(null)
@@ -97,6 +100,18 @@ export function useRouteResume({
   const prevResumeExhaustedRef = useRef<string | null>(null)
 
   useEffect(() => {
+    const routingBecameReady = !wasRoutingReadyRef.current && routingReady
+    wasRoutingReadyRef.current = routingReady
+
+    // A WebSocket reports open before initial boot / a soft profile switch has
+    // adopted the backend profile and loaded profile metadata. Resolving a
+    // routed session in that window can query the wrong profile and turn a hard
+    // refresh into an empty/new chat. Preserve route/gateway edge refs while
+    // unready so the first ready render performs the resume exactly once.
+    if (!routingReady) {
+      return
+    }
+
     const gatewayOpen = gatewayState === 'open'
     const pathnameChanged = lastPathnameRef.current !== locationPathname
     // Fire only on a genuine closed->open transition (a reconnect). seenGatewayStateRef
@@ -140,13 +155,12 @@ export function useRouteResume({
       // we're stranded on a routed session that never loaded. The first two
       // guard against a transient /:sid re-resume during "new chat" state clears
       // before the pathname updates from /:sid -> /.
-      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
+      const shouldResume = pathnameChanged || gatewayBecameOpen || routingBecameReady || stuckOnRoutedSession
 
-      // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
-      // `alreadyActive`: the cached runtime id can be stale once the gateway
-      // rebinds/reaps the session on its side, and trusting it strands Desktop on
-      // a dead id ("session not found"). Otherwise keep skipping when already active.
-      if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
+      // On a reconnect (gatewayBecameOpen) or completed profile adoption
+      // (routingBecameReady), re-resume even when the route looks already active:
+      // a cached runtime id can belong to the backend/profile we just left.
+      if ((gatewayBecameOpen || routingBecameReady || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
         void resumeSession(routedSessionId, true)
       }
 
@@ -171,6 +185,7 @@ export function useRouteResume({
     locationPathname,
     resumeSession,
     routedSessionId,
+    routingReady,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -206,7 +221,7 @@ export function useRouteResume({
       retryAttemptRef.current = 0
     }
 
-    if (currentView !== 'chat' || gatewayState !== 'open') {
+    if (currentView !== 'chat' || gatewayState !== 'open' || !routingReady) {
       return
     }
 
@@ -280,6 +295,7 @@ export function useRouteResume({
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,
+    routingReady,
     selectedStoredSessionIdRef
   ])
 }

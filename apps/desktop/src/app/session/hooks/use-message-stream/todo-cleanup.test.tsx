@@ -6,15 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { TodoItem } from '@/lib/todos'
+import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
 
+const triggerHaptic = vi.hoisted(() => vi.fn())
+const playCompletionSound = vi.hoisted(() => vi.fn())
+const dispatchNativeNotification = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/completion-sound', () => ({ playCompletionSound }))
+vi.mock('@/lib/haptics', () => ({ triggerHaptic }))
+vi.mock('@/store/native-notifications', () => ({ dispatchNativeNotification }))
+
 const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
+let latestSessionState: ClientSessionState | undefined
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
@@ -32,6 +42,7 @@ function Harness() {
       const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
       const next = updater(current)
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      latestSessionState = next
 
       return next
     }
@@ -54,11 +65,17 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
+    latestSessionState = undefined
+    triggerHaptic.mockClear()
+    playCompletionSound.mockClear()
+    dispatchNativeNotification.mockClear()
+    clearClarifyRequest()
     clearSessionTodos(SID)
   })
 
   afterEach(() => {
     cleanup()
+    clearClarifyRequest()
     clearSessionTodos(SID)
     vi.restoreAllMocks()
   })
@@ -80,6 +97,41 @@ describe('useMessageStream turn-end todo cleanup', () => {
 
     // Not cleared immediately — the finished-list linger still owns it.
     expect($todosBySession.get()[SID]).toHaveLength(1)
+  })
+
+  it('uses the existing completion haptic only for the active conversation', async () => {
+    await mountStream()
+
+    complete()
+    expect(playCompletionSound).toHaveBeenCalledOnce()
+    expect(triggerHaptic).toHaveBeenCalledWith('streamDone')
+
+    playCompletionSound.mockClear()
+    triggerHaptic.mockClear()
+    act(() => handleEvent!({ payload: { text: 'background done' }, session_id: 'session-2', type: 'message.complete' }))
+    expect(playCompletionSound).toHaveBeenCalledOnce()
+    expect(triggerHaptic).not.toHaveBeenCalled()
+  })
+
+  it('restores a replayed blocking prompt inline without repeating its native notification', async () => {
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: {
+          _replayed: true,
+          choices: ['continue', 'stop'],
+          question: 'Keep going?',
+          request_id: 'clarify-1'
+        },
+        session_id: SID,
+        type: 'clarify.request'
+      })
+    )
+
+    expect($clarifyRequests.get()[SID]).toMatchObject({ question: 'Keep going?', requestId: 'clarify-1' })
+    expect(latestSessionState?.needsInput).toBe(true)
+    expect(dispatchNativeNotification).not.toHaveBeenCalled()
   })
 
   it('drops a still-active task list when the turn errors out', async () => {

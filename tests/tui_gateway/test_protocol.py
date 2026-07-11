@@ -40,6 +40,7 @@ def server():
         # via reload (which we don't do).
         mod._sessions.clear()
         mod._pending.clear()
+        mod._pending_prompt_payloads.clear()
         mod._answers.clear()
 
 
@@ -418,6 +419,66 @@ def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
     # can't drop the provider ("No LLM provider configured").
     assert session["resume_runtime_overrides"]["model_override"]["model"] == "vendor/cool-model"
     assert server._find_live_session_by_key(target) == (sid, session)
+
+    # A hard refresh must not strand a conversation blocked on a one-shot prompt.
+    # Reuse the retained event rather than inventing a second prompt-hydration API.
+    emitted: list[tuple[str, str, dict | None]] = []
+    server._pending["prompt-1"] = (sid, threading.Event())
+    server._pending_prompt_payloads["prompt-1"] = (
+        "clarify.request",
+        {"choices": ["yes", "no"], "question": "Continue?", "request_id": "prompt-1"},
+    )
+    monkeypatch.setattr(server, "_emit", lambda event, owner, payload=None: emitted.append((event, owner, payload)))
+
+    # Desktop paints the same transcript through REST in parallel. It can ask the
+    # live resume path for metadata/inflight only, avoiding a second large JSON
+    # payload while retaining the authoritative count.
+    compact = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "include_messages": False},
+        }
+    )
+    assert "error" not in compact
+    assert compact["result"]["message_count"] == 2
+    assert compact["result"]["messages"] == []
+    assert emitted == [
+        (
+            "clarify.request",
+            sid,
+            {
+                "_replayed": True,
+                "choices": ["yes", "no"],
+                "question": "Continue?",
+                "request_id": "prompt-1",
+            },
+        )
+    ]
+
+
+def test_replay_pending_approval_redacts_command(server, monkeypatch):
+    sid = "runtime-approval"
+    fake_key = "sk-proj-" + "X" * 40
+    raw_command = f"export OPENAI_API_KEY={fake_key} && python task.py"
+    emitted: list[tuple[str, str, dict | None]] = []
+    server._pending["approval-1"] = (sid, threading.Event())
+    server._pending_prompt_payloads["approval-1"] = (
+        "approval.request",
+        {"command": raw_command, "description": "run task", "request_id": "approval-1"},
+    )
+    monkeypatch.setattr(server, "_emit", lambda event, owner, payload=None: emitted.append((event, owner, payload)))
+
+    server._replay_pending_prompt(sid)
+
+    assert len(emitted) == 1
+    event, owner, payload = emitted[0]
+    assert event == "approval.request"
+    assert owner == sid
+    assert payload is not None
+    assert payload["_replayed"] is True
+    assert fake_key not in payload["command"]
+    assert "python task.py" in payload["command"]
 
 
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):

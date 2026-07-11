@@ -6556,11 +6556,18 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         )
 
         inflight = resp["result"].get("inflight")
-        assert inflight == {
+        assert inflight is not None
+        assert {
+            "assistant": inflight["assistant"],
+            "streaming": inflight["streaming"],
+            "user": inflight["user"],
+        } == {
             "assistant": "partial answer",
             "streaming": True,
             "user": "write a long answer",
         }
+        assert isinstance(inflight.get("started_at"), float)
+        assert inflight["started_at"] > 0
         assert resp["result"]["messages"] == []
 
         release.set()

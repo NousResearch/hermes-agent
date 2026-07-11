@@ -77,6 +77,9 @@ export type GatewayEventPayload = {
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
+  // Internal transport reattachment marker. Restores inline prompt state without
+  // replaying its native notification on hard refresh.
+  _replayed?: boolean
   // moa.reference / moa.aggregating (Mixture of Agents per-model relay)
   label?: string
   index?: number

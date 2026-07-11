@@ -384,12 +384,24 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
+export interface SessionInflightSnapshot {
+  assistant: string
+  started_at?: number
+  streaming: boolean
+  user: string
+}
+
 export interface SessionResumeResponse {
+  inflight?: null | SessionInflightSnapshot
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
   resumed: string
+  running?: boolean
   session_id: string
+  session_key?: string
+  started_at?: number
+  status?: 'idle' | 'starting' | 'streaming' | 'waiting' | 'working'
 }
 
 export interface SessionRuntimeInfo {

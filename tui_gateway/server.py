@@ -5156,11 +5156,15 @@ def _inflight_snapshot(session: dict) -> dict | None:
     streaming = bool(turn.get("streaming"))
     if not user and not assistant and not streaming:
         return None
-    return {
+    snapshot = {
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
     }
+    started_at = turn.get("started_at")
+    if isinstance(started_at, (int, float)) and started_at > 0:
+        snapshot["started_at"] = float(started_at)
+    return snapshot
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -5557,6 +5561,7 @@ def _(rid, params: dict) -> dict:
         cols = int(params.get("cols", 80))
     except (TypeError, ValueError):
         cols = 80
+    include_messages = is_truthy_value(params.get("include_messages", True))
     # ``profile`` (app-global remote mode): resume a session that lives in another
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
@@ -5623,6 +5628,7 @@ def _(rid, params: dict) -> dict:
             sid,
             session,
             cols=cols,
+            include_messages=include_messages,
             touch=True,
             transport=current_transport() or _stdio_transport,
         )
@@ -5633,6 +5639,7 @@ def _(rid, params: dict) -> dict:
         if session.get("agent") is None and _child_run_active(target):
             payload["running"] = True
             payload["status"] = "streaming"
+        _replay_pending_prompt(sid)
         return payload
 
     # Fast path: if the session is already live, reuse it under the lock.
@@ -5689,7 +5696,7 @@ def _(rid, params: dict) -> dict:
                 "session_id": sid,
                 "resumed": target,
                 "message_count": len(messages),
-                "messages": messages,
+                "messages": messages if include_messages else [],
                 "info": _lazy_resume_info(cwd),
                 "inflight": None,
                 "running": child_running,
@@ -5768,7 +5775,7 @@ def _(rid, params: dict) -> dict:
                 "session_id": sid,
                 "resumed": target,
                 "message_count": len(messages),
-                "messages": messages,
+                "messages": messages if include_messages else [],
                 "info": _lazy_resume_info(
                     cwd,
                     model=model_override.get("model") or "",
@@ -5859,6 +5866,7 @@ def _(rid, params: dict) -> dict:
                 other_sid,
                 other_session,
                 cols=cols,
+                include_messages=include_messages,
                 touch=True,
                 transport=current_transport() or _stdio_transport,
             )
@@ -5907,7 +5915,7 @@ def _(rid, params: dict) -> dict:
             "session_id": sid,
             "resumed": target,
             "message_count": len(messages),
-            "messages": messages,
+            "messages": messages if include_messages else [],
             "info": _session_info(agent, session),
             "inflight": None,
             "running": False,
@@ -5942,13 +5950,31 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, info)
 
 
+def _session_pending_prompt(sid: str) -> tuple[str, dict] | None:
+    with _prompt_lock:
+        for rid, (owner_sid, _ev) in _pending.items():
+            if owner_sid == sid:
+                event, payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+                return str(event), dict(payload)
+    return None
+
+
+def _replay_pending_prompt(sid: str) -> None:
+    pending = _session_pending_prompt(sid)
+    if pending is None:
+        return
+    event, payload = pending
+    if event == "approval.request" and "command" in payload:
+        from agent.redact import redact_sensitive_text
+
+        payload["command"] = redact_sensitive_text(str(payload.get("command") or ""), force=True)
+    payload["_replayed"] = True
+    _emit(event, sid, payload)
+
+
 def _session_pending_kind(sid: str) -> str:
-    for rid, (owner_sid, _ev) in list(_pending.items()):
-        if owner_sid != sid:
-            continue
-        event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
-        return str(event).removesuffix(".request")
-    return ""
+    pending = _session_pending_prompt(sid)
+    return pending[0].removesuffix(".request") if pending is not None else ""
 
 
 def _session_live_status(sid: str, session: dict) -> str:
@@ -6045,6 +6071,7 @@ def _live_session_payload(
     session: dict,
     *,
     cols: int | None = None,
+    include_messages: bool = True,
     touch: bool = False,
     transport: Transport | None = None,
 ) -> dict:
@@ -6063,7 +6090,7 @@ def _live_session_payload(
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
-        "messages": _history_to_messages(history),
+        "messages": _history_to_messages(history) if include_messages else [],
         "running": running,
         "session_id": sid,
         "session_key": _session_lookup_key(session, fallback=sid),

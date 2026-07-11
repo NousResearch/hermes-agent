@@ -55,6 +55,7 @@ import {
   chatMessageArraysEquivalent,
   isSessionGoneError,
   patchSessionWorkspace,
+  reconcileResumeInflight,
   reconcileResumeMessages,
   resolveStoredSession,
   sessionMatchesStoredId,
@@ -450,6 +451,7 @@ export function useSessionActions({
       try {
         const watchWindow = isWatchWindow()
         let localSnapshot = $messages.get()
+        let prefetchLoaded = false
 
         // REST transcript prefetch and the gateway resume RPC are independent
         // — run them concurrently so a big session's wall time is
@@ -463,11 +465,13 @@ export function useSessionActions({
           cols: 96,
           source: 'desktop',
           // Watch windows attach lazily (live mirror). Every other cold resume
-          // gets the gateway's default deferred build: the RPC returns the
-          // transcript immediately instead of blocking the switch on _make_agent
-          // (MCP discovery / prompt build), and the agent pre-warms in the
-          // background while the prefetch above paints the transcript.
-          ...(watchWindow ? { lazy: true } : {}),
+          // gets the gateway's default deferred build: the RPC binds a live
+          // runtime without blocking the switch on _make_agent (MCP discovery /
+          // prompt build), and the agent pre-warms in the background while the
+          // prefetch above paints the transcript. Normal Desktop resumes omit
+          // that same transcript from the RPC payload to avoid parsing it twice;
+          // watch windows have no REST prefetch.
+          ...(watchWindow ? { lazy: true } : { include_messages: false }),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 
@@ -478,6 +482,7 @@ export function useSessionActions({
         try {
           if (prefetchPromise) {
             const storedMessages = await prefetchPromise
+            prefetchLoaded = true
 
             if (isCurrentResume()) {
               localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
@@ -491,7 +496,23 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await resumePromise
+        let resumed = await resumePromise
+
+        if (!isCurrentResume()) {
+          return
+        }
+
+        // A compact resume intentionally carries no transcript. If the parallel
+        // REST prefetch failed, recover from the runtime we just bound instead
+        // of making REST a single point of failure or leaving a blank loader.
+        if (!watchWindow && !prefetchLoaded && resumed.message_count > 0 && resumed.messages.length === 0) {
+          const activated = await requestGateway<SessionResumeResponse>('session.activate', {
+            cols: 96,
+            session_id: resumed.session_id
+          })
+
+          resumed = { ...resumed, ...activated, resumed: resumed.resumed }
+        }
 
         if (!isCurrentResume()) {
           return
@@ -505,7 +526,7 @@ export function useSessionActions({
         // 1000+-message session that second conversion plus the deep
         // equivalence compare costs over a second of main-thread time.
         const preferredMessages =
-          localSnapshot.length > 0
+          prefetchLoaded || localSnapshot.length > 0
             ? localSnapshot
             : (() => {
                 const resumedMessages = preserveLocalAssistantErrors(
@@ -524,7 +545,15 @@ export function useSessionActions({
             ? currentMessages
             : preserveLocalAssistantErrors(preferredMessages, currentMessages)
 
-        if (sessionShouldHaveTranscript(stored) && messagesForView.length === 0) {
+        resumedRunning = Boolean(resumed.running)
+
+        const liveTail = reconcileResumeInflight(
+          messagesForView,
+          resumedRunning ? resumed.inflight : null,
+          resumed.session_id
+        )
+
+        if (sessionShouldHaveTranscript(stored) && liveTail.messages.length === 0) {
           setActiveSessionId(null)
           activeSessionIdRef.current = null
           setResumeFailedSessionId(storedSessionId)
@@ -539,16 +568,22 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
-
         updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
-            messages: messagesForView,
+            messages: liveTail.messages,
             busy: resumedRunning,
-            awaitingResponse: resumedRunning
+            awaitingResponse: resumedRunning,
+            interrupted: false,
+            sawAssistantPayload: resumedRunning ? liveTail.sawAssistantPayload : false,
+            streamId: resumedRunning ? liveTail.streamId : null,
+            turnStartedAt: resumedRunning
+              ? typeof resumed.inflight?.started_at === 'number'
+                ? resumed.inflight.started_at * 1000
+                : (state.turnStartedAt ?? Date.now())
+              : null
           }),
           storedSessionId
         )

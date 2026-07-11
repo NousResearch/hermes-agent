@@ -19,7 +19,9 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { storedSessionIdForNotification } from '../lib/session-ids'
 import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
+import { $desktopBoot } from '../store/boot'
 import { setCronFocusJobId } from '../store/cron'
+import { $gatewaySwitching } from '../store/gateway-switch'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -189,6 +191,8 @@ export function DesktopController() {
   const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
 
   const gatewayState = useStore($gatewayState)
+  const gatewaySwitching = useStore($gatewaySwitching)
+  const desktopBoot = useStore($desktopBoot)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
@@ -1001,6 +1005,7 @@ export function DesktopController() {
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,
+    routingReady: !desktopBoot.running && !desktopBoot.error && !gatewaySwitching,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,

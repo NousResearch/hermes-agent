@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
-import type { SessionInfo } from '@/types/hermes'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import type { SessionInflightSnapshot, SessionInfo } from '@/types/hermes'
 
 import {
   chatMessageArraysEquivalent,
   isSessionGoneError,
+  reconcileResumeInflight,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -85,5 +86,62 @@ describe('reconcileResumeMessages', () => {
 
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
+  })
+})
+
+describe('reconcileResumeInflight', () => {
+  const inflight = (over: Partial<SessionInflightSnapshot> = {}): SessionInflightSnapshot => ({
+    assistant: 'partial answer',
+    streaming: true,
+    user: 'keep working',
+    ...over
+  })
+
+  it('restores the active user turn and partial assistant as one pending stream', () => {
+    const history = [msg('a0', 'assistant', 'previous answer')]
+    const result = reconcileResumeInflight(history, inflight(), 'runtime-1')
+
+    expect(result.messages.map(message => [message.role, chatMessageText(message), message.pending])).toEqual([
+      ['assistant', 'previous answer', undefined],
+      ['user', 'keep working', undefined],
+      ['assistant', 'partial answer', true]
+    ])
+    expect(result.streamId).toBe('assistant-inflight-runtime-1')
+    expect(result.sawAssistantPayload).toBe(true)
+  })
+
+  it('does not duplicate a user prompt already painted by the REST prefetch', () => {
+    const history = [msg('u1', 'user', 'keep working')]
+    const result = reconcileResumeInflight(history, inflight({ assistant: '' }), 'runtime-2')
+
+    expect(result.messages).toBe(history)
+    expect(result.streamId).toBe('assistant-inflight-runtime-2')
+    expect(result.sawAssistantPayload).toBe(false)
+  })
+
+  it('preserves a repeated prompt when it starts a later turn', () => {
+    const history = [msg('u0', 'user', 'keep working'), msg('a0', 'assistant', 'done once')]
+    const result = reconcileResumeInflight(history, inflight({ assistant: '' }), 'runtime-3')
+
+    expect(result.messages).toHaveLength(3)
+    expect(result.messages.at(-1)).toMatchObject({ role: 'user' })
+    expect(chatMessageText(result.messages.at(-1)!)).toBe('keep working')
+  })
+
+  it('marks an already-materialized matching assistant tail pending and reuses its id', () => {
+    const history = [msg('u1', 'user', 'keep working'), msg('a1', 'assistant', 'partial answer')]
+    const result = reconcileResumeInflight(history, inflight(), 'runtime-4')
+
+    expect(result.messages).toHaveLength(2)
+    expect(result.messages[1]).toMatchObject({ id: 'a1', pending: true })
+    expect(result.streamId).toBe('a1')
+  })
+
+  it('leaves a completed transcript untouched when there is no live snapshot', () => {
+    const history = [msg('a0', 'assistant', 'done')]
+    const result = reconcileResumeInflight(history, null, 'runtime-5')
+
+    expect(result.messages).toBe(history)
+    expect(result).toMatchObject({ sawAssistantPayload: false, streamId: null })
   })
 })

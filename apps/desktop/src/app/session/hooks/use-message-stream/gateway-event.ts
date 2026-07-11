@@ -104,6 +104,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+      const dispatchPromptNotification = payload?._replayed ? undefined : dispatchNativeNotification
 
       if (event.type === 'gateway.ready') {
         return
@@ -335,6 +336,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         completeAssistantMessage(sessionId, finalText)
 
         if (isActiveEvent) {
+          triggerHaptic('streamDone')
           setTurnStartedAt(null)
 
           // Pet beat: a finished turn always celebrates — go straight to the
@@ -453,7 +455,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 
-          dispatchNativeNotification({
+          dispatchPromptNotification?.({
             body: question,
             kind: 'input',
             sessionId,
@@ -482,7 +484,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
         }
 
-        dispatchNativeNotification({
+        dispatchPromptNotification?.({
           actions: [
             { id: 'approve', text: translateNow('notifications.native.approveAction') },
             { id: 'reject', text: translateNow('notifications.native.rejectAction') }
@@ -504,7 +506,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 
-          dispatchNativeNotification({
+          dispatchPromptNotification?.({
             body: translateNow('notifications.native.inputBody'),
             kind: 'input',
             sessionId,
@@ -531,7 +533,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 
-          dispatchNativeNotification({
+          dispatchPromptNotification?.({
             body: promptText || envVar || translateNow('notifications.native.inputBody'),
             kind: 'input',
             sessionId,

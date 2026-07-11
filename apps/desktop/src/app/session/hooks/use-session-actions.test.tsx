@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
@@ -170,32 +171,48 @@ describe('createBackendSessionForSend profile routing', () => {
 // succeeds must NOT leave the flag armed.
 function ResumeHarness({
   onReady,
+  onState,
   requestGateway,
   runtimeIdByStoredSessionIdRef,
   sessionStateByRuntimeIdRef
 }: {
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  onState?: (sessionId: string, state: ClientSessionState) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const runtimeIds = runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>())
+  const states = sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>())
 
   const actions = useSessionActions({
     activeSessionId: null,
     activeSessionIdRef: ref<string | null>(null),
     busyRef: ref(false),
     creatingSessionRef: ref(false),
-    ensureSessionState: () => ({}) as ClientSessionState,
+    ensureSessionState: (sessionId, storedSessionId) => {
+      const state = states.current.get(sessionId) ?? createClientSessionState(storedSessionId)
+      states.current.set(sessionId, state)
+
+      return state
+    },
     getRouteToken: () => 'token',
     navigate: vi.fn() as never,
     requestGateway,
-    runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: runtimeIds,
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
-    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: states,
     syncSessionStateToView: vi.fn(),
-    updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      const current = states.current.get(sessionId) ?? createClientSessionState(storedSessionId)
+      const next = updater(current)
+      states.current.set(sessionId, next)
+      onState?.(sessionId, next)
+
+      return next
+    }
   })
 
   useEffect(() => {
@@ -218,6 +235,7 @@ describe('resumeSession failure recovery', () => {
   async function runResume(
     requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
     options: {
+      onState?: (sessionId: string, state: ClientSessionState) => void
       runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
       sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
     } = {}
@@ -334,7 +352,101 @@ describe('resumeSession failure recovery', () => {
 
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
-    expect(resumeParams).toMatchObject({ source: 'desktop' })
+    expect(resumeParams).toMatchObject({ include_messages: false, source: 'desktop' })
+  })
+
+  it('restores a live in-flight turn and its streaming state after a hard refresh', async () => {
+    setSessions([storedSession({ message_count: 1 })])
+    let resumedState: ClientSessionState | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-live',
+          resumed: params?.session_id,
+          messages: [{ content: 'previous answer', role: 'assistant', timestamp: 1 }],
+          info: {},
+          running: true,
+          inflight: {
+            assistant: 'partial answer',
+            started_at: 1_720_000_000,
+            streaming: true,
+            user: 'keep working'
+          }
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'previous answer', role: 'assistant', timestamp: 1 }],
+      session_id: 'stored-1'
+    } as never)
+
+    await runResume(requestGateway, {
+      onState: (_sessionId, state) => {
+        resumedState = state
+      }
+    })
+
+    expect(resumedState).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      sawAssistantPayload: true,
+      streamId: 'assistant-inflight-runtime-live',
+      turnStartedAt: 1_720_000_000_000
+    })
+    expect(resumedState?.messages.map(message => [message.role, chatMessageText(message), message.pending])).toEqual([
+      ['assistant', 'previous answer', undefined],
+      ['user', 'keep working', undefined],
+      ['assistant', 'partial answer', true]
+    ])
+  })
+
+  it('recovers the transcript from the bound runtime when REST prefetch fails', async () => {
+    setSessions([storedSession({ message_count: 1 })])
+    let resumedState: ClientSessionState | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-fallback',
+          resumed: params?.session_id,
+          message_count: 1,
+          messages: [],
+          info: {},
+          running: false
+        } as never
+      }
+
+      if (method === 'session.activate') {
+        return {
+          session_id: 'runtime-fallback',
+          session_key: 'stored-1',
+          message_count: 1,
+          messages: [{ content: 'websocket fallback', role: 'assistant', timestamp: 1 }],
+          info: {},
+          running: false
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockRejectedValue(new Error('REST unavailable'))
+
+    await runResume(requestGateway, {
+      onState: (_sessionId, state) => {
+        resumedState = state
+      }
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.activate', {
+      cols: 96,
+      session_id: 'runtime-fallback'
+    })
+    expect(resumedState?.messages.map(chatMessageText)).toEqual(['websocket fallback'])
   })
 
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {

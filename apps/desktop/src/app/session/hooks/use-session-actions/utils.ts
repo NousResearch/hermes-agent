@@ -1,5 +1,5 @@
 import { getSession } from '@/hermes'
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -20,7 +20,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInflightSnapshot, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -120,6 +120,94 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 
     return withAppendedText(preserved, previousImages.map(url => `\n${url}`).join(''))
   })
+}
+
+export interface ResumeInflightReconciliation {
+  messages: ChatMessage[]
+  sawAssistantPayload: boolean
+  streamId: null | string
+}
+
+const normalizedMessageText = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+/** Rebuild the live, not-yet-durable tail when a browser reconnects mid-turn. */
+export function reconcileResumeInflight(
+  messages: ChatMessage[],
+  inflight: null | SessionInflightSnapshot | undefined,
+  runtimeSessionId: string
+): ResumeInflightReconciliation {
+  if (!inflight) {
+    return { messages, sawAssistantPayload: false, streamId: null }
+  }
+
+  const userText = inflight.user.trim()
+  const assistantText = inflight.assistant
+  const visible = messages.filter(message => !message.hidden)
+  const tail = visible.at(-1)
+  const beforeTail = visible.at(-2)
+
+  const assistantTailMatches =
+    Boolean(assistantText) &&
+    tail?.role === 'assistant' &&
+    normalizedMessageText(chatMessageText(tail)) === normalizedMessageText(assistantText)
+
+  const userAlreadyPresent =
+    Boolean(userText) &&
+    ((tail?.role === 'user' && normalizedMessageText(chatMessageText(tail)) === normalizedMessageText(userText)) ||
+      (assistantTailMatches &&
+        beforeTail?.role === 'user' &&
+        normalizedMessageText(chatMessageText(beforeTail)) === normalizedMessageText(userText)))
+
+  let nextMessages = messages
+
+  if (userText && !userAlreadyPresent) {
+    nextMessages = [
+      ...nextMessages,
+      {
+        id: `user-inflight-${runtimeSessionId}`,
+        role: 'user',
+        parts: [textPart(userText)]
+      }
+    ]
+  }
+
+  const generatedStreamId = `assistant-inflight-${runtimeSessionId}`
+
+  if (!assistantText) {
+    return {
+      messages: nextMessages,
+      sawAssistantPayload: false,
+      streamId: generatedStreamId
+    }
+  }
+
+  if (assistantTailMatches && tail) {
+    const pendingTail = tail.pending ? tail : { ...tail, pending: true }
+
+    if (pendingTail !== tail) {
+      nextMessages = nextMessages.map(message => (message === tail ? pendingTail : message))
+    }
+
+    return {
+      messages: nextMessages,
+      sawAssistantPayload: true,
+      streamId: tail.id
+    }
+  }
+
+  return {
+    messages: [
+      ...nextMessages,
+      {
+        id: generatedStreamId,
+        role: 'assistant',
+        parts: [assistantTextPart(assistantText)],
+        pending: true
+      }
+    ],
+    sawAssistantPayload: true,
+    streamId: generatedStreamId
+  }
 }
 
 export interface BranchMessage {

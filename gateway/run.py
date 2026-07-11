@@ -15455,7 +15455,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
                 for evt in async_events:
+                    # Desktop/TUI multi-session hosts stamp origin_ui_session_id
+                    # and own delivery via the TUI notification poller. The
+                    # messaging gateway must not adopt those completions — doing
+                    # so injects into Slack/Telegram home chats (often without a
+                    # thread) or wrong sessions. Desktop uses a separate process
+                    # queue, so drop here rather than requeue forever; the
+                    # result remains in async-delegation records if needed.
+                    if str(evt.get("origin_ui_session_id") or "").strip():
+                        logger.debug(
+                            "Ignoring desktop-owned async-delegation %s on "
+                            "messaging gateway (origin_ui=%s)",
+                            evt.get("delegation_id", "?"),
+                            evt.get("origin_ui_session_id"),
+                        )
+                        continue
                     self._enrich_async_delegation_routing(evt)
+                    # Without a parseable platform session_key there is no
+                    # gateway route (CLI/desktop durable ids look like
+                    # 20260710_…). Drop rather than invent a home-channel target.
+                    if not evt.get("platform") or not evt.get("chat_id"):
+                        logger.info(
+                            "Skipping async-delegation %s with no gateway route "
+                            "(session_key=%r origin_ui=%r)",
+                            evt.get("delegation_id", "?"),
+                            evt.get("session_key", ""),
+                            evt.get("origin_ui_session_id", ""),
+                        )
+                        continue
                     synth_text = _format_gateway_process_notification(evt)
                     if not synth_text:
                         continue

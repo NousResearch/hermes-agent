@@ -1977,10 +1977,11 @@ function readDesktopUpdateConfig() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
+    const remote = typeof parsed?.remote === 'string' ? parsed.remote.trim() : ''
 
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    return { branch: branch || DEFAULT_UPDATE_BRANCH, remote: remote || null }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    return { branch: DEFAULT_UPDATE_BRANCH, remote: null }
   }
 }
 
@@ -2074,6 +2075,30 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
+function splitTrackingRef(ref) {
+  const value = String(ref || '').trim()
+  const slash = value.indexOf('/')
+  if (slash <= 0 || slash === value.length - 1) {
+    return null
+  }
+
+  return {
+    branch: value.slice(slash + 1),
+    ref: value,
+    remote: value.slice(0, slash)
+  }
+}
+
+async function resolveCurrentTrackingRef(updateRoot) {
+  const result = await runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
+    cwd: updateRoot
+  })
+  if (result.code !== 0) {
+    return null
+  }
+  return splitTrackingRef(firstLine(result.stdout))
+}
+
 async function getOriginUrl(updateRoot) {
   const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
 
@@ -2095,20 +2120,18 @@ function emitUpdateProgress(payload) {
 // installed clients. Read-only ls-remote probe; only flips on a definitive
 // "ref absent" (exit 2), never on a transient network error, so a flaky
 // connection can't strand a user on the wrong branch.
-async function resolveHealedBranch(updateRoot, branch) {
+async function resolveHealedBranch(updateRoot, branch, remote = 'origin') {
   if (!branch || branch === 'main') {
     return branch || 'main'
   }
 
-  const originUrl = await getOriginUrl(updateRoot)
-  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
   const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
 
   if (probe.code !== 2) {
     return branch
   }
 
-  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
+  rememberLog(`[updates] ${remote}/${branch} is gone (merged?); falling back to main`)
   const config = readDesktopUpdateConfig()
 
   if (config.branch !== 'main') {
@@ -2118,9 +2141,54 @@ async function resolveHealedBranch(updateRoot, branch) {
   return 'main'
 }
 
+async function resolveUpdateTarget(updateRoot, configuredBranch, configuredRemote) {
+  const branch = configuredBranch || DEFAULT_UPDATE_BRANCH
+  const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+  const currentBranch = firstLine(head.stdout).trim()
+  const tracking = await resolveCurrentTrackingRef(updateRoot)
+
+  // Determine which remote to track for updates.
+  let effectiveRemote = configuredRemote || 'origin'
+
+  // If not explicitly configured, auto-detect: if HEAD matches a fork remote
+  // (e.g., 'fork/main') and that fork has the user's unmerged PRs, prefer it.
+  if (!configuredRemote && tracking && tracking.remote !== 'origin') {
+    // Verify the non-origin remote actually tracks the configured branch
+    const probe = await runGit(['ls-remote', '--exit-code', '--heads', tracking.remote, branch], { cwd: updateRoot })
+    if (probe.code === 0) {
+      effectiveRemote = tracking.remote
+    }
+  }
+
+  if (
+    tracking &&
+    (!branch || branch === DEFAULT_UPDATE_BRANCH || currentBranch === branch || tracking.branch === branch)
+  ) {
+    // If tracking a non-origin remote, prefer it as the effective remote
+    // for the update target label/ref
+    const targetRemote = (!configuredRemote && tracking.remote !== 'origin') ? tracking.remote : effectiveRemote
+    return {
+      branch: tracking.branch,
+      currentBranch,
+      label: targetRemote === 'origin' ? tracking.branch : `${targetRemote}/${tracking.branch}`,
+      ref: `${targetRemote}/${tracking.branch}`,
+      remote: targetRemote
+    }
+  }
+
+  const healedBranch = await resolveHealedBranch(updateRoot, branch, effectiveRemote)
+  return {
+    branch: healedBranch,
+    currentBranch,
+    label: effectiveRemote === 'origin' ? healedBranch : `${effectiveRemote}/${healedBranch}`,
+    ref: `${effectiveRemote}/${healedBranch}`,
+    remote: effectiveRemote
+  }
+}
+
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
-  let { branch } = readDesktopUpdateConfig()
+  let { branch, remote } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
 
   if (!directoryExists(gitDir)) {
@@ -2133,27 +2201,28 @@ async function checkUpdates() {
     }
   }
 
-  branch = await resolveHealedBranch(updateRoot, branch)
+  const target = await resolveUpdateTarget(updateRoot, branch, remote)
+  branch = target.label
   const originUrl = await getOriginUrl(updateRoot)
 
-  if (isOfficialSshRemote(originUrl)) {
+  if (!remote && target.remote === 'origin' && isOfficialSshRemote(originUrl)) {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+    const [currentSha, targetLs, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
+      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${target.branch}`], { cwd: updateRoot }),
       git(['status', '--porcelain']),
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
 
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+    const targetSha = firstLine(targetLs.stdout).split(/\s+/)[0] || ''
 
-    if (target.code !== 0 || !targetSha) {
+    if (targetLs.code !== 0 || !targetSha) {
       return {
         supported: true,
         branch,
         error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
+        message: firstLine(targetLs.stderr) || 'git ls-remote failed.',
         hermesRoot: updateRoot,
         fetchedAt: Date.now()
       }
@@ -2173,7 +2242,7 @@ async function checkUpdates() {
     }
   }
 
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
+  const fetched = await runGit(['fetch', '--quiet', target.remote, target.branch], { cwd: updateRoot })
 
   if (fetched.code !== 0) {
     return {
@@ -2188,15 +2257,14 @@ async function checkUpdates() {
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
+  const [currentSha, targetSha, dirtyStr, shallowStr, mergeBaseStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
+    git(['rev-parse', target.ref]),
     git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
     git(['rev-parse', '--is-shallow-repository']),
     // merge-base exits non-zero with empty stdout when HEAD shares no common
     // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
+    git(['merge-base', 'HEAD', target.ref])
   ])
 
   const isShallow = shallowStr === 'true'
@@ -2207,7 +2275,7 @@ async function checkUpdates() {
   // (thousands of commits, see #51922) and resolveBehindCount discards the
   // result anyway in favour of a SHA compare — so skip the expensive query.
   const countStr = shouldCountCommits({ isShallow, hasMergeBase })
-    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+    ? await git(['rev-list', `HEAD..${target.ref}`, '--count'])
     : ''
 
   const behind = resolveBehindCount({
@@ -2218,12 +2286,12 @@ async function checkUpdates() {
     hasMergeBase
   })
 
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const commits = behind > 0 ? await readCommitLog(updateRoot, target.ref) : []
 
   return {
     supported: true,
     branch,
-    currentBranch,
+    currentBranch: target.currentBranch,
     behind,
     currentSha,
     targetSha,
@@ -2234,12 +2302,12 @@ async function checkUpdates() {
   }
 }
 
-async function readCommitLog(cwd, branch) {
+async function readCommitLog(cwd, targetRef) {
   const SEP = '\x1f'
   const REC = '\x1e'
 
   const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `HEAD..${targetRef}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 
@@ -8615,9 +8683,21 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-  writeDesktopUpdateConfig({ branch })
+  const config = readDesktopUpdateConfig()
+  writeDesktopUpdateConfig({ branch, remote: config.remote })
+  return { branch, remote: config.remote }
+})
 
-  return { branch }
+ipcMain.handle('hermes:updates:remote:get', async () => {
+  const config = readDesktopUpdateConfig()
+  return { remote: config.remote }
+})
+
+ipcMain.handle('hermes:updates:remote:set', async (_event, name) => {
+  const remote = typeof name === 'string' && name.trim() ? name.trim() : null
+  const config = readDesktopUpdateConfig()
+  writeDesktopUpdateConfig({ branch: config.branch, remote })
+  return { branch: config.branch, remote }
 })
 
 // Resolve the canonical Hermes version (the one `release.py` bumps in

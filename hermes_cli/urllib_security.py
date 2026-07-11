@@ -58,6 +58,28 @@ class SafeCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
+class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
+    """Strip headers after installed request processors have run."""
+
+    # Request processors run in ascending order. Keep this last so an installed
+    # cookie/auth/instrumentation processor cannot re-add a secret after the
+    # redirect handler sanitizes the new Request.
+    handler_order = 1_000_000_000
+
+    def __init__(self, original_url: str) -> None:
+        self._original_origin = url_origin(original_url)
+
+    def _sanitize(self, request: urllib.request.Request):
+        if url_origin(request.full_url) != self._original_origin:
+            for name, _value in list(request.header_items()):
+                if name.lower() not in _CROSS_ORIGIN_SAFE_HEADERS:
+                    request.remove_header(name)
+        return request
+
+    http_request = _sanitize
+    https_request = _sanitize
+
+
 def _secure_opener_from_installed_policy(original_url: str):
     """Clone the installed opener's handlers, replacing redirect policy only."""
     installed = getattr(urllib.request, "_opener", None)
@@ -70,8 +92,17 @@ def _secure_opener_from_installed_policy(original_url: str):
         if not isinstance(handler, urllib.request.HTTPRedirectHandler)
     ]
     handlers.append(SafeCredentialRedirectHandler(original_url))
+    handlers.append(_CrossOriginRequestSanitizer(original_url))
     secured = urllib.request.build_opener(*handlers)
-    secured.addheaders = list(getattr(installed, "addheaders", ()))
+    # OpenerDirector injects addheaders after request processors, which would
+    # bypass the sanitizer on redirects. Carry them on the initial request
+    # instead, then leave the rebuilt opener's late-injection list empty.
+    setattr(
+        secured,
+        "_hermes_initial_addheaders",
+        list(getattr(installed, "addheaders", ())),
+    )
+    secured.addheaders = []
     return secured
 
 
@@ -90,6 +121,9 @@ def open_credentialed_url(
     """
     if opener_factory is None:
         opener = _secure_opener_from_installed_policy(request.full_url)
+        for name, value in getattr(opener, "_hermes_initial_addheaders", ()):
+            if not request.has_header(name):
+                request.add_header(name, value)
     else:
         opener = opener_factory(SafeCredentialRedirectHandler(request.full_url))
     return opener.open(request, timeout=timeout)

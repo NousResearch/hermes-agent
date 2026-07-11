@@ -1,9 +1,8 @@
 """Focused tests for Fireworks AI first-class provider wiring.
 
-Fireworks is the bundled, preferred BYOK provider (sits right after Nous
-Portal). These tests pin the wiring that makes it a real provider — alias
-resolution through BOTH CLI resolvers, ordering, config/doctor/overlay
-registration, attribution headers, and credential/base-URL resolution — without
+These tests pin the wiring that makes Fireworks a real provider — alias
+resolution through both CLI resolvers, config/doctor/overlay registration,
+and credential/base-URL resolution — without
 any live network calls.
 """
 
@@ -48,21 +47,12 @@ class TestFireworksAliases:
 
 
 class TestFireworksOrdering:
-    """Product contract: Fireworks is the preferred provider and sits directly
-    below Nous Portal (Nous's own provider stays first)."""
+    """Fireworks participates in the canonical provider catalog."""
 
     def test_present_in_canonical_providers(self):
         slugs = [p.slug for p in CANONICAL_PROVIDERS]
         assert "fireworks" in slugs
 
-    def test_sits_immediately_after_nous(self):
-        slugs = [p.slug for p in CANONICAL_PROVIDERS]
-        assert slugs.index("fireworks") == slugs.index("nous") + 1, slugs[:4]
-
-    def test_ranks_ahead_of_the_other_byok_providers(self):
-        slugs = [p.slug for p in CANONICAL_PROVIDERS]
-        # Ahead of the generic aggregators / other direct providers.
-        assert slugs.index("fireworks") < slugs.index("openrouter")
 
     def test_has_a_label(self):
         assert _PROVIDER_LABELS.get("fireworks") == "Fireworks AI"
@@ -76,8 +66,7 @@ class TestFireworksConfigRegistry:
         assert OPTIONAL_ENV_VARS["FIREWORKS_API_KEY"]["category"] == "provider"
         assert OPTIONAL_ENV_VARS["FIREWORKS_API_KEY"]["password"] is True
 
-        assert "FIREWORKS_BASE_URL" in OPTIONAL_ENV_VARS
-        assert OPTIONAL_ENV_VARS["FIREWORKS_BASE_URL"]["password"] is False
+        assert "FIREWORKS_BASE_URL" not in OPTIONAL_ENV_VARS
 
 
 class TestFireworksOverlay:
@@ -88,7 +77,7 @@ class TestFireworksOverlay:
         overlay = HERMES_OVERLAYS["fireworks"]
         assert overlay.transport == "openai_chat"
         assert overlay.base_url_override == "https://api.fireworks.ai/inference/v1"
-        assert overlay.base_url_env_var == "FIREWORKS_BASE_URL"
+        assert not overlay.base_url_env_var
         assert not overlay.is_aggregator
 
 
@@ -153,16 +142,8 @@ class TestFireworksCredentials:
         assert creds["api_key"] == "fw_test_key"
         assert creds["base_url"] == "https://api.fireworks.ai/inference/v1"
 
-    def test_base_url_override_is_honored(self, monkeypatch):
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        monkeypatch.setenv("FIREWORKS_BASE_URL", "https://gateway.example.com/v1")
-        creds = resolve_api_key_provider_credentials("fireworks")
-        assert creds["base_url"] == "https://gateway.example.com/v1"
-
-
 class TestFireworksAuxiliary:
-    """resolve_provider_client wires the BYOK key, PAYG-safe aux model, and the
-    partner-attribution headers through to the OpenAI client."""
+    """resolve_provider_client wires the BYOK key and PAYG-safe aux model."""
 
     def _resolve(self, name):
         from unittest.mock import patch
@@ -174,13 +155,13 @@ class TestFireworksAuxiliary:
             client, model = resolve_provider_client(name)
         return client, model, mock_openai.call_args.kwargs
 
-    def test_client_carries_attribution_headers(self, monkeypatch):
+    def test_client_has_no_partner_attribution_headers(self, monkeypatch):
         monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
         client, model, kwargs = self._resolve("fireworks")
         assert client is not None
         headers = kwargs.get("default_headers", {})
-        assert headers.get("HTTP-Referer") == "https://hermes-agent.nousresearch.com"
-        assert headers.get("X-Title") == "Hermes Agent"
+        assert "HTTP-Referer" not in headers
+        assert "X-Title" not in headers
         assert kwargs["base_url"] == "https://api.fireworks.ai/inference/v1"
 
     def test_aux_model_is_payg_safe(self, monkeypatch):

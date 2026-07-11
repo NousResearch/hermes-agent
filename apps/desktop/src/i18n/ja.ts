@@ -1873,12 +1873,11 @@ export const ja = defineLocale({
     recommended: '推奨',
     connected: '接続済み',
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
-    fireworksPitch: 'プロダクション AI 向けの最速推論 — 300 以上のモデル、1 つの API、ワンクリックでデプロイ',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
       fireworks: {
-        short: '最速の推論',
-        description: 'Fireworks AI で 300 以上のオープン／プロプライエタリモデルに直接アクセス — 1 つの API キー、プロダクション速度。'
+        short: 'モデル API に直接接続',
+        description: 'Fireworks AI がホストするモデルに直接アクセスします。'
       },
       openrouter: {
         short: '1 つのキーで多くのモデル',

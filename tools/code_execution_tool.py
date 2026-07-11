@@ -1795,8 +1795,7 @@ _TOOL_DOC_LINES = [
      "    Replaces old_string with new_string in the file."),
     ("terminal",
      "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Use direct terminal calls for one shell command; wrapping\n"
-     "    them here uses broader script approval. Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 
@@ -1855,15 +1854,16 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     if "terminal" in enabled_sandbox_tools:
         no_wrap_note = (
             "Do not wrap a single terminal command or subprocess in execute_code. "
-            "The script approval guard cannot review inner shell commands the way "
-            "terminal's command-level guard can, so these wrappers require broader "
-            "one-shot review. Call terminal directly for one command.\n\n"
+            "The wrapper obscures the command's intent and, in gateway/ask sessions, "
+            "adds whole-script approval. hermes_tools.terminal still runs its "
+            "command-level checks, while raw subprocess commands cannot be inspected "
+            "individually. Call terminal directly for one command.\n\n"
         )
     else:
         no_wrap_note = (
             "Do not wrap a single subprocess call in execute_code purely to avoid "
-            "command-level review — the script approval guard cannot inspect the "
-            "inner commands, so these wrappers require broader one-shot review.\n\n"
+            "command-level review. Raw subprocess commands cannot be inspected "
+            "individually, so gateway/ask sessions require whole-script approval.\n\n"
         )
 
     description = (

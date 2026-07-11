@@ -33,6 +33,7 @@ def _force_local_terminal(monkeypatch):
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
+    EXECUTE_CODE_SCHEMA,
     EXECUTION_MODES,
     _get_execution_mode,
     _is_usable_python,
@@ -239,8 +240,24 @@ class TestModeAwareSchema(unittest.TestCase):
     def test_description_discourages_terminal_wrappers(self):
         desc = build_execute_code_schema(mode="project")["description"]
         self.assertIn("Do not wrap a single terminal command", desc)
-        self.assertIn("script approval guard", desc)
+        self.assertIn("in gateway/ask sessions", desc)
+        self.assertIn("whole-script approval", desc)
+        self.assertIn("still runs its command-level checks", desc)
+        self.assertIn("raw subprocess commands cannot be inspected", desc)
         self.assertIn("Call terminal directly", desc)
+        self.assertEqual(desc.count("whole-script approval"), 1)
+
+    def test_module_level_schema_includes_no_wrap_guidance(self):
+        self.assertIn(
+            "Do not wrap a single terminal command",
+            EXECUTE_CODE_SCHEMA["description"],
+        )
+
+    def test_no_wrap_guidance_is_mode_independent(self):
+        for mode in EXECUTION_MODES:
+            desc = build_execute_code_schema(mode=mode)["description"]
+            self.assertIn("Do not wrap a single terminal command", desc)
+            self.assertEqual(desc.count("whole-script approval"), 1)
 
     def test_terminal_disabled_schema_omits_terminal_tool_reference(self):
         """When terminal is not an enabled sandbox tool, the schema must not
@@ -251,11 +268,29 @@ class TestModeAwareSchema(unittest.TestCase):
             enabled_sandbox_tools=no_terminal, mode="project"
         )["description"]
         self.assertNotIn("Call terminal directly", desc)
-        self.assertNotIn("terminal's command-level guard", desc)
+        self.assertNotIn("hermes_tools.terminal", desc)
         self.assertNotIn("wrap a single terminal command", desc)
         # The subprocess-bypass guidance still stands without naming the tool.
-        self.assertIn("script approval guard", desc)
+        self.assertIn("whole-script approval", desc)
         self.assertIn("subprocess", desc)
+
+    def test_empty_sandbox_tool_set_omits_terminal_reference(self):
+        desc = build_execute_code_schema(
+            enabled_sandbox_tools=set(), mode="project"
+        )["description"]
+        self.assertNotIn("Call terminal directly", desc)
+        self.assertNotIn("hermes_tools.terminal", desc)
+        self.assertIn("whole-script approval", desc)
+
+    def test_no_wrap_note_branches_are_mutually_exclusive(self):
+        with_terminal = build_execute_code_schema(mode="project")["description"]
+        without_terminal = build_execute_code_schema(
+            enabled_sandbox_tools={"read_file"}, mode="project"
+        )["description"]
+        self.assertIn("Call terminal directly for one command.", with_terminal)
+        self.assertNotIn("purely to avoid", with_terminal)
+        self.assertIn("purely to avoid", without_terminal)
+        self.assertNotIn("Call terminal directly", without_terminal)
 
     def test_neither_description_uses_sandbox_language(self):
         """REGRESSION GUARD for commit 39b83f34.

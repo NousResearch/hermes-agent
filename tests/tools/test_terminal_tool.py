@@ -30,6 +30,16 @@ def test_terminal_schema_advertises_persistent_env_state():
     assert "do not re-source the same environment before every command" in description
 
 
+def test_terminal_schema_discourages_single_command_wrappers():
+    description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
+
+    assert "Use terminal directly for a single shell command" in description
+    assert "may add whole-script approval" in description
+    assert "without avoiding this tool's command-level checks" in description
+    # Keep this standalone schema usable when execute_code is disabled.
+    assert "execute_code" not in description
+
+
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

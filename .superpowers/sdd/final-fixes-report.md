@@ -37,3 +37,25 @@ The API test-file timeout is the same previously documented harness behavior; th
 - Policy fallback is non-mutating and only fills a missing child policy from the requested compression ancestor for the active execution.
 - Sync and stream select the effective session before history loading and agent creation; both expose the effective ID.
 - No service, config, secret, dependency, installed skill implementation, live API/state, push, deploy, or Gmail write was performed.
+
+## Second review wave: API fork marking
+
+### Scope
+
+- API forks now merge source and request `model_config` fields and force the existing `_branched_from` lineage marker after the merge, preventing caller override.
+- Forking a compression-ended parent preserves `end_reason = compression`, so stable-parent sync and stream chat continue resolving the real compression child rather than the ordinary fork.
+- Ordinary uncompressed forks still mark the parent `branched`, inherit execution policy, and copy history.
+
+### Regressions and verification
+
+- Added direct fork marker/config merge assertion.
+- Added a non-socket direct handler regression proving the compression parent remains marked and the active tip remains the compression child.
+- Added sync and stream API integration regressions for parent -> compression child -> later ordinary fork -> subsequent chat.
+- Direct non-socket regression: 1 passed.
+- Existing focused policy/whitelist regressions and Gmail adapter verification are recorded with the final commit evidence.
+
+### Self-review
+
+- The forced marker is written last, so neither inherited source config nor request JSON can redirect branch lineage.
+- The endpoint accepts only object-valued `model_config`; malformed caller input fails before mutation.
+- No broad suite, service/config/secret change, push, deployment, dependency install, or live-state operation was performed.

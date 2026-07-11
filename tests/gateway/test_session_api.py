@@ -335,14 +335,29 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
 @pytest.mark.asyncio
 async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
-    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+    source_id = session_db.create_session(
+        "source-session",
+        "api_server",
+        model="test-model",
+        model_config={"provider": "source-provider", "shared": "source"},
+    )
     session_db.set_session_title(source_id, "Original")
     session_db.append_message(source_id, "user", "first path")
     session_db.append_message(source_id, "assistant", "answer")
 
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
-        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={"title": "Alternative"})
+        resp = await cli.post(
+            f"/api/sessions/{source_id}/fork",
+            json={
+                "title": "Alternative",
+                "model_config": {
+                    "temperature": 0.2,
+                    "shared": "request",
+                    "_branched_from": "caller-controlled",
+                },
+            },
+        )
         assert resp.status == 201
         payload = await resp.json()
 
@@ -353,6 +368,13 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+    stored_config = session_db.get_session(fork["id"])["model_config"]
+    assert __import__("json").loads(stored_config) == {
+        "provider": "source-provider",
+        "shared": "request",
+        "temperature": 0.2,
+        "_branched_from": source_id,
+    }
 
 
 @pytest.mark.asyncio
@@ -372,6 +394,56 @@ async def test_session_fork_inherits_execution_policy(adapter, session_db):
         payload = await response.json()
     assert payload["session"]["execution_policy"] == "read_only_generation"
     assert session_db.get_session("child")["execution_policy"] == "read_only_generation"
+
+
+@pytest.mark.asyncio
+async def test_api_fork_directly_marks_branch_without_hiding_compression_tip(adapter, session_db):
+    parent_id = session_db.create_session(
+        "direct-compression-parent",
+        "api_server",
+        execution_policy="read_only_generation",
+        model_config={"provider": "source", "shared": "source"},
+    )
+    session_db.end_session(parent_id, "compression")
+    session_db.create_session(
+        "direct-compression-tip",
+        "api_server",
+        execution_policy="read_only_generation",
+        parent_session_id=parent_id,
+    )
+
+    class Request:
+        headers = {}
+        remote = "127.0.0.1"
+        match_info = {"session_id": parent_id}
+
+        async def json(self):
+            return {
+                "id": "direct-ordinary-fork",
+                "model_config": {
+                    "shared": "request",
+                    "temperature": 0.1,
+                    "_branched_from": "caller-override",
+                },
+            }
+
+    response = await adapter._handle_fork_session(Request())
+
+    assert response.status == 201
+    assert session_db.get_session(parent_id)["end_reason"] == "compression"
+    fork = session_db.get_session("direct-ordinary-fork")
+    assert __import__("json").loads(fork["model_config"]) == {
+        "provider": "source",
+        "shared": "request",
+        "temperature": 0.1,
+        "_branched_from": parent_id,
+    }
+    effective_id, effective = adapter._active_compression_session(
+        parent_id,
+        session_db.get_session(parent_id),
+    )
+    assert effective_id == "direct-compression-tip"
+    assert effective["execution_policy"] == "read_only_generation"
 
 
 @pytest.mark.asyncio
@@ -499,6 +571,68 @@ async def test_session_chat_does_not_resolve_ordinary_api_fork(auth_adapter, ses
     assert [message["content"] for message in kwargs["conversation_history"]] == [
         "parent context",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["sync", "stream"])
+async def test_compression_parent_chat_ignores_later_api_fork(
+    auth_adapter, session_db, stream,
+):
+    parent_id = session_db.create_session(
+        f"compression-fork-parent-{stream}",
+        "api_server",
+        execution_policy="read_only_generation",
+    )
+    session_db.append_message(parent_id, "user", "pre-compression context")
+    session_db.end_session(parent_id, "compression")
+    tip_id = f"compression-fork-tip-{stream}"
+    session_db.create_session(
+        tip_id,
+        "api_server",
+        execution_policy="read_only_generation",
+        parent_session_id=parent_id,
+    )
+    session_db.append_message(tip_id, "user", "real compacted context")
+    fork_id = f"ordinary-api-fork-{stream}"
+
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"final_response": "continued", "session_id": tip_id}, {"total_tokens": 1}
+
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            fork_response = await cli.post(
+                f"/api/sessions/{parent_id}/fork",
+                json={"id": fork_id},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert fork_response.status == 201
+            path = f"/api/sessions/{parent_id}/chat"
+            if stream:
+                path += "/stream"
+            chat_response = await cli.post(
+                path,
+                json={"message": "continue stable parent"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert chat_response.status == 200
+            body = await chat_response.text() if stream else await chat_response.json()
+
+    assert session_db.get_session(parent_id)["end_reason"] == "compression"
+    fork_config = __import__("json").loads(session_db.get_session(fork_id)["model_config"])
+    assert fork_config["_branched_from"] == parent_id
+    assert captured["session_id"] == tip_id
+    assert captured["execution_policy"] == "read_only_generation"
+    assert [message["content"] for message in captured["conversation_history"]] == [
+        "real compacted context",
+    ]
+    if stream:
+        assert f'"session_id": "{tip_id}"' in body
+    else:
+        assert body["session_id"] == tip_id
 
 
 @pytest.mark.asyncio

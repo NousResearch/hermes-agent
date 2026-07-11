@@ -1934,6 +1934,12 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        requested_model_config = body.get("model_config")
+        if requested_model_config is not None and not isinstance(requested_model_config, dict):
+            return web.json_response(
+                _openai_error("model_config must be an object", code="invalid_model_config"),
+                status=400,
+            )
         db = self._ensure_session_db()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
@@ -1941,15 +1947,30 @@ class APIServerAdapter(BasePlatformAdapter):
         if db.get_session(fork_id):
             return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
 
-        # Match the CLI /branch semantics: mark the original as branched, then
-        # create a child session that carries the transcript forward. This uses
-        # SessionDB's native parent_session_id/end_reason visibility model rather
-        # than inventing a parallel fork store.
-        db.end_session(source_id, "branched")
+        # Match the CLI /branch semantics while retaining a pre-existing
+        # compression end marker: the marker keeps the real continuation edge
+        # resolvable, while _branched_from distinguishes this ordinary fork.
+        if source.get("end_reason") != "compression":
+            db.end_session(source_id, "branched")
+        fork_model_config: Dict[str, Any] = {}
+        source_model_config = source.get("model_config")
+        if isinstance(source_model_config, dict):
+            fork_model_config.update(source_model_config)
+        elif isinstance(source_model_config, str) and source_model_config:
+            try:
+                parsed_source_config = json.loads(source_model_config)
+            except (TypeError, json.JSONDecodeError):
+                parsed_source_config = None
+            if isinstance(parsed_source_config, dict):
+                fork_model_config.update(parsed_source_config)
+        if requested_model_config:
+            fork_model_config.update(requested_model_config)
+        fork_model_config["_branched_from"] = source_id
         db.create_session(
             fork_id,
             "api_server",
             model=source.get("model"),
+            model_config=fork_model_config,
             system_prompt=source.get("system_prompt"),
             execution_policy=source.get("execution_policy"),
             parent_session_id=source_id,

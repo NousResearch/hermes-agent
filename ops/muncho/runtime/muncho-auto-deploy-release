@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OWNER="ai-platform-brain"
+REPO_URL="${MUNCHO_REPO_URL:-https://github.com/lomliev/hermes-agent.git}"
+RELEASES="/opt/adventico-ai-platform/hermes-agent-releases"
+ACTIVE_LINK="/opt/adventico-ai-platform/hermes-agent"
+SERVICE="hermes-cloud-gateway.service"
+HERMES_HOME="/opt/adventico-ai-platform/hermes-home"
+PLANNED_RESTART_HELPER="$HERMES_HOME/scripts/planned_gateway_restart.sh"
+STATE_DIR="/opt/adventico-ai-platform/canonical-brain/state/private/upstream_sync_monitor"
+REPORT_DIR="/opt/adventico-ai-platform/canonical-brain/state/reports"
+KEEP_RELEASES="${MUNCHO_AUTO_DEPLOY_KEEP_RELEASES:-8}"
+VOICE_CALL_GUARD_PATH="${MUNCHO_VOICE_CALL_GUARD_PATH:-/opt/adventico-ai-platform/canonical-brain/state/runtime/voice-skyai-active-calls.json}"
+VOICE_CALL_LEASE_TOOL="${MUNCHO_VOICE_CALL_LEASE_TOOL:-/opt/adventico-ai-platform/hermes-home/bin/voice-skyai-call-lease}"
+VOICE_CALL_GUARD_BYPASS="${MUNCHO_IGNORE_ACTIVE_VOICE_CALLS:-0}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  muncho-auto-deploy-release start <40-char-sha> <pr-number>
+  muncho-auto-deploy-release run <40-char-sha> <pr-number>
+  muncho-auto-deploy-release check-voice-guard
+EOF
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+write_status() {
+  local status="$1"
+  local sha="$2"
+  local pr="$3"
+  local extra_json="${4:-}"
+  if [ -z "$extra_json" ]; then
+    extra_json="{}"
+  fi
+  mkdir -p "$STATE_DIR" "$REPORT_DIR"
+  local now
+  now="$(date -Iseconds)"
+  local status_file="$STATE_DIR/auto-sync-deploy-latest.json"
+  python3 - "$status_file" "$status" "$sha" "$pr" "$now" "$extra_json" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+status, sha, pr, now = sys.argv[2:6]
+extra = json.loads(sys.argv[6])
+payload = {
+    "schema": "muncho-auto-deploy-release.v1",
+    "status": status,
+    "target_commit": sha,
+    "pr_number": int(pr),
+    "updated_at": now,
+}
+payload.update(extra)
+tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+os.replace(tmp, path)
+archive = path.with_name(f"auto-sync-deploy-{now.replace(':', '').replace('-', '')}.json")
+archive_tmp = archive.with_name(f".{archive.name}.{os.getpid()}.tmp")
+archive_tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+os.replace(archive_tmp, archive)
+PY
+  cat >"$REPORT_DIR/fork-upstream-auto-sync-deploy-latest-public-summary.md" <<EOF
+# Fork upstream auto-sync deploy
+
+Status: \`$status\`
+
+Time: \`$now\`
+
+Target commit: \`$sha\`
+
+PR: #$pr
+EOF
+}
+
+voice_call_guard_json() {
+  if [ "$VOICE_CALL_GUARD_BYPASS" = "1" ]; then
+    printf '{"schema":"voice-skyai-active-calls-status.v1","path":%s,"active":false,"active_count":0,"bypassed":true}\n' \
+      "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$VOICE_CALL_GUARD_PATH")"
+    return 0
+  fi
+  if [ -x "$VOICE_CALL_LEASE_TOOL" ]; then
+    local lease_output
+    local lease_rc=0
+    lease_output="$("$VOICE_CALL_LEASE_TOOL" --path "$VOICE_CALL_GUARD_PATH" status --json)" || lease_rc=$?
+    if [ "$lease_rc" -eq 0 ] || [ "$lease_rc" -eq 7 ]; then
+      printf '%s\n' "$lease_output"
+      return 0
+    fi
+  fi
+  python3 - "$VOICE_CALL_GUARD_PATH" <<'PY'
+import json
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+ttl_default = 180
+ended = {"ended", "completed", "closed", "inactive", "hangup", "hung_up"}
+
+def parse_ts(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+payload = {}
+if path.exists():
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {"unreadable": True}
+if not isinstance(payload, dict):
+    payload = {"unreadable": True}
+ttl = int(payload.get("ttl_seconds") or ttl_default)
+now = time.time()
+fallback_ts = path.stat().st_mtime if path.exists() else None
+active = []
+stale_count = 0
+calls = payload.get("calls") if isinstance(payload.get("calls"), list) else []
+for call in calls:
+    if not isinstance(call, dict):
+        continue
+    status = str(call.get("status") or "active").lower()
+    ts = parse_ts(call.get("last_seen_at")) or parse_ts(call.get("updated_at")) or parse_ts(call.get("started_at")) or fallback_ts
+    if status not in ended and call.get("active") is not False and ts is not None and now - ts <= ttl:
+        active.append(call)
+    else:
+        stale_count += 1
+if not active and payload.get("active") is True:
+    ts = parse_ts(payload.get("last_seen_at")) or parse_ts(payload.get("updated_at")) or fallback_ts
+    if ts is not None and now - ts <= ttl:
+        active.append({"call_id": payload.get("call_id") or "single-marker"})
+print(json.dumps({
+    "schema": "voice-skyai-active-calls-status.v1",
+    "path": str(path),
+    "active": bool(active),
+    "active_count": len(active),
+    "stale_count": stale_count,
+    "ttl_seconds": ttl,
+    "updated_at": payload.get("updated_at"),
+    "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}, ensure_ascii=False, sort_keys=True))
+PY
+}
+
+voice_call_guard_active() {
+  python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("active") else "false")'
+}
+
+voice_call_guard_extra_json() {
+  local stage="$1"
+  local status_json="$2"
+  python3 - "$stage" "$status_json" <<'PY'
+import json
+import sys
+
+stage = sys.argv[1]
+status = json.loads(sys.argv[2])
+print(json.dumps({"stage": stage, "voice_call_guard": status}, ensure_ascii=False, sort_keys=True))
+PY
+}
+
+require_no_active_voice_call() {
+  local sha="$1"
+  local pr="$2"
+  local stage="$3"
+  local status_json
+  status_json="$(voice_call_guard_json)"
+  echo "voice_call_guard_${stage}=$status_json"
+  if [ "$(printf '%s' "$status_json" | voice_call_guard_active)" = "true" ]; then
+    write_status "blocked_active_voice_call" "$sha" "$pr" "$(voice_call_guard_extra_json "$stage" "$status_json")"
+    echo "BLOCKED_ACTIVE_VOICE_CALL: Voice SkyAI/PBX call lease is active; refusing to restart $SERVICE." >&2
+    exit 7
+  fi
+}
+
+validate_args() {
+  local sha="${1:-}"
+  local pr="${2:-}"
+  if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "BLOCKED: target SHA must be a 40-char lowercase git SHA." >&2
+    exit 2
+  fi
+  if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+    echo "BLOCKED: PR number must be numeric." >&2
+    exit 2
+  fi
+}
+
+cleanup_old_releases() {
+  local active
+  active="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+  python3 - "$RELEASES" "$active" "$KEEP_RELEASES" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+active = Path(sys.argv[2]).resolve() if sys.argv[2] else None
+keep = int(sys.argv[3])
+releases = sorted(
+    [p for p in root.glob("hermes-agent-*") if p.is_dir()],
+    key=lambda p: p.stat().st_mtime,
+    reverse=True,
+)
+protected = set(releases[:keep])
+if active:
+    protected.add(active)
+removed = []
+for path in releases:
+    resolved = path.resolve()
+    if resolved in protected:
+        continue
+    if root not in resolved.parents:
+        continue
+    shutil.rmtree(resolved)
+    removed.append(str(resolved))
+print("release_cleanup_removed=" + ",".join(removed))
+PY
+}
+
+start_unit() {
+  local sha="$1"
+  local pr="$2"
+  validate_args "$sha" "$pr"
+  require_no_active_voice_call "$sha" "$pr" "pre_unit_start"
+  local unit="muncho-auto-deploy-${sha:0:12}-pr${pr}"
+  write_status "deploy_unit_starting" "$sha" "$pr" "{\"unit\": \"$unit\"}"
+  systemd-run \
+    --unit="$unit" \
+    --description="Muncho auto deploy upstream sync PR #$pr $sha" \
+    --collect \
+    /usr/local/sbin/muncho-auto-deploy-release run "$sha" "$pr"
+  write_status "deploy_unit_started" "$sha" "$pr" "{\"unit\": \"$unit\"}"
+}
+
+run_deploy() {
+  local sha="$1"
+  local pr="$2"
+  validate_args "$sha" "$pr"
+  local short="${sha:0:12}"
+  local new="$RELEASES/hermes-agent-$short"
+  local tmp="$RELEASES/.hermes-agent-$short.tmp.$$"
+  local active
+  local remote_main
+
+  write_status "deploy_running" "$sha" "$pr" "{}"
+  active="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+  remote_main="$(sudo -n -u "$OWNER" git ls-remote "$REPO_URL" refs/heads/main | awk '{print $1}')"
+  if [ "$remote_main" != "$sha" ]; then
+    write_status "blocked_target_not_current_fork_main" "$sha" "$pr" "{\"remote_main\": \"$remote_main\"}"
+    exit 3
+  fi
+  require_no_active_voice_call "$sha" "$pr" "pre_release"
+
+  if [ ! -e "$new" ]; then
+    if [ -z "$active" ] || [ ! -d "$active/.venv" ]; then
+      write_status "blocked_active_venv_missing" "$sha" "$pr" "{}"
+      exit 4
+    fi
+    sudo -n -u "$OWNER" git clone --depth 1 --branch main "$REPO_URL" "$tmp"
+    local clone_head
+    clone_head="$(sudo -n -u "$OWNER" git -C "$tmp" rev-parse HEAD)"
+    if [ "$clone_head" != "$sha" ]; then
+      rm -rf "$tmp"
+      write_status "blocked_clone_head_mismatch" "$sha" "$pr" "{\"clone_head\": \"$clone_head\"}"
+      exit 5
+    fi
+    sudo -n -u "$OWNER" cp -a "$active/.venv" "$tmp/.venv"
+    sudo -n -u "$OWNER" bash -lc "printf '%s\n' '$sha' > '$tmp/.codex-source-commit'"
+    sudo -n -u "$OWNER" bash -lc "cd '$tmp' && .venv/bin/python -m py_compile gateway/run.py hermes_cli/main.py scripts/run_tests_parallel.py"
+    sudo -n -u "$OWNER" bash -lc "cd '$tmp' && .venv/bin/python - <<'PY'
+from gateway.canonical_brain_routeback_context import RouteBackCaseContext, build_routeback_context_prompt
+ctx = RouteBackCaseContext(case_id='case:auto-sync-deploy-smoke', source_thread_id='source-thread')
+assert 'concrete next-action artifact' in build_routeback_context_prompt([ctx])
+print('routeback_context_import_smoke=ok')
+PY"
+    sudo -n -u "$OWNER" mv "$tmp" "$new"
+  fi
+
+  require_no_active_voice_call "$sha" "$pr" "pre_restart"
+  local marker_output
+  if [ ! -x "$PLANNED_RESTART_HELPER" ]; then
+    write_status "blocked_planned_restart_helper_missing" "$sha" "$pr" "{}"
+    exit 7
+  fi
+  if ! marker_output="$(
+    "$PLANNED_RESTART_HELPER" "$ACTIVE_LINK" "$SERVICE" "$OWNER" "$HERMES_HOME"
+  )"; then
+    write_status "blocked_planned_stop_marker_failed" "$sha" "$pr" "{}"
+    exit 7
+  fi
+  ln -sfn "$new" "$ACTIVE_LINK.next"
+  mv -Tf "$ACTIVE_LINK.next" "$ACTIVE_LINK"
+  systemctl restart "$SERVICE"
+  sleep 8
+  systemctl is-active --quiet "$SERVICE"
+  if [ -e "$HERMES_HOME/.gateway-planned-stop.json" ]; then
+    write_status "blocked_planned_stop_marker_not_consumed" "$sha" "$pr" "{}"
+    exit 8
+  fi
+
+  local deployed_head
+  local deployed_source
+  local service_active
+  deployed_head="$(sudo -n -u "$OWNER" git -C "$ACTIVE_LINK" rev-parse HEAD)"
+  deployed_source="$(cat "$ACTIVE_LINK/.codex-source-commit")"
+  service_active="$(systemctl is-active "$SERVICE")"
+  if [ "$deployed_head" != "$sha" ] || [ "$deployed_source" != "$sha" ] || [ "$service_active" != "active" ]; then
+    write_status "blocked_post_smoke_failed" "$sha" "$pr" "{\"deployed_head\": \"$deployed_head\", \"deployed_source\": \"$deployed_source\", \"service_active\": \"$service_active\"}"
+    exit 6
+  fi
+  local cleanup_output
+  cleanup_output="$(cleanup_old_releases || true)"
+  write_status "deploy_pass" "$sha" "$pr" "{\"deployed_release\": \"$new\", \"deployed_head\": \"$deployed_head\", \"service_active\": \"$service_active\", \"release_cleanup\": $(printf '%s' "$cleanup_output" | json_escape)}"
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = "check-voice-guard" ]; then
+  voice_guard_json="$(voice_call_guard_json)"
+  printf '%s\n' "$voice_guard_json"
+  if [ "$(printf '%s' "$voice_guard_json" | voice_call_guard_active)" = "true" ]; then
+    exit 7
+  fi
+  exit 0
+fi
+
+if [ "$#" -ne 3 ]; then
+  usage
+  exit 2
+fi
+
+case "$1" in
+  start)
+    start_unit "$2" "$3"
+    ;;
+  run)
+    run_deploy "$2" "$3"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

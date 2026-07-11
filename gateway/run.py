@@ -8148,8 +8148,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             active = set()
             self._startup_resume_active = active
         active.add(session_key)
+        dispatched_ok = False
         try:
             await adapter.handle_message(event)
+            dispatched_ok = True
             session_tasks = getattr(adapter, "_session_tasks", {})
             task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
             if task is not None:
@@ -8163,19 +8165,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # here stripped protection from a live recovery turn, letting a
             # user follow-up interrupt it at iteration 1).
             # _release_running_agent_state clears the marker when the turn
-            # actually ends.  Here, discard only when no live turn holds the
-            # slot (never started, or already finished) — belt-and-suspenders
-            # against a leaked marker without early-stripping a running one.
+            # actually ends.  Here, discard only when the slot is EMPTY (the
+            # turn already finished and released, or ownership was never
+            # claimed at all) — belt-and-suspenders against a leaked marker
+            # without early-stripping a running one.
+            #
+            # 🔴 SENTINEL IS NOT "never started" (AEGIS-RIG trace,
+            # 2026-07-11 08:54): the adapter task the shield awaits is NOT
+            # the agent turn — the gateway handler spawns the turn on its own
+            # per-message task and returns, so this finally can run ~7ms
+            # after dispatch while the slot still holds the pre-claim
+            # sentinel and the real turn starts ~40ms later.  Discarding on
+            # sentinel stripped protection from every recovery turn on this
+            # timing (the "iteration 1/300" interrupt acks with no restart
+            # mention).  Sentinel-phase cleanup is owned by the sentinel
+            # release below / the turn chokepoint / the reaper — all of which
+            # funnel through _release_running_agent_state, which clears the
+            # marker.
             occupant = self._running_agents.get(session_key)
-            if occupant is None or occupant is _AGENT_PENDING_SENTINEL:
-                active.discard(session_key)
             if occupant is None:
+                active.discard(session_key)
                 getattr(self, "_startup_resume_modes", {}).pop(session_key, None)
             # _schedule_resume_pending_sessions pre-claims the runner slot
             # before spawning this task.  If adapter.handle_message raises
-            # before _handle_message takes ownership, release that pre-claim;
-            # otherwise the real run's normal cleanup owns the slot.
-            if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+            # before _handle_message takes ownership, release that pre-claim
+            # (which also clears the marker via the chokepoint); otherwise the
+            # real run's normal cleanup owns the slot.  Only on dispatch
+            # FAILURE — after a successful dispatch a lingering sentinel just
+            # means the turn hasn't registered its agent yet (~40ms window),
+            # and releasing it here would strip protection + unlock the slot
+            # under a starting turn.
+            if (
+                not dispatched_ok
+                and self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+            ):
                 self._release_running_agent_state(session_key)
 
     def _session_in_startup_resume(self, session_key: str) -> bool:

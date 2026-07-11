@@ -5520,6 +5520,60 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     assert applied["model"]
 
 
+def test_mirror_slash_side_effects_normalizes_command_case(monkeypatch):
+    """Mixed-case slash names must mirror onto the live agent.
+
+    The worker dispatch (cli.py ``command.lower()``) and the slash.exec
+    router (``_cmd_base.lower()``) both lowercase the command name, but
+    ``_mirror_slash_side_effects`` used ``parts[0]`` raw. A mixed-case
+    ``/MODEL`` therefore ran in the throwaway worker yet silently skipped
+    the live-agent mirror, leaving the gateway agent on the old model.
+    The arg must stay case-preserving (model IDs are case-sensitive).
+    """
+    import types
+
+    applied = {"arg": None}
+
+    def _fake_apply_model(sid, session, arg):
+        applied["arg"] = arg
+        return {"value": arg, "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply_model)
+
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects(
+        "sid", session, "/MODEL anthropic/Claude-X"
+    )
+    assert "session busy" not in warning
+    assert applied["arg"] == "anthropic/Claude-X", (
+        "mixed-case /MODEL should mirror onto the live agent with the "
+        "case-preserved model id"
+    )
+
+
+def test_mirror_slash_side_effects_running_guard_is_case_insensitive(monkeypatch):
+    """The in-flight ``_MUTATES_WHILE_RUNNING`` guard must also fire for a
+    mixed-case name — otherwise ``/MODEL`` mutates live agent state mid-turn."""
+    import types
+
+    applied = {"model": False}
+
+    def _fake_apply_model(sid, session, arg):
+        applied["model"] = True
+        return {"value": arg, "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply_model)
+
+    session = _session(running=True)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/MODEL foo")
+    assert "session busy" in warning
+    assert not applied["model"], "model switch fired mid-turn for mixed-case name"
+
+
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     """Regression guard: /compress side effect must not hold history_lock
     when calling _compress_session_history (the helper snapshots under

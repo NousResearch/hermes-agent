@@ -12971,7 +12971,14 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if not parts:
         return ""
     name, arg, agent = (
-        parts[0],
+        # Normalize the command name to match the worker dispatch
+        # (cli.py does ``command.lower()``) and the slash.exec router
+        # (which lowercases ``_cmd_base``).  A mixed-case ``/Model`` would
+        # otherwise match none of the lowercase branches below, silently
+        # skipping the live-agent mirror and bypassing the in-flight
+        # ``_MUTATES_WHILE_RUNNING`` guard.  ``arg`` stays case-preserving
+        # (model IDs / personality names are case-sensitive).
+        parts[0].lower(),
         (parts[1].strip() if len(parts) > 1 else ""),
         session.get("agent"),
     )

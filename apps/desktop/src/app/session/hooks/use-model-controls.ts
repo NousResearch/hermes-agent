@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -13,12 +14,18 @@ interface ModelSelection {
 }
 
 interface ModelControlsOptions {
+  activeGatewayProfile?: string
   activeSessionId: string | null
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
+export function useModelControls({
+  activeGatewayProfile = 'default',
+  activeSessionId,
+  queryClient,
+  requestGateway
+}: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 
@@ -26,13 +33,13 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
+      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(activeGatewayProfile, activeSessionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
+        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(activeGatewayProfile), patch)
       }
     },
-    [activeSessionId, queryClient]
+    [activeGatewayProfile, activeSessionId, queryClient]
   )
 
   // Seed the composer's model state from the profile default. `force` reseeds
@@ -99,7 +106,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
           value: `${selection.model} --provider ${selection.provider} --session`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
+        void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId) })
 
         return true
       } catch (err) {
@@ -111,7 +118,14 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         return false
       }
     },
-    [activeSessionId, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [
+      activeGatewayProfile,
+      activeSessionId,
+      copy.modelSwitchFailed,
+      queryClient,
+      requestGateway,
+      updateModelOptionsCache
+    ]
   )
 
   return { refreshCurrentModel, selectModel, updateModelOptionsCache }

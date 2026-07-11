@@ -17,7 +17,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { requestModelOptions } from '@/lib/model-options'
+import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import {
   currentPickerSelection,
   displayModelName,
@@ -55,6 +55,7 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
   onSelectModel: (selection: { model: string; provider: string }) => Promise<boolean> | void
+  profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -63,7 +64,7 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
-export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
+export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const closeMenu = useContext(ModelMenuCloseContext)
@@ -82,7 +83,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const visibleModels = useStore($visibleModels)
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', activeSessionId || 'global'],
+    queryKey: modelOptionsQueryKey(profile, activeSessionId),
     // Gateway-first even with no session yet: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers like `moa`
     // that the local REST fallback can't know about (#53817).
@@ -140,7 +141,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     setRefreshing(true)
 
     try {
-      const queryKey = ['model-options', activeSessionId || 'global']
+      const queryKey = modelOptionsQueryKey(profile, activeSessionId)
 
       const next = await requestModelOptions({ gateway, refresh: true, sessionId: activeSessionId })
 

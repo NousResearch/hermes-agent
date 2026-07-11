@@ -11,6 +11,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { playCompletionSound } from '@/lib/completion-sound'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
@@ -65,6 +66,7 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
 ])
 
 interface GatewayEventDeps {
+  activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
@@ -95,6 +97,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
     appendReasoningDelta,
+    activeGatewayProfile,
     activeSessionIdRef,
     compactedTurnRef,
     lastCwdInfoSessionRef,
@@ -279,7 +282,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (modelChanged || providerChanged) {
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            queryKey:
+              explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
           })
         }
       } else if (event.type === 'message.start') {
@@ -714,6 +718,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      activeGatewayProfile,
       compactedTurnRef,
       completeAssistantMessage,
       failAssistantMessage,

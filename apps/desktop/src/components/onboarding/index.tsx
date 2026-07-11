@@ -30,17 +30,12 @@ import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 import { DocsLink, FlowPanel, Status } from './flow'
 import { FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
 
-export {
-  FeaturedProviderRow,
-  KeyProviderRow,
-  ProviderRow,
-  providerTitle,
-  sortProviders
-} from './providers'
+export { FeaturedProviderRow, KeyProviderRow, ProviderRow, providerTitle, sortProviders } from './providers'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
   onCompleted?: () => void
+  profile: string
   requestGateway: OnboardingContext['requestGateway']
 }
 
@@ -167,17 +162,25 @@ function useApiKeyCatalog(): ApiKeyOption[] {
 // → surface-out (520ms, held back by [transition-delay:660ms]). Finalize after.
 const ONBOARDING_EXIT_MS = 1180
 
-export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+export function DesktopOnboardingOverlay({
+  enabled,
+  onCompleted,
+  profile,
+  requestGateway
+}: DesktopOnboardingOverlayProps) {
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
-  ctxRef.current = { requestGateway, onCompleted }
+  const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted, profile })
+  ctxRef.current = { requestGateway, onCompleted, profile }
 
   const ctx = useMemo<OnboardingContext>(
     () => ({
       requestGateway: (...args) => ctxRef.current.requestGateway(...args),
-      onCompleted: () => ctxRef.current.onCompleted?.()
+      onCompleted: () => ctxRef.current.onCompleted?.(),
+      get profile() {
+        return ctxRef.current.profile
+      }
     }),
     []
   )
@@ -485,13 +488,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
         {manual ? <span /> : <ChooseLaterLink />}
-        <Button
-          className="-mr-2 font-medium"
-          onClick={() => openKeyForm()}
-          size="xs"
-          type="button"
-          variant="text"
-        >
+        <Button className="-mr-2 font-medium" onClick={() => openKeyForm()} size="xs" type="button" variant="text">
           {t.onboarding.haveApiKey}
         </Button>
       </div>

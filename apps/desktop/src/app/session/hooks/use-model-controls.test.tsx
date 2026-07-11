@@ -3,6 +3,7 @@ import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 
 import { useModelControls } from './use-model-controls'
@@ -173,6 +174,27 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('anthropic')
     expect(requestGateway).not.toHaveBeenCalled()
     expect(setGlobalModel).not.toHaveBeenCalled()
+  })
+
+  it('updates only the active profile new-chat cache', async () => {
+    const queryClient = new QueryClient()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeGatewayProfile: 'compass',
+        activeSessionId: null,
+        queryClient,
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.selectModel({ model: 'qwen3.6:35b-65k', provider: 'custom:local-ollama' })
+
+    expect(queryClient.getQueryData(modelOptionsQueryKey('compass'))).toMatchObject({
+      model: 'qwen3.6:35b-65k',
+      provider: 'custom:local-ollama'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default'))).toBeUndefined()
   })
 
   it('seeds an empty composer model from global but never clobbers a pick', async () => {

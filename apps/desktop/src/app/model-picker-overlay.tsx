@@ -15,9 +15,10 @@ import {
 interface ModelPickerOverlayProps {
   gateway?: HermesGateway
   onSelect: React.ComponentProps<typeof ModelPickerDialog>['onSelect']
+  profile: string
 }
 
-export function ModelPickerOverlay({ gateway, onSelect }: ModelPickerOverlayProps) {
+export function ModelPickerOverlay({ gateway, onSelect, profile }: ModelPickerOverlayProps) {
   const activeSessionId = useStore($activeSessionId)
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
@@ -36,6 +37,7 @@ export function ModelPickerOverlay({ gateway, onSelect }: ModelPickerOverlayProp
       onOpenChange={setModelPickerOpen}
       onSelect={onSelect}
       open={open}
+      profile={profile}
       sessionId={activeSessionId}
     />
   )

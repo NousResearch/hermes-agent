@@ -136,6 +136,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -227,6 +228,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
+    activeGatewayProfile,
     activeSessionId,
     queryClient,
     requestGateway
@@ -319,6 +321,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [activeSessionIdRef, busyRef, selectedStoredSessionIdRef, updateSessionState])
 
   const { handleGatewayEvent } = useMessageStream({
+    activeGatewayProfile,
     activeSessionIdRef,
     hydrateFromStoredSession,
     queryClient,
@@ -403,7 +406,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill (both are nanostores — the blanket
   // invalidateQueries on swap doesn't touch them).
-  const activeGatewayProfile = useStore($activeGatewayProfile)
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
   useEffect(() => {
@@ -855,12 +857,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             void refreshCurrentModel()
             void queryClient.invalidateQueries({ queryKey: ['model-options'] })
           }}
+          profile={activeGatewayProfile}
           requestGateway={requestGateway}
         />
       )}
-      <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
+      <ModelPickerOverlay
+        gateway={gatewayRef.current || undefined}
+        onSelect={selectModel}
+        profile={activeGatewayProfile}
+      />
       <SessionPickerOverlay onResume={resumeSession} />
-      <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
+      <ModelVisibilityOverlay
+        gateway={gatewayRef.current || undefined}
+        onOpenProviders={openProviderSettings}
+        profile={activeGatewayProfile}
+      />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />

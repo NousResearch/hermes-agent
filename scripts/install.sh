@@ -1271,9 +1271,13 @@ clone_repo() {
         # Try SSH first (for private repo access), fall back to HTTPS
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
         # so SSH fails fast instead of hanging when no key is configured.
+        # Validate the clone by checking .git + files: on some environments
+        # (e.g. Lightning.ai) git clone via SSH can exit 0 without producing
+        # any checkout, causing the installer to skip the HTTPS fallback.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null \
+           && [ -d "$INSTALL_DIR/.git" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null | head -5)" ]; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone

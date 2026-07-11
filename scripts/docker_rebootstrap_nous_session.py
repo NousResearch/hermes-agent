@@ -202,7 +202,21 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     tmp_path = f"{auth_path}.rebootstrap.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        # os.fdopen did NOT take ownership of the descriptor (it can raise
+        # before returning, e.g. ENOMEM allocating the stream buffer), so the
+        # `with` below never runs and can't close it. Close the raw fd here to
+        # avoid leaking it, drop the just-created temp file, then re-raise so
+        # the caller's fail-safe handler still sees the error.
+        os.close(fd)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    try:
+        with fh:
             json.dump(store, fh)
         os.replace(tmp_path, auth_path)
     finally:

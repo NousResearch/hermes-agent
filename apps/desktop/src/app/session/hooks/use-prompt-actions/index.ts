@@ -165,7 +165,7 @@ interface PromptActionsOptions {
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
-  startFreshSessionDraft: () => void
+  startFreshSessionDraft: (replaceRoute?: boolean, clearNewDraft?: boolean) => void
   sttEnabled: boolean
   updateSessionState: (
     sessionId: string,

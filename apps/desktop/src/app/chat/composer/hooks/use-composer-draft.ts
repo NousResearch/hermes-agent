@@ -2,7 +2,13 @@ import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { $composerAttachments, type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  $composerAttachments,
+  clearSessionDraft,
+  type ComposerAttachment,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
 import {
@@ -15,6 +21,7 @@ import {
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
+  onComposerClearRequest,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest
@@ -144,6 +151,15 @@ export function useComposerDraft({
     [paintDraft]
   )
 
+  const clearDraft = useCallback(() => {
+    setComposerText('')
+    draftRef.current = ''
+
+    if (editorRef.current) {
+      editorRef.current.replaceChildren()
+    }
+  }, [setComposerText])
+
   useEffect(() => {
     if (!inputDisabled) {
       focusInput()
@@ -167,11 +183,23 @@ export function useComposerDraft({
       }
     })
 
+    const offClear = onComposerClearRequest(target => {
+      // This event is dispatched after New Session's route/state updates. Only
+      // touch the `__new__` scratch scope: if a delayed React commit has not
+      // reached it yet, retain the active session's recoverable draft instead.
+      if (target === 'main' && activeQueueSessionKeyRef.current === null) {
+        clearDraft()
+        $composerAttachments.set([])
+        clearSessionDraft(null)
+      }
+    })
+
     return () => {
       offFocus()
       offInsert()
+      offClear()
     }
-  }, [appendExternalText, inputDisabled])
+  }, [appendExternalText, clearDraft, inputDisabled])
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
     stashSessionDraft(scope, text, attachments)
@@ -180,15 +208,6 @@ export function useComposerDraft({
     $composerAttachments.set(cloneAttachments(attachments))
     paintDraft(text, false)
   }
-
-  const clearDraft = useCallback(() => {
-    setComposerText('')
-    draftRef.current = ''
-
-    if (editorRef.current) {
-      editorRef.current.replaceChildren()
-    }
-  }, [setComposerText])
 
   // Read the editor's current plain text into draftRef + composer state. This
   // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide

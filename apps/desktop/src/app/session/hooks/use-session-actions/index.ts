@@ -2,6 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
+import { requestComposerClear } from '@/app/chat/composer/focus'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
@@ -105,7 +106,7 @@ export function useSessionActions({
   const resumeRequestRef = useRef(0)
 
   const startFreshSessionDraft = useCallback(
-    (replaceRoute = false) => {
+    (replaceRoute = false, clearNewDraft = false) => {
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
@@ -138,7 +139,15 @@ export function useSessionActions({
       // whatever linked worktree the last session drifted into.
       setCurrentCwd(resolveNewSessionCwd())
       setCurrentBranch('')
-      // Never clear the composer here — ChatBar's per-thread draft swap owns it.
+      // Recovering a route preserves its unsent new-chat draft. An explicit user
+      // New Session instead discards the `__new__` scratch prompt, otherwise the
+      // next chat can silently submit the previous topic. The composer owns its
+      // live DOM, so clear it through its deferred scoped event after this swap.
+
+      if (clearNewDraft) {
+        requestComposerClear('main')
+      }
+
       setFreshDraftReady(true)
     },
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
@@ -251,7 +260,7 @@ export function useSessionActions({
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
       if (item.action === 'new-session') {
-        startFreshSessionDraft()
+        startFreshSessionDraft(false, true)
 
         return
       }

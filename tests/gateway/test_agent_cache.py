@@ -169,6 +169,21 @@ class TestAgentConfigSignature:
         )
         assert sig_on != sig_off
 
+    def test_compression_in_place_toggle_busts_cache(self):
+        """Changing session-identity compaction mode must rebuild the agent."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_rotating = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.in_place": False},
+        )
+        sig_in_place = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.in_place": True},
+        )
+        assert sig_rotating != sig_in_place
+
     def test_cache_keys_key_order_does_not_matter(self):
         """Signature must be stable regardless of dict key insertion order."""
         from gateway.run import GatewayRunner
@@ -231,6 +246,7 @@ class TestExtractCacheBustingConfig:
                     "codex_gpt55_autoraise": False,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
+                    "in_place": True,
                     "codex_app_server_auto": "hermes",
                     "some_other_key": "ignored",
                 }
@@ -241,6 +257,7 @@ class TestExtractCacheBustingConfig:
         assert out["compression.codex_gpt55_autoraise"] is False
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
+        assert out["compression.in_place"] is True
         assert out["compression.codex_app_server_auto"] == "hermes"
 
     def test_missing_keys_yield_none(self):

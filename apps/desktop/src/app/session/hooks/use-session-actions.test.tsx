@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerClearRequest } from '@/app/chat/composer/focus'
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
@@ -160,6 +161,63 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+})
+
+function FreshDraftHarness({
+  onReady
+}: {
+  onReady: (start: (replaceRoute?: boolean, clearNewDraft?: boolean) => void) => void
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: null,
+    activeSessionIdRef: ref<string | null>(null),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway: vi.fn(async () => ({}) as never),
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef: ref<string | null>(null),
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  useEffect(() => {
+    onReady(actions.startFreshSessionDraft)
+  }, [actions.startFreshSessionDraft, onReady])
+
+  return null
+}
+
+describe('startFreshSessionDraft scratch reset', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('asks the composer to discard the old scratch only for an explicit New Session', async () => {
+    const cleared = vi.fn()
+    const offClear = onComposerClearRequest(cleared)
+    let start: ((replaceRoute?: boolean, clearNewDraft?: boolean) => void) | null = null
+
+    render(<FreshDraftHarness onReady={callback => (start = callback)} />)
+    await waitFor(() => expect(start).not.toBeNull())
+
+    start!(true)
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(cleared).not.toHaveBeenCalled()
+
+    start!(false, true)
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(cleared).toHaveBeenCalledWith('main')
+
+    offClear()
   })
 })
 

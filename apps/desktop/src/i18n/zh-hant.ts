@@ -1753,6 +1753,19 @@ export const zhHant = defineLocale({
     docs: provider => `${provider} 文件`
   },
 
+  managedRecovery: {
+    healed: {
+      title: 'APEX 憑證已刷新',
+      retrying: '登入憑證已過期,已自動刷新,正在重試…',
+      resend: '登入憑證已過期,已自動刷新,請重新傳送。'
+    },
+    signInRequired: {
+      title: '請重新登入 APEX',
+      message: 'APEX 工作階段已過期或未連線平台,請重新登入後繼續對話。',
+      reason: 'APEX 工作階段已過期,請重新登入以繼續對話。'
+    }
+  },
+
   auth: {
     login: {
       title: '開始使用',

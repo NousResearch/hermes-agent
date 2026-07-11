@@ -1418,6 +1418,27 @@ export interface Translations {
     docs: (provider: string) => string
   }
 
+  /** hc-511: managed relay-key recovery after a chat turn hit a relay auth
+   *  error (HTTP 401/403). Either self-heal + retry, or a visible re-sign-in. */
+  managedRecovery: {
+    /** Shown when the relay key was self-healed. */
+    healed: {
+      title: string
+      /** The active turn is being retried automatically. */
+      retrying: string
+      /** A background turn healed — the user should resend it. */
+      resend: string
+    }
+    /** Shown when recovery is impossible without a re-login (no reusable token
+     *  or an expired JWT) — a `*.local`/env seed key or an expired session. */
+    signInRequired: {
+      title: string
+      message: string
+      /** Reason banner surfaced on the managed sign-in panel. */
+      reason: string
+    }
+  }
+
   /** Desktop auth boot-gate: the full-window login screen + bottom-left account
    *  panel (Codex-faithful, minimal). Chinese-first (China-first Desktop V0.2). */
   auth: {

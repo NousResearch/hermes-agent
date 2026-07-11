@@ -5604,33 +5604,47 @@ let lastManagedReprovisionAttemptAt = 0
 //
 // Fire-and-forget from the boot path (app.whenReady, alongside the client-config
 // boot sync); never blocks the gateway spawn and only ever logs on failure.
+// Returns a structured outcome so the on-demand caller (a renderer-reported
+// runtime 401, hermes:managed:selfHeal) can act on it — apply + retry when
+// healed, or route to re-sign-in when there is no reusable login token. The
+// boot caller ignores the return (fire-and-forget). Shape:
+//   { ok, relayUnauthorized, healed, hasToken }
+//   - relayUnauthorized=false → relay accepted the key (or managed off / no
+//     key): nothing to heal, not a managed-relay auth problem.
+//   - relayUnauthorized=true, healed=true → fresh key minted + config re-synced.
+//   - relayUnauthorized=true, healed=false, hasToken=false → seed/env key or a
+//     cleared token: can't re-provision, the user must sign in again.
+//   - relayUnauthorized=true, healed=false, hasToken=true → the stored JWT is
+//     itself expired (provision-key rejected it) — sign in again.
 async function selfHealManagedKeyOn401() {
   try {
     const managed = resolveManagedConfig()
-    if (!isManagedEnabled(process.env)) return
-    if (!managed.key || !managed.baseUrl) return
+    if (!isManagedEnabled(process.env)) return { ok: true, relayUnauthorized: false }
+    if (!managed.key || !managed.baseUrl) return { ok: true, relayUnauthorized: false }
 
     // Cheap probe of the exact listing the picker uses. Only a hard auth
-    // rejection is actionable.
+    // rejection is actionable — a 2xx/5xx/offline probe heals nothing and (for
+    // an on-demand call) tells the renderer this wasn't a relay-auth failure.
     const probe = await apexRelayGetModels(managed.baseUrl, managed.key)
-    if (!isRelayUnauthorized(probe.statusCode)) return
+    if (!isRelayUnauthorized(probe.statusCode)) return { ok: true, relayUnauthorized: false }
 
+    const hasToken = Boolean(managed.accessToken)
     if (
       !shouldAttemptReprovision({
         enabled: true,
         hasKey: Boolean(managed.key),
-        hasToken: Boolean(managed.accessToken),
+        hasToken,
         lastAttemptAt: lastManagedReprovisionAttemptAt,
         now: Date.now()
       })
     ) {
-      if (!managed.accessToken) {
+      if (!hasToken) {
         rememberLog(
           '[apexnodes] relay key rejected (401) but no stored login token to re-provision with; ' +
             'sign in again to refresh (self-heal skipped).'
         )
       }
-      return
+      return { ok: true, relayUnauthorized: true, healed: false, hasToken }
     }
 
     lastManagedReprovisionAttemptAt = Date.now()
@@ -5641,17 +5655,19 @@ async function selfHealManagedKeyOn401() {
     const result = await provisionManagedFromAccessToken(managed.accessToken, managed.account || null)
     if (result && result.hasRelayKey) {
       rememberLog('[apexnodes] relay key self-heal succeeded; model picker list restored.')
-    } else {
-      // provision-key returned no key: JWT expired (401) or endpoint unavailable.
-      // Stop here — the cooldown prevents a retry storm; the user re-logs in via
-      // the normal flow when the token is truly dead.
-      rememberLog(
-        '[apexnodes] relay key self-heal could not re-provision (login token likely expired); ' +
-          'sign in again to refresh.'
-      )
+      return { ok: true, relayUnauthorized: true, healed: true, hasToken: true }
     }
+    // provision-key returned no key: JWT expired (401) or endpoint unavailable.
+    // Stop here — the cooldown prevents a retry storm; the user re-logs in via
+    // the normal flow when the token is truly dead.
+    rememberLog(
+      '[apexnodes] relay key self-heal could not re-provision (login token likely expired); ' +
+        'sign in again to refresh.'
+    )
+    return { ok: true, relayUnauthorized: true, healed: false, hasToken: true }
   } catch (error) {
     rememberLog(`[apexnodes] relay key self-heal skipped: ${error && error.message ? error.message : error}`)
+    return { ok: false, relayUnauthorized: false, healed: false, hasToken: false }
   }
 }
 
@@ -7270,6 +7286,13 @@ ipcMain.handle('hermes:managed:status', async () => {
   return {
     enabled: isManagedEnabled(process.env),
     signedIn: Boolean(managed.key),
+    // True only when a reusable login JWT is on disk — i.e. a real cloud
+    // sign-in that CAN self-heal a rotated/expired relay key. A seeded/env key
+    // (e.g. a `*.local` release account or a CI-provisioned test key) has a
+    // relay key but no token: signedIn=true yet hasToken=false, so the UI can
+    // show an honest "not connected to platform" state instead of pretending a
+    // silent-failing account is a live managed sign-in.
+    hasToken: Boolean(managed.accessToken),
     // When signed in, reflect the server-provided routing (base_url/model);
     // otherwise the env/default for display.
     model: managed.model || endpoints.model,
@@ -7384,6 +7407,35 @@ ipcMain.handle('hermes:managed:browserSignIn', async (_event, payload) => {
 ipcMain.handle('hermes:managed:signOut', async () => {
   clearManagedRelayCredential()
   return { ok: true }
+})
+
+// selfHeal: on-demand relay-key recovery, triggered by the renderer when a chat
+// turn fails with a relay auth error (HTTP 401/403). Runs the SAME gated probe +
+// re-provision as the boot self-heal and reports the outcome so the renderer can
+// either apply the fresh key + retry once (healed), or route to re-sign-in when
+// there is no reusable login token (a `*.local`/env seed key, or an expired JWT)
+// — turning a silent 401 loop into a visible, actionable state. Never throws.
+ipcMain.handle('hermes:managed:selfHeal', async () => {
+  const outcome = await selfHealManagedKeyOn401()
+  // Relay accepted the key (or managed off / no key): not a managed-relay auth
+  // problem — let the renderer's generic error path surface it.
+  if (!outcome || !outcome.relayUnauthorized) {
+    return { ok: true, relayUnauthorized: false, healed: false, needsSignIn: false, assignment: null }
+  }
+  if (outcome.healed) {
+    // Fresh key on disk + config.yaml re-synced; hand back the assignment so the
+    // renderer applies it via /api/model/set (same path as sign-in) and retries.
+    return {
+      ok: true,
+      relayUnauthorized: true,
+      healed: true,
+      needsSignIn: false,
+      assignment: managedSignInResultPayload({ hasRelayKey: true }).assignment
+    }
+  }
+  // Could not heal (no token, or the stored JWT is itself expired) → the user
+  // must sign in again. Honest, visible state instead of a silent 401 loop.
+  return { ok: true, relayUnauthorized: true, healed: false, needsSignIn: true, assignment: null }
 })
 
 // ── hc-444: Feishu bridge (renderer surface) ────────────────────────────────

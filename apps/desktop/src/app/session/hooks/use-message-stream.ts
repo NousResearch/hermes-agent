@@ -32,6 +32,7 @@ import { setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
+import { isManagedRelayAuthError, recoverFromManagedRelayAuthError } from '@/store/managed-recovery'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -1160,28 +1161,9 @@ export function useMessageStream({
           compactedTurnRef.current.delete(sessionId)
         }
 
-        dispatchNativeNotification({
-          body: errorMessage,
-          kind: 'turnError',
-          sessionId,
-          title: translateNow('notifications.native.turnErrorTitle')
-        })
-
-        if (looksLikeProviderSetup) {
-          requestDesktopOnboarding(errorMessage)
-        } else {
-          // Toast globally, not just when the failing thread is focused: a
-          // turn-ending error (e.g. out of funds) blocks every thread, so the
-          // inline error alone is too easy to miss. The stable id collapses the
-          // same error from multiple blocked threads into one toast.
-          notify({
-            id: `gateway-error:${errorMessage}`,
-            kind: 'error',
-            title: 'Hermes error',
-            message: errorMessage
-          })
-        }
-
+        // Mark the turn failed immediately — a persistent inline error, never a
+        // vanished turn. A successful relay-key self-heal + retry (below) hides
+        // this message when it regenerates; a failed recovery leaves it visible.
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           failAssistantMessage(sessionId, errorMessage)
@@ -1189,6 +1171,47 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
+        }
+
+        // Generic surfacing (native toast + in-app toast / provider onboarding),
+        // shared by the default path and the recovery-declined fallback. Toasts
+        // globally, not just when the failing thread is focused: a turn-ending
+        // error blocks every thread, so the inline error alone is too easy to
+        // miss. The stable id collapses the same error into one toast.
+        const surfaceGenericError = () => {
+          dispatchNativeNotification({
+            body: errorMessage,
+            kind: 'turnError',
+            sessionId,
+            title: translateNow('notifications.native.turnErrorTitle')
+          })
+
+          if (looksLikeProviderSetup) {
+            requestDesktopOnboarding(errorMessage)
+          } else {
+            notify({
+              id: `gateway-error:${errorMessage}`,
+              kind: 'error',
+              title: 'Hermes error',
+              message: errorMessage
+            })
+          }
+        }
+
+        // A managed relay auth failure (HTTP 401/403 from the relay): self-heal
+        // the rotated/expired relay key and retry the turn once, else route to
+        // re-sign-in — turning the old silent "no response" into a visible,
+        // actionable outcome (hc-511). Recovery owns the follow-up when it
+        // returns true; on decline (a BYOK provider's own 401, or no desktop
+        // bridge) fall back to the generic error surface.
+        if (isManagedRelayAuthError(payload)) {
+          void recoverFromManagedRelayAuthError({ sessionId, isActive: isActiveEvent }).then(handled => {
+            if (!handled) {
+              surfaceGenericError()
+            }
+          })
+        } else {
+          surfaceGenericError()
         }
       }
     },

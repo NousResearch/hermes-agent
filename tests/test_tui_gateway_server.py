@@ -8780,3 +8780,57 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+# hc-511: a non-retryable auth/authorization failure (relay/provider rejected
+# the key) must surface as a terminal ``error`` event so the desktop shows a
+# persistent, actionable failure (self-heal + re-sign-in) instead of dropping
+# the rejection into the transcript as if the model had answered. These pin the
+# classification -> error-event payload mapping that the result handler keys on.
+@pytest.mark.parametrize(
+    "result, expected",
+    [
+        # Relay 401 as agent.conversation_loop tags it (error_kind + error_status).
+        (
+            {"failed": True, "error": "Invalid Agent API key", "error_kind": "auth", "error_status": 401},
+            {"message": "Invalid Agent API key", "code": "auth", "retryable": False, "status_code": 401},
+        ),
+        # 403 folded in defensively (revoked/forbidden key).
+        (
+            {"failed": True, "error": "Forbidden", "error_kind": "auth", "error_status": 403},
+            {"message": "Forbidden", "code": "auth", "retryable": False, "status_code": 403},
+        ),
+        # Status alone (no error_kind) still classifies as auth via the code.
+        (
+            {"failed": True, "error": "nope", "error_status": 401},
+            {"message": "nope", "code": "auth", "retryable": False, "status_code": 401},
+        ),
+        # Empty error string falls back to a generic message, not "".
+        (
+            {"failed": True, "error": "", "error_kind": "auth", "error_status": 401},
+            {"message": "Authentication failed", "code": "auth", "retryable": False, "status_code": 401},
+        ),
+    ],
+)
+def test_terminal_auth_error_payload_classifies_auth_failures(result, expected):
+    assert server._terminal_auth_error_payload(result) == expected
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        # A non-auth client error (bad model slug, 400) stays on message.complete.
+        {"failed": True, "error": "bad request", "error_kind": "client", "error_status": 400},
+        # Rate limit / server error — not an auth problem.
+        {"failed": True, "error": "overloaded", "error_status": 503},
+        # A successful turn.
+        {"failed": False, "final_response": "hi"},
+        # An error string with no failure flag (never a terminal auth event).
+        {"error": "Invalid Agent API key", "error_status": 401},
+        # Non-dict inputs.
+        None,
+        "boom",
+    ],
+)
+def test_terminal_auth_error_payload_ignores_non_auth_results(result):
+    assert server._terminal_auth_error_payload(result) is None

@@ -1998,6 +1998,19 @@ export const zh: Translations = {
     docs: provider => `${provider} 文档`
   },
 
+  managedRecovery: {
+    healed: {
+      title: 'APEX 凭证已刷新',
+      retrying: '登录凭证已过期,已自动刷新,正在重试…',
+      resend: '登录凭证已过期,已自动刷新,请重新发送。'
+    },
+    signInRequired: {
+      title: '请重新登录 APEX',
+      message: 'APEX 会话已过期或未连接平台,请重新登录后继续对话。',
+      reason: 'APEX 会话已过期,请重新登录以继续对话。'
+    }
+  },
+
   auth: {
     login: {
       title: '开始使用',

@@ -1792,6 +1792,19 @@ export const ja = defineLocale({
     docs: provider => `${provider} ドキュメント`
   },
 
+  managedRecovery: {
+    healed: {
+      title: 'APEX 認証情報を更新しました',
+      retrying: 'サインインの有効期限が切れていました。自動的に更新し、再試行しています…',
+      resend: 'サインインの有効期限が切れていました。自動的に更新しました。もう一度送信してください。'
+    },
+    signInRequired: {
+      title: 'APEX に再度サインイン',
+      message: 'APEX セッションの有効期限が切れているか、未接続です。再度サインインして会話を続けてください。',
+      reason: 'APEX セッションの有効期限が切れています。再度サインインして会話を続けてください。'
+    }
+  },
+
   auth: {
     login: {
       title: 'はじめる',

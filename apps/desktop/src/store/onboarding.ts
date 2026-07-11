@@ -414,6 +414,28 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
 }
 
+// hc-511: a signed-in managed session lost its relay auth and can't self-heal
+// (no reusable login token, or an expired JWT). Re-open onboarding on the
+// managed sign-in panel with an explicit reason so the user re-connects, instead
+// of every send silently 401-ing. Forces the managed-first treatment
+// (managedAvailable) regardless of the cached "onboarded" flag — the same state
+// refreshOnboarding lands on for a not-yet-signed-in managed install.
+export function requestManagedReSignIn(reason = DEFAULT_ONBOARDING_REASON) {
+  writeCachedConfigured(false)
+  patch({
+    configured: false,
+    managedAvailable: true,
+    managedError: reason.trim() || null,
+    managedSubmitting: false,
+    requested: true,
+    manual: false,
+    localEndpoint: false,
+    needsCredential: false,
+    reason: null,
+    flow: { status: 'idle' }
+  })
+}
+
 // Open the onboarding provider selector on demand from an already-configured
 // app — e.g. the model picker's "Add provider" button. Reuses the entire
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of

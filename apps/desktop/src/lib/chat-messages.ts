@@ -37,6 +37,12 @@ export type GatewayEventPayload = {
   result?: unknown
   summary?: string
   error?: string | boolean
+  // error event: machine-readable classification so the renderer can route an
+  // auth/authorization failure (code 'auth', status_code 401/403) to relay-key
+  // self-heal + re-sign-in instead of the generic error toast.
+  code?: string
+  status_code?: number
+  retryable?: boolean
   inline_diff?: string
   duration_s?: number
   todos?: unknown

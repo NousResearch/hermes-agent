@@ -52,6 +52,9 @@ declare global {
         // the same managed assignment shape the email/password flow returns.
         browserSignIn: (payload: { provider: 'apex' | 'google' }) => Promise<DesktopManagedSignInResult>
         signOut: () => Promise<{ ok: boolean }>
+        // On-demand relay-key self-heal after a chat turn hit a relay auth error
+        // (HTTP 401/403). Optional: an older main process may not expose it.
+        selfHeal?: () => Promise<DesktopManagedSelfHealResult>
       }
       // hc-444: desktop ↔ cloud Feishu bridge. Mirrors the signed-in user's OWN
       // Feishu app credential (from the cloud agent_entries) down to the local
@@ -389,6 +392,26 @@ export interface DesktopManagedStatus {
   provider: string
   // True when a relay key is on disk (user already signed in to managed).
   signedIn: boolean
+  // True only when a reusable login JWT is on disk — a real cloud sign-in that
+  // can self-heal a rotated/expired relay key. A seeded/env key (a `*.local`
+  // release account or a CI test key) is signedIn=true but hasToken=false: the
+  // UI can then show an honest "not connected to platform" state. Optional so an
+  // older main process (no field) reads as undefined rather than a hard error.
+  hasToken?: boolean
+}
+
+// Result of hermesDesktop.managed.selfHeal() — an on-demand relay-key recovery.
+// relayUnauthorized=false means the relay accepted the key (the failure was not
+// a managed-relay auth problem). healed=true means a fresh key is on disk and
+// `assignment` should be applied via /api/model/set before retrying. needsSignIn
+// =true means recovery is impossible without a re-login (no token, or an expired
+// JWT) — surface the sign-in flow rather than retry into another silent 401.
+export interface DesktopManagedSelfHealResult {
+  ok: boolean
+  relayUnauthorized: boolean
+  healed: boolean
+  needsSignIn: boolean
+  assignment: DesktopManagedSignInResult['assignment']
 }
 
 // hc-444: local Feishu bridge state for the settings card. No secret fields —

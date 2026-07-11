@@ -3893,6 +3893,17 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _nonretryable_summary,
+                        # Structured classification of a non-retryable terminal
+                        # failure so any driver (gateway/TUI/CLI) can surface it
+                        # as a distinct, actionable error rather than a generic
+                        # one — an auth/authorization rejection (HTTP 401/403)
+                        # needs a re-auth prompt, not a "the model replied" bubble.
+                        # ``error_retryable`` is always False here (this branch is
+                        # the non-retryable abort). Generic OS-layer signal; no
+                        # platform coupling.
+                        "error_kind": "auth" if classified.is_auth else "client",
+                        "error_status": status_code,
+                        "error_retryable": False,
                     }
 
                 if retry_count >= max_retries:

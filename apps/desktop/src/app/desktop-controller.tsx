@@ -35,6 +35,7 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
+import { registerActiveTurnResend } from '../store/managed-recovery'
 import { respondToApprovalAction } from '../store/native-notifications'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
@@ -816,6 +817,15 @@ export function DesktopController() {
     sttEnabled,
     updateSessionState
   })
+
+  // hc-511: let the detached relay-auth recovery retry the active turn once
+  // after a successful relay-key self-heal, reusing the in-place regenerate
+  // (no duplicate user bubble). Kept in sync with reloadFromMessage's identity.
+  useEffect(() => {
+    registerActiveTurnResend(() => reloadFromMessage(null))
+
+    return () => registerActiveTurnResend(null)
+  }, [reloadFromMessage])
 
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,

@@ -1840,6 +1840,19 @@ export const en: Translations = {
     docs: provider => `${provider} docs`
   },
 
+  managedRecovery: {
+    healed: {
+      title: 'APEX credentials refreshed',
+      retrying: 'Your sign-in had expired — refreshed automatically, retrying…',
+      resend: 'Your sign-in had expired — refreshed automatically, please resend.'
+    },
+    signInRequired: {
+      title: 'Sign in to APEX again',
+      message: 'Your APEX session has expired or is not connected — sign in again to keep chatting.',
+      reason: 'Your APEX session has expired. Sign in again to keep chatting.'
+    }
+  },
+
   auth: {
     login: {
       title: 'Get started',

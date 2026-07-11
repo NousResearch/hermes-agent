@@ -1091,6 +1091,32 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
+def _terminal_auth_error_payload(result) -> dict | None:
+    """Return an ``error`` event payload for a turn that failed on a
+    non-retryable auth/authorization rejection, else ``None``.
+
+    The agent classifies a non-retryable abort in its result dict
+    (``error_kind`` / ``error_status`` — see agent.conversation_loop). A relay
+    or provider that rejects the key (HTTP 401/403) is a terminal, actionable
+    failure, not an assistant reply: drivers should raise a persistent error
+    (with a re-auth affordance) instead of dropping the provider's message into
+    the transcript as if the model had answered. Isolating the mapping keeps the
+    result-handling branch readable and the classification reusable.
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return None
+    kind = result.get("error_kind")
+    status = result.get("error_status")
+    is_auth = kind == "auth" or status in (401, 403)
+    if not is_auth:
+        return None
+    message = str(result.get("error") or "Authentication failed").strip()
+    payload: dict = {"message": message, "code": "auth", "retryable": False}
+    if isinstance(status, int):
+        payload["status_code"] = status
+    return payload
+
+
 def _estimate_image_tokens(width: int, height: int) -> int:
     """Very rough UI estimate for image prompt cost.
 
@@ -8822,7 +8848,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["rendered"] = rendered
             with session["history_lock"]:
                 _clear_inflight_turn(session)
-            _emit("message.complete", sid, payload)
+            # A non-retryable auth/authorization failure surfaces as a terminal
+            # ``error`` event (persistent, actionable) rather than a
+            # message.complete carrying the provider's rejection as assistant
+            # text. The retry/abort trace already streamed on the lifecycle
+            # status channel, which keeps its own semantics. Every other outcome
+            # (success, interrupted, generic error) stays on message.complete.
+            _auth_error_payload = _terminal_auth_error_payload(result)
+            if _auth_error_payload is not None:
+                _emit("error", sid, _auth_error_payload)
+            else:
+                _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge

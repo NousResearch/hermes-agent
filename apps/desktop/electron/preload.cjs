@@ -24,7 +24,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     status: () => ipcRenderer.invoke('hermes:managed:status'),
     signIn: payload => ipcRenderer.invoke('hermes:managed:signIn', payload),
     browserSignIn: payload => ipcRenderer.invoke('hermes:managed:browserSignIn', payload),
-    signOut: () => ipcRenderer.invoke('hermes:managed:signOut')
+    signOut: () => ipcRenderer.invoke('hermes:managed:signOut'),
+    // On-demand relay-key self-heal after a chat turn hit a relay auth error
+    // (HTTP 401/403): re-provision + report whether it healed or the user must
+    // sign in again. See electron/main.cjs hermes:managed:selfHeal.
+    selfHeal: () => ipcRenderer.invoke('hermes:managed:selfHeal')
   },
   // hc-444: desktop ↔ cloud Feishu bridge — mirror the signed-in user's own
   // Feishu app credential down to light up the Feishu adapter + lark tools. See

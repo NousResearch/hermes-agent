@@ -313,12 +313,22 @@ function migrateWebPreviewTab(tab: WebPreviewTab): WebPreviewTab {
 }
 
 function isPersistableWebPreviewTarget(target: PreviewTarget): boolean {
+  if (target.dataUrl) {
+    return false
+  }
+
   try {
     const url = new URL(target.url)
 
-    // Credential-bearing and stateful URLs remain usable for this process but
-    // are deliberately omitted from localStorage.
-    return !url.username && !url.password && !url.search && !url.hash
+    // Credential-bearing, stateful, and non-network URLs remain usable for
+    // this process but are deliberately omitted from localStorage.
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    )
   } catch {
     return false
   }

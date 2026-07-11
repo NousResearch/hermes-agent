@@ -194,6 +194,33 @@ describe('preview store', () => {
     expect(window.localStorage.getItem('hermes.desktop.previewSurfaceLayouts.v1') ?? '').not.toContain(sensitive.url)
   })
 
+  it('keeps data URL contents out of every preview persistence key', () => {
+    const dataUrl = 'data:text/html,<h1>private-inline-content</h1>'
+
+    const sensitive: PreviewTarget = {
+      dataUrl,
+      kind: 'url',
+      label: 'Private inline preview',
+      source: dataUrl,
+      url: dataUrl
+    }
+
+    setCurrentSessionPreviewTarget(sensitive, 'manual')
+    setRightRailTabFloatingGeometry(
+      $webPreviewTabs.get()[0]!.id,
+      { height: 480, width: 640, x: 80, y: 90 },
+      { height: 900, width: 1400 }
+    )
+
+    for (const key of [
+      'hermes.desktop.webPreviewTabs.v1',
+      'hermes.desktop.sessionPreviews.v1',
+      'hermes.desktop.previewSurfaceLayouts.v1'
+    ]) {
+      expect(window.localStorage.getItem(key) ?? '').not.toContain('private-inline-content')
+    }
+  })
+
   it('restores floating geometry after maximize and minimize', () => {
     const target = previewTarget('/work/layout.html')
 

@@ -214,6 +214,8 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
+    "run_approval_response": true,
+    "run_approval_ids": true,
     "run_stop": true
   }
 }

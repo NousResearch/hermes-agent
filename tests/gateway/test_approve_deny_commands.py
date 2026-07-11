@@ -189,6 +189,93 @@ class TestBlockingGatewayApproval:
         assert not first.event.is_set()
         assert _gateway_queues[session_key] == [first]
 
+    def test_resolve_by_id_publishes_result_under_queue_lock(self, monkeypatch):
+        from tools import approval as approval_module
+
+        class TrackingLock:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+                self.held = False
+
+            def __enter__(self):
+                self.wrapped.acquire()
+                self.held = True
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.held = False
+                self.wrapped.release()
+
+        tracking_lock = TrackingLock(approval_module._lock)
+        monkeypatch.setattr(approval_module, "_lock", tracking_lock)
+        session_key = "test-exact-id-atomic"
+        entry = approval_module._ApprovalEntry({"command": "command"})
+        approval_module._gateway_queues[session_key] = [entry]
+        original_set = entry.event.set
+        observed = {}
+
+        def assert_atomic_set():
+            observed["lock_owned"] = tracking_lock.held
+            observed["result"] = entry.result
+            original_set()
+
+        entry.event.set = assert_atomic_set
+
+        assert approval_module.resolve_gateway_approval_by_id(
+            session_key,
+            entry.approval_id,
+            "once",
+        ) == 1
+        assert observed == {"lock_owned": True, "result": "once"}
+
+    def test_timeout_boundary_adopts_committed_id_resolution(self, monkeypatch):
+        from tools import approval as approval_module
+
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"gateway_timeout": 1},
+        )
+        resolver_result = {}
+        monkeypatch.setattr(
+            approval_module.time,
+            "monotonic",
+            lambda: 2.0 if resolver_result else 0.0,
+        )
+
+        def notify(_data):
+            entry = approval_module._gateway_queues["timeout-boundary"][0]
+
+            class BoundaryEvent:
+                def wait(self, timeout):
+                    resolver_result["count"] = (
+                        approval_module.resolve_gateway_approval_by_id(
+                            "timeout-boundary",
+                            entry.approval_id,
+                            "once",
+                        )
+                    )
+                    return False
+
+                def set(self):
+                    return None
+
+            entry.event = BoundaryEvent()
+
+        result = approval_module._await_gateway_decision(
+            "timeout-boundary",
+            notify,
+            {
+                "command": "dangerous-command",
+                "description": "test",
+                "pattern_key": "test",
+                "pattern_keys": ["test"],
+            },
+        )
+
+        assert resolver_result == {"count": 1}
+        assert result == {"resolved": True, "choice": "once", "reason": None}
+
     def test_gateway_notify_receives_approval_id(self, monkeypatch):
         from tools import approval as approval_module
 

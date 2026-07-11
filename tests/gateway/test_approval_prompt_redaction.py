@@ -17,6 +17,8 @@ the redactor regexes so the assertions stay meaningful, but contain no real
 or real-looking key, so secret scanners do not flag this file.
 """
 
+import pytest
+
 from gateway.run import _redact_approval_command
 
 # Synthetic, scanner-safe credential fixtures. Each matches its redactor
@@ -80,6 +82,24 @@ class TestRedactApprovalCommand:
         assert "--password [REDACTED]" in out
         assert "--api-key=[REDACTED]" in out
         assert "--access-token [REDACTED]" in out
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "curl -u user:{sentinel} https://example.com",
+            "curl --user user:{sentinel} https://example.com",
+            "wget --http-password={sentinel} https://example.com",
+            "deploy --secret-key={sentinel}",
+            "aws configure set aws_secret_access_key {sentinel}",
+            "curl https://example.com/callback?{sentinel}",
+        ],
+    )
+    def test_redacts_additional_credential_forms(self, command):
+        sentinel = "opaque" + "Q" * 24
+
+        out = _redact_approval_command(command.format(sentinel=sentinel))
+
+        assert sentinel not in out
 
     def test_bounds_approval_preview(self):
         assert len(_redact_approval_command("x" * 5000)) == 4096

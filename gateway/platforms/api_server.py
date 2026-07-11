@@ -4600,6 +4600,14 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(
+                _openai_error(
+                    "Request body must be a JSON object",
+                    code="invalid_json",
+                ),
+                status=400,
+            )
 
         raw_choice = str(body.get("choice", "")).strip().lower()
         aliases = {"approve": "once", "approved": "once", "allow": "once"}
@@ -4688,7 +4696,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        self._set_run_status(run_id, "running", last_event="approval.responded")
+        from tools.approval import has_blocking_approval
+
+        next_status = (
+            "waiting_for_approval"
+            if has_blocking_approval(approval_session_key)
+            else "running"
+        )
+        self._set_run_status(run_id, next_status, last_event="approval.responded")
         q = self._run_streams.get(run_id)
         if q is not None:
             try:

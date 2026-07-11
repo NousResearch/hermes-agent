@@ -343,9 +343,22 @@ _APPROVAL_URL_USERINFO_RE = re.compile(
 _APPROVAL_URL_QUERY_VALUE_RE = re.compile(
     r"([?&][^=\s&#'\"<>]+=)([^&#\s'\"<>]*)"
 )
+_APPROVAL_URL_OPAQUE_QUERY_RE = re.compile(
+    r"([?&])([^=&\s#'\"<>]+)(?=(?:&|#|\s|'|\"|<|>|$))"
+)
 _APPROVAL_SECRET_FLAG_RE = re.compile(
     r"(?i)(--(?:password|passwd|passphrase|token|access-token|auth-token|"
-    r"api-key|apikey|secret|client-secret|credential)(?:=|\s+))"
+    r"api-key|apikey|secret|secret-key|client-secret|credential|"
+    r"http-password|https-password|ftp-password|proxy-password)(?:=|\s+))"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
+)
+_APPROVAL_USERINFO_FLAG_RE = re.compile(
+    r"(?i)((?:^|\s)(?:-u|--user)(?:=|\s+))"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
+)
+_APPROVAL_AWS_CONFIG_SECRET_RE = re.compile(
+    r"(?i)(\baws\s+configure\s+set\s+"
+    r"(?:aws_access_key_id|aws_secret_access_key|aws_session_token)\s+)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
 )
 _APPROVAL_PREVIEW_MAX_CHARS = 4096
@@ -371,7 +384,19 @@ def _redact_approval_command(cmd: "str | None") -> str:
         lambda match: f"{match.group(1)}[REDACTED]",
         redacted,
     )
+    redacted = _APPROVAL_URL_OPAQUE_QUERY_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
     redacted = _APPROVAL_SECRET_FLAG_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
+    redacted = _APPROVAL_USERINFO_FLAG_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
+    redacted = _APPROVAL_AWS_CONFIG_SECRET_RE.sub(
         lambda match: f"{match.group(1)}[REDACTED]",
         redacted,
     )

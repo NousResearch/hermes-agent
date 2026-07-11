@@ -1442,9 +1442,10 @@ def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
     The callback signature is ``cb(approval_data: dict) -> None`` where
-    *approval_data* contains ``command``, ``description``, and
-    ``pattern_keys``.  The callback bridges sync→async (runs in the agent
-    thread, must schedule the actual send on the event loop).
+    *approval_data* contains the opaque ``approval_id`` plus ``command``,
+    ``description``, and ``pattern_keys``. The callback bridges sync→async
+    (runs in the agent thread, must schedule the actual send on the event
+    loop).
     """
     with _lock:
         _gateway_notify_cbs[session_key] = cb
@@ -1488,14 +1489,14 @@ def resolve_gateway_approval(session_key: str, choice: str,
             queue.clear()
         else:
             targets = [queue.pop(0)]
+        for entry in targets:
+            entry.result = choice
+            if reason:
+                entry.reason = reason
+            entry.event.set()
         if not queue:
             _gateway_queues.pop(session_key, None)
 
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
     return len(targets)
 
 
@@ -1522,14 +1523,14 @@ def resolve_gateway_approval_by_id(session_key: str, approval_id: str,
         )
         if entry is None:
             return 0
+        entry.result = choice
+        if reason:
+            entry.reason = reason
+        entry.event.set()
         queue.remove(entry)
         if not queue:
             _gateway_queues.pop(session_key, None)
 
-    entry.result = choice
-    if reason:
-        entry.reason = reason
-    entry.event.set()
     return 1
 
 
@@ -2477,13 +2478,15 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 
-    def _drop_entry() -> None:
+    def _drop_entry() -> bool:
         with _lock:
             queue = _gateway_queues.get(session_key, [])
-            if entry in queue:
+            removed = entry in queue
+            if removed:
                 queue.remove(entry)
             if not queue:
                 _gateway_queues.pop(session_key, None)
+            return removed
 
     # Notify plugins that an approval is being requested. Fires before the
     # gateway notify callback so observers get the event in real time.
@@ -2551,7 +2554,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         if touch_activity_if_due is not None:
             touch_activity_if_due(_activity_state, "waiting for user approval")
 
-    _drop_entry()
+    waiter_removed_entry = _drop_entry()
+    if not resolved and not waiter_removed_entry and entry.result is not None:
+        # The resolver won the timeout boundary: it published the result and
+        # removed this exact entry under the queue lock. Honor that committed
+        # decision rather than reporting a contradictory timeout.
+        resolved = True
 
     choice = entry.result
     # Normalize outcome for the post hook. Unresolved (timeout) and None both

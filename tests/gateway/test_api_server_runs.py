@@ -405,6 +405,30 @@ class TestRunEvents:
         assert sentinel not in caplog.text
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], "deny", 1])
+    async def test_approval_rejects_non_object_json(self, adapter, payload, caplog):
+        app = _create_runs_app(adapter)
+        run_id = "run_non_object_json"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = run_id
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json=payload,
+            )
+            data = await response.json()
+
+        assert response.status == 400
+        assert data["error"] == {
+            "message": "Request body must be a JSON object",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_json",
+        }
+        assert "Traceback" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_approval_response_by_id_never_retargets_fifo_head(self, adapter):
         app = _create_runs_app(adapter)
         run_id = "run_exact_approval"
@@ -433,9 +457,56 @@ class TestRunEvents:
         assert not first.event.is_set()
         assert second.event.is_set()
         assert approval_mod._gateway_queues[run_id] == [first]
+        assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
         event = adapter._run_streams[run_id].get_nowait()
         assert event["event"] == "approval.responded"
         assert event["approval_id"] == second.approval_id
+
+    @pytest.mark.asyncio
+    async def test_approval_id_errors_never_consume_pending_entry(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_approval_id_errors"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = run_id
+        pending = approval_mod._ApprovalEntry({"command": "pending"})
+        approval_mod._gateway_queues[run_id] = [pending]
+
+        cases = [
+            (
+                {"choice": "deny", "approval_id": "invalid"},
+                400,
+                "invalid_approval_id",
+            ),
+            (
+                {"choice": "deny", "approval_id": "approval_" + "f" * 32},
+                409,
+                "approval_not_pending",
+            ),
+            (
+                {
+                    "choice": "deny",
+                    "approval_id": pending.approval_id,
+                    "resolve_all": True,
+                },
+                400,
+                "invalid_approval_request",
+            ),
+        ]
+
+        async with TestClient(TestServer(app)) as cli:
+            for payload, expected_status, expected_code in cases:
+                response = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json=payload,
+                )
+                data = await response.json()
+
+                assert response.status == expected_status
+                assert data["error"]["code"] == expected_code
+                assert data["error"]["param"] is None
+                assert approval_mod._gateway_queues[run_id] == [pending]
+                assert pending.result is None
+                assert not pending.event.is_set()
 
     @pytest.mark.asyncio
     async def test_approval_string_false_does_not_resolve_all(self, adapter):

@@ -4278,7 +4278,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
+        client_session_id = body.get("session_id")
+        session_id = client_session_id or stored_session_id or run_id
+        # If no conversation_history was resolved from any of the explicit
+        # sources (body.conversation_history, previous_response_id, or multi-
+        # message input), but the client provided a session_id, restore the
+        # conversation history from SessionDB — mirroring the behaviour of
+        # /api/sessions/{session_id}/chat/stream (see #62732).
+        if not conversation_history and client_session_id:
+            conversation_history = self._conversation_history_for_session(client_session_id)
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple

@@ -190,6 +190,92 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_run_restores_history_from_session_id(self, adapter):
+        """When session_id is provided without conversation_history,
+        the handler should load history from SessionDB (#62732)."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(adapter, "_conversation_history_for_session") as mock_hist:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                loaded_history = [
+                    {"role": "user", "content": "previous question"},
+                    {"role": "assistant", "content": "previous answer"},
+                ]
+                mock_hist.return_value = loaded_history
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "follow up", "session_id": "my-session"},
+                )
+                assert resp.status == 202
+                await asyncio.sleep(0.3)
+
+                mock_hist.assert_called_once_with("my-session")
+                mock_agent.run_conversation.assert_called_once()
+                assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == loaded_history
+
+    @pytest.mark.asyncio
+    async def test_explicit_history_takes_precedence_over_session_db(self, adapter):
+        """Explicit conversation_history should win over SessionDB loading."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(adapter, "_conversation_history_for_session") as mock_hist:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                mock_hist.return_value = [{"role": "user", "content": "from db"}]
+
+                explicit_history = [{"role": "user", "content": "explicit"}]
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": "hello",
+                        "session_id": "my-session",
+                        "conversation_history": explicit_history,
+                    },
+                )
+                assert resp.status == 202
+                await asyncio.sleep(0.3)
+
+                mock_hist.assert_not_called()
+                mock_agent.run_conversation.assert_called_once()
+                assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == explicit_history
+
+    @pytest.mark.asyncio
+    async def test_no_session_id_does_not_load_from_db(self, adapter):
+        """Without session_id the handler must not attempt SessionDB lookup."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(adapter, "_conversation_history_for_session") as mock_hist:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                mock_hist.return_value = [{"role": "user", "content": "from db"}]
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                await asyncio.sleep(0.3)
+
+                mock_hist.assert_not_called()
+                mock_agent.run_conversation.assert_called_once()
+                assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == []
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

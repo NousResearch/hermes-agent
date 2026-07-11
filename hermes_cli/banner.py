@@ -191,29 +191,36 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
-    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        checked = _check_via_rev(head_rev) if head_rev else None
-        if checked == UPDATE_AVAILABLE_NO_COUNT:
-            return 1
-        return checked
-
-    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
-    # clone the history stops at a single commit, so a plain `git fetch` would
-    # unshallow the repo (dragging in the whole history) and
-    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
-    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
-    # --depth 1 to preserve the boundary and compare tip SHAs instead of
-    # counting. Full clones (developers, Docker dev images) keep the exact
-    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
-    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
-    is_shallow = shallow == "true"
-
+def _git_tracking_ref(repo_dir: Path) -> str:
+    """Return the current branch's tracking ref, falling back to origin/main."""
     try:
-        fetch_args = ["git", "fetch", "origin"]
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            ref = (result.stdout or "").strip()
+            if "/" in ref:
+                return ref
+    except Exception:
+        pass
+    return "origin/main"
+
+
+def _fetch_tracking_ref(repo_dir: Path, tracking_ref: str, is_shallow: bool = False) -> None:
+    """Best-effort fetch for the remote that owns ``tracking_ref``.
+
+    On a shallow installer checkout (``git clone --depth 1``) fetch with
+    ``--depth 1`` so the shallow boundary is preserved instead of unshallowing
+    the repo and dragging in the whole upstream history (which makes
+    ``rev-list --count`` report a bogus "behind" number — see #51922).
+    """
+    remote = tracking_ref.split("/", 1)[0] if "/" in tracking_ref else "origin"
+    try:
+        fetch_args = ["git", "fetch", remote]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -225,14 +232,47 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
+
+def _check_via_local_git(repo_dir: Path) -> Optional[int]:
+    """Count commits behind the current branch's tracking ref.
+
+    Resolves the branch's ``@{upstream}`` tracking ref so fork installs compare
+    against their own remote instead of a hardcoded ``origin/main``. Shallow
+    installer clones (``git clone --depth 1``) are detected up front and handled
+    by comparing tip SHAs instead of counting across the (absent) history, which
+    would otherwise yield a huge bogus "behind" number. Mirrors the desktop fix
+    in apps/desktop/electron/main.cjs.
+    """
+    tracking_ref = _git_tracking_ref(repo_dir)
+    remote = tracking_ref.split("/", 1)[0] if "/" in tracking_ref else "origin"
+    remote_url = _git_stdout(["remote", "get-url", remote], cwd=repo_dir)
+    if _is_official_ssh_remote(remote_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        checked = _check_via_rev(head_rev) if head_rev else None
+        if checked == UPDATE_AVAILABLE_NO_COUNT:
+            return 1
+        return checked
+
+    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
+    # clone the history stops at a single commit, so a plain `git fetch` would
+    # unshallow the repo (dragging in the whole history) and
+    # `rev-list --count HEAD..<tracking_ref>` would report a huge bogus "behind"
+    # number (e.g. "12492 commits behind"). Detect shallow up front so the fetch
+    # stays shallow (--depth 1) and we compare tip SHAs instead of counting.
+    # Full clones (developers, Docker dev images) keep the exact count path.
+    shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
+    is_shallow = shallow == "true"
+
+    _fetch_tracking_ref(repo_dir, tracking_ref, is_shallow=is_shallow)
+
     if is_shallow:
-        # No history to count across the shallow boundary. `origin/main` may not
-        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
-        # updated by the fetch above) and fall back to origin/main.
+        # No history to count across the shallow boundary. The tracking ref may
+        # not exist as a local ref in a `clone --depth 1`, so prefer FETCH_HEAD
+        # (just updated by the fetch above) and fall back to the tracking ref.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+            or _git_stdout(["rev-parse", tracking_ref], cwd=repo_dir)
         )
         if not head_rev or not target_rev:
             return None
@@ -240,7 +280,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{tracking_ref}"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -298,7 +338,7 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    git checkout and count commits behind the current branch's tracking ref.
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -426,10 +466,11 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             pass
         return None
 
-    upstream = _git_short_hash(repo_dir, "origin/main")
+    upstream_ref = _git_tracking_ref(repo_dir)
+    upstream = _git_short_hash(repo_dir, upstream_ref)
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
+        # Live-git lookup failed (e.g. shallow clone without the tracking ref).
         # Fall back to the baked build SHA if available.
         try:
             from hermes_cli.build_info import get_build_sha
@@ -443,7 +484,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", f"{upstream_ref}..HEAD"],
             capture_output=True,
             text=True,
             timeout=5,

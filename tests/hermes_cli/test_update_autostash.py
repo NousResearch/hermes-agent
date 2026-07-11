@@ -534,6 +534,7 @@ def _make_update_side_effect(
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
+    upstream_ref="",
 ):
     """Build a subprocess.run side_effect for cmd_update tests."""
     recorded = []
@@ -541,12 +542,14 @@ def _make_update_side_effect(
     def side_effect(cmd, **kwargs):
         recorded.append(cmd)
         joined = " ".join(str(c) for c in cmd)
-        if "fetch" in joined and "origin" in joined:
+        if "fetch" in joined:
             if fetch_fails:
                 return SimpleNamespace(stdout="", stderr=fetch_stderr, returncode=128)
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "for-each-ref" in joined:
+            return SimpleNamespace(stdout=f"{upstream_ref}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -598,6 +601,34 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+def test_cmd_update_uses_target_branch_tracking_remote(monkeypatch, tmp_path):
+    """A live install updating to main should honor main's configured upstream.
+
+    The macOS desktop update path can run from a temporary live branch while the
+    local ``main`` branch tracks a fork remote. In that shape, hard-coding
+    ``origin/main`` makes the updater report "Already up to date" against the
+    wrong remote and leaves the app on stale code.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    side_effect, recorded = _make_update_side_effect(
+        current_branch="live/hermes-desktop-thinking-off-20260604",
+        commit_count="2",
+        upstream_ref="fork/main",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace(branch="main"))
+
+    assert ["git", "fetch", "fork"] in recorded
+    assert ["git", "rev-list", "HEAD..fork/main", "--count"] in recorded
+    assert ["git", "pull", "--ff-only", "fork", "main"] in recorded
+    assert ["git", "pull", "--ff-only", "origin", "main"] not in recorded
 
 
 # ---------------------------------------------------------------------------

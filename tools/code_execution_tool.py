@@ -624,6 +624,29 @@ def _rpc_server_loop(
 # Remote execution support (file-based RPC via terminal backend)
 # ---------------------------------------------------------------------------
 
+def _cached_env_type(env) -> str:
+    """Detect the terminal backend type from an environment object's class name.
+
+    Mirrors the same class-name heuristic in file_tools._terminal_env_type_for_task
+    to avoid importing environment subclasses (which would create circular imports
+    or coupling issues).
+    """
+    name = env.__class__.__name__.lower()
+    if "local" in name:
+        return "local"
+    if "ssh" in name:
+        return "ssh"
+    if "docker" in name:
+        return "docker"
+    if "singularity" in name:
+        return "singularity"
+    if "modal" in name:
+        return "modal"
+    if "daytona" in name:
+        return "daytona"
+    return "local"  # conservative fallback
+
+
 def _get_or_create_env(task_id: str):
     """Get or create the terminal environment for *task_id*.
 
@@ -643,8 +666,19 @@ def _get_or_create_env(task_id: str):
     # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            cached = _active_environments[effective_task_id]
+            current_type = _get_env_config()["env_type"]
+            if _cached_env_type(cached) == current_type:
+                _last_activity[effective_task_id] = time.time()
+                return cached, current_type
+            # Backend type changed (e.g. ssh→local) in the same long-lived
+            # process — discard the stale environment so the slow path below
+            # creates one matching the current config (#62720).
+            del _active_environments[effective_task_id]
+            try:
+                cached.cleanup()
+            except Exception:
+                pass
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -655,8 +689,17 @@ def _get_or_create_env(task_id: str):
     with task_lock:
         with _env_lock:
             if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                cached = _active_environments[effective_task_id]
+                current_type = _get_env_config()["env_type"]
+                if _cached_env_type(cached) == current_type:
+                    _last_activity[effective_task_id] = time.time()
+                    return cached, current_type
+                # Type mismatch — discard stale env (same guard as fast path).
+                del _active_environments[effective_task_id]
+                try:
+                    cached.cleanup()
+                except Exception:
+                    pass
 
         config = _get_env_config()
         env_type = config["env_type"]

@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import queue
+import platform
 import re
 import shlex
 import shutil
@@ -3188,20 +3189,28 @@ def stream_tts_to_speaker(
                 )
             except Exception:
                 stream_max_len = 0
-            try:
-                sd = _import_sounddevice()
-                output_stream = sd.OutputStream(
-                    samplerate=streamer.sample_rate,
-                    channels=streamer.channels,
-                    dtype="int16",
-                )
-                output_stream.start()
-            except (ImportError, OSError) as exc:
-                logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+            # On macOS, skip the sounddevice OutputStream entirely: PortAudio/
+            # CoreAudio init triggers a kTCCServiceMediaLibrary permission
+            # prompt even though output needs no media-library access. Leaving
+            # output_stream=None routes each sentence through the tempfile
+            # -> play_audio_file -> afplay path. See PR #62601 / #13291.
+            if platform.system() == "Darwin":
                 output_stream = None
-            except Exception as exc:
-                logger.warning("sounddevice OutputStream failed: %s", exc)
-                output_stream = None
+            else:
+                try:
+                    sd = _import_sounddevice()
+                    output_stream = sd.OutputStream(
+                        samplerate=streamer.sample_rate,
+                        channels=streamer.channels,
+                        dtype="int16",
+                    )
+                    output_stream.start()
+                except (ImportError, OSError) as exc:
+                    logger.debug("sounddevice not available, streamer→tempfile: %s", exc)
+                    output_stream = None
+                except Exception as exc:
+                    logger.warning("sounddevice OutputStream failed: %s", exc)
+                    output_stream = None
 
         chunker = SentenceChunker()
         long_flush_len = 100

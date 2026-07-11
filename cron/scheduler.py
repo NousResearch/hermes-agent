@@ -2089,7 +2089,16 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # On Windows the script path uses backslashes (C:\Users\...\x.sh).
+        # Git-Bash treats '\' as an escape char, collapsing the path to
+        # "C:Users..." so the file is never found (exit 127). Convert to the
+        # MSYS form git-bash expects (/c/Users/...) before invoking bash.
+        bash_path = str(path)
+        if sys.platform == "win32":
+            bash_path = bash_path.replace("\\", "/")
+            if len(bash_path) >= 2 and bash_path[1] == ":":
+                bash_path = "/" + bash_path[0].lower() + bash_path[2:]
+        argv = [_bash, bash_path]
     else:
         argv = [sys.executable, str(path)]
 

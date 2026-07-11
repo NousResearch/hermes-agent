@@ -2061,6 +2061,21 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _merge_dedup_claim_ids(target: MessageEvent, source: MessageEvent) -> None:
+    """Carry inbound-dedup claim ids across event merges.
+
+    Adapters that release dedup claims on handler failure (see
+    ``on_handler_failure``) track each inbound message's claim ids in
+    ``event.metadata["dedup_msg_ids"]``. When base merges or replaces
+    buffered events it must preserve the union, or the dropped event's ids
+    stay claimed for the dedup TTL after a failure and the platform's
+    redelivery is silently discarded.
+    """
+    ids = source.metadata.get("dedup_msg_ids")
+    if ids:
+        target.metadata.setdefault("dedup_msg_ids", []).extend(ids)
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2091,6 +2106,7 @@ def merge_pending_message_event(
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            _merge_dedup_claim_ids(existing, event)
             return
 
         if existing_has_media or incoming_has_media:
@@ -2109,6 +2125,7 @@ def merge_pending_message_event(
                 and event.message_type != MessageType.TEXT
             ):
                 existing.message_type = event.message_type
+            _merge_dedup_claim_ids(existing, event)
             return
 
         if (
@@ -2118,8 +2135,14 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            _merge_dedup_claim_ids(existing, event)
             return
 
+    if existing is not None:
+        # The replaced event's content is discarded by policy, but its claim
+        # ids must ride the replacement so a later handler failure releases
+        # them too.
+        _merge_dedup_claim_ids(event, existing)
     pending_messages[session_key] = event
 
 
@@ -4018,6 +4041,19 @@ class BasePlatformAdapter(ABC):
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 
+    async def on_handler_failure(self, event: MessageEvent) -> None:
+        """Hook called when the message handler failed before completing.
+
+        Fires only when ``self._message_handler(event)`` raised or was
+        unexpectedly cancelled before returning — i.e. the event was NOT
+        processed. Delivery failures after a completed handler do NOT fire
+        this hook (the turn already ran; re-processing it would duplicate
+        side effects), and neither do expected cancellations (/stop, session
+        reset). Adapters use this to release per-message claims — e.g. an
+        inbound dedup entry — so a platform redelivery can retry the message
+        instead of being dropped as a duplicate.
+        """
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
@@ -4269,6 +4305,7 @@ class BasePlatformAdapter(ABC):
                     if state.event.text
                     else event.text
                 )
+            _merge_dedup_claim_ids(state.event, event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -4644,6 +4681,7 @@ class BasePlatformAdapter(ABC):
                             "[%s] Command '/%s' dispatch failed: %s",
                             self.name, cmd, e, exc_info=True,
                         )
+                        await self._run_processing_hook("on_handler_failure", event)
                     return
 
                 # Other bypass commands (/approve, /deny, /status,
@@ -4653,9 +4691,11 @@ class BasePlatformAdapter(ABC):
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
                 )
+                _inline_handler_done = False
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
+                    _inline_handler_done = True
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
                         _r = await self._send_with_retry(
@@ -4672,6 +4712,8 @@ class BasePlatformAdapter(ABC):
                             )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                    if not _inline_handler_done:
+                        await self._run_processing_hook("on_handler_failure", event)
                 return
 
             # Clarify reply bypass: if the agent is blocked on a
@@ -4704,11 +4746,13 @@ class BasePlatformAdapter(ABC):
                         "[%s] Routing message to clarify text-intercept for %s",
                         self.name, session_key,
                     )
+                    _inline_handler_done = False
                     try:
                         _thread_meta = _thread_metadata_for_source(
                             event.source, _reply_anchor_for_event(event)
                         )
                         response = await self._message_handler(event)
+                        _inline_handler_done = True
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
                         if _text:
                             _r = await self._send_with_retry(
@@ -4728,6 +4772,8 @@ class BasePlatformAdapter(ABC):
                             "[%s] Clarify text-intercept dispatch failed: %s",
                             self.name, e, exc_info=True,
                         )
+                        if not _inline_handler_done:
+                            await self._run_processing_hook("on_handler_failure", event)
                     return
 
             if self._busy_session_handler is not None:
@@ -4852,11 +4898,17 @@ class BasePlatformAdapter(ABC):
                 typing_task,
             )
         
+        # Distinguishes handler failures (event not processed — adapters may
+        # release per-message claims via on_handler_failure) from failures
+        # after the handler returned (delivery problems; re-processing would
+        # duplicate side effects).
+        handler_completed = False
         try:
             await self._run_processing_hook("on_processing_start", event)
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            handler_completed = True
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -5206,9 +5258,13 @@ class BasePlatformAdapter(ABC):
             if current_task is None or current_task not in self._expected_cancelled_tasks:
                 outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, outcome)
+            if not handler_completed and outcome is ProcessingOutcome.FAILURE:
+                await self._run_processing_hook("on_handler_failure", event)
             raise
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            if not handler_completed:
+                await self._run_processing_hook("on_handler_failure", event)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:

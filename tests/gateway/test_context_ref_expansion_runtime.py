@@ -277,3 +277,39 @@ async def test_at_reference_passes_compatible_custom_provider_context(monkeypatc
         event=MessageEvent(text="@file:note", source=source), source=source, history=[]
     )
     assert captured["custom_providers"] == custom_providers
+
+
+@pytest.mark.asyncio
+async def test_at_reference_ignores_global_context_for_session_model_override(monkeypatch):
+    """A session model override must not inherit another model's global limit."""
+    runner = _make_runner()
+    source = _source()
+    captured = {}
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "global/model", "context_length": 128000}},
+    )
+    monkeypatch.setattr(runner, "_resolve_session_agent_runtime", lambda **_kwargs: (
+        "session/model",
+        {"provider": "openai", "api_key": "test", "base_url": "https://api.openai.com/v1"},
+    ))
+
+    import agent.model_metadata as model_meta_mod
+    import agent.context_references as ctx_mod
+
+    async def _fake_get_context(_model, **kwargs):
+        captured["config_context_length"] = kwargs["config_context_length"]
+        return 32768
+
+    async def _passthrough(message, **_kwargs):
+        return ContextReferenceResult(message=message, original_message=message)
+
+    monkeypatch.setattr(model_meta_mod, "get_model_context_length_async", _fake_get_context)
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _passthrough)
+
+    await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="@file:note", source=source), source=source, history=[]
+    )
+    assert captured["config_context_length"] is None

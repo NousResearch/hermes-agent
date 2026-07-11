@@ -69,7 +69,15 @@ class TestSnapshotExcludesSessionIdentity:
         out = res["output"]
         assert res["returncode"] == 0
         assert "KEY=EMPTY" in out, f"foreign identity persisted: {out!r}"
-        assert "HOME_=EMPTY" in out or "/tmp/foreign_home" not in out
+        # HERMES_HOME may legitimately be inherited from the *process* env
+        # (Popen injection is authoritative); the contract is that B's
+        # foreign value must never win.  Assert equality with the expected
+        # inherited value — not a weak "foreign string absent" disjunction.
+        expected_home = os.environ.get("HERMES_HOME") or "EMPTY"
+        assert f"HOME_={expected_home}" in out, (
+            f"HERMES_HOME not the process-inherited value: {out!r}"
+        )
+        assert "/tmp/foreign_home" not in out
 
     def test_non_session_vars_still_persist(self, env):
         """The snapshot's PURPOSE (env persistence across calls) must survive
@@ -104,6 +112,7 @@ class TestSnapshotExcludesSessionIdentity:
             'declare -x HERMES_SESSION_THREAD_ID="1"',
             'declare -x HERMES_SESSION_MESSAGE_ID="1"',
             'declare -x HERMES_SESSION_USER_NAME="Ace"',
+            'declare -x HERMES_SESSION_CHANNEL_1="x"',  # digit suffix (Greptile P2)
             'declare -x HERMES_HOME="/tmp/dw_e2e/home"',
             'export HERMES_SESSION_KEY="x"',
             'export HERMES_HOME="/x"',

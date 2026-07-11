@@ -160,11 +160,10 @@ def classify_stuck_streak(results) -> "tuple[bool, str]":
     """Return whether a zero-spawn streak is only concurrency deferrals."""
     from hermes_cli import kanban_db as _kb
     counts = _kb.dispatch_cause_counts(results)
-    causes = ", ".join(
-        f"{cause}={count}"
-        for cause, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return (
+        _kb.dispatch_causes_capacity_only(counts),
+        _kb.summarize_dispatch_causes(results),
     )
-    return _kb.dispatch_causes_capacity_only(counts), causes
 
 
 class DispatcherStuckEscalationState:
@@ -1583,16 +1582,17 @@ class GatewayKanbanWatchersMixin:
                     capacity_only, causes = classify_stuck_streak(stuck_tick_results)
                     causes_suffix = f" causes: {causes}" if causes else ""
                     if capacity_only:
+                        # Cause counts accumulate across the streak window, so
+                        # a per-task "N deferred" figure would inflate with
+                        # streak length — the causes breakdown carries the
+                        # cumulative counts, same convention as the WARN path.
                         if now - last_warn_at >= 300:
-                            deferred = sum(
-                                _kb.dispatch_cause_counts(stuck_tick_results).values()
-                            )
                             logger.info(
-                                "kanban dispatcher at capacity: %d ready task(s) "
+                                "kanban dispatcher at capacity: ready tasks "
                                 "deferred by concurrency caps for %d consecutive "
-                                "ticks (causes: %s) — healthy; drains when a running "
-                                "worker finishes.",
-                                deferred, bad_ticks, causes,
+                                "ticks (causes: %s) — healthy; drains when a "
+                                "running worker finishes.",
+                                bad_ticks, causes,
                             )
                             last_warn_at = now
                     else:

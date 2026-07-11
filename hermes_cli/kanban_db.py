@@ -7202,7 +7202,7 @@ def dispatch_cause_counts(
 
 def dispatch_causes_capacity_only(counts: "dict[str, int]") -> bool:
     """Whether ``counts`` contains only intentional concurrency deferrals."""
-    return bool(counts) and all(cause in CAPACITY_ONLY_CAUSES for cause in counts)
+    return bool(counts) and CAPACITY_ONLY_CAUSES.issuperset(counts)
 
 
 def summarize_dispatch_causes(results: "Iterable[Optional[DispatchResult]]") -> str:

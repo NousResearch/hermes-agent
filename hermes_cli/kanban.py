@@ -2461,11 +2461,14 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             if now - health_state["last_warn_at"] >= 300:
                 counts = kb.dispatch_cause_counts(health_state["results"])
                 if kb.dispatch_causes_capacity_only(counts):
+                    # Counts accumulate across the streak, so no per-task
+                    # figure here — the causes breakdown carries the
+                    # cumulative counts, same convention as the WARN path.
                     causes = kb.summarize_dispatch_causes(health_state["results"])
                     print(
                         f"[{_fmt_ts(now)}] INFO dispatcher at capacity: "
-                        f"{sum(counts.values())} ready task(s) deferred by concurrency "
-                        f"caps for {health_state['bad_ticks']} consecutive ticks "
+                        f"ready tasks deferred by concurrency caps for "
+                        f"{health_state['bad_ticks']} consecutive ticks "
                         f"(causes: {causes}) — healthy; drains when a running worker "
                         f"finishes.",
                         file=sys.stderr, flush=True,

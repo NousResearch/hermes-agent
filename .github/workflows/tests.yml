@@ -1,5 +1,10 @@
 name: Tests
 
+# Test-impact rule: a pull request whose entire diff is confined to one
+# plugins/<name>/ tree (plus tests/plugins/<name>/) runs that plugin's tests
+# and one pinned gateway/session/config smoke slice. Any other, uncertain,
+# cross-plugin, conftest, pyproject, or workflow path fails open to the full
+# slice_count matrix. Non-PR events, including merge_group, always run full.
 on:
   workflow_call:
     inputs:
@@ -7,6 +12,10 @@ on:
         description: Number of parallel test slices
         type: number
         default: 8
+      test_scope:
+        description: Isolated plugin scope from detect-changes, or full.
+        type: string
+        default: full
 
 permissions:
   contents: read
@@ -35,11 +44,13 @@ jobs:
       - name: Generate test slices
         id: matrix
         run: |
-          MATRIX=$(python3 scripts/run_tests_parallel.py --generate-slices ${{ inputs.slice_count }})
+          MATRIX=$(python3 scripts/run_tests_parallel.py \
+            --generate-slices ${{ inputs.slice_count }} \
+            --test-scope '${{ inputs.test_scope }}')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   test:
-    name: Run tests slice ${{ matrix.slice.index }}/${{ inputs.slice_count }}
+    name: Run tests ${{ matrix.slice.name }}
     needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -94,7 +105,7 @@ jobs:
         # re-download, keeping the persisted cache small and fast to restore.
         run: uv cache prune --ci
 
-      - name: Run tests (slice ${{ matrix.slice.index }}/${{ inputs.slice_count }})
+      - name: Run tests (${{ matrix.slice.name }})
         # Per-file isolation via scripts/run_tests.sh: each test file runs
         # in its own freshly-spawned `python -m pytest <file>` subprocess
         # with bounded parallelism. No xdist, no shared workers, no

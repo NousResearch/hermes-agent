@@ -49,6 +49,7 @@ jobs:
       deps: ${{ steps.classify.outputs.deps }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
+      test_scope: ${{ steps.classify.outputs.test_scope }}
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -67,6 +68,7 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       slice_count: 10
+      test_scope: ${{ needs.detect.outputs.test_scope }}
 
   lint:
     name: Python lints

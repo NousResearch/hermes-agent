@@ -90,6 +90,17 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
 
+# Every plugin-scoped CI run keeps one fixed core smoke slice. These files pin
+# the gateway, session, and config seams that every plugin is loaded through.
+_CORE_SMOKE_TESTS = (
+    "tests/gateway/test_gateway_process_exit.py",
+    "tests/gateway/test_session.py",
+    "tests/gateway/test_config.py",
+    "tests/hermes_cli/test_gateway.py",
+    "tests/hermes_cli/test_config.py",
+    "tests/hermes_state/test_resolve_resume_session_id.py",
+)
+
 
 def _approximately_count_tests(
     files: List[Path], repo_root: Path
@@ -159,6 +170,84 @@ def _discover_files(roots: List[Path]) -> List[Path]:
             seen.add(real)
             out.append(path)
     return sorted(out)
+
+
+def _plugin_scope_from_changes(changed_paths: List[str]) -> str:
+    """Return ``plugin:<name>`` only for one isolated plugin tree.
+
+    Any empty, malformed, cross-plugin, shared-fixture, or out-of-plugin path
+    fails open to ``full``. ``tests/plugins/<name>/`` is the only allowed
+    companion tree for ``plugins/<name>/``.
+    """
+    plugin_name: str | None = None
+    paths = [path.strip() for path in changed_paths if path.strip()]
+    if not paths or any("\\" in path for path in paths):
+        return "full"
+
+    for path in paths:
+        parts = path.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            return "full"
+        if path.endswith("/conftest.py") or path == "conftest.py":
+            return "full"
+        if len(parts) >= 3 and parts[0] == "plugins":
+            candidate = parts[1]
+        elif len(parts) >= 4 and parts[:2] == ["tests", "plugins"]:
+            candidate = parts[2]
+        else:
+            return "full"
+        if (
+            not candidate.isascii()
+            or not candidate.replace("_", "").replace("-", "").isalnum()
+        ):
+            return "full"
+        if plugin_name is None:
+            plugin_name = candidate
+        elif candidate != plugin_name:
+            return "full"
+
+    return f"plugin:{plugin_name}" if plugin_name else "full"
+
+
+def _scoped_plugin_matrix(
+    scope: str,
+    repo_root: Path,
+) -> dict[str, list[dict[str, object]]] | None:
+    """Build one plugin slice plus one pinned core-smoke slice.
+
+    Invalid scope names, missing plugin tests, or a missing pinned smoke file
+    return ``None`` so the caller can fail open to the full matrix.
+    """
+    if not scope.startswith("plugin:"):
+        return None
+    plugin_name = scope.removeprefix("plugin:")
+    if (
+        not plugin_name
+        or not plugin_name.isascii()
+        or not plugin_name.replace("_", "").replace("-", "").isalnum()
+    ):
+        return None
+
+    plugin_root = repo_root / "tests" / "plugins" / plugin_name
+    plugin_files = _discover_files([plugin_root])
+    smoke_files = [repo_root / path for path in _CORE_SMOKE_TESTS]
+    if not plugin_files or any(not path.is_file() for path in smoke_files):
+        return None
+
+    return {
+        "slice": [
+            {
+                "index": 1,
+                "name": f"plugin {plugin_name}",
+                "files": ":".join(_format_file(path, repo_root) for path in plugin_files),
+            },
+            {
+                "index": 2,
+                "name": "core smoke",
+                "files": ":".join(_format_file(path, repo_root) for path in smoke_files),
+            },
+        ]
+    }
 
 
 def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
@@ -690,6 +779,23 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--changed-files-scope",
+        action="store_true",
+        help=(
+            "Read newline-separated changed paths from stdin, print either "
+            "'plugin:<name>' or fail-open 'full', then exit."
+        ),
+    )
+    parser.add_argument(
+        "--test-scope",
+        default="full",
+        help=(
+            "CI slice scope from --changed-files-scope. A valid isolated "
+            "'plugin:<name>' scope emits one plugin slice plus one core-smoke "
+            "slice; anything else fails open to the full matrix."
+        ),
+    )
+    parser.add_argument(
         "--min-tests",
         metavar="N",
         type=int,
@@ -752,6 +858,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--slice", "--generate-slices", "--files",
+        "--changed-files-scope", "--test-scope",
         "--min-tests", "--strict-noop", "--no-strict-noop",
     }
     # pytest short flags that consume the NEXT token as their value.
@@ -814,6 +921,24 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parent.parent
 
+    if args.changed_files_scope:
+        print(_plugin_scope_from_changes(sys.stdin.read().splitlines()))
+        return 0
+
+    if args.generate_slices is not None and args.test_scope != "full":
+        scoped_matrix = _scoped_plugin_matrix(args.test_scope, repo_root)
+        if scoped_matrix is not None:
+            print(
+                f"Test scope: {args.test_scope} + core smoke (2 slices)",
+                file=sys.stderr,
+            )
+            print(json.dumps(scoped_matrix))
+            return 0
+        print(
+            f"Test scope {args.test_scope!r} is invalid or incomplete; failing open to full",
+            file=sys.stderr,
+        )
+
     # --files: explicit file list from the CI generate job — skip discovery.
     # Track which files were *explicitly requested* (by --files or by a
     # positional .py path) vs. discovered by directory recursion. An
@@ -862,11 +987,16 @@ def main() -> int:
             "slice": [
                 {
                     "index": i + 1,
+                    "name": f"slice {i + 1}/{args.generate_slices}",
                     "files": ":".join(_format_file(f, repo_root) for f in bucket),
                 }
                 for i, bucket in enumerate(slices)
             ]
         }
+        print(
+            f"Test scope: full ({args.generate_slices} slices)",
+            file=sys.stderr,
+        )
         # Print to stdout so the CI step can capture it with $().
         print(json.dumps(matrix))
         return 0

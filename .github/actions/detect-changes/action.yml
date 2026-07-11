@@ -27,6 +27,9 @@ outputs:
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}
+  test_scope:
+    description: Isolated plugin test scope, or fail-open full.
+    value: ${{ steps.classify.outputs.test_scope }}
 
 runs:
   using: composite
@@ -51,12 +54,22 @@ runs:
           # event payload instead of the "current PR files" endpoint. The SHAs
           # are frozen at trigger time, so the file list is deterministic even
           # if the PR receives a new push between trigger and detect.
-          CHANGED="$(gh api \
-            --paginate \
+          CHANGED="$(gh api --paginate \
             "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}" \
-            --jq '.files[].filename' || true)"
+            --jq '.files[] | .filename, (.previous_filename // empty)' || true)"
         fi
 
         echo "Changed files:"
         printf '%s\n' "${CHANGED:-(none)}"
         printf '%s\n' "${CHANGED:-}" | python3 scripts/ci/classify_changes.py
+
+        TEST_SCOPE=full
+        if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$CHANGED" ]; then
+          TEST_SCOPE="$(printf '%s\n' "$CHANGED" | \
+            python3 scripts/run_tests_parallel.py --changed-files-scope || true)"
+        fi
+        case "$TEST_SCOPE" in
+          full|plugin:*) ;;
+          *) TEST_SCOPE=full ;;
+        esac
+        echo "test_scope=$TEST_SCOPE" | tee -a "$GITHUB_OUTPUT"

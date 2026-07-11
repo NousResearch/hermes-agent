@@ -296,10 +296,12 @@ def test_recovery_cannot_overwrite_undelivered_onset(tmp_path):
 
 def test_renewed_failure_cancels_undelivered_recovery(tmp_path):
     attempts = []
+    recovery_attempted = threading.Event()
 
     def fail_recovery(message):
         attempts.append(message)
         if "RECOVERED" in message:
+            recovery_attempted.set()
             raise RuntimeError("forced recovery delivery failure")
 
     state_path = tmp_path / "state.json"
@@ -314,9 +316,7 @@ def test_renewed_failure_cancels_undelivered_recovery(tmp_path):
     manager.observe(failure)
     manager.observe(failure)
     manager.observe({"status": "success", "latency_ms": 5, "effective_arm": "builtin"})
-    deadline = time.monotonic() + 0.5
-    while len(attempts) < 2 and time.monotonic() < deadline:
-        time.sleep(0.005)
+    assert recovery_attempted.wait(10)
     assert ["RECOVERED" in message for message in attempts] == [False, True]
 
     manager.observe(failure)
@@ -460,10 +460,12 @@ def test_initial_write_failure_persists_before_delivery_and_replacement_replays(
 ):
     state_path = tmp_path / "state.json"
     first_attempts = []
+    first_attempted = threading.Event()
 
     def hold_pending_for_replacement(message):
         first_attempts.append(message)
         manager._retry_backoff_s = 10
+        first_attempted.set()
         raise RuntimeError("hold pending for replacement")
 
     manager = RerankIncidentManager(
@@ -486,9 +488,7 @@ def test_initial_write_failure_persists_before_delivery_and_replacement_replays(
     monkeypatch.setattr(manager, "_write", fail_once)
 
     manager.observe({"status": "failure", "failure_class": "timeout", "effective_arm": "off"})
-    deadline = time.monotonic() + 0.5
-    while not first_attempts and time.monotonic() < deadline:
-        time.sleep(0.005)
+    assert first_attempted.wait(10)
 
     assert writes >= 2
     assert len(first_attempts) == 1
@@ -587,9 +587,11 @@ def test_default_page_requires_positive_delivery_ack(monkeypatch, response):
         _send_page("incident")
 
 
-def test_initial_hung_delivery_is_bounded_serialized_and_self_retries(tmp_path):
+def test_initial_hung_delivery_is_bounded_serialized_and_self_retries(tmp_path, monkeypatch):
     entered = threading.Event()
     release = threading.Event()
+    retry_scheduled = threading.Event()
+    second_observed = threading.Event()
     attempts = []
 
     def blocking_alert(message):
@@ -605,20 +607,29 @@ def test_initial_hung_delivery_is_bounded_serialized_and_self_retries(tmp_path):
         delivery_timeout_s=0.02,
         retry_backoff_s=0.01,
     )
+    real_schedule_retry = manager._schedule_retry
+    real_observe_one = manager._observe_one
+
+    def observe_retry_schedule():
+        real_schedule_retry()
+        retry_scheduled.set()
+
+    def observe_second(metadata):
+        real_observe_one(metadata)
+        if metadata.get("failure_class") == "second":
+            second_observed.set()
+
+    monkeypatch.setattr(manager, "_schedule_retry", observe_retry_schedule)
+    monkeypatch.setattr(manager, "_observe_one", observe_second)
     manager.observe({"status": "failure", "failure_class": "first", "effective_arm": "off"})
-    assert entered.wait(0.2)
-    time.sleep(0.08)
+    assert entered.wait(10)
+    assert retry_scheduled.wait(10)
 
     manager.observe({"status": "failure", "failure_class": "second", "effective_arm": "off"})
-    deadline = time.monotonic() + 0.2
+    assert second_observed.wait(10)
     state = json.loads(state_path.read_text())
-    in_memory = {}
-    while time.monotonic() < deadline:
-        with manager._lock:
-            in_memory = dict(manager._state)
-        if in_memory.get("failure_class") == "second":
-            break
-        time.sleep(0.005)
+    with manager._lock:
+        in_memory = dict(manager._state)
 
     assert len(attempts) == 1
     assert state["pending_page"] == "onset"

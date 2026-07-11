@@ -1500,8 +1500,28 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     return not Path(path).suffix
 
 
+def _is_placeholder_media_path(path: str) -> bool:
+    """Recognize narrow documentation/example paths that must not be delivered."""
+    normalized = str(path or "").strip().strip("`\"'")
+    if normalized.startswith("file://"):
+        normalized = normalized[7:]
+    try:
+        normalized = os.path.expanduser(normalized)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    lowered = normalized.lower().replace("\\", "/")
+    parts = [part for part in lowered.split("/") if part]
+    if len(parts) < 2:
+        return False
+    # An extension may appear on the *final* example filename (for example
+    # ``/ruta/absoluta.png``), but never normalize directory names: doing so
+    # would turn ordinary ``/absolute.json/path/...`` paths into placeholders.
+    second = parts[1].rsplit(".", 1)[0] if len(parts) == 2 else parts[1]
+    return (parts[0], second) in {("absolute", "path"), ("ruta", "absoluta")}
+
+
 def _strip_media_tag_directives(text: str) -> str:
-    """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
+    """Remove real MEDIA tags while preserving examples in protected spans."""
     if (
         "MEDIA:" not in text
         and "[[audio_as_voice]]" not in text
@@ -1509,15 +1529,35 @@ def _strip_media_tag_directives(text: str) -> str:
     ):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
-
-    def _strip_extensionless(match: re.Match) -> str:
+    # Locate directives in a protected-span mask, then delete the corresponding
+    # spans from the original text. Replacing directly in the mask would blank
+    # code/quote examples that are intentionally visible in streamed output.
+    masked = BasePlatformAdapter._mask_protected_spans(cleaned)
+    # A complete MEDIA directive wrapped in one inline-code span is an existing
+    # supported streaming form (`` `MEDIA:/tmp/file.png` ``). Preserve code
+    # examples, including placeholders, but restore real non-placeholder tags
+    # so that established wrapper behavior is not regressed.
+    masked_chars = list(masked)
+    for inline in re.finditer(
+        r'`MEDIA:\s*(?P<path>(?:~/|/|[A-Za-z]:[/\\])[^`\s]+)`', cleaned,
+    ):
+        path = _normalize_media_tag_path(inline.group("path"))
+        if path and not _is_placeholder_media_path(path):
+            masked_chars[inline.start():inline.end()] = cleaned[inline.start():inline.end()]
+    masked = "".join(masked_chars)
+    spans = [match.span() for match in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
+    for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
         if not path or not _path_lacks_deliverable_extension(path):
-            return match.group(0)
-        return "" if validate_media_delivery_path(path) else match.group(0)
-
-    cleaned = MEDIA_TAG_CLEANUP_RE.sub("", cleaned)
-    return MEDIA_EXTENSIONLESS_TAG_RE.sub(_strip_extensionless, cleaned)
+            continue
+        if validate_media_delivery_path(path) or _is_placeholder_media_path(path):
+            spans.append(match.span())
+    if not spans:
+        return cleaned
+    chars = list(cleaned)
+    for start, end in sorted(spans, reverse=True):
+        del chars[start:end]
+    return "".join(chars)
 
 
 def get_document_cache_dir() -> Path:
@@ -3579,6 +3619,19 @@ class BasePlatformAdapter(ABC):
         return ''.join(chars)
 
     @staticmethod
+    def _is_placeholder_media_path(path: str) -> bool:
+        """Return True for documentation/example paths that should not deliver.
+
+        Agents often use examples such as ``MEDIA:/absolute/path/to/file.png``
+        or ``MEDIA:/ruta/absoluta.png`` while explaining how native file
+        delivery works. Those placeholders should be stripped from visible text,
+        but should not enter the delivery pipeline or emit missing-file warnings.
+        Keep this intentionally narrow so genuinely wrong generated paths (for
+        example ``/tmp/generated-chart.png``) still surface.
+        """
+        return _is_placeholder_media_path(path)
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -3628,9 +3681,14 @@ class BasePlatformAdapter(ABC):
         # stay valid; chaining them masks the union of both protected regions.
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
+        delivery_tag_spans = []
         for match in media_pattern.finditer(scan_content):
+            # Strip visible delivery/placeholder tags from text, but deliver
+            # only normalized non-placeholder paths. Protected example/JSON
+            # regions were masked above, so these spans are real output tags.
+            delivery_tag_spans.append(match.span())
             path = _normalize_media_tag_path(match.group("path"))
-            if path:
+            if path and not BasePlatformAdapter._is_placeholder_media_path(path):
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))
                 except (OSError, RuntimeError, ValueError):
@@ -3643,12 +3701,15 @@ class BasePlatformAdapter(ABC):
             path = _normalize_media_tag_path(match.group("path"))
             if not path or not _path_lacks_deliverable_extension(path):
                 continue
+            is_placeholder = BasePlatformAdapter._is_placeholder_media_path(path)
             safe = validate_media_delivery_path(path)
-            if safe and safe not in seen_paths:
+            if safe or is_placeholder:
+                delivery_tag_spans.append(match.span())
+            if safe and not is_placeholder and safe not in seen_paths:
                 media.append((safe, has_voice_tag))
                 seen_paths.add(safe)
 
-        # Remove the delivered MEDIA tags from the user-visible text. Mask a
+        # Remove the delivered/placeholder MEDIA tags from the user-visible text. Mask a
         # length-equal copy of ``cleaned`` (same union of protected regions) to
         # *locate* the real tag spans, then delete exactly those spans from the
         # *unmasked* ``cleaned``. Masking is only a locator — protected spans
@@ -3656,7 +3717,7 @@ class BasePlatformAdapter(ABC):
         # in the delivered text, not be blanked to whitespace. Masking
         # ``cleaned`` (not ``content``) keeps offsets valid after the
         # [[audio_as_voice]] / [[as_document]] directives are removed.
-        if media:
+        if delivery_tag_spans:
             masked_cleaned = BasePlatformAdapter._mask_protected_spans(cleaned)
             masked_cleaned = BasePlatformAdapter._mask_json_string_media(masked_cleaned)
             spans = [m.span() for m in media_pattern.finditer(masked_cleaned)]
@@ -3664,7 +3725,7 @@ class BasePlatformAdapter(ABC):
                 path = _normalize_media_tag_path(match.group("path"))
                 if not path or not _path_lacks_deliverable_extension(path):
                     continue
-                if validate_media_delivery_path(path):
+                if validate_media_delivery_path(path) or BasePlatformAdapter._is_placeholder_media_path(path):
                     spans.append(match.span())
             if spans:
                 chars = list(cleaned)

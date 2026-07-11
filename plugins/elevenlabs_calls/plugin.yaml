@@ -1,0 +1,15 @@
+name: elevenlabs_calls
+version: 1.0.0
+description: >
+  Explicitly authorized outbound calls through ElevenLabs Conversational AI.
+  Calls require authorization in the latest user message and make at most one
+  provider request.
+author: NousResearch
+kind: backend
+provides_tools:
+  - elevenlabs_outbound_call
+requires_env:
+  - name: ELEVENLABS_API_KEY
+    description: ElevenLabs API key
+    prompt: ElevenLabs API key
+    password: true

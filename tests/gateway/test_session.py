@@ -450,8 +450,8 @@ class TestBuildSessionContextPrompt:
         ctx = build_session_context(source, config)
         prompt = build_session_context_prompt(ctx)
 
-        assert "**User:** Jc" in prompt
-        assert "**User ID:** ou_sender_123" in prompt
+        assert '**User:** "Jc"' in prompt
+        assert '**User ID:** "ou_sender_123"' in prompt
 
 
     def test_shared_non_thread_group_prompt_hides_single_user(self):

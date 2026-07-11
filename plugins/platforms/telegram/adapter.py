@@ -164,6 +164,7 @@ try:
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
+        TypeHandler,
         filters,
     )
     from telegram.constants import ParseMode, ChatType
@@ -180,6 +181,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    TypeHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -252,7 +254,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler, TypeHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -270,7 +272,7 @@ def check_telegram_requirements() -> bool:
             _LPO = None
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
-            CallbackQueryHandler as _CQH,
+            CallbackQueryHandler as _CQH, TypeHandler as _TH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -287,6 +289,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    TypeHandler = _TH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -2994,6 +2997,36 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _fire_observer_hook(self, name: str, **kwargs) -> None:
+        """Fire a ``telegram:*`` observer hook (see VALID_HOOKS for the contract).
+
+        Observer-only; ``invoke_hook`` isolates each callback and this wrapper
+        swallows plugin-layer errors so send/edit/connect can't break. The
+        adapter is injected automatically; a ``has_hook`` guard skips all
+        dispatch when nothing subscribes (the hot-path common case).
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            mgr = get_plugin_manager()
+            if not mgr.has_hook(name):  # hot path: skip when nothing subscribes
+                return
+            mgr.invoke_hook(name, adapter=self, **kwargs)
+        except Exception as exc:
+            logger.debug("[%s] %s hook fire error: %s", self.name, name, exc)
+
+    async def _on_platform_update(self, update, context) -> None:
+        """Catch-all PTB handler that fires ``telegram:update`` per inbound update.
+
+        Registered in a dedicated high handler group so it observes every
+        update *alongside* the core handlers (group 0) rather than displacing
+        them. Plugins filter inside their callback (e.g. ``update.message_reaction``).
+        ``bot`` is read at fire time and may be ``None`` during lifecycle
+        transitions (connect/teardown); plugins should guard before using it.
+        """
+        self._fire_observer_hook(
+            "telegram:update", update=update, bot=self._bot, context=context,
+        )
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3201,6 +3234,9 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # telegram:update observer; group 99 so it observes alongside — never
+            # displaces — the core handlers in group 0. See _on_platform_update.
+            self._app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -3582,6 +3618,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        # Platform-boundary observer hook: let plugins observe outbound sends
+        # (e.g. cache content keyed by chat for a reaction-triggered fallback).
+        self._fire_observer_hook(
+            "telegram:send",
+            chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata,
+        )
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -3946,6 +3989,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        # Platform-boundary observer hook: let plugins observe outbound edits
+        # (message_id is known on edits, so plugins can key on it precisely).
+        self._fire_observer_hook(
+            "telegram:edit",
+            chat_id=chat_id, message_id=message_id, content=content,
+            finalize=finalize, metadata=metadata,
+        )
 
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet

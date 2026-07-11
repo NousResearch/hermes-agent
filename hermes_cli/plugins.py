@@ -210,6 +210,30 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Telegram platform-boundary hooks. Fired by the Telegram adapter so plugins
+    # can observe platform events the core doesn't route (message reactions,
+    # edited messages, chat-member changes) and track outbound sends — without
+    # monkeypatching the adapter or depending on private method names. Observer
+    # only: return values are ignored, each callback isolated by invoke_hook.
+    # Plugin callbacks should accept **kwargs (the contract may grow).
+    #
+    # Contract: these fire on the streaming hot path (telegram:edit once per
+    # chunk, telegram:send per outbound message) — keep callbacks cheap and
+    # debounce heavy work. Observer-only: a callback must not synchronously
+    # trigger a send/edit that re-enters the same hook, or it feedback-loops.
+    #
+    #   telegram:update — EVERY inbound PTB update, in a dedicated handler group
+    #                      so it never displaces core handlers. Kwargs: update,
+    #                      adapter, bot, context. Plugins filter themselves
+    #                      (e.g. update.message_reaction).
+    #   telegram:send   — at TelegramAdapter.send() entry. Kwargs: chat_id,
+    #                      content, reply_to, metadata, adapter.
+    #   telegram:edit   — at TelegramAdapter.edit_message() entry (message_id
+    #                      is known on edits). Kwargs: chat_id, message_id,
+    #                      content, finalize, metadata, adapter.
+    "telegram:update",
+    "telegram:send",
+    "telegram:edit",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

@@ -4477,14 +4477,15 @@ def interactive_setup() -> None:
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
+        matrix_feature = "platform.matrix.e2ee" if want_e2ee else "platform.matrix"
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
         try:
             from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
-            _missing_before = feature_missing("platform.matrix")
+            _missing_before = feature_missing(matrix_feature)
             if _missing_before:
                 print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
                 try:
-                    _lazy_ensure("platform.matrix", prompt=False)
+                    _lazy_ensure(matrix_feature, prompt=False)
                     print_success(f"{matrix_pkg} installed")
                 except Exception as exc:
                     print_warning(

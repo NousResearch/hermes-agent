@@ -13,28 +13,28 @@ commit** them. This document exists so agents understand what they are.
 
 | Pattern | Examples | Purpose |
 |---------|----------|---------|
-| `*.mp4`, `*.wav`, `*.ogg`, `*.png` | `ohayo_tweet.mp4`, `latest_vrchat.png` | VRChat / Hakua content drafts |
-| `hermes_v*.py`, `hermes_v*_with_audio.mp4` | versioned demo renders | Local video generation experiments |
+| `output/media/*` | `ohayo_tweet.mp4`, `latest_vrchat.png` | VRChat / Hakua content drafts |
+| `tmp/snapshots/hermes_v*.py`, `output/media/hermes_v*_with_audio.mp4` | versioned demo renders | Local video generation experiments |
 
 ### Disaster / monitoring JSON (ephemeral)
 
 | Files | Purpose |
 |-------|---------|
-| `eq.json`, `quake.json`, `tsunami.json` | Earthquake API snapshots |
-| `check_quake_tsunami.py`, `process_disaster.py`, `disaster_security*.py` | One-off processing scripts |
+| `output/reports/eq.json`, `output/reports/quake.json`, `output/reports/tsunami.json` | Earthquake API snapshots |
+| `tmp/probes/check_quake_tsunami.py`, `tmp/probes/process_disaster.py`, `tmp/probes/disaster_security*.py` | One-off processing scripts |
 
 ### Logs and state text
 
 | Files | Purpose |
 |-------|---------|
-| `*.log`, `report.txt`, `state.txt`, `sync_result.txt` | Local run output |
-| `current_time.txt`, `last_*.txt`, `.last_*_index` | Scratch indices |
+| `output/logs/*.log`, `output/reports/report.txt`, `output/reports/state.txt`, `output/reports/sync_result.txt` | Local run output |
+| `output/reports/current_time.txt`, `output/reports/last_*.txt`, `output/reports/.last_*_index` | Scratch indices |
 
 ### Diagnostics (gitignored)
 
 | Pattern | Purpose |
 |---------|----------|
-| `_diag_*.py`, `temp_*.py`, `tmp_*.py` | Ad-hoc probes |
+| `tmp/probes/_diag_*.py`, `tmp/probes/temp_*.py`, `tmp/probes/tmp_*.py` | Ad-hoc probes |
 | `test_web_search.py` | Throwaway tool tests — use `tests/` instead |
 
 ### Secrets (never commit)
@@ -44,11 +44,23 @@ commit** them. This document exists so agents understand what they are.
 | `client_secret_*.json` | OAuth client secrets |
 | `.env`, `cli-config.yaml` | Credentials and local paths |
 
+### Canonical local folders
+
+Root scratch is being classified without deleting files. Use `output/media/`
+for generated media, `output/reports/` for generated reports and snapshots,
+`output/logs/` for generated logs, `tmp/probes/` for one-off diagnostics, and
+`tmp/snapshots/` for generated source or configuration snapshots. These
+directories remain ignored; only this guide and the fork harness are tracked.
+
+Agents must not execute an untrusted generated script merely because it is in
+the repository. Inspect it first, keep credentials out of its environment,
+and run it only with an explicit temporary workspace and bounded permissions.
+
 ## Where outputs should go
 
 | Type | Preferred path |
 |------|----------------|
-| Cron media output | `output/` (gitignored) |
+| Cron media output | `output/media/` (gitignored) |
 | Implementation logs | `_docs/` (gitignored) |
 | Career / docs export | `career_docs_output/` (gitignored) |
 | Temp merge work | `tmp/`, `_tmp/` (gitignored) |
@@ -58,7 +70,7 @@ commit** them. This document exists so agents understand what they are.
 | Official (tracked) | Scratch (ignored) |
 |--------------------|-------------------|
 | `run_agent.py`, `cli.py` | `temp_script.py` |
-| `scripts/daily_*.py` | root-level `test_*.py` probes |
-| `plugins/`, `skills/` | root `*.mp4` renders |
+| `scripts/daily_*.py` | `tmp/probes/test_*.py` probes |
+| `plugins/`, `skills/` | `output/media/*` renders |
 
 See [`AGENTS.md`](AGENTS.md) for agent handling rules.

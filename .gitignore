@@ -231,3 +231,34 @@ infographic/
 
 # Go memory-graph static server binary (built by scripts/windows/build-memory-graph-server.ps1)
 bin/memory-graph-server.exe
+
+# Keep navigation docs for ignored local-workspace folders while ignoring all
+# generated contents below them.
+!output/
+output/*
+!output/media/
+output/media/*
+!output/media/AGENTS.md
+!output/media/README.md
+!output/reports/
+output/reports/*
+!output/reports/AGENTS.md
+!output/reports/README.md
+!output/logs/
+output/logs/*
+!output/logs/AGENTS.md
+!output/logs/README.md
+!tmp/
+tmp/*
+!tmp/probes/
+tmp/probes/*
+!tmp/probes/AGENTS.md
+!tmp/probes/README.md
+!tmp/snapshots/
+tmp/snapshots/*
+!tmp/snapshots/AGENTS.md
+!tmp/snapshots/README.md
+!tmp/snapshots/secrets/
+tmp/snapshots/secrets/*
+!tmp/snapshots/secrets/AGENTS.md
+!tmp/snapshots/secrets/README.md

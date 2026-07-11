@@ -27,7 +27,7 @@ Run `tailscale up` if tailnet IP missing. Refresh Serve after stack restart when
 - `~/.hermes/` runtime state
 - `apps/desktop/release/`, `dist/`, `node_modules/`
 - Implementation logs in `_docs/`
-- One-off probes like `test_web_search.py` at repo root
+- One-off probes under `tmp/probes/`; keep them out of the source tree
 
 ## Logs
 

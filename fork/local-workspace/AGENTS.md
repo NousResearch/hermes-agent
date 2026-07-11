@@ -13,6 +13,23 @@ Prefer moving scratch into existing ignored dirs:
 - `output/` for generated media
 - `tmp/` for short-lived experiments
 
+Use these stable subdirectories when classifying root scratch:
+
+- `output/media/` for audio, video, and image renders
+- `output/reports/` for JSON, HTML, text, and run summaries
+- `output/logs/` for generated logs that are not implementation records
+- `tmp/probes/` for one-off scripts and diagnostics
+- `tmp/snapshots/` for generated source or configuration snapshots
+
+Create the destination before moving an existing file and verify that the
+source and destination are inside this repository. Move, do not delete, local
+scratch. Preserve symlinks as symlinks; do not dereference a link while
+classifying it, and never move a link target outside the repository.
+
+The root `AGENTS.md` remains the required entrypoint. This file supplies the
+safe local-workspace rules; it must not be copied into runtime directories or
+used to make ignored output look like source code.
+
 Update any hardcoded paths in `scripts/daily_*.py` only when the operator requests relocation.
 
 ## Probes and tests

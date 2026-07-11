@@ -49,3 +49,10 @@ scripts\run_tests.sh tests/tools/test_vrchat_osc_tool.py -q
 - `.worktrees/` merge scratch
 
 See [`AGENTS.md`](AGENTS.md) for agent rules during conflict resolution.
+The former root development guide is preserved at
+[`upstream-development-guide.md`](upstream-development-guide.md) and remains
+the detailed reference for the core architecture and contribution contract.
+
+Detailed quality rules are in
+[`testing-and-pitfalls.md`](testing-and-pitfalls.md). Read that guide before
+changing tests, path handling, gateway guards, or process lifecycle code.

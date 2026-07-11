@@ -923,7 +923,20 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+
+    # Sanitize Unicode dashes in descriptions at the final menu boundary so
+    # ALL sources (built-ins, plugins, and skill entries) share the invariant.
+    # Telegram BotFather rejects em dashes (U+2014) and en dashes (U+2013) in
+    # bot command descriptions, returning a 400 Bad Request error that silently
+    # prevents the entire command menu from updating (issue #2927).
+    # Applying the replacement here -- after all tiers are merged -- is safer
+    # than patching each individual collection path, since new description
+    # sources (future plugins, hub skills) automatically receive the fix.
+    sanitized = [
+        (name, desc.replace("\u2014", "-").replace("\u2013", "-"))
+        for name, desc in all_commands
+    ]
+    return sanitized[:max_commands], hidden_count + hidden_core_count
 
 
 def discord_skill_commands(

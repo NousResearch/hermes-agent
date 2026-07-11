@@ -2217,3 +2217,62 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+    def test_unicode_dashes_sanitized_in_builtin_descriptions(self, tmp_path, monkeypatch):
+        """Em dashes and en dashes in built-in command descriptions must be
+        replaced with ASCII hyphens in the final Telegram menu.
+
+        Telegram BotFather rejects U+2014 (em dash) and U+2013 (en dash) in
+        bot command descriptions with a 400 Bad Request, silently preventing
+        the entire command menu from updating (issue #2927).
+        """
+        from hermes_cli.commands import _COMMANDS, CommandDef, telegram_menu_commands
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("")
+
+        # Inject a built-in command whose description contains both dash forms.
+        _COMMANDS["test_em_en_dash"] = CommandDef(
+            name="test_em_en_dash",
+            description="Fast\u2014em dash \u2013 en dash here",
+            handler=lambda _a: None,
+        )
+        try:
+            menu, _ = telegram_menu_commands(max_commands=100)
+        finally:
+            _COMMANDS.pop("test_em_en_dash", None)
+
+        descs = {name: desc for name, desc in menu}
+        assert "test_em_en_dash" in descs
+        assert "\u2014" not in descs["test_em_en_dash"]
+        assert "\u2013" not in descs["test_em_en_dash"]
+        assert "-" in descs["test_em_en_dash"]
+
+    def test_unicode_dashes_sanitized_in_skill_descriptions(self, tmp_path, monkeypatch):
+        """Em and en dashes in SKILL descriptions must also be sanitized.
+
+        The maintainer review of #62754 identified that the earlier fix only
+        covered built-in entries; _collect_gateway_skill_entries() appended
+        skill descriptions unchanged, reaching the same Telegram API call with
+        unsanitized Unicode dashes.  The boundary sanitizer in
+        telegram_menu_commands() covers ALL tiers.
+        """
+        from unittest.mock import patch
+        from hermes_cli.commands import telegram_menu_commands
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("")
+
+        # Inject a fake skill entry with both dash forms in its description.
+        fake_skill_entry = ("skill_dash", "Em\u2014dash \u2013 en dash", "skill_dash")
+        with patch(
+            "hermes_cli.commands._collect_gateway_skill_entries",
+            return_value=([fake_skill_entry], 0),
+        ):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        descs = {name: desc for name, desc in menu}
+        assert "skill_dash" in descs
+        assert "\u2014" not in descs["skill_dash"], "em dash not sanitized in skill entry"
+        assert "\u2013" not in descs["skill_dash"], "en dash not sanitized in skill entry"
+        assert "-" in descs["skill_dash"]

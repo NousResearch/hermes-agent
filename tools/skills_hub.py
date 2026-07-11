@@ -1052,7 +1052,7 @@ class GitHubSource(SkillSource):
         index_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_file = index_cache_dir / f"{key}.json"
         try:
-            cache_file.write_text(json.dumps(data, ensure_ascii=False))
+            cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         except OSError as e:
             logger.debug("Could not write cache: %s", e)
 
@@ -3251,7 +3251,7 @@ def _write_index_cache(key: str, data: Any) -> None:
             pass
     cache_file = index_cache_dir / f"{key}.json"
     try:
-        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
+        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
     except OSError as e:
         logger.debug("Could not write cache: %s", e)
 

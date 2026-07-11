@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -36,11 +37,7 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 
-_SUMMARY_ACCESS_OR_QUOTA_ERROR_SUBSTRINGS: tuple[str, ...] = (
-    "invalid api key",
-    "invalid x-api-key",
-    "unauthorized",
-    "authentication",
+_SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
     "insufficient_quota",
     "quota exceeded",
     "quota_exceeded",
@@ -54,6 +51,12 @@ _SUMMARY_ACCESS_OR_QUOTA_ERROR_SUBSTRINGS: tuple[str, ...] = (
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
+    classified = classify_api_error(exc)
+    if classified.reason is FailoverReason.rate_limit:
+        return False
+    if classified.reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
+        return True
+
     status = getattr(exc, "status_code", None) or getattr(
         getattr(exc, "response", None), "status_code", None
     )
@@ -61,9 +64,9 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
         return True
 
     err_text = str(exc).lower()
-    if "api key" in err_text and ("invalid" in err_text or "blocked" in err_text):
-        return True
-    return any(marker in err_text for marker in _SUMMARY_ACCESS_OR_QUOTA_ERROR_SUBSTRINGS)
+    if classified.reason is FailoverReason.billing:
+        return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
+    return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"

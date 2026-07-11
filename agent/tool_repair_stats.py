@@ -32,7 +32,7 @@ class RepairPattern(str, Enum):
     EMPTY_ARGS = "empty_args"                    # Empty/whitespace → {}
     NONE_LITERAL = "none_literal"                # Python None → {}
     CONTROL_CHAR_ESCAPE = "control_char_escape"  # Unescaped control chars in JSON strings
-    TRAILING_COMMA = "trailing_comma"            # Trailing commas in JSON
+    MALFORMED_JSON_REPAIR = "malformed_json_repair"  # Trailing commas, unclosed brackets, excess brackets
     UNCLOSED_BRACKET = "unclosed_bracket"        # Unclosed {}/[]
     TRAILING_CONTENT = "trailing_content"        # Complete JSON + extra prose
     DOUBLE_SERIALIZE = "double_serialize"        # JSON string wrapping JSON object
@@ -54,6 +54,9 @@ class RepairPattern(str, Enum):
 
     # Schema validation (PR #61550)
     REQUIRED_MISSING = "required_missing"        # Missing required parameters
+
+    # History-level corruption (agent_runtime_helpers.py sanitize_tool_call_arguments)
+    TRUNCATED_ARGS = "truncated_args"            # Corrupted JSON → {} in message history
 
     # Catch-all
     OTHER = "other"
@@ -121,13 +124,15 @@ class ToolRepairStats:
                 self._events.append(evt)
                 if len(self._events) > self._MAX_EVENTS:
                     self._events = self._events[-self._MAX_EVENTS:]
-                    # Rebuild model counts from retained events so totals
-                    # stay consistent with total() after ring-buffer trim.
+                    # Rebuild all counts from retained events.
+                    # The new event is already included in self._events,
+                    # so we must NOT also increment below.
                     self._model_counts = defaultdict(lambda: defaultdict(int))
                     for e in self._events:
                         v = e.pattern if isinstance(e.pattern, str) else getattr(e.pattern, "value", str(e.pattern))
                         self._model_counts[e.model_name][v] += 1
-                self._model_counts[model_name][pat_value] += 1
+                else:
+                    self._model_counts[model_name][pat_value] += 1
         except Exception:
             # Observability must NEVER break the repair pipeline.
             pass
@@ -229,7 +234,7 @@ def get_stats() -> ToolRepairStats:
 # ---------------------------------------------------------------------------
 
 def record_repair(
-    pattern: RepairPattern,
+    pattern: Any,
     tool_name: str = "?",
     model_name: str = "unknown",
     success: bool = True,
@@ -240,24 +245,3 @@ def record_repair(
         get_stats().record(pattern, tool_name, model_name, success, detail)
     except Exception:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Current model context — set by dispatch_tool, read by hooks
-# ---------------------------------------------------------------------------
-
-_current_model: str = "unknown"
-_model_lock = threading.Lock()
-
-
-def set_current_model(model_name: str) -> None:
-    """Called by dispatch_tool to make the current model available to hooks."""
-    global _current_model
-    with _model_lock:
-        _current_model = model_name
-
-
-def get_current_model() -> str:
-    """Read by hook points to tag events with the model that caused them."""
-    with _model_lock:
-        return _current_model

@@ -4,18 +4,11 @@ from __future__ import annotations
 
 import threading
 
-
-# ---------------------------------------------------------------------------
-# Imports under test
-# ---------------------------------------------------------------------------
-
 from agent.tool_repair_stats import (
     RepairPattern,
     ToolRepairStats,
     get_stats,
     record_repair,
-    get_current_model,
-    set_current_model,
 )
 
 
@@ -29,9 +22,9 @@ class TestRepairPattern:
     def test_has_core_patterns(self):
         core = [
             "EMPTY_ARGS", "NONE_LITERAL", "CONTROL_CHAR_ESCAPE",
-            "TRAILING_COMMA", "UNREPAIRABLE",
+            "MALFORMED_JSON_REPAIR", "UNREPAIRABLE",
             "BARE_STRING_WRAP", "BARE_OBJECT_WRAP",
-            "STRING_TO_INT", "STRING_TO_BOOL",
+            "STRING_TO_INT", "STRING_TO_BOOL", "TRUNCATED_ARGS",
         ]
         for name in core:
             assert hasattr(RepairPattern, name), f"Missing pattern: {name}"
@@ -106,18 +99,43 @@ class TestToolRepairStatsBasic:
 
 
 # ---------------------------------------------------------------------------
-# Ring buffer cap
+# Ring buffer cap — overflow invariant (Teknium review fix)
 # ---------------------------------------------------------------------------
 
 class TestRingBuffer:
 
     def test_bounded_memory(self):
         stats = ToolRepairStats()
-        # Override max for faster test
         stats._MAX_EVENTS = 100
         for i in range(150):
             stats.record(RepairPattern.OTHER, "t", "m")
         assert stats.total() == 100
+
+    def test_no_double_count_after_overflow(self):
+        """After overflow, per-model totals must equal total().
+
+        Regression test for Teknium's review: the rebuild included the
+        newest event, then the normal increment double-counted it.
+        """
+        stats = ToolRepairStats()
+        stats._MAX_EVENTS = 10
+        for i in range(15):
+            stats.record(RepairPattern.BARE_STRING_WRAP, "t", "m")
+
+        assert stats.total() == 10
+        model_counts = stats.by_model("m")
+        assert sum(model_counts.values()) == 10, (
+            f"Expected 10, got {sum(model_counts.values())} — double-count bug"
+        )
+
+    def test_count_consistency_across_multiple_overflows(self):
+        """Multiple consecutive overflows must keep counts consistent."""
+        stats = ToolRepairStats()
+        stats._MAX_EVENTS = 5
+        for i in range(25):
+            stats.record(RepairPattern.OTHER, "t", "m")
+        assert stats.total() == 5
+        assert sum(stats.by_model("m").values()) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -157,16 +175,12 @@ class TestFailureResilience:
     def test_record_never_raises(self):
         """record() must NEVER raise, even with garbage input."""
         stats = ToolRepairStats()
-        # Should not raise
         stats.record(None, None, None)  # type: ignore[arg-type]
         stats.record("not_an_enum", "", "")
 
     def test_import_failure_noop(self):
-        """When _record_repair is None, _stat should be a no-op."""
-        # This is tested indirectly — if the import fails in
-        # message_sanitization.py, the fallback record_repair does nothing.
-        # Here we just verify the module-level record_repair works.
-        record_repair(RepairPattern.OTHER, "test", "test")  # should not raise
+        """record_repair should work with string patterns too."""
+        record_repair("string_pattern", "test")  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -191,22 +205,6 @@ class TestSummary:
 
 
 # ---------------------------------------------------------------------------
-# Model context (set_current_model / get_current_model)
-# ---------------------------------------------------------------------------
-
-class TestModelContext:
-
-    def test_set_and_get(self):
-        set_current_model("deepseek/deepseek-v4-pro")
-        assert get_current_model() == "deepseek/deepseek-v4-pro"
-
-    def test_default_is_unknown(self):
-        import agent.tool_repair_stats as mod
-        mod._current_model = "unknown"
-        assert get_current_model() == "unknown"
-
-
-# ---------------------------------------------------------------------------
 # Singleton
 # ---------------------------------------------------------------------------
 
@@ -222,5 +220,27 @@ class TestSingleton:
         stats.record(RepairPattern.OTHER, "t", "m")
         stats.reset()
         assert get_stats().total() == 0
-        # Same object
         assert get_stats() is stats
+
+
+# ---------------------------------------------------------------------------
+# String pattern normalization
+# ---------------------------------------------------------------------------
+
+class TestStringPatterns:
+
+    def test_string_pattern_recorded(self):
+        """String patterns (from _stat()) must be counted, not dropped."""
+        stats = ToolRepairStats()
+        stats.record("empty_args", "t", "m")
+        stats.record("empty_args", "t", "m")
+        assert stats.total() == 2
+        assert stats.by_model("m")["empty_args"] == 2
+
+    def test_string_and_enum_mixed(self):
+        """String and enum patterns for the same value should count together."""
+        stats = ToolRepairStats()
+        stats.record(RepairPattern.BARE_STRING_WRAP, "t", "m")
+        stats.record("bare_string_wrap", "t", "m")
+        assert stats.total() == 2
+        assert stats.by_model("m")["bare_string_wrap"] == 2

@@ -35,6 +35,11 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
+
+try:
+    from agent.tool_repair_stats import record_repair as _record_repair
+except ImportError:
+    _record_repair = None  # type: ignore[assignment]
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
@@ -325,6 +330,11 @@ def sanitize_tool_call_arguments(
                     preview,
                 )
                 function["arguments"] = "{}"
+                if _record_repair is not None:
+                    try:
+                        _record_repair("truncated_args", function_name)
+                    except Exception:
+                        pass
 
                 existing_tool_msg = None
                 scan_index = message_index + 1

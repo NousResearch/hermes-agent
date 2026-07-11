@@ -719,8 +719,8 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     tool_name, key,
                 )
                 try:
-                    from agent.tool_repair_stats import record_repair, RepairPattern, get_current_model
-                    record_repair(RepairPattern.BARE_STRING_WRAP, tool_name, get_current_model())
+                    from agent.tool_repair_stats import record_repair, RepairPattern
+                    record_repair(RepairPattern.BARE_STRING_WRAP, tool_name)
                 except ImportError:
                     pass
                 continue
@@ -730,8 +730,8 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 type(value).__name__, tool_name, key,
             )
             try:
-                from agent.tool_repair_stats import record_repair, RepairPattern, get_current_model
-                record_repair(RepairPattern.BARE_OBJECT_WRAP, tool_name, get_current_model())
+                from agent.tool_repair_stats import record_repair, RepairPattern
+                record_repair(RepairPattern.BARE_OBJECT_WRAP, tool_name)
             except ImportError:
                 pass
             continue

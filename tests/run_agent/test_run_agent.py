@@ -2574,6 +2574,57 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_invoke_tool_passes_profile_to_session_search(self, agent, monkeypatch):
+        """The agent-runtime dispatch path must forward session_search.profile."""
+        sentinel_db = object()
+        captured = {}
+        agent._session_db = sentinel_db
+
+        def fake_session_search(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "results": []})
+
+        monkeypatch.setattr("tools.session_search_tool.session_search", fake_session_search)
+
+        result = json.loads(agent._invoke_tool(
+            "session_search",
+            {"query": "koala", "profile": "other"},
+            "task-1",
+        ))
+
+        assert result["success"] is True
+        assert captured["profile"] == "other"
+        assert captured["db"] is sentinel_db
+
+    def test_sequential_dispatch_passes_profile_to_session_search(self, agent, monkeypatch):
+        """The sequential dispatch path must forward session_search.profile."""
+        sentinel_db = object()
+        captured = {}
+        agent._session_db = sentinel_db
+
+        def fake_session_search(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "results": []})
+
+        monkeypatch.setattr("tools.session_search_tool.session_search", fake_session_search)
+        tool_call = _mock_tool_call(
+            name="session_search",
+            arguments='{"query":"koala","profile":"other"}',
+            call_id="session-search-1",
+        )
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tool_call]),
+            messages,
+            "task-1",
+        )
+
+        assert len(messages) == 1
+        assert json.loads(messages[0]["content"])["success"] is True
+        assert captured["profile"] == "other"
+        assert captured["db"] is sentinel_db
+
     def test_sequential_tool_callbacks_fire_in_order(self, agent):
         tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

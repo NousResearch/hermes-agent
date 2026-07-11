@@ -19,7 +19,7 @@ class TestCrossProfileDiscovery:
     """session_search(query=..., profile=\"other\") must search the named
     profile's DB, not the current one.  This covers both the SessionDB
     read-only FTS detection (#49554) and the agent-loop parameter passthrough
-    (#FIXME replace with actual issue number after creation)."""
+    (#60789)."""
 
     @staticmethod
     def _patch_profiles(monkeypatch, home, exists=True):

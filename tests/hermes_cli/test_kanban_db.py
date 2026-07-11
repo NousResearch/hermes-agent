@@ -4547,10 +4547,23 @@ def test_write_txn_raises_on_persistent_deficit_with_drained_wal(tmp_path):
 def test_check_heals_killed_checkpoint_deficit_from_wal(tmp_path):
     """A checkpoint killed after its page-1 write leaves a PERSISTENT deficit
     whose tail frames still live in the WAL. The check must finish the
-    backfill (heal) instead of alarming."""
+    backfill (heal) instead of alarming.
+
+    The torn state is reconstructed byte-for-byte from a REAL checkpoint's own
+    artifacts rather than hand-written header fields: phase 1 snapshots the
+    pre-checkpoint db+WAL pair, runs a real FULL checkpoint of that same board
+    to completion, and captures the page 1 it wrote. Splicing that page 1 onto
+    the pre-checkpoint file (WAL preserved, no -shm — the post-crash shape)
+    is exactly the page-1-backfilled-tail-never-extended intermediate of the
+    documented page-1-first interleaving, with every byte SQLite-authored.
+    (A deterministic mid-checkpoint kill is not reachable from stdlib sqlite3:
+    the whole checkpoint is a single VDBE opcode, so no progress hook fires
+    inside it; SQLite's own torn-write suites use a custom crash VFS.)
+    A second live connection reads the board before and after the heal.
+    """
     import hermes_cli.kanban_db as kb
     from hermes_cli.kanban_db import connect, write_txn
-    db = tmp_path / "test.db"
+    db = tmp_path / "real.db"
     conn = connect(db_path=db)
     page_size = conn.execute("PRAGMA page_size").fetchone()[0]
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -4563,14 +4576,87 @@ def test_check_heals_killed_checkpoint_deficit_from_wal(tmp_path):
             ("x" * (4 * page_size),),
         )
     assert os.path.getsize(db) // page_size == baseline_pages, "growth must be WAL-only"
-    # Forge the killed-checkpoint state: header claims more pages than the
-    # file holds, while the WAL still carries the extending frames.
-    with open(db, "r+b") as f:
-        f.seek(28)
-        f.write((baseline_pages + 1).to_bytes(4, "big"))
-    kb._check_file_length_invariant(conn)  # must heal, not raise
-    header_pages, file_pages = kb._header_and_file_pages(str(db), page_size)
+    # Phase 1: snapshot the pre-checkpoint pair, then let a REAL checkpoint
+    # finish and capture the page 1 it backfilled.
+    with open(db, "rb") as f:
+        pre_db = f.read()
+    with open(f"{db}-wal", "rb") as f:
+        pre_wal = f.read()
+    ck = conn.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+    assert ck[0] == 0 and ck[1] == ck[2], f"real checkpoint must complete: {ck}"
+    with open(db, "rb") as f:
+        post_page1 = f.read(page_size)
+    post_pages = os.path.getsize(db) // page_size
+    assert post_pages > baseline_pages, "checkpoint must have extended the file"
+    assert int.from_bytes(post_page1[28:32], "big") == post_pages
+    conn.close()
+
+    # Phase 2: assemble the killed-checkpoint intermediate from those real
+    # artifacts and prove the tripwire heals it.
+    torn = tmp_path / "torn.db"
+    with open(torn, "wb") as f:
+        f.write(post_page1 + pre_db[page_size:])
+    with open(f"{torn}-wal", "wb") as f:
+        f.write(pre_wal)
+    assert os.path.getsize(torn) // page_size == baseline_pages, (
+        "torn state must be the SHORT file carrying the checkpoint's new page 1"
+    )
+    raw = sqlite3.connect(str(torn), isolation_level=None)
+    watcher = sqlite3.connect(str(torn))  # live second connection
+    n_before = watcher.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    kb._check_file_length_invariant(raw)  # must heal, not raise
+    header_pages, file_pages = kb._header_and_file_pages(str(torn), page_size)
     assert file_pages >= header_pages, "drain must leave the file covering the header claim"
+    assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    # The healed board converges on the real checkpoint's outcome: page 1 is
+    # byte-identical to what the completed checkpoint wrote in phase 1.
+    with open(torn, "rb") as f:
+        healed_page1 = f.read(page_size)
+    assert healed_page1 == post_page1
+    assert watcher.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == n_before
+    watcher.close()
+    raw.close()
+
+
+def test_check_stands_down_on_reader_pinned_partial_checkpoint(tmp_path):
+    """Real two-connection checkpoint interleaving: a PASSIVE checkpoint that
+    stalls behind a live reader's WAL mark reports a verifiably partial
+    backfill — a legitimate mid-interleaving state the tripwire must treat as
+    indeterminate (stand down silently), never alarm. After the reader
+    releases, the drain completes and the check stays silent."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli.kanban_db import connect, write_txn
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    with write_txn(conn) as c:
+        c.execute(
+            "INSERT INTO tasks (id, title, body, assignee, status, priority, created_at) "
+            "VALUES ('t_pin01', 'first', ?, 'tester', 'todo', 0, 1234567890)",
+            ("x" * (2 * page_size),),
+        )
+    # Reader pins its mark at the current end of the WAL...
+    reader = sqlite3.connect(str(db))
+    reader.execute("BEGIN")
+    assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    # ...then the writer appends frames PAST that mark.
+    with write_txn(conn) as c:
+        c.execute(
+            "INSERT INTO tasks (id, title, body, assignee, status, priority, created_at) "
+            "VALUES ('t_pin02', 'second', ?, 'tester', 'todo', 0, 1234567890)",
+            ("y" * (4 * page_size),),
+        )
+    res = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    assert res[0] == 0 and 0 <= res[2] < res[1], (
+        f"expected a reader-pinned PARTIAL backfill, got {res}"
+    )
+    kb._check_file_length_invariant(conn)  # indeterminate — must not raise
+    reader.rollback()
+    reader.close()
+    res = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    assert res[0] == 0 and res[1] == res[2], f"drain must complete: {res}"
+    kb._check_file_length_invariant(conn)  # healthy — still silent
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     conn.close()
 
@@ -4646,10 +4732,12 @@ def test_check_raises_on_real_truncation_with_empty_wal(tmp_path):
     truncated = bytes(data[: (real_page_count - 1) * page_size])
     with open(db, "wb") as f:
         f.write(truncated)
-    # Now open and check — should raise
+    # Now open and check — the CHECKER's own verdict must fire (match pins the
+    # "kanban torn-extend" message: a SQLite-internal DatabaseError raised
+    # before the post-drain final decision would fail this test, not pass it).
     # We can't use connect() because _validate_sqlite_header may block; use a raw connection
     raw_conn = sqlite3.connect(str(db), isolation_level=None)
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(sqlite3.DatabaseError, match="kanban torn-extend"):
         _check_file_length_invariant(raw_conn)
     raw_conn.close()
 

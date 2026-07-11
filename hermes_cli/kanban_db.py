@@ -2315,7 +2315,26 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
         # backfilling frames, so identical (log, checkpointed) counters
         # across both drains with an unmoved header prove nothing ran in
         # between — the surviving deficit cannot be someone mid-flight.
-        first_drain = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        #
+        # The drains themselves can also raise: on a really-truncated file
+        # SQLite's checkpoint detects the damage ("database disk image is
+        # malformed") before our post-drain comparison ever runs. A deficit
+        # that survived the backoff plus a drain that dies on the damaged
+        # image IS the tripwire's target condition, so fold that error into
+        # the checker's own verdict (chained) instead of letting a generic
+        # SQLite message escape. Lock contention does not raise — a busy
+        # checkpoint reports via the row's busy flag and stands down below.
+        def _drain() -> Optional[tuple]:
+            try:
+                return conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            except sqlite3.DatabaseError as exc:
+                raise sqlite3.DatabaseError(
+                    f"kanban torn-extend: {path} header claims {header_pages} "
+                    f"pages but the file holds {file_pages}, and the WAL "
+                    f"drain itself failed on the damaged image ({exc})"
+                ) from exc
+
+        first_drain = _drain()
         if first_drain is None or first_drain[0]:
             return  # checkpoint lock contended — indeterminate this pass
         if first_drain[1] != first_drain[2]:
@@ -2326,7 +2345,7 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
         header_pages, file_pages = sample
         if header_pages == 0 or file_pages >= header_pages:
             return  # the drain healed it (killed-checkpoint case, repaired)
-        second_drain = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        second_drain = _drain()
         if second_drain is None or second_drain[0]:
             return
         if second_drain[1] != second_drain[2]:

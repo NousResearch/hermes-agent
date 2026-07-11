@@ -850,7 +850,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
 
 @pytest.mark.asyncio
-async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
+async def test_topic_root_command_creates_system_topic_unpinned(tmp_path, monkeypatch):
     import gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")

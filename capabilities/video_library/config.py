@@ -10,6 +10,9 @@ from typing import Any
 
 _LIBRARY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SUPPORTED_MODES = {"linked", "managed"}
+GENERATED_LIBRARY_DIRECTORIES = frozenset(
+    {"02_精选镜头", "03_关键帧", "04_素材分析", "timelines", ".hermes-assets"}
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,15 @@ class VideoLibraryConfig:
     @property
     def analysis_dir(self) -> Path:
         return self.root / "04_素材分析"
+
+
+def is_generated_library_path(library: VideoLibraryConfig, path: Path | str) -> bool:
+    candidate = Path(path).expanduser().resolve()
+    try:
+        relative = candidate.relative_to(library.root.resolve())
+    except ValueError:
+        return False
+    return bool(relative.parts) and relative.parts[0] in GENERATED_LIBRARY_DIRECTORIES
 
 
 def load_library_configs(config: dict[str, Any]) -> dict[str, VideoLibraryConfig]:
@@ -109,7 +121,9 @@ def resolve_source_path(library: VideoLibraryConfig, path: Path | str) -> Path:
 
 
 __all__ = [
+    "GENERATED_LIBRARY_DIRECTORIES",
     "VideoLibraryConfig",
+    "is_generated_library_path",
     "load_library_configs",
     "resolve_library_config",
     "resolve_source_path",

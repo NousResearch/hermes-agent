@@ -6,7 +6,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import VideoLibraryConfig, load_library_configs, resolve_library_config, resolve_source_path
+from .config import (
+    VideoLibraryConfig,
+    is_generated_library_path,
+    load_library_configs,
+    resolve_library_config,
+    resolve_source_path,
+)
 from .obsidian import ObsidianProjector
 from .semantic import analyze_keyframes
 from .service import VideoLibraryService
@@ -66,6 +72,8 @@ class VideoLibraryBatchRunner:
                 errors.append({"file": str(source_root), "message": "source root is missing", "stage": "authorization"})
                 continue
             for candidate in sorted(source_root.rglob("*"), key=lambda path: str(path).casefold()):
+                if is_generated_library_path(self.library, candidate):
+                    continue
                 if candidate.suffix.lower() not in SUPPORTED_VIDEO_SUFFIXES:
                     continue
                 try:

@@ -74,3 +74,14 @@ Bare `python3` is not canonical for this handoff because a system Python may be 
 - Story 2.3 owns generic cwd enforcement and a minimal provider-action cwd test double; real Archon adapter cwd validation belongs to Story 3.4a.
 - Story 5.3a owns the operational diagnostic taxonomy, persistence contract, and diagnostic family matrix; query formatting belongs to Story 5.3b and resolution history belongs to Story 5.3c.
 - External Archon producer completion status is not proven by this local handoff. Provider-dependent stories must keep their Archon dependency records until compatible producer output is available and validated.
+
+## External Archon Validation Blocker
+
+This isolated handoff does not contain validated runtime output captured from the external Archon producer.
+Do not infer producer compatibility from the local fixture package alone.
+Before any provider-dependent Hermes story is marked `done`, the missing external evidence must be supplied and validated against the local contract package:
+
+- Archon provider binding lifecycle output for create, update, status, rotate, disable, and remove paths.
+- Archon workflow command output for start, status, approve, reject, resume, retry, cancel, timeout, schema mismatch, malformed request, unexpected exit, and unexpected state paths.
+- Archon workflow event output for workflow started, completed, failed, approval requested, delivery failed, artifact recorded, and redelivery paths.
+- Archon delivery and outbox status output for healthy, delayed, retrying, failed, duplicated, terminal-failure, and reconciliation-pending paths.

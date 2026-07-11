@@ -46,6 +46,13 @@ Schema files are present under `contracts/workflow-commander/schemas/`.
 Required example fixture families remain required before contract-gated stories can complete.
 No story may claim example fixture readiness unless the matching files exist under `contracts/workflow-commander/examples/` and pass compatibility validation.
 
+## Provider Completion Gate
+
+The local contract package is Hermes-side readiness evidence, not proof that external Archon producer output is compatible.
+Any Hermes story that depends on Archon producer output must keep its dependency record and must not be marked `done` from local fixtures alone.
+Completion for those provider-dependent stories requires compatible external Archon producer output for every consumed command, provider binding, delivery-status, and workflow-event family, validated against the local `contracts/workflow-commander/` package.
+Until that external evidence is available, Hermes implementation may proceed against local fixtures where the story allows it, but final done claims remain blocked.
+
 ## Local NFR Coverage Map
 
 This map keeps the parent NFR traceability local to the Hermes handoff.
@@ -178,8 +185,8 @@ Requirements Covered: FR-3.
 Implementation Scope: Hermes workflow-action cwd guard, audit capture, BMAD invocation cwd, and a minimal provider-action cwd port/test double used only to prove cwd propagation before real provider adapters exist.
 Depends on: hermes-agent Story 2.1c.
 Contract needed: Bound Project Cwd authority rule, BMAD execution cwd, workflow action audit record, and minimal provider-action cwd propagation interface for tests.
-Blocking behavior: Cwd enforcement can be completed when Hermes proves BMAD actions and the minimal provider-action test double receive the selected Project Binding cwd. Provider-specific Archon command cwd evidence remains in Story 3.4a and must not block Story 2.3.
-Integration validation: Cwd guard tests prove BMAD actions and test-double provider actions use the Bound Project Cwd and reject missing or invalid cwd before any external workflow action runs. Story 3.4a repeats cwd validation with the real provider adapter.
+Blocking behavior: Cwd enforcement can be completed when Hermes proves BMAD actions and the minimal provider-action test double receive the selected Project Binding cwd. Real provider-adapter evidence is not required to complete Story 2.3.
+Integration validation: Cwd guard tests prove BMAD actions and test-double provider actions use the Bound Project Cwd and reject missing or invalid cwd before any external workflow action runs.
 
 Acceptance Criteria:
 
@@ -290,7 +297,7 @@ Implementation Scope: Hermes strict provider adapter for workflow start and stat
 Depends on: parent Story 1.3a, hermes-agent Story 2.1c, hermes-agent Story 2.3, hermes-agent Story 3.2, Archon Story 3.3a, and Archon Story 3.3b.
 Contract needed: Workflow command envelope, start result schema, status result schema, timeout shape, success shape, and error shape.
 Blocking behavior: Hermes start and status control cannot be completed until provider command examples are locally available and Hermes can fail closed on malformed or incompatible results.
-Integration validation: Hermes adapter tests parse provider `archon` start and status examples once present, invoke from the Bound Project Cwd, record stdout, stderr, exit code, timeout, correlation id, and update only allowed workflow reference or diagnostic state.
+Integration validation: Hermes adapter tests parse provider `archon` start and status examples once present, invoke the real provider adapter from the Bound Project Cwd, prove it uses the Story 2.3 cwd guard, record stdout, stderr, exit code, timeout, correlation id, and update only allowed workflow reference or diagnostic state.
 
 Acceptance Criteria:
 

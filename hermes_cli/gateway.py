@@ -3892,14 +3892,20 @@ def _ensure_launchd_launcher(python_path: str) -> str:
     named symlink, ``-m hermes_cli.main`` works identically.
 
     Idempotent: recreates the link only when missing or pointing at a stale
-    interpreter (e.g. after a venv rebuild). Falls back to the raw
-    ``python_path`` if the symlink cannot be created (read-only home, etc.)
-    so gateway installation never breaks over a cosmetic feature.
+    interpreter (e.g. after a venv rebuild). Only ever replaces symlinks —
+    if a regular file occupies the path, it is left untouched and the raw
+    ``python_path`` is used. Likewise falls back on any OSError (read-only
+    home, etc.) so gateway installation never breaks over a cosmetic feature.
     """
     launcher = get_hermes_home() / "bin" / get_launchd_launcher_name()
     try:
-        if launcher.is_symlink() and os.readlink(launcher) == python_path:
-            return str(launcher)
+        if launcher.is_symlink():
+            if os.readlink(launcher) == python_path:
+                return str(launcher)
+        elif launcher.exists():
+            # Unexpected regular file/dir at the launcher path — never
+            # clobber user data for a cosmetic feature.
+            return python_path
         launcher.parent.mkdir(parents=True, exist_ok=True)
         tmp_link = launcher.parent / f".{launcher.name}.tmp"
         tmp_link.unlink(missing_ok=True)
@@ -3908,6 +3914,20 @@ def _ensure_launchd_launcher(python_path: str) -> str:
         return str(launcher)
     except OSError:
         return python_path
+
+
+def remove_launchd_launcher() -> None:
+    """Remove the named launcher symlink (both uninstall paths call this).
+
+    Only removes symlinks — a regular file at the path is preserved.
+    Best-effort: uninstall flows must not fail over launcher cleanup.
+    """
+    try:
+        launcher = get_hermes_home() / "bin" / get_launchd_launcher_name()
+        if launcher.is_symlink():
+            launcher.unlink()
+    except OSError:
+        pass
 
 
 def generate_launchd_plist() -> str:
@@ -4212,6 +4232,8 @@ def launchd_uninstall():
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
+
+    remove_launchd_launcher()
 
     print("✓ Service uninstalled")
 

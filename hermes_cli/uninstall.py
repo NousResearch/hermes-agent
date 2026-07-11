@@ -250,7 +250,7 @@ def uninstall_gateway_service():
     # 3. macOS: uninstall launchd plist
     elif system == "Darwin":
         try:
-            from hermes_cli.gateway import get_launchd_plist_path
+            from hermes_cli.gateway import get_launchd_plist_path, remove_launchd_launcher
             plist_path = get_launchd_plist_path()
             if plist_path.exists():
                 subprocess.run(["launchctl", "unload", str(plist_path)],
@@ -258,15 +258,9 @@ def uninstall_gateway_service():
                 plist_path.unlink()
                 log_success(f"Removed macOS gateway service ({plist_path})")
                 stopped_something = True
-            # Remove the named launcher symlink used for Login Items display.
-            try:
-                from hermes_cli.gateway import get_launchd_launcher_name
-                from hermes_constants import get_hermes_home
-                launcher = get_hermes_home() / "bin" / get_launchd_launcher_name()
-                if launcher.is_symlink():
-                    launcher.unlink()
-            except Exception:
-                pass
+            # Remove the named launcher symlink used for Login Items display
+            # (not gated on the plist existing — covers orphaned launchers).
+            remove_launchd_launcher()
         except Exception as e:
             log_warn(f"Could not remove launchd gateway service: {e}")
 

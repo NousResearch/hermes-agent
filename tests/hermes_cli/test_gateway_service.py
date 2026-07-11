@@ -2639,6 +2639,60 @@ class TestProfileArg:
         assert result == str(launcher)
         assert os.readlink(launcher) == str(new_python)
 
+    def test_launchd_launcher_preserves_regular_file_at_path(self, tmp_path, monkeypatch):
+        # A non-symlink at the launcher path must never be clobbered.
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "bin").mkdir(parents=True)
+        launcher = hermes_home / "bin" / "Hermes Gateway"
+        launcher.write_text("user data, not ours\n")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+
+        result = gateway_cli._ensure_launchd_launcher("/some/venv/bin/python")
+
+        assert result == "/some/venv/bin/python"
+        assert launcher.read_text() == "user data, not ours\n"
+        assert not launcher.is_symlink()
+
+    def test_remove_launchd_launcher_removes_symlink_only(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "bin").mkdir(parents=True)
+        launcher = hermes_home / "bin" / "Hermes Gateway"
+        target = tmp_path / "python"
+        target.write_text("#!/bin/sh\n")
+        launcher.symlink_to(target)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+
+        gateway_cli.remove_launchd_launcher()
+        assert not launcher.exists()
+
+        # Regular file at the path is preserved.
+        launcher.write_text("user data\n")
+        gateway_cli.remove_launchd_launcher()
+        assert launcher.read_text() == "user data\n"
+
+    def test_launchd_uninstall_removes_launcher_symlink(self, tmp_path, monkeypatch):
+        # The `hermes gateway uninstall` path must clean up the launcher too.
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "bin").mkdir(parents=True)
+        launcher = hermes_home / "bin" / "Hermes Gateway"
+        target = tmp_path / "python"
+        target.write_text("#!/bin/sh\n")
+        launcher.symlink_to(target)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>")
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+
+        gateway_cli.launchd_uninstall()
+
+        assert not plist_path.exists()
+        assert not launcher.exists()
+
     def test_launchd_launcher_falls_back_to_python_on_oserror(self, tmp_path, monkeypatch):
         # Cosmetic feature must never break gateway install: if the symlink
         # can't be created, the raw interpreter path is used.

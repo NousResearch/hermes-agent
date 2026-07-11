@@ -96,7 +96,11 @@ _PREFIX_PATTERNS = [
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
-    r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+    r"sk_[A-Za-z0-9]{20,}",             # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+                                         # Body is [A-Za-z0-9] only (no underscore) and
+                                         # min-length 20 to avoid false-positive matches on
+                                         # snake_case filenames like ``sk_hynix_chart.png``.
+                                         # Real ElevenLabs keys are 30+ mixed-case alnum chars.
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
     r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key

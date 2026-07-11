@@ -403,12 +403,30 @@ class TestElevenLabsTavilyExaKeys:
     def test_elevenlabs_key_redacted(self):
         text = "ELEVENLABS_API_KEY=sk_abc123def456ghi789jklmnopqrstu"
         result = redact_sensitive_text(text)
-        assert "abc123def456ghi" not in result
+        assert "abc123def456ghi789jklmnopqrstu" not in result
 
     def test_elevenlabs_key_in_log_line(self):
         text = "Connecting to ElevenLabs with key sk_abc123def456ghi789jklmnopqrstu"
         result = redact_sensitive_text(text)
-        assert "abc123def456ghi" not in result
+        assert "abc123def456ghi789jklmnopqrstu" not in result
+
+    def test_elevenlabs_key_not_confused_with_filename(self):
+        """sk_ prefix must NOT match snake_case filenames (issue #61876)."""
+        filenames = [
+            "/home/user/sk_hynix_chart.png",
+            "/tmp/sk_telecom_data.csv",
+            "sk_hynix_report.pdf",
+            "/data/sk_group_analysis.xlsx",
+        ]
+        for path in filenames:
+            result = redact_sensitive_text(path, code_file=True)
+            assert result == path, f"Filename falsely redacted: {path!r} -> {result!r}"
+
+    def test_elevenlabs_key_short_value_not_matched(self):
+        """Short sk_ values (< 20 chars body) must NOT be redacted."""
+        text = "variable sk_short_var = 42"
+        result = redact_sensitive_text(text)
+        assert "sk_short_var" in result
 
     def test_tavily_key_redacted(self):
         text = "TAVILY_API_KEY=tvly-ABCdef123456789GHIJKL0000"
@@ -439,7 +457,7 @@ class TestElevenLabsTavilyExaKeys:
             "SHELL=/bin/bash\n"
         )
         result = redact_sensitive_text(env_dump)
-        assert "abc123def456ghi" not in result
+        assert "abc123def456ghi789jklmnopqrstu" not in result
         assert "ABCdef123456789" not in result
         assert "XYZ789abcdef" not in result
         assert "HOME=/home/user" in result

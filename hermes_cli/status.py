@@ -437,6 +437,7 @@ def show_status(args):
 
     platforms = {
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
+        "Matrix": ("MATRIX_ACCESS_TOKEN", "MATRIX_HOME_ROOM"),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),

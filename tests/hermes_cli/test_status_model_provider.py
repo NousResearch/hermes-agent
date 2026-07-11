@@ -64,6 +64,24 @@ def test_show_status_displays_legacy_string_model_and_custom_endpoint(monkeypatc
     assert "Provider:     Custom endpoint" in out
 
 
+def test_show_status_reports_matrix_home_room(monkeypatch, capsys, tmp_path):
+    from hermes_cli import status as status_mod
+
+    _patch_common_status_deps(monkeypatch, status_mod, tmp_path)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": {}}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openrouter", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenRouter", raising=False)
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org")
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    out = capsys.readouterr().out
+    assert "Matrix" in out
+    assert "configured (home: !room123:example.org)" in out
+
+
 def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("hermes_cli.status.managed_nous_tools_enabled", lambda: True)
     from hermes_cli import status as status_mod

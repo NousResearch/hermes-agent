@@ -94,7 +94,7 @@ function buildDesktopBackendEnv({
   currentEnv = process.env,
   platform = process.platform,
   pathModule = pathModuleForPlatform(platform)
-}: any = {}) {
+}: any = {}): Record<string, string> {
   const delimiter = delimiterForPlatform(platform)
   const currentPythonPath = currentEnv?.PYTHONPATH || ''
   const key = pathEnvKey(currentEnv, platform)
@@ -107,7 +107,8 @@ function buildDesktopBackendEnv({
       currentPath: currentPathValue(currentEnv, platform),
       platform,
       pathModule
-    })
+    }),
+    ...(platform === 'win32' ? { PYTHONIOENCODING: 'utf-8' } : {})
   }
 }
 

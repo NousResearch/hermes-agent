@@ -4361,19 +4361,27 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, has_blocking_approval, has_pending_approval,
         )
 
-        if not has_blocking_approval(session_key):
+        if not (has_blocking_approval(session_key) or has_pending_approval(session_key)):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
 
-        # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
-        resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
+        # Parse args: support an exact request id plus the legacy choices.
+        raw_args = event.get_command_args().strip().split()
+        args = [arg.lower() for arg in raw_args]
+        request_id = next(
+            (raw for raw, arg in zip(raw_args, args) if arg != "all" and arg not in {
+                "once", "approve", "approved", "allow", "session", "ses",
+                "always", "permanent", "permanently",
+            }),
+            None,
+        )
+        resolve_all = "all" in args and request_id is None
+        remaining = [a for a in args if a not in {"all", request_id}]
 
         if any(a in {"always", "permanent", "permanently"} for a in remaining):
             choice = "always"
@@ -4382,7 +4390,9 @@ class GatewaySlashCommandsMixin:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            session_key, choice, resolve_all=resolve_all, request_id=request_id,
+        )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -4391,7 +4401,10 @@ class GatewaySlashCommandsMixin:
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
-        logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
+        logger.info(
+            "User approved %d dangerous command(s) via /approve (%s, request_id=%s)",
+            count, choice, request_id or "session_fifo",
+        )
         plural = "plural" if count > 1 else "singular"
         return t(f"gateway.approve.{choice}_{plural}", count=count)
 
@@ -4410,22 +4423,29 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, has_blocking_approval, has_pending_approval,
+            get_pending_approval,
         )
 
-        if not has_blocking_approval(session_key):
+        if not (has_blocking_approval(session_key) or has_pending_approval(session_key)):
             if session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
-        # Parse args: a leading "all" token denies every pending command;
-        # anything after it (or the whole arg string when "all" is absent) is
-        # captured verbatim as the optional deny reason relayed to the agent.
+        # A request id is accepted before the legacy free-text deny reason.
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
-        resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        request_id = None
+        if tokens and (
+            len(tokens[0]) == 32 and all(c in "0123456789abcdefABCDEF" for c in tokens[0])
+            or has_pending_approval(session_key) and get_pending_approval(tokens[0]) is not None
+        ):
+            request_id = tokens[0]
+        resolve_all = bool(tokens) and tokens[0].lower() == "all" and request_id is None
         if resolve_all:
+            reason = raw_args[len(tokens[0]):].strip()
+        elif request_id:
             reason = raw_args[len(tokens[0]):].strip()
         else:
             reason = raw_args
@@ -4435,7 +4455,7 @@ class GatewaySlashCommandsMixin:
 
         count = resolve_gateway_approval(
             session_key, "deny", resolve_all=resolve_all,
-            reason=reason or None,
+            reason=reason or None, request_id=request_id,
         )
         if not count:
             return t("gateway.deny.no_pending")
@@ -4446,8 +4466,8 @@ class GatewaySlashCommandsMixin:
             _adapter.resume_typing_for_chat(source.chat_id)
 
         logger.info(
-            "User denied %d dangerous command(s) via /deny%s",
-            count, " (with reason)" if reason else "",
+            "User denied %d dangerous command(s) via /deny%s (request_id=%s)",
+            count, " (with reason)" if reason else "", request_id or "session_fifo",
         )
         if reason:
             if count > 1:

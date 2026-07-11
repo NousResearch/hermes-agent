@@ -12,6 +12,7 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -1403,7 +1405,10 @@ def detect_dangerous_command(command: str) -> tuple:
 # =========================================================================
 
 _lock = threading.Lock()
+# Fallback approvals are indexed by their request id; the per-session list is
+# only the compatibility ordering used by session-only /approve and /deny.
 _pending: dict[str, dict] = {}
+_pending_by_session: dict[str, list[str]] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
@@ -1460,22 +1465,140 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
+def _approval_arguments(approval: dict):
+    """Return the stable, non-display argument payload used for revalidation."""
+    if "arguments" in approval:
+        return approval["arguments"]
+    if "args" in approval:
+        return approval["args"]
+    if "argument_hash" in approval:
+        return None
+    return approval.get("command", approval.get("code", approval.get("description", "")))
+
+
+def _approval_argument_hash(approval: dict) -> str:
+    """Hash normalized approval arguments without persisting their raw value."""
+    supplied = approval.get("argument_hash") or approval.get("args_hash")
+    if supplied:
+        return str(supplied)
+    normalized = json.dumps(
+        _approval_arguments(approval),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _mark_expired(request: dict) -> bool:
+    """Mark a fallback request expired and return whether it is still valid."""
+    if request.get("status") != "pending":
+        return False
+    try:
+        expired = time.time() >= float(request["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        expired = True
+    if expired:
+        request["status"] = "expired"
+        return False
+    return True
+
+
+def _resolve_fallback_approval(
+    session_key: str,
+    choice: str,
+    *,
+    request_id: Optional[str],
+    resolve_all: bool,
+    reason: Optional[str],
+    request_hash: Optional[str],
+) -> int:
+    """Resolve an in-memory fallback request, preserving the legacy int API."""
+    with _lock:
+        if request_id:
+            request = _pending.get(request_id)
+            if not request or request.get("session_key") != session_key:
+                logger.warning(
+                    "approval_resolution outcome=missing resolution_mode=exact "
+                    "request_id=%s session_key=%s",
+                    request_id, session_key,
+                )
+                return 0
+            if request.get("resolution") is not None:
+                logger.warning(
+                    "approval_resolution outcome=already_resolved resolution_mode=exact "
+                    "request_id=%s session_key=%s",
+                    request_id, session_key,
+                )
+                return 0
+            if not _mark_expired(request):
+                logger.warning(
+                    "approval_resolution outcome=stale resolution_mode=exact "
+                    "request_id=%s session_key=%s",
+                    request_id, session_key,
+                )
+                return 0
+            if request_hash and request_hash != request.get("argument_hash"):
+                request["status"] = "stale"
+                logger.warning(
+                    "approval_resolution outcome=changed resolution_mode=exact "
+                    "request_id=%s session_key=%s",
+                    request_id, session_key,
+                )
+                return 0
+            targets = [request]
+            resolution_mode = "exact"
+        else:
+            ids = _pending_by_session.get(session_key, [])
+            valid = []
+            for current_id in ids:
+                request = _pending.get(current_id)
+                if request and _mark_expired(request):
+                    valid.append(request)
+            if not valid:
+                return 0
+            targets = valid if resolve_all else valid[:1]
+            resolution_mode = "session_all" if resolve_all else "session_fifo"
+
+        resolved_at = time.time()
+        for request in targets:
+            request["resolution"] = choice
+            request["resolution_reason"] = reason
+            request["resolved_at"] = resolved_at
+            request["resolution_mode"] = resolution_mode
+            request["status"] = "resolved"
+            logger.info(
+                "approval_resolution outcome=resolved resolution_mode=%s "
+                "request_id=%s session_key=%s choice=%s",
+                resolution_mode, request["request_id"], session_key, choice,
+            )
+        return len(targets)
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
-    """Called by the gateway's /approve or /deny handler to unblock
-    waiting agent thread(s).
+                             reason: Optional[str] = None,
+                             request_id: Optional[str] = None,
+                             request_hash: Optional[str] = None) -> int:
+    """Resolve a gateway approval by exact request id or legacy session FIFO.
 
-    When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
-
-    *reason* is an optional free-text explanation attached to an explicit
-    deny (``/deny <reason>``).  It is relayed back to the agent in the
-    BLOCKED message so it can adapt instead of only hearing "denied".
-
-    Returns the number of approvals resolved (0 means nothing was pending).
+    Callback-backed approvals retain their existing event queue behavior. The
+    no-callback fallback is keyed by request id and remains in memory until a
+    later tool retry consumes the resolved decision.
     """
+    if request_id or not _gateway_queues.get(session_key):
+        fallback_count = _resolve_fallback_approval(
+            session_key,
+            choice,
+            request_id=request_id,
+            resolve_all=resolve_all,
+            reason=reason,
+            request_hash=request_hash,
+        )
+        if fallback_count or request_id:
+            return fallback_count
+
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -1502,10 +1625,93 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
-def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
+def has_pending_approval(session_key: str) -> bool:
+    """Return whether a valid no-callback approval remains for *session_key*."""
     with _lock:
-        _pending[session_key] = approval
+        return any(
+            request is not None and _mark_expired(request)
+            for request_id in _pending_by_session.get(session_key, [])
+            for request in [_pending.get(request_id)]
+        )
+
+
+def get_pending_approval(request_id: str) -> Optional[dict]:
+    """Return a copy of an in-memory approval request, if it still exists."""
+    with _lock:
+        request = _pending.get(request_id)
+        return dict(request) if request is not None else None
+
+
+def consume_pending_approval(
+    session_key: str,
+    request_id: str,
+    *,
+    request_hash: Optional[str] = None,
+) -> Optional[dict]:
+    """Consume one resolved fallback approval after revalidating its identity."""
+    with _lock:
+        request = _pending.get(request_id)
+        if not request or request.get("session_key") != session_key:
+            return None
+        if request.get("status") != "resolved" or request.get("resolution") in {None, "deny"}:
+            return None
+        try:
+            if time.time() >= float(request["expires_at"]):
+                request["status"] = "expired"
+                return None
+        except (KeyError, TypeError, ValueError):
+            request["status"] = "stale"
+            return None
+        if request_hash and request_hash != request.get("argument_hash"):
+            request["status"] = "stale"
+            logger.warning(
+                "approval_resolution outcome=changed resolution_mode=consume "
+                "request_id=%s session_key=%s",
+                request_id, session_key,
+            )
+            return None
+        request["status"] = "consumed"
+        return dict(request)
+
+
+def submit_pending(session_key: str, approval: dict) -> dict:
+    """Store and return an identity-bound, in-memory fallback approval request."""
+    request = dict(approval)
+    request_id = str(request.get("request_id") or uuid.uuid4().hex)
+    with _lock:
+        existing = _pending.get(request_id)
+        if existing is not None:
+            if _approval_argument_hash(request) != existing.get("argument_hash"):
+                existing["status"] = "stale"
+                logger.warning(
+                    "approval_resolution outcome=changed resolution_mode=submit "
+                    "request_id=%s session_key=%s",
+                    request_id, session_key,
+                )
+            return dict(existing)
+        created_at = float(request.get("created_at") or time.time())
+        expires_at = request.get("expires_at")
+        if expires_at is None:
+            expires_at = created_at + max(_get_approval_timeout(), 0)
+        request.update({
+            "request_id": request_id,
+            "session_key": session_key,
+            "created_at": created_at,
+            "expires_at": float(expires_at),
+            "argument_hash": _approval_argument_hash(request),
+            "operation": request.get("operation") or request.get("tool_name") or "",
+            "tool_name": request.get("tool_name") or request.get("operation") or "",
+            "policy_key": request.get("policy_key") or request.get("pattern_key"),
+            "requester": request.get("requester") or request.get("user_id") or "",
+            "channel": request.get("channel") or request.get("platform") or "",
+            "status": "pending",
+            "resolution": None,
+            "resolution_reason": None,
+            "resolved_at": None,
+        })
+        _pending[request_id] = request
+        _pending_by_session.setdefault(session_key, []).append(request_id)
+        return dict(request)
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -1537,7 +1743,8 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
-        _pending.pop(session_key, None)
+        for request_id in _pending_by_session.pop(session_key, []):
+            _pending.pop(request_id, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
         # Session-boundary cleanup should cancel any blocked approval waits
@@ -2006,6 +2213,7 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    approval_metadata: Optional[dict] = None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -2172,17 +2380,25 @@ def _run_approval_gate(
 
         # No notify callback (e.g. API server without an attached chat):
         # queue for /approve /deny review, agent sees approval_required.
-        submit_pending(session_key, {
+        pending = dict(approval_metadata or {})
+        pending.update({
             "command": display_target,
             "pattern_key": pattern_key,
             "description": description,
         })
+        pending_request = submit_pending(session_key, pending)
+        pending_fields = {
+            key: pending_request[key]
+            for key in ("request_id", "created_at", "expires_at")
+            if key in pending_request
+        } if isinstance(pending_request, dict) else {}
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "approval_required",
             "command": display_target,
             "description": description,
+            **pending_fields,
             "message": (
                 f"⚠️ This action is potentially dangerous ({description}). "
                 f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
@@ -2304,6 +2520,10 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    arguments=None,
+    requester: str = "",
+    channel: str = "",
+    request_id: str = "",
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -2382,6 +2602,14 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+        approval_metadata={
+            "operation": tool_name,
+            "tool_name": tool_name,
+            "arguments": arguments if arguments is not None else {"reason": description},
+            "requester": requester,
+            "channel": channel,
+            "request_id": request_id,
+        },
     )
 
 
@@ -2875,17 +3103,26 @@ def check_all_command_guards(command: str, env_type: str,
         from agent.redact import redact_sensitive_text
         _disp_command = redact_sensitive_text(command)
         _disp_combined_desc = redact_sensitive_text(combined_desc)
-        submit_pending(session_key, {
+        pending_request = submit_pending(session_key, {
+            "operation": "terminal",
+            "tool_name": "terminal",
+            "argument_hash": _approval_argument_hash({"arguments": {"command": command}}),
             "command": _disp_command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
         })
+        pending_fields = {
+            key: pending_request[key]
+            for key in ("request_id", "created_at", "expires_at")
+            if key in pending_request
+        }
         return {
             "approved": False,
             "pattern_key": primary_key,
             "status": "pending_approval",
             "approval_pending": True,
+            **pending_fields,
             "command": _disp_command,
             "description": _disp_combined_desc,
             "message": (
@@ -3074,17 +3311,26 @@ def check_execute_code_guard(code: str, env_type: str,
     if notify_cb is None:
         # No gateway callback registered (e.g. ask-mode without a notifier):
         # surface a pending approval for backward compatibility.
-        submit_pending(session_key, {
+        pending_request = submit_pending(session_key, {
+            "operation": "execute_code",
+            "tool_name": "execute_code",
+            "argument_hash": _approval_argument_hash({"arguments": {"command": command, "code": code}}),
             "command": display_command,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
             "description": display_description,
         })
+        pending_fields = {
+            key: pending_request[key]
+            for key in ("request_id", "created_at", "expires_at")
+            if key in pending_request
+        }
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "pending_approval",
             "approval_pending": True,
+            **pending_fields,
             "command": display_command,
             "description": display_description,
             "message": (

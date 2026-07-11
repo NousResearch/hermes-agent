@@ -74,6 +74,7 @@ def _clear_approval_state():
     mod._session_approved.clear()
     mod._permanent_approved.clear()
     mod._pending.clear()
+    getattr(mod, "_pending_by_session", {}).clear()
 
 
 # ------------------------------------------------------------------
@@ -703,6 +704,25 @@ class TestFallbackNoCallback:
         assert result.get("status") == "pending_approval"
         assert result.get("approval_pending") is True
 
+    @pytest.mark.asyncio
+    async def test_exact_request_id_approves_fallback_request(self):
+        """An exact fallback request id resolves only that request."""
+        from tools import approval as mod
+
+        runner = _make_runner()
+        session_key = runner._session_key_for_source(_make_source())
+        request = mod.submit_pending(session_key, {
+            "operation": "terminal",
+            "arguments": {"command": "rm -rf /tmp/a"},
+            "pattern_key": "recursive delete",
+            "command": "rm -rf /tmp/a",
+        })
+
+        await runner._handle_approve_command(
+            _make_event(f"/approve {request['request_id']}")
+        )
+
+        assert mod._pending[request["request_id"]]["resolution"] == "once"
 
 # ------------------------------------------------------------------
 # Regression: cross-session approval routing isolation (#24100)

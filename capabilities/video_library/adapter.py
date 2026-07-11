@@ -142,6 +142,7 @@ def create_timeline_data(body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         timeline = _request_service(library_id).create_timeline(
             [str(item) for item in clip_ids],
             aspect=str(body.get("aspect") or "9:16"),
+            library_id=library_id or "",
             script=script,
         )
         return 200, _envelope(timeline)

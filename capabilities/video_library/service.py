@@ -257,16 +257,24 @@ class VideoLibraryService:
         clip_ids: list[str],
         *,
         aspect: str = "9:16",
+        library_id: str = "",
         script: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not clip_ids:
             raise ValueError("at least one clip is required")
         all_clips = {clip["id"]: clip for clip in self.store.list_clips()}
         selected = []
+        normalized_library_id = str(library_id or "").strip().lower()
         for clip_id in clip_ids:
             clip = all_clips.get(clip_id)
             if clip is None:
                 raise KeyError(f"unknown video clip: {clip_id}")
+            asset = self.store.get_asset(str(clip["asset_id"]))
+            if asset is None:
+                raise KeyError(f"unknown video asset: {clip['asset_id']}")
+            asset_library_id = str(asset.get("library_id") or "default").strip().lower()
+            if normalized_library_id and asset_library_id != normalized_library_id:
+                raise ValueError("timeline clips must belong to the current named library")
             if not clip["materialized"]:
                 clip = self.materialize_clip(clip_id)
             file_path = Path(clip["file_path"]).expanduser().resolve()
@@ -274,20 +282,42 @@ class VideoLibraryService:
                 file_path.relative_to(self.store.root.resolve())
             except ValueError as exc:
                 raise ValueError("timeline clips must stay inside the managed library root") from exc
-            selected.append((clip, file_path))
+            selected.append((clip, asset, file_path))
 
         cursor = 0.0
         video_track = []
-        for clip, file_path in selected:
+        shot_plan = []
+        script_rows = list(script or [])
+        for index, (clip, asset, file_path) in enumerate(selected):
             duration = float(clip["duration_seconds"])
+            script_row = script_rows[index] if index < len(script_rows) else {}
+            segment_id = str(script_row.get("id") or f"segment-{index + 1}")
             video_track.append(
                 {
                     "clipId": clip["id"],
                     "end": round(cursor + duration, 6),
                     "file": str(file_path),
+                    "segmentId": segment_id,
                     "sourceEnd": duration,
                     "sourceStart": 0.0,
                     "start": round(cursor, 6),
+                }
+            )
+            shot_plan.append(
+                {
+                    "assetId": asset["id"],
+                    "clipId": clip["id"],
+                    "confidence": float(clip.get("confidence") or 0.0),
+                    "description": str(clip.get("description") or ""),
+                    "libraryId": normalized_library_id or str(asset.get("library_id") or "default"),
+                    "qualityScore": float(clip.get("quality_score") or 0.0),
+                    "script": str(script_row.get("text") or ""),
+                    "segmentId": segment_id,
+                    "sourceEnd": float(clip["end_seconds"]),
+                    "sourcePath": str(asset.get("source_path") or clip.get("source_file_path") or ""),
+                    "sourceSha256": str(asset.get("sha256") or ""),
+                    "sourceStart": float(clip["start_seconds"]),
+                    "tags": [str(tag.get("name") or "") for tag in clip.get("tags") or [] if tag.get("name")],
                 }
             )
             cursor += duration
@@ -295,7 +325,12 @@ class VideoLibraryService:
         timeline = {
             "aspect": aspect,
             "duration": round(cursor, 6),
-            "script": list(script or []),
+            "provenance": {
+                "libraryId": normalized_library_id,
+                "shots": shot_plan,
+            },
+            "script": script_rows,
+            "shotPlan": shot_plan,
             "tracks": {
                 "music": [],
                 "transitions": [],

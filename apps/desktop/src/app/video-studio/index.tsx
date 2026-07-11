@@ -17,6 +17,11 @@ import {
   miniMaxVoiceName,
   validateMiniMaxCloneInput
 } from './minimax-voice-workflows'
+import {
+  cacheFilenameForSelection,
+  confirmedTimelineFormPatch,
+  timelineVideoSelections
+} from './material-cache'
 import { NamedLibraryPanel } from './named-library-panel'
 import {
   configFormFromSummary,
@@ -98,17 +103,6 @@ function savedStateLabel(configured?: boolean): string {
 
 function isVideoFile(file: File): boolean {
   return file.type.startsWith('video/') || /\.(?:avi|flv|mkv|mov|mp4|webm)$/i.test(file.name)
-}
-
-function timelineVideoFiles(timeline: Record<string, unknown>): string[] {
-  const tracks = timeline.tracks
-  if (!tracks || typeof tracks !== 'object' || Array.isArray(tracks)) return []
-  const video = (tracks as { video?: unknown }).video
-  if (!Array.isArray(video)) return []
-
-  return video
-    .map(item => (item && typeof item === 'object' && !Array.isArray(item) ? (item as { file?: unknown }).file : ''))
-    .filter((file): file is string => typeof file === 'string' && file.length > 0)
 }
 
 function storedVideoGenerationForm(): VideoGenerationForm {
@@ -473,12 +467,16 @@ export function VideoStudioView({
   const createNamedLibraryTimeline = useCallback(async () => {
     try {
       const result = await namedLibrary.createTimeline(form.videoAspect)
-      const sourcePaths = timelineVideoFiles(result.timeline)
+      const selections = timelineVideoSelections(result.timeline)
+      if (selections.length === 0) throw new Error('素材时间线缺少可验证的来源信息')
       const uploadedFiles: string[] = []
 
-      for (const sourcePath of sourcePaths) {
-        const filename = sourcePath.split(/[\\/]/).pop() || 'selected-clip.mp4'
-        const response = await moneyprinterClient.uploadLocalMaterial({ filename, sourcePath })
+      for (const selection of selections) {
+        const filename = cacheFilenameForSelection(selection)
+        const response = await moneyprinterClient.uploadLocalMaterial({
+          filename,
+          sourcePath: selection.file
+        })
         if (!response.ok || !response.data) {
           throw new Error(response.error?.message || `无法加入镜头 ${filename}`)
         }
@@ -489,8 +487,7 @@ export function VideoStudioView({
 
       setForm(current => ({
         ...current,
-        localMaterials: Array.from(new Set([...current.localMaterials, ...uploadedFiles])),
-        videoSource: 'local'
+        ...confirmedTimelineFormPatch(uploadedFiles)
       }))
       notify({
         kind: 'success',

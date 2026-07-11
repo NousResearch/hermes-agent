@@ -81,6 +81,64 @@ def test_create_timeline_uses_managed_clip_files(tmp_path):
     assert persisted["script"][0]["text"] == "开头文案"
 
 
+def test_create_timeline_records_single_library_clip_provenance(tmp_path):
+    source = tmp_path / "后厨熬汤.mp4"
+    source.write_bytes(b"labeled-video")
+    store = VideoLibraryStore(root=tmp_path / "牛肉面资产库")
+    service = VideoLibraryService(store)
+    asset = store.import_asset(source, source_mode="managed", library_id="beef-noodle")
+    clip = store.replace_clips(
+        asset["id"],
+        [
+            {
+                "start_seconds": 4.0,
+                "end_seconds": 8.5,
+                "file_path": str(store.clips_dir / "soup.mp4"),
+                "description": "后厨汤锅热气升腾",
+                "quality_score": 0.88,
+                "confidence": 0.93,
+            }
+        ],
+    )[0]
+    store.replace_clip_tags(
+        clip["id"],
+        [{"name": "牛骨汤", "source": "vision", "confidence": 0.95}],
+    )
+
+    result = service.create_timeline(
+        [clip["id"]],
+        library_id="beef-noodle",
+        script=[{"id": "segment-1", "text": "牛骨每天慢火熬制"}],
+    )
+
+    shot = result["timeline"]["shotPlan"][0]
+    assert shot["libraryId"] == "beef-noodle"
+    assert shot["assetId"] == asset["id"]
+    assert shot["clipId"] == clip["id"]
+    assert shot["segmentId"] == "segment-1"
+    assert shot["script"] == "牛骨每天慢火熬制"
+    assert shot["sourcePath"] == str(source.resolve())
+    assert shot["sourceSha256"] == asset["sha256"]
+    assert shot["sourceStart"] == 4.0
+    assert shot["sourceEnd"] == 8.5
+    assert shot["tags"] == ["牛骨汤"]
+
+
+def test_create_timeline_rejects_asset_from_another_library(tmp_path):
+    source = tmp_path / "other.mp4"
+    source.write_bytes(b"other-library")
+    store = VideoLibraryStore(root=tmp_path / "library")
+    service = VideoLibraryService(store)
+    asset = store.import_asset(source, library_id="other-library")
+    clip = store.replace_clips(
+        asset["id"],
+        [{"start_seconds": 0, "end_seconds": 2, "file_path": str(store.clips_dir / "other.mp4")}],
+    )[0]
+
+    with pytest.raises(ValueError, match="current named library"):
+        service.create_timeline([clip["id"]], library_id="beef-noodle")
+
+
 def test_failed_reanalysis_preserves_previous_clips(tmp_path, monkeypatch):
     source = tmp_path / "merchant.mp4"
     source.write_bytes(b"video")

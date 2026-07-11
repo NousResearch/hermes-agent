@@ -138,6 +138,48 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+# REQ-044/045/046 (decision 0007): deployment execution tiers + the enforcement
+# floor. A card's ``risk_tier`` describes what the work DOES; a project's
+# ``autonomy_ceiling`` (hermes_cli/projects_db) is the highest tier the loop may
+# EXECUTE autonomously for that repo. The dispatch gate spawns-to-execute only
+# when the card's tier is permitted by its project ceiling; anything above is
+# routed to a human (plan-only / blocked). Tier-C surfaces (live WAN, external
+# prod) have no ceiling value that permits them, so a ``deploy-C`` card can never
+# execute autonomously — it is always routed to a human.
+VALID_RISK_TIERS = {"inspect", "repo-only", "deploy-A", "deploy-B", "deploy-C"}
+# Increasing blast radius; used only for the ``<=`` comparison at the gate.
+_RISK_TIER_RANK = {
+    "inspect": 0,
+    "repo-only": 1,
+    "deploy-A": 2,
+    "deploy-B": 3,
+    "deploy-C": 4,
+}
+# A project's autonomy ceiling = the MOST that may run autonomously. ``plan-only``
+# permits only read-only ``inspect`` (rank 0) — every mutation is drafted/blocked
+# (Tier-C hard-exclude: wanctl, work-ansible). ``repo-only`` is the safe default
+# for an unset ceiling (repo/doc/test edits, no deploys). No ceiling permits
+# ``deploy-C``.
+VALID_AUTONOMY_CEILINGS = {"plan-only", "repo-only", "deploy-A", "deploy-B"}
+_CEILING_RANK = {"plan-only": 0, "repo-only": 1, "deploy-A": 2, "deploy-B": 3}
+DEFAULT_AUTONOMY_CEILING = "repo-only"
+
+
+def tier_permitted_by_ceiling(risk_tier: Optional[str], ceiling: Optional[str]) -> bool:
+    """True if a card of ``risk_tier`` may spawn-to-execute under ``ceiling``.
+
+    Fails CLOSED. An unclassified card (``risk_tier`` None/unknown) is treated as
+    the ``repo-only`` floor — never as a deploy. A None/unknown ceiling falls back
+    to ``DEFAULT_AUTONOMY_CEILING`` (``repo-only``): no autonomous deploy without an
+    explicit per-repo opt-in. ``deploy-C`` outranks every ceiling, so a Tier-C card
+    is never permitted regardless of configuration.
+    """
+    tier = risk_tier if risk_tier in _RISK_TIER_RANK else "repo-only"
+    cap = ceiling if ceiling in _CEILING_RANK else DEFAULT_AUTONOMY_CEILING
+    return _RISK_TIER_RANK[tier] <= _CEILING_RANK[cap]
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -919,6 +961,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # REQ-044: deploy risk tier of this card's work (one of VALID_RISK_TIERS) or
+    # None when unclassified. Compared to the project's autonomy_ceiling at the
+    # dispatch gate; None is treated as the repo-only floor (never a deploy).
+    risk_tier: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1002,6 +1048,9 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            risk_tier=(
+                row["risk_tier"] if "risk_tier" in keys and row["risk_tier"] else None
             ),
         )
 
@@ -1180,7 +1229,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- REQ-044 (decision 0007): deploy risk tier of the work this card does, one
+    -- of VALID_RISK_TIERS (inspect < repo-only < deploy-A < deploy-B < deploy-C)
+    -- or NULL when unclassified (treated as the repo-only floor at the dispatch
+    -- gate — never a deploy). Compared against the card's project
+    -- autonomy_ceiling: a card whose tier exceeds the ceiling is never
+    -- spawned-to-execute (routed to a human instead).
+    risk_tier            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2014,6 +2070,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "risk_tier" not in cols:
+        # REQ-044: deploy risk tier (VALID_RISK_TIERS) or NULL. Existing rows get
+        # NULL = unclassified, treated as the repo-only floor at the dispatch gate
+        # (never a deploy) — the same conservative default a pre-column board had.
+        _add_column_if_missing(conn, "tasks", "risk_tier", "risk_tier TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2435,6 +2497,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    risk_tier: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2470,6 +2533,12 @@ def create_task(
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
             f"got {workspace_kind!r}"
+        )
+    if risk_tier is not None:
+        risk_tier = str(risk_tier).strip() or None
+    if risk_tier is not None and risk_tier not in VALID_RISK_TIERS:
+        raise ValueError(
+            f"risk_tier must be one of {sorted(VALID_RISK_TIERS)}, got {risk_tier!r}"
         )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
@@ -2679,8 +2748,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        risk_tier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2703,6 +2773,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        risk_tier,
                     ),
                 )
                 for pid in parents:
@@ -8277,6 +8348,19 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if task.risk_tier:
+        lines.append(f"Risk tier: {task.risk_tier}")
+        if task.risk_tier in ("deploy-A", "deploy-B", "deploy-C"):
+            # REQ-044/048: a live-mutation card is told the deploy-gate protocol.
+            # Enforcement is mechanical (dispatch gate REQ-046, completion gate
+            # REQ-047); this brief is the worker-facing contract.
+            lines.append(
+                "  ⚠ Live-mutation/deploy card. Follow the deploy-gate protocol: "
+                "dry-run first, capture a validated rollback, apply only after a "
+                "clean dry-run, then health-verify and auto-rollback on failure. "
+                "Never execute beyond your project's autonomy ceiling — if unsure, "
+                "draft the plan and block for a human."
+            )
     lines.append("")
 
     if task.body and task.body.strip():

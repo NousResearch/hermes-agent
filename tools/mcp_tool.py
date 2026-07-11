@@ -1344,6 +1344,41 @@ def _format_elicitation_schema_summary(schema: dict, server_name: str) -> str:
     return "\n".join(lines)
 
 
+def _affirmative_form_content(schema: dict) -> dict:
+    """Fill a form-mode elicitation's required fields with affirmative answers.
+
+    Hermes's consent surface is binary (approve/decline), but servers such as
+    powerbi-modeling-mcp gate writes behind a form whose required field must
+    literally say "Yes" (e.g. {"Confirm the operation": {"enum": ["Yes", "No"]}}).
+    An ``action="accept"`` with empty content reads as unconfirmed and the
+    server refuses the operation -- so once the user has approved on the
+    Hermes surface, answer the form affirmatively on their behalf. Only the
+    accept path calls this; decline/cancel/timeout still return no content.
+    """
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict) or not props:
+        return {}
+    required = schema.get("required")
+    if not isinstance(required, list) or not required:
+        required = list(props.keys())
+    affirmatives = ("yes", "y", "confirm", "continue", "accept", "approve", "ok", "true")
+    content: dict = {}
+    for name in required:
+        spec = props.get(name)
+        spec = spec if isinstance(spec, dict) else {}
+        enum = spec.get("enum")
+        if isinstance(enum, list) and enum:
+            content[name] = next(
+                (v for v in enum if str(v).strip().lower() in affirmatives),
+                enum[0],
+            )
+        elif spec.get("type") == "boolean":
+            content[name] = True
+        else:
+            content[name] = "Yes"
+    return content
+
+
 class ElicitationHandler:
     """Handles ``elicitation/create`` requests for a single MCP server.
 
@@ -1417,7 +1452,14 @@ class ElicitationHandler:
         message = getattr(params, "message", "") or (
             f"MCP server '{self.server_name}' is requesting your approval"
         )
-        schema = getattr(params, "requested_schema", {}) or {}
+        # SDK field is camelCase: ElicitRequestFormParams.requestedSchema (a plain
+        # dict, no snake_case alias) -- reading "requested_schema" always yielded {},
+        # which blanked the schema summary AND the affirmative form answers.
+        schema = (
+            getattr(params, "requestedSchema", None)
+            or getattr(params, "requested_schema", None)
+            or {}
+        )
         description = _format_elicitation_schema_summary(schema, self.server_name)
 
         logger.info(
@@ -1493,7 +1535,7 @@ class ElicitationHandler:
 
         if answer == "accept":
             self.metrics["accepted"] += 1
-            return ElicitResult(action="accept", content={})
+            return ElicitResult(action="accept", content=_affirmative_form_content(schema))
         if answer == "cancel":
             self.metrics["errors"] += 1
             return ElicitResult(action="cancel")

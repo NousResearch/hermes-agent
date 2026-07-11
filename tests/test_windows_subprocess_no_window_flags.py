@@ -399,3 +399,31 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
 
     assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_devin_acp_client_hides_console_window(monkeypatch):
+    from agent import copilot_acp_client
+    from agent.devin_acp_client import DevinACPClient
+
+    captured = []
+
+    class _Proc:
+        stdin = SimpleNamespace()
+        stdout = SimpleNamespace()
+        stderr = SimpleNamespace()
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(copilot_acp_client, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(copilot_acp_client.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(copilot_acp_client.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
+
+    client = DevinACPClient(acp_command="devin", acp_args=["acp"])
+    client._subprocess_env = lambda: {}
+    client._spawn_process()
+
+    assert len(captured) == 1
+    assert captured[0][0] == ["devin", "acp"]
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW

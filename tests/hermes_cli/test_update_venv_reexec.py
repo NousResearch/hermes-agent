@@ -19,13 +19,27 @@ def _make_venv(root: Path, name: str = "venv") -> tuple[Path, Path]:
     return venv, python
 
 
-def test_select_update_venv_prefers_dotvenv(tmp_path):
+def test_select_update_venv_prefers_dotvenv_when_current_python_is_external(tmp_path):
     dotvenv, dotvenv_python = _make_venv(tmp_path, ".venv")
     _make_venv(tmp_path, "venv")
+    system_python = tmp_path / "system" / "python"
+    system_python.parent.mkdir()
+    system_python.write_text("", encoding="utf-8")
 
-    selected = cli_main._select_update_venv(tmp_path)
+    with patch.object(sys, "executable", str(system_python)):
+        selected = cli_main._select_update_venv(tmp_path)
 
     assert selected == (dotvenv, dotvenv_python)
+
+
+def test_select_update_venv_prefers_active_candidate_over_dotvenv(tmp_path):
+    _make_venv(tmp_path, ".venv")
+    venv, venv_python = _make_venv(tmp_path, "venv")
+
+    with patch.object(sys, "executable", str(venv_python)):
+        selected = cli_main._select_update_venv(tmp_path)
+
+    assert selected == (venv, venv_python)
 
 
 def test_select_update_venv_uses_venv_when_dotvenv_missing(tmp_path):
@@ -106,6 +120,18 @@ def test_python_belongs_to_venv_does_not_follow_posix_symlink_out(tmp_path):
 
 def test_maybe_reexec_skips_when_already_in_expected_venv(tmp_path):
     venv, python = _make_venv(tmp_path, "venv")
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
+        sys, "executable", str(python)
+    ), patch.object(os, "execvpe") as execvpe:
+        assert cli_main._maybe_reexec_update_in_managed_venv(SimpleNamespace(check=False)) is False
+
+    execvpe.assert_not_called()
+
+
+def test_maybe_reexec_skips_when_active_venv_is_not_first_candidate(tmp_path):
+    _make_venv(tmp_path, ".venv")
+    _venv, python = _make_venv(tmp_path, "venv")
 
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
         sys, "executable", str(python)

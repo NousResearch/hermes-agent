@@ -7346,17 +7346,24 @@ def _candidate_update_venvs(project_root: Path = PROJECT_ROOT) -> list[Path]:
 def _select_update_venv(project_root: Path = PROJECT_ROOT) -> tuple[Path, Path] | None:
     """Find the venv Python that should drive ``hermes update``.
 
-    Hermes' development and install scripts prefer ``.venv`` first for source
-    checkouts and then ``venv`` for managed installs. Profile-aware
-    ``$HERMES_HOME/hermes-agent`` candidates are included only for git
-    checkouts, as a fallback for worktrees that share the main install's
-    environment.
+    Keep the active candidate when Hermes is already running from one. This
+    avoids switching an update from a managed ``venv`` into a co-located
+    development ``.venv``. Otherwise, use the stable project-preferred order:
+    ``.venv``, then ``venv``. Profile-aware ``$HERMES_HOME/hermes-agent``
+    candidates are included only for git checkouts, as a fallback for
+    worktrees that share the main install's environment.
     """
+    candidates: list[tuple[Path, Path]] = []
     for venv_dir in _candidate_update_venvs(project_root):
         python = _venv_python_path(venv_dir)
         if python.is_file():
+            candidates.append((venv_dir, python))
+
+    for venv_dir, python in candidates:
+        if _python_belongs_to_venv(sys.executable, venv_dir):
             return venv_dir, python
-    return None
+
+    return candidates[0] if candidates else None
 
 
 def _update_target_venv_dir(project_root: Path = PROJECT_ROOT) -> Path:

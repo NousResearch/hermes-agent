@@ -888,6 +888,7 @@ AUTHOR_MAP = {
     "foxion37@gmail.com": "foxion37",
     "bloodcarter@gmail.com": "bloodcarter",
     "scott@scotttrinh.com": "scotttrinh",
+    "tturney1@gmail.com": "TheTom",
     "quocanh261997@gmail.com": "quocanh261997",
     "savanne.kham@protonmail.com": "savanne-kham",  # PR #28958 salvage (strip tool_name for strict providers)
     # contributors (from noreply pattern)

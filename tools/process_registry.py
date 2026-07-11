@@ -2142,6 +2142,11 @@ PROCESS_SCHEMA = {
     "name": "process",
     "description": (
         "Manage background processes started with terminal(background=true). "
+        "Use this tool only when that terminal call returned a real process session ID. "
+        "If terminal returned ordinary output plus exit_code, it finished synchronously "
+        "and there is no background process to poll. Never invent or guess a session ID. "
+        "If an ID returns not_found, call action='list' once or change strategy; never "
+        "retry the same missing ID unchanged. "
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
@@ -2157,7 +2162,7 @@ PROCESS_SCHEMA = {
             },
             "session_id": {
                 "type": "string",
-                "description": "Process session ID (from terminal background output). Required for all actions except 'list'."
+                "description": "Exact process session ID returned by terminal(background=true). Never use an invented ID or an ID from a synchronous terminal result. Required for all actions except 'list'."
             },
             "data": {
                 "type": "string",

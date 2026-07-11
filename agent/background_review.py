@@ -68,6 +68,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "command": getattr(agent, "acp_command", None),
         "args": list(getattr(agent, "acp_args", []) or []),
         "routed": False,
+        "max_iterations": 16,
     }
     try:
         from hermes_cli.config import load_config
@@ -76,6 +77,12 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         return parent
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
     task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
+    try:
+        review_max_iterations = int(task.get("max_iterations", 16))
+    except (TypeError, ValueError):
+        review_max_iterations = 16
+    review_max_iterations = max(1, min(review_max_iterations, 16))
+    parent["max_iterations"] = review_max_iterations
     task_provider = (str(task.get("provider", "")).strip() or None)
     task_model = (str(task.get("model", "")).strip() or None)
     task_base_url = (str(task.get("base_url", "")).strip() or None)
@@ -104,6 +111,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             "command": rp.get("command"),
             "args": list(rp.get("args") or []),
             "routed": True,
+            "max_iterations": review_max_iterations,
         }
     except Exception as e:
         logger.debug("background-review aux routing failed (%s); using main model", e)
@@ -698,7 +706,7 @@ def _run_review_in_thread(
                 _fork_kwargs["acp_args"] = _rt.get("args") or []
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
-                max_iterations=16,
+                max_iterations=int(_rt.get("max_iterations") or 16),
                 quiet_mode=True,
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,

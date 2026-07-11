@@ -52,6 +52,22 @@ def test_routing_auto_inherits_parent_and_downgrades_codex_app_server():
     assert rt["api_mode"] == "codex_responses"  # downgraded so agent-loop tools dispatch
 
 
+def test_background_review_iteration_budget_is_configurable():
+    agent = _FakeAgent()
+    cfg = {
+        "auxiliary": {
+            "background_review": {
+                "provider": "auto",
+                "model": "",
+                "max_iterations": 4,
+            }
+        }
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["max_iterations"] == 4
+
+
 def test_routing_to_different_model_marks_routed_and_resolves_credentials():
     agent = _FakeAgent()
     cfg = {"auxiliary": {"background_review": {

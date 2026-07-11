@@ -1726,6 +1726,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,
+            "max_iterations": 16,
             "extra_body": {},
         },
         "moa_reference": {

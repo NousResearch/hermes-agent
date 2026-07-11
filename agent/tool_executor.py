@@ -862,7 +862,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         elif r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if i in cancelled_indices:
-                function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                cancelled_by_timeout = i in timed_out_indices
+                cancellation_reason = "timeout" if cancelled_by_timeout else "user interrupt"
+                function_result = f"[Tool execution cancelled — {name} was skipped due to {cancellation_reason}]"
                 effect_disposition = "none"
                 _emit_terminal_post_tool_call(
                     agent,
@@ -872,8 +874,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     effective_task_id=effective_task_id,
                     tool_call_id=getattr(tc, "id", "") or "",
                     status="cancelled",
-                    error_type="keyboard_interrupt",
-                    error_message="Tool execution cancelled by user interrupt",
+                    error_type="tool_timeout_cancelled" if cancelled_by_timeout else "keyboard_interrupt",
+                    error_message=f"Tool execution cancelled by {cancellation_reason}",
                     middleware_trace=list(middleware_trace),
                 )
             elif agent._interrupt_requested:

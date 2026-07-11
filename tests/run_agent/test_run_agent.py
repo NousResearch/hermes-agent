@@ -2550,6 +2550,17 @@ class TestConcurrentToolExecution:
             lambda fs, timeout=None: (set(), set(fs)),
         )
         agent._flush_messages_to_session_db = MagicMock()
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._current_api_request_id = "api-1"
+        hook_calls = []
+
+        def _capture_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture_hook)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
         tc = _mock_tool_call(name="write_file", arguments='{"path":"x"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
@@ -2558,9 +2569,13 @@ class TestConcurrentToolExecution:
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         result = messages[0]
+        assert result["content"] == "[Tool execution cancelled — write_file was skipped due to timeout]"
         assert result["effect_disposition"] == "none"
-        assert "cancelled" in result["content"].lower()
         assert "[UNRESOLVED]" not in result["content"]
+        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
+        assert len(post_calls) == 1
+        assert post_calls[0]["status"] == "cancelled"
+        assert post_calls[0]["error_type"] == "tool_timeout_cancelled"
 
     def test_concurrent_late_real_result_wins_without_sleep(self, agent, monkeypatch):
         """A real result present after the deadline snapshot beats fabrication."""

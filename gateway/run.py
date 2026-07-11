@@ -10340,8 +10340,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Same-token conflict detection — refuse a duplicate poll.
             fp = self._adapter_credential_fingerprint(adapter)
-            if fp is not None:
-                owner = claimed.get((platform, fp))
+            credential_claim = (platform, fp) if fp is not None else None
+            if credential_claim is not None:
+                owner = claimed.get(credential_claim)
                 if owner is not None:
                     logger.error(
                         "Profile '%s' and '%s' both configure %s with the same "
@@ -10355,7 +10356,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the shared platform state and, for a same-credential Photon
                     # adapter, shut down the primary profile's live sidecar.
                     continue
-                claimed[(platform, fp)] = profile_name
 
             listener_claim = self._adapter_listener_claim(platform, adapter)
             if listener_claim is not None:
@@ -10378,7 +10378,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Like credential conflicts, this adapter never connected
                     # and owns no resources that should be disconnected.
                     continue
-                claimed[listener_claim] = profile_name
 
             self._configure_profile_adapter(adapter, profile_name, platform)
 
@@ -10389,6 +10388,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 if success:
                     profile_map[platform] = adapter
+                    if credential_claim is not None:
+                        claimed[credential_claim] = profile_name
+                    if listener_claim is not None:
+                        claimed[listener_claim] = profile_name
                     connected += 1
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
                 else:

@@ -1178,6 +1178,9 @@ def restore_primary_runtime(agent) -> bool:
             "use_native_cache_layout",
             agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
         )
+        agent._codex_reasoning_replay_enabled = rt.get(
+            "codex_reasoning_replay_enabled", True
+        )
 
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
@@ -1831,6 +1834,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_anthropic_base_url",
             "_is_anthropic_oauth",
             "_config_context_length",
+            "_codex_reasoning_replay_enabled",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -1875,6 +1879,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
+        # Reset Codex reasoning replay flag when (re)entering codex_responses mode
+        # (xai-oauth, openai-codex etc). Leaving codex mode or switching providers
+        # can leave stale encrypted_content from previous issuer, causing
+        # invalid_encrypted_content 400s on next codex turn. Ensure replay is
+        # enabled for the new codex context (history items will be filtered
+        # by issuer guard at send time if needed).
+        agent._codex_reasoning_replay_enabled = (api_mode == "codex_responses")
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2087,6 +2098,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "codex_reasoning_replay_enabled": getattr(agent, "_codex_reasoning_replay_enabled", True),
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

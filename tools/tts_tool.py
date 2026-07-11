@@ -988,7 +988,7 @@ def _stream_edge(
 
     tts_config = extra.pop("tts_config", None) or {}
     edge_config = (
-        tts_config.get("edge", {}) if isinstance(tts_config, dict) else {}
+        (tts_config.get("edge") or {}) if isinstance(tts_config, dict) else {}
     )
     if voice is None:
         voice = edge_config.get("voice") or DEFAULT_EDGE_VOICE
@@ -1218,7 +1218,7 @@ def _stream_openai(
 
     tts_config = extra.pop("tts_config", None) or {}
     oai_config = (
-        tts_config.get("openai", {}) if isinstance(tts_config, dict) else {}
+        (tts_config.get("openai") or {}) if isinstance(tts_config, dict) else {}
     )
     if model is None:
         model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
@@ -2959,7 +2959,7 @@ def _iter_pcm_chunks(text: str, provider: str, tts_config: Dict[str, Any]) -> It
         api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
         if not api_key:
             raise ValueError("ELEVENLABS_API_KEY not set for streaming TTS")
-        el_config = tts_config.get("elevenlabs", {})
+        el_config = tts_config.get("elevenlabs") or {}
         voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
         model_id = el_config.get(
             "streaming_model_id",

@@ -181,6 +181,36 @@ class TestKeepaliveProbe:
         task.session.send_ping.assert_awaited_once()
         task.session.list_tools.assert_not_called()
 
+    async def test_keepalive_skips_an_active_tool_rpc(self):
+        """An active RPC proves liveness; keepalive must not wait or overlap."""
+        task = MCPServerTask("test")
+        rpc_started = asyncio.Event()
+        release_rpc = asyncio.Event()
+        ping_started = asyncio.Event()
+
+        async def active_tool_rpc():
+            async with task._rpc_lock:
+                rpc_started.set()
+                await release_rpc.wait()
+
+        async def send_ping():
+            ping_started.set()
+
+        task.session = SimpleNamespace(
+            list_tools=AsyncMock(),
+            send_ping=AsyncMock(side_effect=send_ping),
+        )
+
+        active_task = asyncio.create_task(active_tool_rpc())
+        await rpc_started.wait()
+        await asyncio.wait_for(task._keepalive_probe(), timeout=0.1)
+
+        assert not ping_started.is_set()
+
+        release_rpc.set()
+        await active_task
+        task.session.send_ping.assert_not_awaited()
+
 
 class TestKeepaliveInterval:
     """The keepalive cadence is configurable so servers with short session

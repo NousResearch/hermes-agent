@@ -737,6 +737,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
         self._last_compress_aborted = False
@@ -773,6 +774,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
         self._last_compress_aborted = False
         self._context_probed = False
@@ -947,6 +949,7 @@ class ContextCompressor(ContextEngine):
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
         self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1134,9 +1137,12 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
-        # Set by compress(); consumed by should_compress() to check the next
-        # real reading against the threshold. See should_compress().
+        # Set after a completed compression boundary; consumed by the next
+        # provider-reported prompt count in update_from_response().
         self._verify_compaction_cleared_threshold: bool = False
+        # Lets the boundary wrapper distinguish a completed rewrite from a
+        # no-op/abort without inferring progress from message-list length.
+        self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -1183,6 +1189,10 @@ class ContextCompressor(ContextEngine):
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                # Any real provider reading below the trigger proves the prompt
+                # fits again. Clear the episode latch even when this response was
+                # not the one immediately following compaction.
+                self._ineffective_compression_count = 0
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
 
@@ -1296,9 +1306,9 @@ class ContextCompressor(ContextEngine):
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
+                    "Compression skipped — last %d compaction attempts did not "
+                    "restore enough context headroom. Consider /new to start a "
+                    "fresh session, or /compress <topic> for focused compression.",
                     self._ineffective_compression_count,
                 )
             return False
@@ -2862,6 +2872,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compression_made_progress = False
         # NOTE: do NOT reset _last_summary_auth_failure or
         # _last_summary_network_failure here.  These flags are set by
         # _generate_summary() on a terminal failure and are already cleared on
@@ -3207,11 +3218,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
         self._last_compression_savings_pct = savings_pct
 
-        # Only ever INCREMENT here. The reset lives in should_compress(), which
-        # is the one place that sees the same measure the trigger uses; see
-        # ``_verify_compaction_cleared_threshold``.
-        if savings_pct < 10:
-            self._ineffective_compression_count += 1
+        # Message-only savings are diagnostic. The anti-thrashing verdict is
+        # owned by the next provider-reported prompt count, which answers the
+        # actual question: did this completed boundary get under the threshold?
+        # Counting a low message-savings estimate here as well would give one
+        # compaction two strikes when that real reading remains over threshold.
 
         if not self.quiet_mode:
             logger.info(
@@ -3228,5 +3239,6 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        self._last_compression_made_progress = True
 
         return compressed

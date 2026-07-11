@@ -961,6 +961,12 @@ def compress_context(
         agent.context_compressor.last_prompt_tokens = -1
         agent.context_compressor.last_completion_tokens = 0
         agent.context_compressor.awaiting_real_usage_after_compression = True
+        # Arm the effectiveness verdict only after the full compaction boundary
+        # succeeds. Exceptions and aborted/no-op attempts return before here, so
+        # unrelated later usage cannot be charged to an attempt that never took
+        # effect. External engines without the private flag stay untouched.
+        if hasattr(agent.context_compressor, "_verify_compaction_cleared_threshold"):
+            agent.context_compressor._verify_compaction_cleared_threshold = True
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same

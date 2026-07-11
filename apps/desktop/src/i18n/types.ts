@@ -2087,6 +2087,11 @@ export interface Translations {
     clipboard: string
     noClipboardImage: string
     clipboardPasteFailed: string
+    carouselPlay: string
+    carouselPause: string
+    carouselPrevious: string
+    carouselNext: string
+    carouselOpen: string
     dropFiles: string
     handoff: {
       pickPlatform: string

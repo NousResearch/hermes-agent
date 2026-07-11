@@ -113,6 +113,15 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
 
     usage = getattr(turn, "token_usage_last", None)
     if not isinstance(usage, dict) or not usage:
+        compressor = getattr(agent, "context_compressor", None)
+        if (
+            compressor is not None
+            and getattr(compressor, "awaiting_real_usage_after_compression", False)
+        ):
+            # No usage means this turn cannot adjudicate the pending compaction.
+            # Consume the marker so a later unrelated reading is not charged to
+            # it and preflight deferral cannot stay latched indefinitely.
+            compressor.update_from_response({})
         if agent._session_db and agent.session_id:
             try:
                 if not agent._session_db_created:
@@ -270,6 +279,11 @@ def _record_codex_app_server_compaction(
             compressor, "compression_count", 0
         ) + 1
         compressor.last_compression_rough_tokens = approx_tokens or 0
+        # The app server has already completed a real compaction boundary. Its
+        # usage update (when supplied) is therefore the same real-vs-real
+        # effectiveness verdict used by the normal compression path.
+        if hasattr(compressor, "_verify_compaction_cleared_threshold"):
+            compressor._verify_compaction_cleared_threshold = True
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens = -1
             compressor.last_completion_tokens = 0

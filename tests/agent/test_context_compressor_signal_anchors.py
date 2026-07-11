@@ -32,6 +32,7 @@ def _response(content: str = "summary") -> MagicMock:
         ("I prefer deterministic tests.", "decision"),
         ("Please always preserve the original quote.", "decision"),
         ("Use Postgres rather than SQLite.", "correction"),
+        ("Use approach B, not approach A.", "correction"),
         ("Actually, switch to approach B.", "correction"),
         ("Do not modify generated files.", "correction"),
         ("Configure timeout to 30 seconds.", "configuration"),
@@ -56,6 +57,7 @@ def test_explicit_signal_matrix(text: str, kind: str):
         "The docs mention a default timeout.",
         "Actually, what happened here?",
         "Please compare approach A and approach B.",
+        "Use the tool. This is not a decision.",
         "The command returned two rows.",
     ],
 )
@@ -122,9 +124,39 @@ def test_anchor_budget_prefers_newer_correction_over_older_preference():
     assert "second approach" in anchors[0][2]
 
 
+def test_anchor_budget_reserves_latest_signal_before_older_higher_tier():
+    compressor = _compressor()
+    turns = [
+        {
+            "role": "user",
+            "content": "Actually, do not use backend A. " + "old " * 120,
+        },
+        {
+            "role": "user",
+            "content": "Configure the backend to B. " + "new " * 120,
+        },
+    ]
+    latest = compressor._select_high_signal_user_anchors(
+        [turns[1]], token_budget=800
+    )
+    assert len(latest) == 1
+    exact_budget = estimate_messages_tokens_rough(
+        [{"role": "user", "content": latest[0][2]}]
+    )
+
+    anchors = compressor._select_high_signal_user_anchors(
+        turns,
+        token_budget=exact_budget,
+    )
+
+    assert len(anchors) == 1
+    assert anchors[0][1] == "configuration"
+    assert "backend to B" in anchors[0][2]
+
+
 def test_anchor_text_is_redacted_bounded_and_json_quoted():
     compressor = _compressor()
-    secret = "ghp_1234567890abcdefghijklmnop"
+    secret = "".join(("ghp", "_", "x" * 32))
     turns = [
         {
             "role": "user",
@@ -215,6 +247,42 @@ def test_iterative_compaction_carries_previous_summary_and_new_correction():
     assert "PREVIOUS SUMMARY:\nExisting decision: use approach A." in prompt
     assert "Actually, use approach B instead." in prompt
     assert "[correction]" in prompt
+
+
+def test_compress_wires_middle_window_decision_into_summary_prompt():
+    compressor = _compressor()
+    compressor.protect_first_n = 0
+    compressor.protect_last_n = 2
+    compressor.tail_token_budget = 120
+    turns = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "We decided to keep the SQLite backend."},
+        {"role": "assistant", "content": "Decision recorded."},
+    ]
+    turns.extend(
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"ordinary context {index} " + "detail " * 80,
+        }
+        for index in range(12)
+    )
+
+    with patch(
+        "agent.context_compressor.call_llm",
+        return_value=_response("Compacted summary"),
+    ) as mock_call:
+        compressed = compressor.compress(
+            turns,
+            current_tokens=90_000,
+            focus_topic="current implementation",
+            force=True,
+        )
+
+    assert mock_call.call_count == 1
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "HIGH-SIGNAL USER ANCHORS" in prompt
+    assert "We decided to keep the SQLite backend." in prompt
+    assert len(compressed) < len(turns)
 
 
 def test_ordinary_user_turns_do_not_add_anchor_block():

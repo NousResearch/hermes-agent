@@ -232,11 +232,12 @@ _HIGH_SIGNAL_ANCHOR_MAX_CHARS = 800
 # negatives still flow through the normal summarizer; false positives consume
 # scarce anchor budget and can fossilize ordinary requests across compactions.
 _CORRECTION_SIGNAL_RE = re.compile(
-    r"(?:\bactually\b.{0,80}\b(?:use|choose|switch|change|keep|prefer|"
+    r"(?:\bactually\b[^.!?。！？]{0,80}\b(?:use|choose|switch|change|keep|prefer|"
     r"do\s+not|don't|instead)\b|\b(?:instead|rather\s+than|do\s+not|"
     r"don't|never\s+mind|stop\s+using|switch(?:ed)?\s+to|"
     r"changed?\s+(?:it\s+)?to|correction)\b|"
-    r"(?:其实.{0,60}(?:改|用|不要|选择|决定)|改成|改用|不要|不再|"
+    r"\b(?:use|choose|keep|prefer)\b[^.!?。！？]{0,80}(?:,\s*)?\bnot\b|"
+    r"(?:其实[^.!?。！？]{0,60}(?:改|用|不要|选择|决定)|改成|改用|不要|不再|"
     r"而不是|纠正|更正))",
     re.IGNORECASE,
 )
@@ -251,8 +252,8 @@ _DURABLE_SIGNAL_RE = re.compile(
     re.IGNORECASE,
 )
 _CONFIG_SIGNAL_RE = re.compile(
-    r"(?:\b(?:set|configur(?:e|ed)|default)\b.{0,120}(?:=|\bto\b)|"
-    r"(?:设置|配置|默认).{0,120}(?:为|成|=))",
+    r"(?:\b(?:set|configur(?:e|ed)|default)\b[^.!?。！？]{0,120}"
+    r"(?:=|\bto\b)|(?:设置|配置|默认)[^.!?。！？]{0,120}(?:为|成|=))",
     re.IGNORECASE,
 )
 # Keep a short run of recent messages verbatim even when the token budget is
@@ -1521,8 +1522,9 @@ class ContextCompressor(ContextEngine):
     ) -> list[tuple[int, str, str]]:
         """Select redacted user decisions under an independent token budget.
 
-        Higher-priority and newer signals win selection, then selected anchors
-        are restored to source order so corrections remain chronological.
+        The newest explicit signal is considered first so a stale correction
+        cannot crowd out a later decision. Remaining budget favors correction,
+        then decision, then configuration; output is restored to source order.
         """
         candidates_by_text: dict[str, tuple[int, int, str, str, int]] = {}
         for index, message in enumerate(turns):
@@ -1549,10 +1551,13 @@ class ContextCompressor(ContextEngine):
 
         selected: list[tuple[int, str, str]] = []
         used = 0
-        candidates = sorted(
-            candidates_by_text.values(),
-            key=lambda item: (-item[1], -item[0]),
-        )
+        candidates = list(candidates_by_text.values())
+        if candidates:
+            newest = max(candidates, key=lambda item: item[0])
+            candidates = [newest] + sorted(
+                (item for item in candidates if item[0] != newest[0]),
+                key=lambda item: (-item[1], -item[0]),
+            )
         for index, _priority, kind, excerpt, cost in candidates:
             if used + cost > token_budget:
                 continue

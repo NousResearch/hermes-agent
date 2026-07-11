@@ -271,6 +271,10 @@ _PROVIDER_ALIASES = {
     "tokenhub": "tencent-tokenhub",
     "tencent-cloud": "tencent-tokenhub",
     "tencentmaas": "tencent-tokenhub",
+    "google-vertex": "vertex",
+    "vertex-ai": "vertex",
+    "gcp-vertex": "vertex",
+    "vertexai": "vertex",
 }
 
 
@@ -4843,6 +4847,56 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(model or default_model, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
+
+    # ── Google Vertex AI (OAuth2 bearer token) ─────────────────────────
+    # Vertex is not in PROVIDER_REGISTRY because it uses an OAuth2 token
+    # (not a static API key).  Mirror the main runtime resolver's approach:
+    # mint a short-lived token from the service-account credentials / ADC and
+    # hand it as api_key to a standard OpenAI client.
+    # Providers.google-vertex, vertex-ai, gcp-vertex, vertexai also land
+    # here via _PROVIDER_ALIASES or _normalize_aux_provider.
+    if provider == "vertex":
+        try:
+            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        except ImportError:
+            logger.warning(
+                "resolve_provider_client: vertex requested but google-auth "
+                "not installed \u2014 install with: pip install 'hermes-agent[vertex]'"
+            )
+            return None, None
+
+        if not has_vertex_credentials():
+            logger.debug(
+                "resolve_provider_client: vertex requested but "
+                "no GCP credentials found"
+            )
+            return None, None
+
+        token, base_url = get_vertex_config()
+        if not token or not base_url:
+            logger.warning(
+                "resolve_provider_client: vertex requested but "
+                "could not mint token / resolve project"
+            )
+            return None, None
+
+        default_model = "google/gemini-3-flash-preview"
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=token, base_url=base_url)
+        except Exception as exc:
+            logger.warning(
+                "resolve_provider_client: cannot create Vertex client: %s", exc
+            )
+            return None, None
+        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+        return (
+            _to_async_client(client, final_model, is_vision=is_vision)
+            if async_mode
+            else (client, final_model)
+        )
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:

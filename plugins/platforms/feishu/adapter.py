@@ -3282,13 +3282,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._bot_identity().matches(open_id=open_id, user_id=user_id, name=user_name):
             return None
 
-        mention_id = (
-            str(sender_profile.get("user_id") or "").strip()
-            or str(sender_profile.get("user_id_alt") or "").strip()
-        )
-        if not mention_id:
+        if not open_id:
             return None
-        return mention_id, user_name
+        return open_id, user_name
 
     async def _process_inbound_message(
         self,

@@ -723,6 +723,25 @@ def _admits_group(adapter, message, sender_id, chat_id=""):
 
 
 class TestAdapterBehavior(unittest.TestCase):
+    @staticmethod
+    def _both_id_topic_starter_at_ref(adapter):
+        return adapter._topic_starter_at_ref(
+            message=SimpleNamespace(root_id="om_root"),
+            sender_id=SimpleNamespace(
+                open_id="ou_human",
+                user_id="u_human",
+                union_id="on_human",
+            ),
+            sender_profile={
+                "user_id": "u_human",
+                "user_name": "员工 B",
+                "user_id_alt": "on_human",
+            },
+            is_bot=False,
+            thread_id="om_root",
+            reply_to_message_id="om_root",
+        )
+
     @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
         from gateway.config import PlatformConfig
@@ -2190,6 +2209,9 @@ class TestAdapterBehavior(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
+        at_ref = self._both_id_topic_starter_at_ref(adapter)
+        self.assertEqual(at_ref, ("ou_human", "员工 B"))
+        at_user_id, at_user_name = at_ref
         captured = {}
 
         class _MessageAPI:
@@ -2216,8 +2238,8 @@ class TestAdapterBehavior(unittest.TestCase):
                     metadata={
                         "thread_id": "om_root",
                         "notify": True,
-                        "feishu_at_user_id": "ou_human",
-                        "feishu_at_user_name": "员工 B",
+                        "feishu_at_user_id": at_user_id,
+                        "feishu_at_user_name": at_user_name,
                     },
                 )
             )
@@ -2229,6 +2251,7 @@ class TestAdapterBehavior(unittest.TestCase):
             payload["text"],
             '<at user_id="ou_human"></at> 收到，我来处理。',
         )
+        self.assertNotIn('<at user_id="u_human">', payload["text"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_markdown_thread_topic_reply_uses_post_at_element(self):
@@ -2236,6 +2259,9 @@ class TestAdapterBehavior(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
+        at_ref = self._both_id_topic_starter_at_ref(adapter)
+        self.assertEqual(at_ref, ("ou_human", "员工 B"))
+        at_user_id, at_user_name = at_ref
         captured = {}
 
         class _MessageAPI:
@@ -2262,8 +2288,8 @@ class TestAdapterBehavior(unittest.TestCase):
                     metadata={
                         "thread_id": "om_root",
                         "notify": True,
-                        "feishu_at_user_id": "ou_human",
-                        "feishu_at_user_name": "员工 B",
+                        "feishu_at_user_id": at_user_id,
+                        "feishu_at_user_name": at_user_name,
                     },
                 )
             )
@@ -2278,10 +2304,40 @@ class TestAdapterBehavior(unittest.TestCase):
                 {"tag": "text", "text": " "},
             ],
         )
+        self.assertNotEqual(
+            payload["zh_cn"]["content"][0][0]["user_id"],
+            "u_human",
+        )
         self.assertEqual(
             payload["zh_cn"]["content"][1],
             [{"tag": "md", "text": "**收到**，我来处理。"}],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_topic_starter_without_open_id_does_not_create_mention(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        at_ref = adapter._topic_starter_at_ref(
+            message=SimpleNamespace(root_id="om_root"),
+            sender_id=SimpleNamespace(
+                open_id="",
+                user_id="u_human",
+                union_id="on_human",
+            ),
+            sender_profile={
+                "user_id": "u_human",
+                "user_name": "员工 B",
+                "user_id_alt": "on_human",
+            },
+            is_bot=False,
+            thread_id="om_root",
+            reply_to_message_id="om_root",
+        )
+
+        self.assertIsNone(at_ref)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_preserves_thread_topic_at_mention(self):
@@ -4915,9 +4971,9 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter = self._build_adapter()
         adapter._resolve_sender_profile = AsyncMock(
             return_value={
-                "user_id": "ou_human",
+                "user_id": "u_human",
                 "user_name": "员工 B",
-                "user_id_alt": None,
+                "user_id_alt": "on_human",
             }
         )
 
@@ -4946,7 +5002,11 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
             adapter._process_inbound_message(
                 data=message,
                 message=message,
-                sender_id=SimpleNamespace(open_id="ou_human", user_id="", union_id=""),
+                sender_id=SimpleNamespace(
+                    open_id="ou_human",
+                    user_id="u_human",
+                    union_id="on_human",
+                ),
                 chat_type="group",
                 message_id="om_reply",
                 is_bot=False,

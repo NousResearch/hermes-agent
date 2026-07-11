@@ -42,5 +42,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
   }
 }

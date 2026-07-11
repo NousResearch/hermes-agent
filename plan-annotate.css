@@ -1,0 +1,106 @@
+/* plan-annotate.css — Annotation module styles */
+
+.h-annot-hl {
+  background-color: #fff3bf;
+  border-bottom: 2px solid #f0c000;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.h-annot-box {
+  position: fixed;
+  z-index: 99999;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 10px;
+  min-width: 260px;
+  max-width: 360px;
+}
+
+.h-annot-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  resize: vertical;
+  margin-bottom: 6px;
+}
+
+.h-annot-box-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.h-annot-box-actions button {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  background: #f5f5f5;
+}
+
+.h-annot-pin-btn {
+  background: #4a90d9 !important;
+  color: #fff;
+  border-color: #3a7bc8 !important;
+  font-weight: 600;
+}
+
+.h-annot-callout {
+  margin: 4px 0 4px 20px;
+  padding: 6px 10px;
+  border-left: 3px solid #f0c000;
+  background: #fffbe6;
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #333;
+}
+
+.h-annot-callout-author {
+  font-weight: 600;
+  color: #555;
+}
+
+.h-annot-callout-status {
+  color: #888;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.h-annot-callout-actions {
+  float: right;
+}
+
+.h-annot-callout-actions button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: #888;
+  padding: 0 3px;
+  line-height: 1;
+}
+
+.h-annot-callout-actions button:hover {
+  color: #333;
+}
+
+.h-annot-export-btn {
+  margin-left: 12px;
+  padding: 4px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #f5f5f5;
+  cursor: pointer;
+  font-size: 12px;
+}

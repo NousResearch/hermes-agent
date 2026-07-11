@@ -867,3 +867,127 @@ def test_set_input_feed_status_idempotent_noop_returns_feed(tmp_path, monkeypatc
         same = wfdb.set_input_feed_status(conn, feed.feed_id, "open")
         assert same.feed_id == feed.feed_id
         assert same.status == "open"
+
+
+# --- Task 8: workflow-filtered history, detail, cancel, rerun ---
+
+
+def _second_spec(*, version: int = 1) -> WorkflowSpec:
+    return WorkflowSpec.model_validate({
+        "id": "other", "name": "Other", "version": version,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {"start": {"type": "pass"}},
+    })
+
+
+def test_list_executions_filters_by_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, _demo_spec(), created_by="test")
+        e1 = wfdb.start_execution(conn, "demo", input_data={}, trigger_type="manual", now=100)
+        e2 = wfdb.start_execution(conn, "demo", input_data={}, trigger_type="manual", now=101)
+        conn.execute("UPDATE workflow_executions SET status = 'succeeded' WHERE execution_id = ?", (e1,))
+        conn.execute("UPDATE workflow_executions SET status = 'running' WHERE execution_id = ?", (e2,))
+
+        queued = wfdb.list_executions(conn, status="queued")
+        assert queued == []
+
+        succeeded = wfdb.list_executions(conn, status="succeeded")
+        assert len(succeeded) == 1
+        assert succeeded[0].execution_id == e1
+
+        running = wfdb.list_executions(conn, status="running")
+        assert len(running) == 1
+        assert running[0].execution_id == e2
+
+
+def test_list_executions_filters_by_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, _demo_spec(version=1), created_by="test")
+        wfdb.deploy_definition(conn, _demo_spec(version=2), created_by="test")
+        e1 = wfdb.start_execution(conn, "demo", input_data={}, trigger_type="manual", version=1, now=100)
+        e2 = wfdb.start_execution(conn, "demo", input_data={}, trigger_type="manual", version=2, now=101)
+
+        v1 = wfdb.list_executions(conn, version=1)
+        assert len(v1) == 1
+        assert v1[0].execution_id == e1
+
+        v2 = wfdb.list_executions(conn, version=2)
+        assert len(v2) == 1
+        assert v2[0].execution_id == e2
+
+
+def test_list_executions_filters_by_trigger_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    spec = WorkflowSpec.model_validate({
+        "id": "multi", "name": "Multi", "version": 1,
+        "triggers": [
+            {"type": "manual", "id": "t1"},
+            {"type": "manual", "id": "t2"},
+        ],
+        "nodes": {"start": {"type": "pass"}},
+    })
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, spec, created_by="test")
+        e1 = wfdb.start_execution(conn, "multi", input_data={}, trigger_type="manual", trigger_id="t1", now=100)
+        e2 = wfdb.start_execution(conn, "multi", input_data={}, trigger_type="manual", trigger_id="t2", now=101)
+
+        filtered = wfdb.list_executions(conn, trigger_id="t1")
+        assert len(filtered) == 1
+        assert filtered[0].execution_id == e1
+
+
+def test_list_executions_before_cursor_pages_newest_first(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, _demo_spec(), created_by="test")
+        ids = [
+            wfdb.start_execution(conn, "demo", input_data={}, trigger_type="manual", now=100 + i)
+            for i in range(5)
+        ]
+        # ids[4] is newest (created_at=104). Before cursor on ids[3] (created_at=103)
+        # should return ids[4] only.
+        page = wfdb.list_executions(conn, before=(103, ids[3]))
+        assert [e.execution_id for e in page] == [ids[4]]
+
+
+def test_list_executions_combined_filters(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, _demo_spec(version=1), created_by="test")
+        wfdb.deploy_definition(conn, _second_spec(version=1), created_by="test")
+        e1 = wfdb.start_execution(conn, "demo", input_data={}, trigger_type="manual", now=100)
+        e2 = wfdb.start_execution(conn, "other", input_data={}, trigger_type="manual", now=101)
+        conn.execute("UPDATE workflow_executions SET status = 'succeeded' WHERE execution_id = ?", (e1,))
+        conn.execute("UPDATE workflow_executions SET status = 'succeeded' WHERE execution_id = ?", (e2,))
+
+        # workflow_id + status
+        result = wfdb.list_executions(conn, "demo", status="succeeded")
+        assert len(result) == 1
+        assert result[0].workflow_id == "demo"
+
+
+def test_get_execution_detail_returns_execution_node_runs_and_events(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    wfdb.init_db()
+    with wfdb.connect() as conn:
+        wfdb.deploy_definition(conn, _demo_spec(), created_by="test")
+        exec_id = wfdb.start_execution(conn, "demo", input_data={"x": 1}, trigger_type="manual")
+        conn.execute(
+            "INSERT INTO workflow_node_runs (execution_id, node_id, status) VALUES (?, 'start', 'succeeded')",
+            (exec_id,),
+        )
+        wfdb.append_event(conn, exec_id, "execution_started", {"ok": True})
+
+        detail = wfdb.get_execution_detail(conn, exec_id)
+        assert detail["execution"].execution_id == exec_id
+        assert detail["definition"].workflow_id == "demo"
+        assert len(detail["node_runs"]) == 1
+        assert len(detail["events"]) == 1
+        assert detail["events"][0]["kind"] == "execution_started"

@@ -255,6 +255,41 @@
 		return {};
 	}
 	//#endregion
+	//#region ../plugins/workflows/dashboard/src/history.js
+	var CANCELABLE_STATUSES = /* @__PURE__ */ new Set([
+		"queued",
+		"running",
+		"waiting"
+	]);
+	function serializeFilters(opts) {
+		if (!opts || typeof opts !== "object") return "";
+		const parts = [];
+		if (opts.workflowId) parts.push("workflow_id=" + encodeURIComponent(opts.workflowId));
+		if (opts.status) parts.push("status=" + encodeURIComponent(opts.status));
+		if (opts.version != null) parts.push("version=" + encodeURIComponent(opts.version));
+		if (opts.triggerId) parts.push("trigger_id=" + encodeURIComponent(opts.triggerId));
+		if (opts.before && opts.before.createdAt != null && opts.before.executionId) {
+			parts.push("before_created_at=" + encodeURIComponent(opts.before.createdAt));
+			parts.push("before_execution_id=" + encodeURIComponent(opts.before.executionId));
+		}
+		if (opts.limit != null) parts.push("limit=" + encodeURIComponent(opts.limit));
+		return parts.join("&");
+	}
+	function historyListPath(opts) {
+		const qs = serializeFilters(opts);
+		return "/executions" + (qs ? "?" + qs : "");
+	}
+	function detailUrl(executionId) {
+		if (!executionId) return "";
+		return "/executions/" + encodeURIComponent(executionId) + "/detail";
+	}
+	function canCancel(status) {
+		return CANCELABLE_STATUSES.has(status);
+	}
+	function buildRerunBody(input) {
+		return { input: input && typeof input === "object" ? input : {} };
+	}
+	//#endregion
 	//#region ../plugins/workflows/dashboard/src/workspace.js
 	var WORKSPACE_MODES = [
 		"build",
@@ -1982,11 +2017,19 @@
 					setNodeRuns([]);
 					return Promise.resolve(null);
 				}
-				return api("/executions/" + encodeURIComponent(executionId)).then(function(res) {
+				return api(detailUrl(executionId)).then(function(res) {
 					const execution = res.execution || null;
 					setSelectedExecution(execution);
-					return Promise.all([loadEvents(executionId), loadNodeRuns(executionId)]).then(function() {
-						return execution;
+					setEvents(asArray(res.events));
+					setNodeRuns(asArray(res.node_runs));
+					return execution;
+				}).catch(function() {
+					return api("/executions/" + encodeURIComponent(executionId)).then(function(res) {
+						const execution = res.execution || null;
+						setSelectedExecution(execution);
+						return Promise.all([loadEvents(executionId), loadNodeRuns(executionId)]).then(function() {
+							return execution;
+						});
 					});
 				});
 			}
@@ -2022,8 +2065,11 @@
 					return null;
 				});
 			}
-			function loadExecutions(preferId) {
-				return api("/executions").then(function(res) {
+			function loadExecutions(preferId, opts) {
+				var filterOpts = opts && typeof opts === "object" ? opts : {};
+				var workflowId = (runWorkflowId || "").trim();
+				if (workflowId && !filterOpts.workflowId) filterOpts.workflowId = workflowId;
+				return api(historyListPath(filterOpts)).then(function(res) {
 					const rows = asArray(res.executions);
 					const currentId = selectedExecution && selectedExecution.execution_id;
 					function hasExecution(id) {
@@ -2277,12 +2323,7 @@
 					setStatus("Select an execution before cancelling it.");
 					return;
 				}
-				if ([
-					"succeeded",
-					"failed",
-					"cancelled",
-					"blocked"
-				].indexOf(executionStatus) !== -1) {
+				if (!canCancel(executionStatus)) {
 					setStatus("Cannot cancel terminal execution " + safeString(executionId));
 					return;
 				}
@@ -2291,6 +2332,32 @@
 					setSelectedExecution(res.execution || execution);
 					setStatus(res.cancelled ? "Cancelled execution " + safeString(executionId) : "Cannot cancel terminal execution " + safeString(executionId));
 					return loadExecutions(executionId);
+				}).catch(fail);
+			}
+			function rerunSelectedExecution() {
+				const execution = selectedExecution;
+				if (!execution) {
+					setStatus("Select an execution before rerunning it.");
+					return;
+				}
+				const executionId = execution.execution_id || execution.id || "";
+				if (!executionId) return;
+				setError("");
+				var input = execution.input && typeof execution.input === "object" ? execution.input : {};
+				var safeInput = {};
+				Object.keys(input).forEach(function(key) {
+					var val = input[key];
+					if (val !== "[REDACTED]" && val !== void 0) safeInput[key] = val;
+				});
+				var body = buildRerunBody(safeInput);
+				api("/executions/" + encodeURIComponent(executionId) + "/rerun", {
+					method: "POST",
+					body
+				}).then(function(res) {
+					var newExec = res.execution;
+					setStatus("Rerun started: " + safeString(newExec.execution_id));
+					loadExecutions(newExec.execution_id);
+					loadExecution(newExec.execution_id);
 				}).catch(fail);
 			}
 			function draftFromGoal(event) {
@@ -2801,18 +2868,15 @@
 			}
 			function renderExecutionActions() {
 				if (!selectedExecution) return null;
-				const executionStatus = safeString(selectedExecution.status);
-				const terminal = [
-					"succeeded",
-					"failed",
-					"cancelled",
-					"blocked"
-				].indexOf(executionStatus) !== -1;
+				const canCancel$1 = canCancel(safeString(selectedExecution.status));
 				return h("div", { className: "hermes-workflows-row" }, h("button", {
 					type: "button",
 					onClick: cancelSelectedExecution,
-					disabled: terminal
-				}, terminal ? "Cannot cancel terminal execution" : "Cancel Execution"));
+					disabled: !canCancel$1
+				}, canCancel$1 ? "Cancel Execution" : "Cannot cancel terminal execution"), h("button", {
+					type: "button",
+					onClick: rerunSelectedExecution
+				}, "Rerun"));
 			}
 			function renderTimeline() {
 				return h("div", { className: "hermes-workflows-timeline" }, h("p", { className: "hermes-workflows-privacy-note" }, PRIVACY_NOTE), renderExecutionStallWarning(), selectedExecution ? h("div", { className: "hermes-workflows-event" }, h("div", { className: "hermes-workflows-item-title" }, h("strong", null, safeString(selectedExecution.execution_id)), h("span", { className: "hermes-workflows-badge" }, safeString(selectedExecution.status))), h("div", { className: "hermes-workflows-meta" }, safeString(selectedExecution.workflow_id) + " · created " + safeString(selectedExecution.created_at)), h("pre", { className: "hermes-workflows-pre" }, jsonBlock(selectedExecution.input)), renderExecutionActions()) : h("p", { className: "hermes-workflows-muted" }, "Select an execution to inspect it."), renderNodeRuns(), events.length ? events.map(function(row) {

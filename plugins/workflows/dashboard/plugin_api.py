@@ -955,12 +955,28 @@ async def run_workflow(
 @router.get("/executions")
 def list_executions(
     workflow_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    version: int | None = Query(default=None),
+    trigger_id: str | None = Query(default=None),
+    before_created_at: int | None = Query(default=None),
+    before_execution_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> dict[str, Any]:
+    before = None
+    if before_created_at is not None and before_execution_id is not None:
+        before = (before_created_at, before_execution_id)
     with _connect_initialized() as conn:
         executions = [
             _execution_to_dict(e)
-            for e in wfdb.list_executions(conn, workflow_id, limit=limit)
+            for e in wfdb.list_executions(
+                conn,
+                workflow_id,
+                status=status,
+                version=version,
+                trigger_id=trigger_id,
+                before=before,
+                limit=limit,
+            )
         ]
     return {"executions": executions}
 
@@ -973,6 +989,54 @@ def get_execution(execution_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise _http_404(exc) from exc
     return {"execution": _execution_to_dict(execution)}
+
+
+@router.get("/executions/{execution_id}/detail")
+def execution_detail(execution_id: str) -> dict[str, Any]:
+    try:
+        with _connect_initialized() as conn:
+            detail = wfdb.get_execution_detail(conn, execution_id)
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    return {
+        "execution": _execution_to_dict(detail["execution"]),
+        "definition": _definition_to_dict(detail["definition"]),
+        "node_runs": [_redact_node_run_for_display(nr) for nr in detail["node_runs"]],
+        "events": [_event_to_dict(e) for e in detail["events"]],
+    }
+
+
+@router.post("/executions/{execution_id}/rerun")
+async def rerun_execution(
+    execution_id: str, request: Request
+) -> dict[str, Any]:
+    try:
+        payload = _object_payload(await _read_body(request), what="rerun request")
+        input_data = payload.get("input")
+        if not isinstance(input_data, dict):
+            raise ValueError("rerun request must include an 'input' object")
+
+        def _rerun():
+            with _connect_initialized() as conn:
+                source = wfdb.get_execution(conn, execution_id)
+                new_id = wfdb.start_manual_execution(
+                    conn,
+                    source.workflow_id,
+                    input_data=input_data,
+                    version=source.version,
+                    trigger_id=source.trigger_id,
+                )
+                return wfdb.get_execution(conn, new_id)
+
+        new_execution = await asyncio.to_thread(_rerun)
+    except KeyError as exc:
+        raise _http_404(exc) from exc
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError) as exc:
+        raise _http_400(exc) from exc
+    return {
+        "execution": _execution_to_dict(new_execution),
+        "source_execution_id": execution_id,
+    }
 
 
 @router.get("/executions/{execution_id}/node-runs")

@@ -1248,20 +1248,59 @@ def list_executions(
     conn: sqlite3.Connection,
     workflow_id: str | None = None,
     *,
+    status: str | None = None,
+    version: int | None = None,
+    trigger_id: str | None = None,
+    before: tuple[int, str] | None = None,
     limit: int | None = None,
 ) -> list[WorkflowExecution]:
-    """List executions newest-first, optionally scoped to one workflow."""
-    query = "SELECT execution_id FROM workflow_executions"
+    """List executions newest-first with optional filters.
+
+    ``before`` is a ``(created_at, execution_id)`` cursor for keyset
+    pagination — no offset pagination.
+    """
+    clauses: list[str] = []
     params: list[Any] = []
     if workflow_id:
-        query += " WHERE workflow_id = ?"
+        clauses.append("workflow_id = ?")
         params.append(workflow_id)
-    query += " ORDER BY created_at DESC, execution_id DESC"
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if version is not None:
+        clauses.append("version = ?")
+        params.append(version)
+    if trigger_id is not None:
+        clauses.append("trigger_id = ?")
+        params.append(trigger_id)
+    if before is not None:
+        # In newest-first order, "before the cursor" means newer items.
+        clauses.append("(created_at > ? OR (created_at = ? AND execution_id > ?))")
+        params.extend([before[0], before[0], before[1]])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    query = f"SELECT execution_id FROM workflow_executions{where} ORDER BY created_at DESC, execution_id DESC"
     if limit is not None and limit > 0:
         query += " LIMIT ?"
         params.append(limit)
     rows = conn.execute(query, params).fetchall()
     return [get_execution(conn, row["execution_id"]) for row in rows]
+
+
+def get_execution_detail(
+    conn: sqlite3.Connection,
+    execution_id: str,
+) -> dict[str, Any]:
+    """Return execution, definition summary, node runs, and events in one response."""
+    execution = get_execution(conn, execution_id)
+    definition = _definition_record(conn, execution.workflow_id, execution.version)
+    node_runs = list_node_runs(conn, execution_id)
+    events = list_events(conn, execution_id)
+    return {
+        "execution": execution,
+        "definition": definition,
+        "node_runs": node_runs,
+        "events": events,
+    }
 
 
 def get_execution(conn: sqlite3.Connection, execution_id: str) -> WorkflowExecution:

@@ -3117,3 +3117,122 @@ def test_dashboard_tick_endpoint_returns_detailed_report(client, monkeypatch):
         "remaining_running_or_waiting": 0,
         "processed": 2,
     }
+
+
+# --- Task 8: detail endpoint, rerun, filtered executions ---
+
+
+SECRET_DETAIL_SPEC = {
+    "id": "secret_detail_demo",
+    "name": "Secret Detail Demo",
+    "version": 1,
+    "triggers": [{"type": "manual", "id": "manual"}],
+    "nodes": {
+        "start": {
+            "type": "pass",
+            "output": {"api_key": "${ input.api_key }", "topic": "${ input.topic }"},
+        }
+    },
+}
+
+
+def test_execution_detail_is_versioned_and_redacted(client):
+    _deploy(client, SECRET_DETAIL_SPEC)
+    r = client.post(
+        "/api/plugins/workflows/definitions/secret_detail_demo/run",
+        json={"input": {"api_key": "super-secret", "topic": "safe"}},
+    )
+    assert r.status_code == 200, r.text
+    execution_id = r.json()["execution"]["execution_id"]
+
+    detail = client.get(f"/api/plugins/workflows/executions/{execution_id}/detail")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["execution"]["version"] == 1
+    assert body["definition"]["version"] == 1
+    assert "super-secret" not in detail.text
+    assert body["node_runs"]
+    assert body["events"]
+    assert body["execution"]["input"]["api_key"] == "[REDACTED]"
+
+
+def test_rerun_creates_new_execution_pinned_to_same_version(client):
+    _deploy(client, PASS_SPEC)
+    r = client.post(
+        f"/api/plugins/workflows/definitions/{PASS_SPEC['id']}/run",
+        json={"input": {"x": 1}},
+    )
+    assert r.status_code == 200, r.text
+    original = r.json()["execution"]
+
+    rerun = client.post(
+        f"/api/plugins/workflows/executions/{original['execution_id']}/rerun",
+        json={"input": {"x": 2}},
+    )
+    assert rerun.status_code == 200, rerun.text
+    body = rerun.json()
+    assert body["execution"]["execution_id"] != original["execution_id"]
+    assert body["execution"]["version"] == original["version"]
+    assert body["execution"]["workflow_id"] == original["workflow_id"]
+    assert body["source_execution_id"] == original["execution_id"]
+    assert body["execution"]["input"] == {"x": 2}
+
+
+def test_rerun_requires_explicit_input(client):
+    _deploy(client, PASS_SPEC)
+    r = client.post(
+        f"/api/plugins/workflows/definitions/{PASS_SPEC['id']}/run",
+        json={"input": {}},
+    )
+    execution_id = r.json()["execution"]["execution_id"]
+
+    rerun = client.post(
+        f"/api/plugins/workflows/executions/{execution_id}/rerun",
+        json={},
+    )
+    assert rerun.status_code == 400
+
+
+def test_rerun_returns_404_for_missing_execution(client):
+    r = client.post(
+        "/api/plugins/workflows/executions/wfexec_missing/rerun",
+        json={"input": {}},
+    )
+    assert r.status_code == 404
+
+
+def test_executions_list_supports_status_filter(client):
+    _deploy(client, PASS_SPEC)
+    e1 = client.post(
+        f"/api/plugins/workflows/definitions/{PASS_SPEC['id']}/run",
+        json={"input": {}},
+    ).json()["execution"]
+    e2 = client.post(
+        f"/api/plugins/workflows/definitions/{PASS_SPEC['id']}/run",
+        json={"input": {}},
+    ).json()["execution"]
+
+    succeeded = client.get("/api/plugins/workflows/executions?status=succeeded")
+    running = client.get("/api/plugins/workflows/executions?status=queued")
+    # At least one should match based on how fast they complete.
+    all_execs = client.get("/api/plugins/workflows/executions")
+    assert len(all_execs.json()["executions"]) == 2
+
+
+def test_executions_list_supports_version_filter(client):
+    _deploy(client, PASS_SPEC)
+    client.post(
+        f"/api/plugins/workflows/definitions/{PASS_SPEC['id']}/run",
+        json={"input": {}},
+    )
+
+    v1 = client.get("/api/plugins/workflows/executions?version=1")
+    assert len(v1.json()["executions"]) == 1
+
+    v99 = client.get("/api/plugins/workflows/executions?version=99")
+    assert len(v99.json()["executions"]) == 0
+
+
+def test_detail_returns_404_for_missing_execution(client):
+    r = client.get("/api/plugins/workflows/executions/wfexec_missing/detail")
+    assert r.status_code == 404

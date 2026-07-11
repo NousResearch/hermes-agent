@@ -3,6 +3,14 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
 import { semanticWorkflowDiff, isDraftDirty, buildApiHelpers } from "./build.js";
 import { feedActions, shouldPollFeed, fieldErrors } from "./run.js";
 import {
+  serializeFilters as historySerializeFilters,
+  historyListPath,
+  detailUrl as historyDetailUrl,
+  canCancel as historyCanCancel,
+  buildRerunBody as historyBuildRerunBody,
+  buildDetailGraphParams as historyBuildDetailGraphParams,
+} from "./history.js";
+import {
   WORKSPACE_MODES,
   locationForMode,
   modeForLocation,
@@ -1558,10 +1566,20 @@ import {
         setNodeRuns([]);
         return Promise.resolve(null);
       }
-      return api("/executions/" + encodeURIComponent(executionId)).then(function (res) {
+      var detailPath = historyDetailUrl(executionId);
+      return api(detailPath).then(function (res) {
         const execution = res.execution || null;
         setSelectedExecution(execution);
-        return Promise.all([loadEvents(executionId), loadNodeRuns(executionId)]).then(function () { return execution; });
+        setEvents(asArray(res.events));
+        setNodeRuns(asArray(res.node_runs));
+        return execution;
+      }).catch(function () {
+        // ponytail: fall back to legacy separate fetches if detail endpoint fails.
+        return api("/executions/" + encodeURIComponent(executionId)).then(function (res) {
+          const execution = res.execution || null;
+          setSelectedExecution(execution);
+          return Promise.all([loadEvents(executionId), loadNodeRuns(executionId)]).then(function () { return execution; });
+        });
       });
     }
 
@@ -1598,8 +1616,14 @@ import {
       });
     }
 
-    function loadExecutions(preferId) {
-      return api("/executions").then(function (res) {
+    function loadExecutions(preferId, opts) {
+      var filterOpts = opts && typeof opts === "object" ? opts : {};
+      var workflowId = (runWorkflowId || "").trim();
+      if (workflowId && !filterOpts.workflowId) {
+        filterOpts.workflowId = workflowId;
+      }
+      var path = historyListPath(filterOpts);
+      return api(path).then(function (res) {
         const rows = asArray(res.executions);
         const currentId = selectedExecution && selectedExecution.execution_id;
         function hasExecution(id) {
@@ -1850,7 +1874,7 @@ import {
         setStatus("Select an execution before cancelling it.");
         return;
       }
-      if (["succeeded", "failed", "cancelled", "blocked"].indexOf(executionStatus) !== -1) {
+      if (!historyCanCancel(executionStatus)) {
         setStatus("Cannot cancel terminal execution " + safeString(executionId));
         return;
       }
@@ -1860,6 +1884,31 @@ import {
         setSelectedExecution(nextExecution);
         setStatus(res.cancelled ? "Cancelled execution " + safeString(executionId) : "Cannot cancel terminal execution " + safeString(executionId));
         return loadExecutions(executionId);
+      }).catch(fail);
+    }
+
+    function rerunSelectedExecution() {
+      const execution = selectedExecution;
+      if (!execution) {
+        setStatus("Select an execution before rerunning it.");
+        return;
+      }
+      const executionId = execution.execution_id || execution.id || "";
+      if (!executionId) return;
+      setError("");
+      // ponytail: prefill non-sensitive values only; the UI never retrieves raw secrets.
+      var input = execution.input && typeof execution.input === "object" ? execution.input : {};
+      var safeInput = {};
+      Object.keys(input).forEach(function (key) {
+        var val = input[key];
+        if (val !== "[REDACTED]" && val !== undefined) safeInput[key] = val;
+      });
+      var body = historyBuildRerunBody(safeInput);
+      api("/executions/" + encodeURIComponent(executionId) + "/rerun", { method: "POST", body: body }).then(function (res) {
+        var newExec = res.execution;
+        setStatus("Rerun started: " + safeString(newExec.execution_id));
+        loadExecutions(newExec.execution_id);
+        loadExecution(newExec.execution_id);
       }).catch(fail);
     }
 
@@ -2388,9 +2437,10 @@ import {
     function renderExecutionActions() {
       if (!selectedExecution) return null;
       const executionStatus = safeString(selectedExecution.status);
-      const terminal = ["succeeded", "failed", "cancelled", "blocked"].indexOf(executionStatus) !== -1;
+      const canCancel = historyCanCancel(executionStatus);
       return h("div", { className: "hermes-workflows-row" },
-        h("button", { type: "button", onClick: cancelSelectedExecution, disabled: terminal }, terminal ? "Cannot cancel terminal execution" : "Cancel Execution")
+        h("button", { type: "button", onClick: cancelSelectedExecution, disabled: !canCancel }, canCancel ? "Cancel Execution" : "Cannot cancel terminal execution"),
+        h("button", { type: "button", onClick: rerunSelectedExecution }, "Rerun")
       );
     }
 

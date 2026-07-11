@@ -48,7 +48,7 @@ from gateway.platforms.base import (  # noqa: E402
     SessionSource,
     build_session_key,
 )
-from gateway.run import GatewayRunner  # noqa: E402
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL  # noqa: E402
 
 
 class RecordingAdapter(BasePlatformAdapter):
@@ -375,3 +375,92 @@ async def test_marker_survives_session_task_lookup_miss():
 
     turn_gate.set()
     await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_marker_survives_sentinel_phase_fast_dispatch():
+    """AEGIS-RIG live trace (2026-07-11 08:54): the adapter task the wrapper
+    shields is NOT the agent turn.  The gateway handler spawns the turn on its
+    own per-message task and RETURNS, so the wrapper's finally ran ~7ms after
+    dispatch while the slot still held the scheduler's pre-claim SENTINEL; the
+    real turn registered its agent ~40ms later.  Discarding the marker on
+    sentinel stripped protection from every recovery turn on this timing.
+
+    Sequence: pre-claim sentinel (as _schedule_resume_pending_sessions does)
+    -> wrapper dispatch where the handler returns immediately and the turn
+    runs detached -> wrapper finally sees SENTINEL -> marker must survive ->
+    poke during the running turn gets the demotion, not an interrupt.
+    """
+    adapter = RecordingAdapter()
+    ev = _user_event("")
+    ev.internal = True
+    sk = build_session_key(ev.source)
+
+    runner = _make_runner(sk)
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    turn_running = asyncio.Event()
+    turn_gate = asyncio.Event()
+    parent = MagicMock()
+    parent._active_children = []
+    parent._active_children_lock = threading.Lock()
+    parent.get_activity_summary.return_value = {
+        "api_call_count": 1, "max_iterations": 300, "current_tool": "terminal",
+    }
+
+    detached: list[asyncio.Task] = []
+
+    async def detached_turn():
+        # the real agent registers AFTER the dispatch path has fully unwound
+        await asyncio.sleep(0.04)
+        runner._running_agents[sk] = parent
+        turn_running.set()
+        await turn_gate.wait()
+        runner._release_running_agent_state(sk)
+
+    async def fast_handler(event):
+        # production shape: spawn the turn, return immediately
+        detached.append(asyncio.create_task(detached_turn()))
+        return None
+
+    adapter.set_message_handler(fast_handler)
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+
+    # scheduler pre-claim: slot holds the sentinel before the wrapper spawns
+    runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
+    runner._running_agents_ts[sk] = 0.0
+
+    await runner._run_startup_resume_event(adapter, ev, sk)
+    # Wrapper has fully returned during the sentinel window.  The contract:
+    # the SLOT is handed back (the late-arrival drain's re-dispatch must be
+    # able to claim it — test_auto_resume_runs_agent_exactly_once_through_
+    # full_path), but the protection MARKER must stay armed for the incoming
+    # recovery turn.
+    assert runner._session_in_startup_resume(sk) is True, (
+        "wrapper finally discarded the marker during the SENTINEL phase — "
+        "the AEGIS-RIG 2026-07-11 live failure"
+    )
+    assert runner._running_agents.get(sk) is not _AGENT_PENDING_SENTINEL, (
+        "pre-claimed slot must be handed back so the drain re-dispatch can claim it"
+    )
+
+    await asyncio.wait_for(turn_running.wait(), timeout=5)
+    assert runner._session_in_startup_resume(sk) is True
+
+    # With the turn now live, the adapter holds its session guard (in
+    # production the per-message task keeps it for the turn's duration; our
+    # fast handler returned early, so re-install it and a live owner task so
+    # the poke routes to the busy path instead of a fresh dispatch).
+    adapter._active_sessions[sk] = asyncio.Event()
+    adapter._session_tasks[sk] = detached[0]
+
+    poke = _user_event("How's it going?")
+    await adapter.handle_message(poke)
+    parent.interrupt.assert_not_called()
+    assert any("restarted" in s.lower() for s in adapter.sent), adapter.sent
+
+    turn_gate.set()
+    await asyncio.sleep(0.1)
+    assert runner._session_in_startup_resume(sk) is False, (
+        "marker must clear at the turn chokepoint once the turn finishes"
+    )

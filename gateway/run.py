@@ -8148,12 +8148,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             active = set()
             self._startup_resume_active = active
         active.add(session_key)
+        dispatched_ok = False
+        turn_task = None
         try:
             await adapter.handle_message(event)
+            dispatched_ok = True
             session_tasks = getattr(adapter, "_session_tasks", {})
-            task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
-            if task is not None:
-                await asyncio.shield(task)
+            turn_task = (
+                session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
+            )
+            if turn_task is not None:
+                await asyncio.shield(turn_task)
         finally:
             # Marker ownership belongs to the TURN lifecycle, not this wrapper
             # (2026-07-10 20:17 live failure: the wrapper's await chain can
@@ -8163,20 +8168,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # here stripped protection from a live recovery turn, letting a
             # user follow-up interrupt it at iteration 1).
             # _release_running_agent_state clears the marker when the turn
-            # actually ends.  Here, discard only when no live turn holds the
-            # slot (never started, or already finished) — belt-and-suspenders
-            # against a leaked marker without early-stripping a running one.
+            # actually ends.  Here, discard only when the slot is EMPTY (the
+            # turn already finished and released, or ownership was never
+            # claimed at all) — belt-and-suspenders against a leaked marker
+            # without early-stripping a running one.
+            #
+            # 🔴 SENTINEL IS NOT "never started" (AEGIS-RIG trace,
+            # 2026-07-11 08:54): the adapter task the shield awaits is NOT
+            # the agent turn — the gateway handler spawns the turn on its own
+            # per-message task and returns, so this finally can run ~7ms
+            # after dispatch while the slot still holds the pre-claim
+            # sentinel and the real turn starts ~40ms later.  Discarding on
+            # sentinel stripped protection from every recovery turn on this
+            # timing (the "iteration 1/300" interrupt acks with no restart
+            # mention).  Sentinel-phase cleanup is owned by the sentinel
+            # release below / the turn chokepoint / the reaper — all of which
+            # funnel through _release_running_agent_state, which clears the
+            # marker.
             occupant = self._running_agents.get(session_key)
-            if occupant is None or occupant is _AGENT_PENDING_SENTINEL:
-                active.discard(session_key)
             if occupant is None:
+                active.discard(session_key)
                 getattr(self, "_startup_resume_modes", {}).pop(session_key, None)
             # _schedule_resume_pending_sessions pre-claims the runner slot
-            # before spawning this task.  If adapter.handle_message raises
-            # before _handle_message takes ownership, release that pre-claim;
-            # otherwise the real run's normal cleanup owns the slot.
+            # before spawning this task.  A sentinel still here after dispatch
+            # is the NORMAL resume path, not a leak: the resume event
+            # self-bounces off its own pre-claim in _handle_message, gets
+            # queued, and the adapter's late-arrival drain re-dispatches it
+            # AFTER this release (locked in by
+            # test_auto_resume_runs_agent_exactly_once_through_full_path).
+            # So the slot must be handed back unconditionally — but on a
+            # SUCCESSFUL dispatch the protection marker must stay armed for
+            # that incoming recovery turn.  Clearing it here was the
+            # AEGIS-RIG 2026-07-11 bug: the wrapper's finally ran ~7ms after
+            # dispatch, the re-dispatched turn started ~40ms later
+            # unprotected, and user pokes interrupted it at iteration 1.
+            # On dispatch FAILURE nothing will ever run — clear everything.
             if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(session_key)
+                self._release_running_agent_state(
+                    session_key,
+                    clear_startup_resume_protection=not dispatched_ok,
+                )
+                if not dispatched_ok:
+                    active.discard(session_key)
+                    getattr(self, "_startup_resume_modes", {}).pop(session_key, None)
 
     def _session_in_startup_resume(self, session_key: str) -> bool:
         """True while ``session_key``'s running turn is a boot-resume turn."""
@@ -18612,6 +18646,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str,
         *,
         run_generation: Optional[int] = None,
+        clear_startup_resume_protection: bool = True,
     ) -> bool:
         """Pop ALL per-running-agent state entries for ``session_key``.
 
@@ -18662,16 +18697,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # clearing it here guarantees marker-lifetime == turn-lifetime.  The
         # wrapper (_run_startup_resume_event) deliberately does NOT clear it
         # while a live turn holds the slot (2026-07-10 20:17 live failure).
-        _sra = getattr(self, "_startup_resume_active", None)
-        if _sra is not None:
-            try:
-                _sra.discard(session_key)
-            except Exception:
-                pass
+        # ``clear_startup_resume_protection=False`` is the ONE non-turn-exit
+        # caller: the resume wrapper's sentinel pre-claim handback, where the
+        # resume event was queued and the drain's re-dispatch (the actual
+        # recovery turn) is about to claim the slot — its protection must
+        # stay armed (AEGIS-RIG 2026-07-11).
+        if clear_startup_resume_protection:
+            _sra = getattr(self, "_startup_resume_active", None)
+            if _sra is not None:
+                try:
+                    _sra.discard(session_key)
+                except Exception:
+                    pass
         # The synthetic resume disposition has the same lifecycle as the
         # protection marker. Keep it while a detached wrapper's turn is still
         # alive, then clear it at this turn-exit chokepoint.
-        getattr(self, "_startup_resume_modes", {}).pop(session_key, None)
+        if clear_startup_resume_protection:
+            getattr(self, "_startup_resume_modes", {}).pop(session_key, None)
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see

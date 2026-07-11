@@ -555,6 +555,7 @@ class WebhookAdapter(BasePlatformAdapter):
         event_type = (
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
+            or request.headers.get("X-Gitea-Event", "")
             or payload.get("event_type", "")
             or payload.get("type", "")
             or "unknown"
@@ -882,6 +883,14 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Gitea: X-Gitea-Signature = <hex HMAC-SHA256 of body> (no prefix)
+        gitea_sig = request.headers.get("X-Gitea-Signature", "")
+        if gitea_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(gitea_sig, expected)
 
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)

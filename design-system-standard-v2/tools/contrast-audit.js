@@ -15,6 +15,15 @@
  * exit rule (ในบริบท CI ที่มี headless): window.__CONTRAST_FAILS__ = จำนวน fail
  */
 (function () {
+  if (typeof document === 'undefined') {
+    var msg = '⚠ contrast-audit.js ต้องรันในเบราว์เซอร์ (มี document) ไม่ใช่ node ตรง ๆ\n' +
+      '  วิธีที่ถูก:\n' +
+      '   • อัตโนมัติ: node tools/contrast-audit-run.mjs <หน้า.html>\n' +
+      '   • มือ: วางทั้งไฟล์นี้ใน DevTools Console ของหน้าที่เปิดอยู่';
+    if (typeof console !== 'undefined') console.error(msg);
+    if (typeof process !== 'undefined' && process.exit) process.exit(2);
+    return;
+  }
   function pRGB(s) {
     const m = s && s.match(/rgba?\(([^)]+)\)/);
     if (!m) return null;

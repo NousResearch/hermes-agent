@@ -22,13 +22,13 @@ tags:
   - phase-tracking
   - completion
 status: active
-version: "4.1"
-updated: 2026-07-05
+version: "4.2"
+updated: 2026-07-08
 schema: memory-schema-v1.2
 replaces: go-to-sleep
 ---
 
-# Use Continue (v4.1 · 2026-07-05)
+# Use Continue (v4.2 · 2026-07-08)
 
 คู่กับ Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
@@ -54,7 +54,10 @@ Use Continue
 - เจอไฟล์ความจำเก่าใน `.hermes/` หรือ root ที่ยังมีเนื้อหาจริง → Migration ตาม Schema §1b ก่อนลุย (ย้าย + stub ห้ามลบ + แก้จุดอ้าง)
 - `NEED_OWNER_ACTION_BEFORE_CLOSE` รอบก่อน = หยุด เตือนเจ้าของ ห้ามลุยต่อ จนกว่าเคลียร์
 - เคารพ claim/worktree: route ไป worktree ตัวเอง · path ซ้อน claim คนอื่น = STOP · ไม่แตะ worktree คนอื่น
-- อ้าง phase_id/issue_id เดิมจาก plan/comply ตลอด ไม่ตั้งใหม่
+- อ้าง phase_id/issue_id เดิมจาก plan/comply ตลอด ไม่ตั้งใหม่ · ถ้า plan.md ประกาศ plan_id (เช่น GRD) เลขงานต้องขึ้นต้นด้วย plan_id นั้น · เลขที่ไม่มีใน plan.md = ห้ามทำ
+
+[กฎ re-anchor — กันลืมแผนหลังคำถามแทรก · แผน GRD 2026-07-07]
+หลังตอบคำถามแทรก / ออกนอกเรื่อง / สลับงาน — ก่อนแตะไฟล์หรือลงมือครั้งถัดไป ต้องเปิด `.project/plan.md` ทวน "เฟสปัจจุบัน + ข้อห้าม" ก่อนเสมอ · ห้ามทำต่อจากความจำในแชท (ปฐมเหตุ: AI ตอบคำถามเสร็จแล้วลืมแผน ทำโปรเจกต์พัง · ละเมิด "ตอบโดยไม่ทวนโจทย์" 3,790 ครั้ง)
 
 [ระดับอิสระ 3 ชั้น — ตัดสินก่อนทำทุกอย่าง · อิง Schema §12]
 ชั้น 1 ทำเองได้เลย: อ่านไฟล์ / แก้โค้ดใน scope รอบนี้ / รันเทส / เขียนไฟล์ทดสอบ / เขียน doc
@@ -107,6 +110,7 @@ Use Continue
 
 ## Changelog
 
+- v4.2 (2026-07-08): เพิ่มกฎ re-anchor (หลังตอบคำถามแทรก ต้องเปิด plan.md ทวนเฟส+ข้อห้ามก่อนลงมือ) + เลขงานต้องขึ้นต้นด้วย plan_id ของแผน · จากการสอบสวนแผน GRD 2026-07-07 (ต้นตอ: AI ลืมแผนหลังตอบคำถาม + เลขงานชนกันข้ามแผน)
 - v4.1 (2026-07-05): เกาะ Memory Schema v1.2 — ขั้น 0 อ่าน `.project/plan.md` + `.project/OverviewProgress.md` + `.project/decisions.md` (เดิมอ่าน `.hermes/`+handoff) · เจอไฟล์เก่า = Migration §1b ก่อนลุย · ledger ยังอยู่ `.hermes/ledger/` (ไฟล์เครื่องจักร) · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05)
 - v4.0 (2026-06-26): เกาะ Memory Schema v1.1 · **เปลี่ยนนโยบาย: merge→main/deploy prod/migration prod ออกจาก auto → ต้องขอคน (ALLOW_AUTO_PROD=OFF ค่าตั้งต้น ตาม §12)** · เพิ่มขั้น 0 อ่าน plan/memory/token/claim ก่อนลงมือ · เคารพ claim/worktree (ไม่แตะของคนอื่น) · ledger ผูกเข้า memory (§13) · ค้น gate เอง (§5) · อ้าง phase_id/issue_id เดิม · ส่งต่อ Use Close Chat ตอนจบ · redact secret (§7)
 - v3.1 (2026-06-24): งานเสี่ยงสูงเป็น auto ผ่านด่าน (ชั้น 3A) · fail-closed + ผลจากเครื่องมือจริง + ผูกกับคำสั่งจริง · เพิ่มนิยาม "ว้าว" + นิยาม 100% + STOP rule + closeout

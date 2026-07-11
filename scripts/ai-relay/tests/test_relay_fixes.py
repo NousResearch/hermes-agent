@@ -175,6 +175,54 @@ def test_relay_suggest_reviewer_must_be_different_vendor_from_coder():
     assert reg[out["reviewer"]]["vendor"] != reg[out["coder"]]["vendor"]
 
 
+def load_relay_relogin():
+    path = ROOT / "relay-relogin.py"
+    assert path.exists(), "ต้องมี scripts/ai-relay/relay-relogin.py"
+    return load_module("relay_relogin", "relay-relogin.py")
+
+
+def test_relay_relogin_lists_only_down_enabled_tools_with_login_cmd_first():
+    relay_relogin = load_relay_relogin()
+    reg = {
+        "codex":  {"enabled": True, "login_hint": "codex login", "login_cmd": "codex login"},
+        "grok":   {"enabled": True, "login_hint": "grok login --device-auth", "login_cmd": "grok login --device-auth"},
+        "opus":   {"enabled": True, "login_hint": "claude (login ผ่าน Claude Code)"},   # ไม่มี login_cmd
+        "gemini": {"enabled": False, "login_hint": "x"},   # ปิดอยู่ → ไม่นับ
+    }
+    status_map = {
+        "codex":  {"ready": False, "live": "auth"},
+        "grok":   {"ready": True},                          # พร้อม → ไม่ต้อง login
+        "opus":   {"ready": False, "hint": "ยังไม่ล็อกอิน"},
+    }
+    plan = relay_relogin.relogin_plan(reg, status_map)
+    tools = [p["tool"] for p in plan]
+    assert "grok" not in tools          # พร้อมแล้ว ไม่อยู่ในรายการ
+    assert "gemini" not in tools        # ปิดอยู่ ไม่อยู่ในรายการ
+    assert set(tools) == {"codex", "opus"}
+    # ตัวที่มีคำสั่ง login (codex) ต้องมาก่อนตัวที่ไม่มี (opus) เพื่อ --run พาทำได้
+    assert tools[0] == "codex"
+    assert plan[0]["login_cmd"] == "codex login"
+    assert plan[1]["login_cmd"] is None
+
+
+def test_relay_relogin_safe_login_argv_allowlist():
+    # GPT-5 fix: --run รันได้เฉพาะคำสั่ง login ที่โปรแกรมอยู่ในรายชื่ออนุญาต (กัน registry ถูกแก้เป็น rm)
+    relay_relogin = load_relay_relogin()
+    allowed = {"codex", "grok", "gemini", "claude"}
+    assert relay_relogin.safe_login_argv("codex login", allowed) == ["codex", "login"]
+    assert relay_relogin.safe_login_argv("grok login --device-auth", allowed) == ["grok", "login", "--device-auth"]
+    # คำสั่งอันตราย/ไม่อยู่ในรายชื่อ → None (ไม่รัน)
+    assert relay_relogin.safe_login_argv("rm -rf /", allowed) is None
+    assert relay_relogin.safe_login_argv("", allowed) is None
+    assert relay_relogin.safe_login_argv(None, allowed) is None
+
+
+def test_relay_relogin_empty_when_all_ready():
+    relay_relogin = load_relay_relogin()
+    reg = {"codex": {"enabled": True, "login_cmd": "codex login"}}
+    assert relay_relogin.relogin_plan(reg, {"codex": {"ready": True}}) == []
+
+
 def load_relay_report():
     path = ROOT / "relay-report.py"
     assert path.exists(), "ต้องมี scripts/ai-relay/relay-report.py"
@@ -402,6 +450,30 @@ def test_classify_stdout_session_limit_is_quota():
     assert relay_call.classify(1, "You've hit your session limit · resets 6:10am (UTC)", "") == "quota"
 
 
+def test_classify_work_review_mentioning_quota_terms_is_ok():
+    # เคสจริง 2026-07-10 (QAQC review): กรรมการรีวิวดีไซน์ที่ "เนื้อหาพูดถึง" quota/rate limit
+    # (เพราะโจทย์คือตรวจหมวด Quota/Rate-limit ของ taxonomy) ตอบยาวปกติ exit 0
+    # เดิม QUOTA_RE จับ stdout ยาวโดยไม่มีตัวกันความยาวแบบ auth → codex+gemini โดน quota ปลอม คำตอบถูกทิ้งฟรี
+    out = ("ผลรีวิวตารางแม่: หมวด Q03 มีหัวข้อ Quota / Limit และ Billing ครบถ้วนดี · "
+           "หมวด Q04 ข้อ Rate limit / brute force ควรระบุเครื่องมือตรวจให้ชัดขึ้น · "
+           "กติกาเมื่อ AI โดน usage limit แล้วสลับสายสำรองออกแบบถูกต้องตามหลัก fail-over · "
+           "โดยรวมไม่พบข้อ blocking · Verdict: proceed เพราะโครงหมวดครบและกันซ้ำรอยระบบเก่าได้จริง")
+    assert len(out.strip()) > 250  # ต้องยาวพอเป็นคำตอบงานจริง (จุดที่บั๊กเดิมจับผิด)
+    assert relay_call.classify(0, out, "") == "ok"
+
+
+def test_classify_nonzero_long_stdout_quota_words_is_crash_not_quota():
+    # คำตอบยาวที่พูดถึง quota แต่ CLI พังกลางทาง (exit != 0) = crash ไม่ใช่ quota
+    out = ("รีวิวไปได้ครึ่งทาง: หมวด Quota / Rate limit ตรวจแล้ว 8 หัวข้อ พบประเด็น usage limit "
+           "ในดีไซน์สายสำรอง 2 จุดที่ควรเข้มกว่านี้ แล้วยังเหลือหมวด Q10-Q16 ที่ยังไม่ได้ไล่ตรวจอีกทั้งหมด "
+           "แต่กระบวนการถูกตัดกลางคันก่อนถึงขั้นสรุป Verdict สุดท้าย ทำให้รายงานฉบับนี้ไม่สมบูรณ์ "
+           "และต้องเริ่มรีวิวใหม่ตั้งแต่หมวดที่ค้างในรอบถัดไปจึงจะปิดงานได้ครบทุกหมวดตามใบสั่งงาน")
+    assert len(out.strip()) > 250
+    assert relay_call.classify(1, out, "") == "crash"
+    # ของจริงที่สั้น (ข้อความ limit จาก CLI เอง) ต้องยังเป็น quota เหมือนเดิม
+    assert relay_call.classify(1, "You've hit your usage limit.", "") == "quota"
+
+
 def test_summarize_final_failure_preserves_all_quota_result():
     status, reason, exit_code = relay_call.summarize_final_failure(["opus:quota"])
     assert status == "quota"
@@ -587,18 +659,15 @@ def test_resolve_timeout_coder_and_brain():
 
 
 def test_run_once_returns_timeout_mark_on_timeout():
-    def fake_run(cmd, **kwargs):
-        raise relay_call.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-    orig = relay_call.subprocess.run
-    relay_call.subprocess.run = fake_run
-    try:
-        code, out, err = relay_call.run_once({"cmd": ["grok", "-p", "hi"]}, "hi", Path("/tmp"), "", timeout=1)
-    finally:
-        relay_call.subprocess.run = orig
+    # run_once ใช้ subprocess.Popen + polling loop (ไม่ใช่ subprocess.run แล้วตั้งแต่ v2.6 "นาฬิกาปลุกกันค้าง")
+    # การ mock subprocess.run จึงไม่ถูกเรียก → ทดสอบด้วย process ที่ค้างจริง (sleep) + timeout สั้นแทน
+    # ต้องคืน 124 + TIMEOUT_MARK แล้ว classify จับเป็น "timeout"
+    started = time.monotonic()
+    code, out, err = relay_call.run_once({"cmd": ["sh", "-c", "sleep 30"]}, "hi", Path("/tmp"), "", timeout=1)
     assert code == 124
-    assert err == relay_call.TIMEOUT_MARK
+    assert relay_call.TIMEOUT_MARK in err
     assert relay_call.classify(code, out, err) == "timeout"
+    assert time.monotonic() - started < 10
 
 
 def test_run_once_kills_group_on_timeout(tmp_path):
@@ -664,3 +733,174 @@ def test_opus_is_only_brain_in_default_chain():
     assert relay_call.DEFAULT_ACCOUNTS["fallback"]["brain"] == ["opus"]
     brains = [t for t, spec in relay_call.DEFAULT_ADAPTERS.items() if spec.get("brain")]
     assert brains == ["opus"]
+
+
+_PLAN_WITH_TASKS = """\
+# Plan — GRD · test fixture
+
+> **plan_id: GRD** · branch: feature/plan-guardrails
+
+## กติกาเหล็กของแผนนี้ — fixture
+
+1. **เลขงานต้องขึ้นต้นด้วย plan_id** เช่น `GRD-P1-I1`
+
+## GRD-P1 — fixture phase
+
+- **GRD-P1-I1** plan-anchor script
+- **GRD-P1-I2** relay integration
+"""
+
+
+def _run_relay_main(tmp_path, task_id, *, plan_text=None, no_plan=False):
+    """เรียก relay-call.main() ใน tmp cwd · คืน (exit_code, json_payload, tool_invocations)"""
+    import sys
+
+    prompt_file = tmp_path / "brief.md"
+    prompt_file.write_text("test prompt", encoding="utf-8")
+    if plan_text is not None:
+        plan_dir = tmp_path / ".project"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        (plan_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+
+    invoked = {"count": 0}
+    orig_run_once = relay_call.run_once
+
+    def fake_run_once(*args, **kwargs):
+        invoked["count"] += 1
+        return 0, "RELAYOK", ""
+
+    relay_call.run_once = fake_run_once
+    argv = [
+        "relay-call.py",
+        "--tool",
+        "grok",
+        "--task-id",
+        task_id,
+        "--prompt-file",
+        str(prompt_file),
+        "--cwd",
+        str(tmp_path),
+    ]
+    if no_plan:
+        argv.append("--no-plan")
+
+    old_argv = sys.argv
+    sys.argv = argv
+    captured = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured
+    exit_code = None
+    try:
+        try:
+            relay_call.main()
+        except SystemExit as exc:
+            exit_code = exc.code
+    finally:
+        sys.argv = old_argv
+        sys.stdout = old_stdout
+        relay_call.run_once = orig_run_once
+
+    lines = [ln for ln in captured.getvalue().splitlines() if ln.strip()]
+    payload = json.loads(lines[-1]) if lines else {}
+    return exit_code, payload, invoked["count"]
+
+
+def _ledger_text(tmp_path):
+    ledger_dir = tmp_path / ".hermes" / "ai-relay"
+    files = sorted(ledger_dir.glob("calls-*.md"))
+    return files[0].read_text(encoding="utf-8") if files else ""
+
+
+def test_off_plan_task_blocks_tool_and_writes_ledger(tmp_path):
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "GRD-P9-Z9", plan_text=_PLAN_WITH_TASKS
+    )
+    assert exit_code == 60
+    assert payload["status"] == "off_plan"
+    assert payload["tool"] == "grok"
+    assert payload["ledger_written"] is True
+    assert "เลขงานไม่อยู่ในแผน" in payload["reason_human"]
+    assert tool_calls == 0
+    ledger = _ledger_text(tmp_path)
+    assert "off_plan" in ledger
+    assert "GRD-P9-Z9" in ledger
+    assert "| off_plan | 0 |" in ledger
+
+
+def test_off_plan_three_times_does_not_bump_counters(tmp_path):
+    """off_plan ต้องไม่กิน session-calls / rounds — ยิง 3 ครั้ง counter ยังเท่าเดิม"""
+    cfg = tmp_path / ".hermes" / "ai-relay"
+    task_ids = ["GRD-P9-Z9", "GRD-P9-Z8", "GRD-P9-Z7"]
+
+    for task_id in task_ids:
+        exit_code, payload, tool_calls = _run_relay_main(
+            tmp_path, task_id, plan_text=_PLAN_WITH_TASKS
+        )
+        assert exit_code == 60
+        assert payload["status"] == "off_plan"
+        assert tool_calls == 0
+
+    session_calls = cfg / ".session-calls"
+    if session_calls.exists():
+        data = json.loads(session_calls.read_text(encoding="utf-8"))
+        assert int(data.get("count", 0)) == 0
+    assert not list(cfg.glob(".rounds-*"))
+
+
+def test_no_plan_flag_invokes_tool_and_tags_ledger(tmp_path):
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "GRD-P9-Z9", plan_text=_PLAN_WITH_TASKS, no_plan=True
+    )
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert tool_calls == 1
+    ledger = _ledger_text(tmp_path)
+    assert "[no-plan]" in ledger
+    assert "GRD-P9-Z9 [no-plan]" in ledger
+
+
+def test_missing_plan_md_keeps_old_behavior(tmp_path):
+    exit_code, payload, tool_calls = _run_relay_main(tmp_path, "GRD-P9-Z9", plan_text=None)
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert tool_calls == 1
+    assert payload.get("status") != "off_plan"
+
+
+def test_plan_without_plan_id_keeps_old_behavior(tmp_path):
+    plan_no_id = "# Plan\n\nno plan id here\n- **GRD-P1-I1** something\n"
+    exit_code, payload, tool_calls = _run_relay_main(
+        tmp_path, "GRD-P9-Z9", plan_text=plan_no_id
+    )
+    assert exit_code == 0
+    assert payload["status"] == "ok"
+    assert tool_calls == 1
+
+
+def test_classify_exit0_long_stderr_echoed_conversation_with_quota_words_is_ok():
+    # DEC-036 รูที่ 2 (2026-07-11): codex CLI สะท้อนบทสนทนาทั้งหมด (prompt+คำตอบ) ลง stderr
+    # งาน P14 ทั้งเฟสพูดเรื่อง rate limit / usage limit ของ API วัดผล → stderr ยาวมีคำ quota เต็มไปหมด
+    # เดิม QUOTA_RE.search(err_clean) ไม่มีตัวกันความยาว → quota ปลอม ทั้งที่ exit 0 งานสำเร็จ
+    err = ("thinking: ผู้ใช้ขอให้เขียน fetcher ดึงสถิติจาก DEV.to และ YouTube · "
+           "ต้องระวัง rate limit ของแต่ละ API · YouTube quota คือ 10000 units/day · "
+           "DEV.to ไม่มี usage limit ชัดเจน · Facebook Graph API v25 มี rate limit ต่อ token · "
+           "เขียน retry เมื่อเจอ 429 too many requests · เสร็จแล้วรัน typecheck ผ่าน") * 2
+    assert len(err.strip()) > 250  # stderr ยาว = บทสนทนาสะท้อน ไม่ใช่ error จริง (จุดที่บั๊กรูที่ 2 จับผิด)
+    assert relay_call.classify(0, "RELAYOK · fetchers เขียนเสร็จ typecheck ผ่าน", err) == "ok"
+
+
+def test_classify_exit0_short_stderr_real_quota_still_quota():
+    # error โควต้าจริงของ CLI สั้น (≤250) → ต้องยังจับเป็น quota เหมือนเดิม (regression กันแก้เกิน)
+    assert relay_call.classify(0, "", "Error: 429 rate limit exceeded · resets in 2h") == "quota"
+
+
+def test_classify_exit0_long_stderr_echoed_conversation_with_auth_words_is_ok():
+    # รูที่ 2 ฝั่ง auth: บทสนทนายาวใน stderr ที่บังเอิญมีวลี auth ต้องไม่โดนตีเป็น auth ปลอม
+    # หมายเหตุ: เคสจริงเมื่อ codex สำเร็จ stdout จะยาว (คำตอบงาน) จึงไม่ชนกฎ stdout<40 (บรรทัด 275)
+    out = ("แก้หน้า login เสร็จเรียบร้อย: เพิ่มการแสดงข้อความสถานะให้ผู้ใช้เห็นชัดเจน "
+           "ปรับ flow ให้ครบทุกกรณี เพิ่มเทสต์ครอบคลุม และรัน typecheck ผ่านทั้งหมดแล้ว")
+    err = ("thinking: งานคือแก้หน้า login ให้แสดงข้อความ you are not authenticated "
+           "อย่างถูกต้อง · ตรวจสอบว่า organization has disabled subscription access "
+           "ถูกจับเป็น auth ตามสเปค · เพิ่มเทสต์ครบ · เขียนโค้ดเสร็จ typecheck ผ่านทั้งหมด") * 2
+    assert len(out.strip()) >= 40 and len(err.strip()) > 250
+    assert relay_call.classify(0, out, err) == "ok"

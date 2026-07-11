@@ -62,7 +62,9 @@ def test_knowledge_status_reports_read_only_vault(tmp_path: Path, monkeypatch) -
     assert payload["safe_file_count"] == 4
 
 
-def test_knowledge_tree_excludes_sensitive_and_owner_only_paths(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_tree_excludes_sensitive_and_owner_only_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     response = client.get("/api/knowledge/tree", headers=_headers())
@@ -77,7 +79,9 @@ def test_knowledge_tree_excludes_sensitive_and_owner_only_paths(tmp_path: Path, 
     assert "90-Owner-Private" not in names
 
 
-def test_knowledge_file_reads_safe_note_and_extracts_links(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_file_reads_safe_note_and_extracts_links(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     response = client.get(
@@ -94,7 +98,9 @@ def test_knowledge_file_reads_safe_note_and_extracts_links(tmp_path: Path, monke
     assert payload["links"] == ["20-Departments/HR"]
 
 
-def test_knowledge_file_extracts_frontmatter_and_headings(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_file_extracts_frontmatter_and_headings(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     response = client.get(
@@ -116,7 +122,9 @@ def test_knowledge_file_extracts_frontmatter_and_headings(tmp_path: Path, monkey
     ]
 
 
-def test_knowledge_file_blocks_path_traversal_and_sensitive_files(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_file_blocks_path_traversal_and_sensitive_files(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     traversal = client.get(
@@ -140,7 +148,9 @@ def test_knowledge_file_blocks_path_traversal_and_sensitive_files(tmp_path: Path
     assert owner_file.status_code == 400
 
 
-def test_knowledge_search_and_backlinks_stay_inside_safe_vault(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_search_and_backlinks_stay_inside_safe_vault(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     search = client.get(
@@ -162,7 +172,9 @@ def test_knowledge_search_and_backlinks_stay_inside_safe_vault(tmp_path: Path, m
     ]
 
 
-def test_knowledge_resolve_links_supports_stem_and_safe_paths(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_resolve_links_supports_stem_and_safe_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     by_stem = client.get(
@@ -172,7 +184,10 @@ def test_knowledge_resolve_links_supports_stem_and_safe_paths(tmp_path: Path, mo
     )
     by_path = client.get(
         "/api/knowledge/resolve",
-        params={"link": "20-Departments/HR", "from_path": "10-Knowledge/Operating Rules.md"},
+        params={
+            "link": "20-Departments/HR",
+            "from_path": "10-Knowledge/Operating Rules.md",
+        },
         headers=_headers(),
     )
     blocked = client.get(
@@ -201,13 +216,17 @@ def test_knowledge_save_is_disabled_by_default(tmp_path: Path, monkeypatch) -> N
     assert response.status_code == 403
 
 
-def test_knowledge_save_requires_fresh_modified_and_creates_backup(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_save_requires_fresh_modified_and_creates_backup(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_KNOWLEDGE_WRITE", "1")
     backup_root = tmp_path / "knowledge-backups"
     monkeypatch.setenv("HERMES_KNOWLEDGE_BACKUP_PATH", str(backup_root))
 
-    current = client.get("/api/knowledge/file", params={"path": "MOC.md"}, headers=_headers())
+    current = client.get(
+        "/api/knowledge/file", params={"path": "MOC.md"}, headers=_headers()
+    )
     assert current.status_code == 200
     modified = current.json()["modified"]
 
@@ -232,10 +251,14 @@ def test_knowledge_save_requires_fresh_modified_and_creates_backup(tmp_path: Pat
     assert payload["write_enabled"] is True
     assert payload["backup_path"].endswith(".bak")
     assert (backup_root / payload["backup_path"]).exists()
-    assert "# Hermes Agent" in (backup_root / payload["backup_path"]).read_text(encoding="utf-8")
+    assert "# Hermes Agent" in (backup_root / payload["backup_path"]).read_text(
+        encoding="utf-8"
+    )
 
 
-def test_knowledge_graph_returns_local_note_neighborhood(tmp_path: Path, monkeypatch) -> None:
+def test_knowledge_graph_returns_local_note_neighborhood(
+    tmp_path: Path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     response = client.get(
@@ -252,3 +275,139 @@ def test_knowledge_graph_returns_local_note_neighborhood(tmp_path: Path, monkeyp
     assert "20-Departments/HR.md" in node_ids
     assert "10-Knowledge/Operating Rules.md" in node_ids
     assert ("10-Knowledge/Operating Rules.md", "20-Departments/HR.md") in edge_pairs
+
+
+def test_knowledge_global_graph_returns_vault_wide_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/api/knowledge/global-graph",
+        params={"limit": 4, "edge_limit": 10},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    node_ids = {node["id"] for node in payload["nodes"]}
+    edge_pairs = {(edge["source"], edge["target"]) for edge in payload["edges"]}
+
+    assert payload["mode"] == "global"
+    assert payload["path"] == ""
+    assert payload["limit"] == 4
+    assert payload["node_count"] == 4
+    assert len(payload["nodes"]) <= 4
+    assert "90-Owner-Private/profile/secret.md" not in node_ids
+    assert "MOC.md" in node_ids
+    assert "10-Knowledge/Operating Rules.md" in node_ids
+    assert ("MOC.md", "10-Knowledge/Operating Rules.md") in edge_pairs
+
+
+def test_knowledge_graph_and_backlinks_resolve_relative_links(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    vault = tmp_path / "HermesAgent"
+    _write(
+        vault / "10-Knowledge" / "lessons" / "daily.md",
+        "# Daily\n\nSee [[../patterns/review-loop]].",
+    )
+    _write(
+        vault / "10-Knowledge" / "patterns" / "review-loop.md",
+        "# Review Loop\n\nUsed for daily work.",
+    )
+
+    graph = client.get(
+        "/api/knowledge/graph",
+        params={"path": "10-Knowledge/lessons/daily.md"},
+        headers=_headers(),
+    )
+    backlinks = client.get(
+        "/api/knowledge/backlinks",
+        params={"path": "10-Knowledge/patterns/review-loop.md"},
+        headers=_headers(),
+    )
+
+    assert graph.status_code == 200
+    graph_payload = graph.json()
+    edge_pairs = {(edge["source"], edge["target"]) for edge in graph_payload["edges"]}
+    assert "10-Knowledge/patterns/review-loop.md" in {
+        node["id"] for node in graph_payload["nodes"]
+    }
+    assert (
+        "10-Knowledge/lessons/daily.md",
+        "10-Knowledge/patterns/review-loop.md",
+    ) in edge_pairs
+
+    assert backlinks.status_code == 200
+    assert [item["path"] for item in backlinks.json()["items"]] == [
+        "10-Knowledge/lessons/daily.md"
+    ]
+
+
+def test_knowledge_search_matches_file_paths_with_hyphenated_tokens(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    vault = tmp_path / "HermesAgent"
+    _write(
+        vault / "10-Knowledge" / "lessons" / "auto-daily-2026-05-15.md",
+        "# Daily Lesson\n\nCaptured lesson.",
+    )
+
+    response = client.get(
+        "/api/knowledge/search",
+        params={"q": "auto daily"},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert [item["path"] for item in response.json()["items"]] == [
+        "10-Knowledge/lessons/auto-daily-2026-05-15.md"
+    ]
+
+
+def test_knowledge_graph_depth_expands_second_hop_links(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    vault = tmp_path / "HermesAgent"
+    _write(vault / "10-Knowledge" / "lessons" / "daily.md", "# Daily\n\nSee [[Router]].")
+    _write(vault / "Router.md", "# Router\n\nSee [[Skill Graph]].")
+    _write(vault / "Skill Graph.md", "# Skill Graph\n\nSecond hop target.")
+
+    response = client.get(
+        "/api/knowledge/graph",
+        params={"path": "10-Knowledge/lessons/daily.md", "depth": 2},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    node_ids = {node["id"] for node in payload["nodes"]}
+    edge_pairs = {(edge["source"], edge["target"]) for edge in payload["edges"]}
+
+    assert payload["depth"] == 2
+    assert "Router.md" in node_ids
+    assert "Skill Graph.md" in node_ids
+    assert ("10-Knowledge/lessons/daily.md", "Router.md") in edge_pairs
+    assert ("Router.md", "Skill Graph.md") in edge_pairs
+
+
+def test_knowledge_graph_respects_node_limit(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    vault = tmp_path / "HermesAgent"
+    links = " ".join(f"[[Note {index}]]" for index in range(10))
+    _write(vault / "Hub.md", f"# Hub\n\n{links}")
+    for index in range(10):
+        _write(vault / f"Note {index}.md", f"# Note {index}\n")
+
+    response = client.get(
+        "/api/knowledge/graph",
+        params={"path": "Hub.md", "depth": 2, "limit": 6},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["limit"] == 6
+    assert len(payload["nodes"]) <= 6

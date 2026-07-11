@@ -1,0 +1,13 @@
+{
+  "name": "ds-standard-tools",
+  "private": true,
+  "type": "module",
+  "description": "ตัวตรวจของ Design System กลาง — ต้องมี playwright สำหรับ contrast-audit-run.mjs (ตรวจ contrast บนหน้าเรนเดอร์จริง)",
+  "scripts": {
+    "contrast-audit": "node contrast-audit-run.mjs",
+    "postinstall": "echo 'ถ้ายังไม่มี chromium: npx playwright install chromium'"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}

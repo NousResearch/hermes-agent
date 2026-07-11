@@ -16,13 +16,13 @@ tags:
   - session-memory
   - context-management
 status: active
-version: 2.2
-updated: 2026-07-05
+version: 2.3
+updated: 2026-07-10
 schema: memory-schema-v1.2
 pairs_with: use-new-chat >= 1.8
 ---
 
-# Use Close Chat (v2.2 · 2026-07-05)
+# Use Close Chat (v2.3 · 2026-07-10)
 
 คู่กับ Use New Chat ≥ v1.8 · อ้าง Memory Schema v1.2 · เช็ก schema version ตอนเริ่ม · ไม่ตรง = เตือน + ห้ามเขียนไฟล์ความจำจนกว่าจะอ่าน schema ล่าสุด
 
@@ -94,6 +94,11 @@ Business Plan Sync (capability-based — ทำเฉพาะเมื่อม
 - มี → อัป [fact] ใน `.project/BusinessPlan.md` + ต่อท้าย log ใน `.project/BusinessPlan-Full.md` (ห้ามทับ log เก่า)
 ห้ามบังคับอัปเดตทั้งที่รอบนั้นไม่มีอะไรกระทบธุรกิจ (กันไฟล์รก/ข้อมูลลม) · รายละเอียดเทมเพลตอยู่ใน Use BusinessPlan
 
+QA/QC Scan Sync (capability-based — ทำเฉพาะเมื่อมี `.project/qaqc-scan.md` · คู่กับ Use QA QC ≥ v1.0):
+ถามตัวเอง: แชทนี้มีการสแกน / แก้ปัญหาจากตาราง QA/QC / งานแก้ QQF-* เปลี่ยนสถานะไหม
+- ไม่มี → ระบุใน Output ว่า "QA/QC: รอบนี้ไม่มีการสแกน/แก้"
+- มี → อัปเดต `.project/qaqc-scan.md`: สถานะรายหมวด + ตารางปัญหาคงค้าง (ตัดเฉพาะข้อที่ verified มีแถว gate-run) + ประวัติรอบ (append ใหม่บนสุด) · สถานะ "verified" ใน qaqc-scan.md ใช้บันไดหลักฐานเดียวกับข้อ 4 ห้ามหย่อนกว่า
+
 Decision Token ปิด (ตาม Schema §2):
 - `CLOSED_CLEAN` — commit ครบ ไม่มีค้าง gate เขียว (CI เขียวถ้ามี deploy)
 - `CLOSED_WITH_PENDING` — ปิดได้แต่มีงานค้าง/claimed · ระบุชัดว่าค้างอะไร
@@ -108,6 +113,7 @@ Quality Gate: <gate ที่ค้นเจอ> = ผล + output (หรือ
 Deploy: merge SHA / CI status / live SHA   (หรือ N/A ถ้ายังไม่ถึง merge)
 Memory written: session log path / OverviewProgress(4 หัวข้อบน) / decisions.md(+N บรรทัด) / migration(ถ้าย้ายไฟล์เก่า)
 Business Plan: <อัปอะไรใน .project/BusinessPlan(.md/-Full.md) หรือ "ไม่มีการเปลี่ยนด้านธุรกิจ" หรือ N/A ถ้าไม่มีไฟล์>
+QA/QC: <อัปอะไรใน .project/qaqc-scan.md หรือ "รอบนี้ไม่มีการสแกน/แก้" หรือ N/A ถ้าไม่มีไฟล์>
 Decision Token: <token> + เหตุผล
 งานค้าง: <รายการ> + เจ้าของถัดไป
 ข้อความเปิดแชทหน้า: <ก๊อปวางได้>
@@ -121,6 +127,7 @@ Evidence: timestamp / host / cwd / commands ที่รันจริง
 
 ## Changelog
 
+- v2.3 (2026-07-10): เพิ่มขั้น QA/QC Scan Sync (capability-based — เฉพาะโปรเจกต์ที่มี `.project/qaqc-scan.md`) + บรรทัด QA/QC ใน Output · คู่กับ Use QA QC v1.0 (แผน QAQC-P4-I2) · verified ใน qaqc-scan.md ใช้บันไดหลักฐานเดิม ไม่หย่อน
 - v2.2 (2026-07-05): เกาะ Memory Schema v1.2 — เลิกเขียน `handoff.md`/`.hermes/active.md`/`.hermes/decisions.md` · แหล่งจริงของสถานะ = `.project/OverviewProgress.md` (4 หัวข้อบนสุด อัปเดตทุกครั้งก่อนอย่างอื่น) + `.project/decisions.md` (append) · เพิ่มขั้นย้ายไฟล์เก่าเป็น stub ตอนปิด · schema ไม่ตรง = ห้ามเขียนความจำ (คำสั่งเจ้าของ 2026-07-05 · ตรวจข้ามค่าย Grok+Codex)
 - v2.1 (2026-06-28): เพิ่มขั้น Business Plan Sync (capability-based) · ปิดแชทแล้วถ้ามี `.project/BusinessPlan.md` ให้เช็คว่ารอบนี้มีอะไรกระทบแผนธุรกิจไหม → อัป BusinessPlan(.md/-Full.md) เฉพาะเมื่อเปลี่ยนจริง + เพิ่มบรรทัด Business Plan ใน Output · ผูกกับ Use BusinessPlan v1.0 (ชุด Project OS)
 - v2.0 (2026-06-26): เขียนใหม่ทั้งฉบับให้เกาะ Memory Schema v1.1 · เพิ่ม Pre-Close Gate เป็น 6 ด่าน (Quality Gate auto-detect ค้นเอง + Deploy verify ผ่านสถานะ CI ของ merge SHA) · ผูก verified/claimed กับบันไดหลักฐาน · ห้ามปลด claim ตอน NEED_OWNER_ACTION · เขียน memory เพิ่ม active.md + decisions.md (append) · Output format ตายตัว + Evidence footer · เช็ก schema version ตอนเริ่ม

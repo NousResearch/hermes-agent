@@ -372,6 +372,93 @@ def _workspace_retirement_block_result(description: str) -> dict:
 
 
 # =========================================================================
+# Stash-sweep guard (GRD-P3)
+# =========================================================================
+#
+# Hardline-style floor for git commands that sweep away uncommitted work
+# belonging to another session.  Past incident (2026-07-06): one AI thread
+# stash-swept another thread's in-flight JARVIS files twice, destroying its
+# plan file.  Anchored to command-start positions (_CMDPOS) so quoted echoes
+# like `echo "git stash"` do not false-positive.
+_GIT_GLOBAL_OPTS = (
+    r"(?:-C\s+\S+\s+|-c\s+\S+\s+|--git-dir=\S+\s+|--work-tree=\S+\s+)*"
+)
+
+STASH_SWEEP_PATTERNS = [
+    (
+        _CMDPOS
+        + r"git\s+"
+        + _GIT_GLOBAL_OPTS
+        + r"stash\b(?!\s+(?:list|show|pop|apply|branch)\b)",
+        "git stash sweep",
+    ),
+    (
+        _CMDPOS
+        + r"git\s+"
+        + _GIT_GLOBAL_OPTS
+        + r"clean\s+-[^\s]*f",
+        "git clean with force",
+    ),
+    (
+        _CMDPOS
+        + r"git\s+"
+        + _GIT_GLOBAL_OPTS
+        + r"checkout\s+(?:(?:\S+\s+)*--\s+)?(?:\.|\*)(?:\s|$|[;&|])",
+        "git checkout directory-wide discard",
+    ),
+    (
+        _CMDPOS
+        + r"git\s+"
+        + _GIT_GLOBAL_OPTS
+        + r"restore(?:\s+-{1,2}\S+)*\s+(?:\.|\*)(?:\s|$|[;&|])",
+        "git restore directory-wide discard",
+    ),
+    (
+        _CMDPOS
+        + r"git\s+"
+        + _GIT_GLOBAL_OPTS
+        + r"reset\s+--hard\b",
+        "git reset --hard",
+    ),
+]
+
+STASH_SWEEP_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in STASH_SWEEP_PATTERNS
+]
+
+
+def detect_stash_sweep_command(command: str) -> tuple:
+    """Check if a command sweeps away uncommitted work from another session.
+
+    Returns:
+        (is_blocked, description) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern, description in STASH_SWEEP_PATTERNS_COMPILED:
+        if pattern.search(normalized):
+            return True, description
+    return False, None
+
+
+def _stash_sweep_block_result(description: str) -> dict:
+    """Build the standard block result for a stash-sweep match."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "stash_sweep": True,
+        "message": (
+            f"BLOCKED (stash-sweep guard): {description}. "
+            "คำสั่งนี้อาจกวาดงานที่ยังไม่ commit ของอีกเซสชันไป "
+            "(เคสจริง: งาน JARVIS โดน stash กวาด 2 รอบ เมื่อ 2026-07-06). "
+            "ต้องให้เจ้าของงานยืนยันอย่างชัดเจนก่อน — รันเองในเทอร์มินนัลนอก agent. "
+            "ทางเลือกที่ปลอดภัย: รัน `git stash list` ดูก่อน "
+            "หรือ commit ไปที่ branch แทน."
+        ),
+    }
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -1007,6 +1094,11 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Workspace-retirement block: %s (command: %s)", retire_desc, command[:200])
         return _workspace_retirement_block_result(retire_desc)
 
+    is_sweep, sweep_desc = detect_stash_sweep_command(command)
+    if is_sweep:
+        logger.warning("Stash-sweep block: %s (command: %s)", sweep_desc, command[:200])
+        return _stash_sweep_block_result(sweep_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
@@ -1137,6 +1229,11 @@ def check_all_command_guards(command: str, env_type: str,
     if is_retire:
         logger.warning("Workspace-retirement block: %s (command: %s)", retire_desc, command[:200])
         return _workspace_retirement_block_result(retire_desc)
+
+    is_sweep, sweep_desc = detect_stash_sweep_command(command)
+    if is_sweep:
+        logger.warning("Stash-sweep block: %s (command: %s)", sweep_desc, command[:200])
+        return _stash_sweep_block_result(sweep_desc)
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a

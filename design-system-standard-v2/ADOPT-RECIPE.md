@@ -15,6 +15,9 @@
    (OneManFleet เผลอทำครั้งแรก แล้วต้องแก้กลับ — อย่าทำซ้ำ)
 2. **ห้ามรื้อ globals.css ของเว็บที่รันอยู่รวดเดียว** — ใส่ตัวตรวจ (ds-check) ล็อกคะแนนปัจจุบันไว้ก่อน แล้วค่อยขยับขึ้นทีละงาน
 3. **commit งาน DS แยกก้อน** — ระบุชื่อไฟล์ชัด ไม่ปนกับงานอื่นที่ค้างในโปรเจกต์ · ห้าม merge/deploy เอง (เจ้าของกด)
+4. **`onemanfleet-ds.html` = โครงตัวอย่างเท่านั้น ห้ามส่งมอบเป็นหน้าโชว์ของโปรเจกต์อื่น** — ก๊อปไปแล้ว **ต้องแปลงสี/แบรนด์/ข้อความให้เป็นของโปรเจกต์ทันที** (ผ่านด่านสี Phase 3 ของ `Use Design System`) · ห้ามปล่อยสีแบรนด์ OneManFleet (`#E94560` แดง · `#1A1A2E` กรมท่า) ค้างในหน้าโชว์ · onemanfleet-ds.html เป็น "โครงให้ดูว่าครบทุกชั้น" ไม่ใช่ผลลัพธ์ที่ส่งลูกค้า
+   (ต้นเหตุ 2026-07-08: DS2 เดิมสั่งก๊อป HTML ตรง ๆ โดยไม่บังคับเปลี่ยนสี — เสี่ยงหน้าโชว์โปรเจกต์อื่นติดสี OneManFleet)
+   ด่านตรวจพร้อมใช้: `bash design-system/tools/brand-leak-check.sh <project>/design-system/` (exit 0 = สะอาด · exit 1 = เจอสีตัวอย่างค้าง ต้องแก้ก่อนปิดงาน)
 
 ## 6 ขั้น (DS0-DS5) — ทำตามลำดับ
 
@@ -22,9 +25,10 @@
 |---|---|---|
 | DS0 | เพิ่มแผน 6 ขั้นนี้ต่อท้าย `.project/plan.md` + จด decision "DS=ชุดกลาง, สีแบรนด์=<ของโปรเจกต์>" ใน `.project/decisions.md` | `git ls-files .project/` เห็นครบ · `git check-ignore` ไม่โดนซ่อน |
 | DS1 | ลบเอกสาร Design System เก่าของโปรเจกต์ที่ขัดกับชุดกลาง (เช่นเอกสารสีที่ค่าไม่ตรงโค้ดจริง) | `grep` สีเก่าที่ทิ้ง = 0 · สีที่ใช้จริงยังอยู่ครบ |
-| DS2 | ก๊อป `preview/onemanfleet-ds.html` + `tokens/` + `tools/` เข้า `<project>/design-system/` ให้เปิดเห็นในโปรเจกต์ | `ls` เห็นไฟล์ครบ · เปิด HTML ในเบราว์เซอร์ได้ |
+| DS2a | ก๊อป `tokens/` + `tools/` เข้า `<project>/design-system/` (โครงกลาง สะอาด ไม่มีสีแบรนด์ใคร) | `ls` เห็นไฟล์ครบ |
+| DS2b | ก๊อป `preview/onemanfleet-ds.html` เป็น **โครงตั้งต้น** แล้ว **แปลงสี/แบรนด์/ข้อความเป็นของโปรเจกต์ทันที** — แทน `#E94560`/`#1A1A2E` ด้วยสีแบรนด์โปรเจกต์ (จากด่านสี Phase 3) · เปลี่ยนชื่อ/โลโก้/ข้อความเป็นของโปรเจกต์ | เปิด HTML ได้ · **`grep -riE "E94560\|1A1A2E" <project>/design-system/` = 0** (ไม่เหลือสี OneManFleet) |
 | DS3 | ต่อชั้นเบา: รัน `ds-check.py` วัดคะแนนปัจจุบัน → เขียนลง `.ds-baseline` → ใส่เข้า CI เป็น "ratchet" (ห้ามต่ำกว่าเดิม) · **ไม่แตะ globals.css** | `ds-check` รายงาน % · CI ล็อกไม่ให้ถอยหลัง |
-| DS4 | รันเว็บจริง (`npm run dev`) + **ถ่ายรูปหน้าจอ** + รัน `contrast-check.mjs` | screenshot หน้าเว็บจริง + contrast exit 0 |
+| DS4 | รันเว็บจริง (`npm run dev`) + **ถ่ายรูปหน้าจอ** + รัน `node tools/contrast-audit-run.mjs <หน้า.html>` (ตรวจ contrast บนหน้าเรนเดอร์จริง headless · ครั้งแรก `npm i playwright` ในโฟลเดอร์ tools) | screenshot หน้าเว็บจริง + audit **exit 0** (0 fail) |
 | DS5 | อัป `.project/OverviewProgress.md` + `decisions.md` · commit งาน DS แยกก้อน (รอเจ้าของ) | Close report + ไฟล์เข้า git จริง |
 
 > DS4 (ถ่ายรูป) ห้ามข้าม — เป็นหลักฐานเดียวที่บอกว่า "เว็บไม่เพี้ยน" จริง · OneManFleet ยังค้างขั้นนี้อยู่
@@ -41,10 +45,12 @@
 - สีแบรนด์ของโปรเจกต์นี้ = [#สีแบรนด์] — อยู่ชั้นโปรเจกต์เท่านั้น ห้ามฝังใน token กลาง
 - ห้ามรื้อ globals.css รวดเดียว · ใช้ ds-check ratchet ล็อกคะแนนก่อน
 - commit งาน DS แยกก้อน · ห้าม merge/deploy เอง
+- onemanfleet-ds.html = โครงตัวอย่างเท่านั้น · ก๊อปแล้ว **ต้องเปลี่ยนสี/แบรนด์/ข้อความเป็นของ [ชื่อโปรเจกต์] ทันที** · ห้ามเหลือสี OneManFleet (#E94560/#1A1A2E) ในหน้าโชว์ (พิสูจน์: `grep -riE "E94560|1A1A2E" <project>/design-system/` = 0)
 
-path ต้นทาง (ก๊อปมาจากที่นี่ ทุกไฟล์มีจริง):
-/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent/design-system-standard-v2/
-  preview/onemanfleet-ds.html · tokens/ (core/front/admin/effects) · tools/ds-check.py · tools/contrast-check.mjs · tokens/build-tokens.mjs
+หาชุดต้นทางได้ 2 ทาง (อย่าฝัง path เครื่องเดียวลงในงานโปรเจกต์):
+- Mac เจ้าของ: โฟลเดอร์ repo Hermes Agent → `design-system-standard-v2/`
+- VPS/เครื่องอื่น: ชุดอยู่บน GitHub → `git clone --depth 1 https://github.com/rattanasak-ops/hermes-agent.git` แล้วใช้ `design-system-standard-v2/`
+ไฟล์ที่ก๊อป: tokens/ (core/front/admin/effects) · tools/ (ds-check.py · contrast-check.mjs · contrast-audit.js · contrast-audit-run.mjs · brand-leak-check.sh · build-tokens.mjs) · preview/onemanfleet-ds.html (โครงตัวอย่าง — เปลี่ยนสี/แบรนด์เป็นของโปรเจกต์ก่อนใช้)
 
 เริ่ม DS0-DS2 ก่อน (ปลอดภัย ไม่แตะโค้ดที่รันเว็บ) แล้วรายงานผลก่อนลุย DS3-DS4
 ```
@@ -57,6 +63,7 @@ path ต้นทาง (ก๊อปมาจากที่นี่ ทุก
 - [ ] `contrast-check` exit 0
 - [ ] **มี screenshot หน้าเว็บจริง** (ไม่ใช่หน้าโชว์กลาง)
 - [ ] สีแบรนด์อยู่ในโปรเจกต์ · แกนกลางยังสะอาด (grep สีโปรเจกต์ใน tokens กลาง = 0)
+- [ ] **หน้าโชว์โปรเจกต์ไม่เหลือสีตัวอย่าง OneManFleet** — `bash design-system/tools/brand-leak-check.sh <project>/design-system/` = exit 0
 - [ ] แผน + decision อัปใน `.project/` แล้ว · ไฟล์เข้า git จริง
 
 ## ความคืบหน้ารายโปรเจกต์ (อัปทุกครั้งที่ทำเพิ่ม)

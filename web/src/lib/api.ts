@@ -316,10 +316,19 @@ export const api = {
     fetchJSON<KnowledgeBacklinksResponse>(
       `/api/knowledge/backlinks?path=${encodeURIComponent(path)}`,
     ),
-  getKnowledgeGraph: (path: string) =>
-    fetchJSON<KnowledgeGraphResponse>(
-      `/api/knowledge/graph?path=${encodeURIComponent(path)}`,
-    ),
+  getKnowledgeGraph: (path: string, options: { depth?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams({ path });
+    if (options.depth !== undefined) qs.set("depth", String(options.depth));
+    if (options.limit !== undefined) qs.set("limit", String(options.limit));
+    return fetchJSON<KnowledgeGraphResponse>(`/api/knowledge/graph?${qs.toString()}`);
+  },
+  getKnowledgeGlobalGraph: (options: { limit?: number; edgeLimit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (options.limit !== undefined) qs.set("limit", String(options.limit));
+    if (options.edgeLimit !== undefined) qs.set("edge_limit", String(options.edgeLimit));
+    const suffix = qs.toString();
+    return fetchJSON<KnowledgeGraphResponse>(`/api/knowledge/global-graph${suffix ? `?${suffix}` : ""}`);
+  },
 
   // Dashboard plugins
   getPlugins: () =>
@@ -474,6 +483,7 @@ export interface KnowledgeGraphNode {
   id: string;
   path: string;
   label: string;
+  degree?: number;
 }
 
 export interface KnowledgeGraphEdge {
@@ -484,6 +494,12 @@ export interface KnowledgeGraphEdge {
 export interface KnowledgeGraphResponse {
   ok: boolean;
   path: string;
+  mode?: "local" | "global";
+  depth: number;
+  limit: number;
+  edge_limit?: number;
+  node_count?: number;
+  edge_count?: number;
   nodes: KnowledgeGraphNode[];
   edges: KnowledgeGraphEdge[];
 }

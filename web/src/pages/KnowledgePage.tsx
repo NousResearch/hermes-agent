@@ -6,10 +6,12 @@ import {
   ChevronRight,
   Clock3,
   Columns2,
+  Copy,
   Edit3,
   Eye,
   FileText,
   Folder,
+  FolderOpen,
   GitBranch,
   Link as LinkIcon,
   ListTree,
@@ -46,11 +48,17 @@ const ROOT_PATH = "";
 const RECENT_STORAGE_KEY = "hermes.knowledge.recent";
 const PINNED_STORAGE_KEY = "hermes.knowledge.pinned";
 const MAX_RECENT_NOTES = 8;
+const GRAPH_DEPTH = 2;
+const GRAPH_LIMIT = 24;
+const GLOBAL_GRAPH_LIMIT = 220;
+const GLOBAL_GRAPH_EDGE_LIMIT = 900;
 
 type StoredNote = {
   path: string;
   title: string;
 };
+
+type GraphMode = "global" | "local";
 
 function readStoredNotes(key: string): StoredNote[] {
   if (typeof window === "undefined") return [];
@@ -134,7 +142,9 @@ export default function KnowledgePage() {
   const [selectedFile, setSelectedFile] = useState<KnowledgeFileResponse | null>(null);
   const [backlinks, setBacklinks] = useState<KnowledgeBacklinkItem[]>([]);
   const [graph, setGraph] = useState<KnowledgeGraphResponse | null>(null);
+  const [graphMode, setGraphMode] = useState<GraphMode>("global");
   const [query, setQuery] = useState("");
+  const [searchedQuery, setSearchedQuery] = useState("");
   const [results, setResults] = useState<KnowledgeSearchItem[]>([]);
   const [recentNotes, setRecentNotes] = useState<StoredNote[]>(() => readStoredNotes(RECENT_STORAGE_KEY));
   const [pinnedNotes, setPinnedNotes] = useState<StoredNote[]>(() => readStoredNotes(PINNED_STORAGE_KEY));
@@ -145,6 +155,7 @@ export default function KnowledgePage() {
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -170,6 +181,8 @@ export default function KnowledgePage() {
     () => Object.entries(selectedFile?.frontmatter ?? {}),
     [selectedFile?.frontmatter],
   );
+  const writeStatusLabel = writeEnabled ? "WRITE ENABLED" : "READ ONLY";
+  const searchEmpty = Boolean(searchedQuery && !searching && results.length === 0);
 
   const loadTree = useCallback((path: string) => {
     setLoading(true);
@@ -191,6 +204,22 @@ export default function KnowledgePage() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
+  const loadGraph = useCallback((path: string, mode: GraphMode) => {
+    const request = mode === "global"
+      ? api.getKnowledgeGlobalGraph({ limit: GLOBAL_GRAPH_LIMIT, edgeLimit: GLOBAL_GRAPH_EDGE_LIMIT })
+      : api.getKnowledgeGraph(path, { depth: GRAPH_DEPTH, limit: GRAPH_LIMIT });
+    return request.then(setGraph);
+  }, []);
+
+  const changeGraphMode = useCallback((mode: GraphMode) => {
+    setGraphMode(mode);
+    if (selectedFile) {
+      void loadGraph(selectedFile.path, mode).catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    }
+  }, [loadGraph, selectedFile]);
+
   const openFile = useCallback((path: string, options: { syncUrl?: boolean } = {}) => {
     setFileLoading(true);
     setError(null);
@@ -211,22 +240,24 @@ export default function KnowledgePage() {
           url.searchParams.set("note", file.path);
           window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
         }
+        void loadTree(parentPath(file.path));
         return Promise.all([
           api.getKnowledgeBacklinks(file.path).then((resp) => setBacklinks(resp.items)),
-          api.getKnowledgeGraph(file.path).then(setGraph),
+          loadGraph(file.path, graphMode),
         ]);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setFileLoading(false));
-  }, []);
+  }, [graphMode, loadGraph, loadTree]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadStatus();
-      void loadTree(ROOT_PATH);
       const initialNote = new URLSearchParams(window.location.search).get("note");
       if (initialNote) {
         openFile(initialNote, { syncUrl: false });
+      } else {
+        void loadTree(ROOT_PATH);
       }
     }, 0);
     return () => window.clearTimeout(timer);
@@ -248,17 +279,21 @@ export default function KnowledgePage() {
   const onSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const term = query.trim();
+    setSearchedQuery(term);
     if (!term) {
       setResults([]);
       return;
     }
-    setLoading(true);
+    setSearching(true);
     setError(null);
     api
       .searchKnowledge(term)
       .then((resp) => setResults(resp.items))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        setResults([]);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setSearching(false));
   };
 
   const openLinkedNote = (link: string) => {
@@ -285,6 +320,25 @@ export default function KnowledgePage() {
     writeStoredNotes(RECENT_STORAGE_KEY, []);
   };
 
+  const clearSearch = () => {
+    setQuery("");
+    setSearchedQuery("");
+    setResults([]);
+  };
+
+  const copySelectedPath = useCallback(() => {
+    if (!selectedFile) return;
+    const text = selectedFile.path;
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => setSaveMessage("Path copied"))
+        .catch(() => setSaveMessage(text));
+      return;
+    }
+    setSaveMessage(text);
+  }, [selectedFile]);
+
   const closeTab = (path: string) => {
     setOpenTabs((current) => current.filter((note) => note.path !== path));
   };
@@ -302,12 +356,12 @@ export default function KnowledgePage() {
         setSaveMessage(file.backup_path ? `Saved · backup ${file.backup_path}` : "Saved");
         return Promise.all([
           api.getKnowledgeBacklinks(file.path).then((resp) => setBacklinks(resp.items)),
-          api.getKnowledgeGraph(file.path).then(setGraph),
+          loadGraph(file.path, graphMode),
         ]);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setSaving(false));
-  }, [editorContent, editorDirty, selectedFile, writeEnabled]);
+  }, [editorContent, editorDirty, graphMode, loadGraph, selectedFile, writeEnabled]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -336,9 +390,9 @@ export default function KnowledgePage() {
 
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <Badge tone="success" className="gap-1 text-[10px]">
+          <Badge tone={writeEnabled ? "warning" : "success"} className="gap-1 text-[10px]">
             <ShieldCheck className="h-3 w-3" />
-            READ ONLY
+            {writeStatusLabel}
           </Badge>
           {status ? (
             <Badge tone="secondary" className="max-w-full truncate text-[10px]">
@@ -360,10 +414,15 @@ export default function KnowledgePage() {
             placeholder="Search vault"
             className="min-w-0"
           />
-          <Button type="submit" size="sm" className="shrink-0 gap-2" disabled={loading}>
-            {loading ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+          <Button type="submit" size="sm" className="shrink-0 gap-2" disabled={searching}>
+            {searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
             Search
           </Button>
+          {(searchedQuery || results.length > 0) ? (
+            <Button type="button" ghost size="icon" onClick={clearSearch} aria-label="Clear search">
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
         </form>
       </div>
 
@@ -405,6 +464,9 @@ export default function KnowledgePage() {
                 <span className="min-w-0 truncate normal-case">{item.name}</span>
               </button>
             ))}
+            {!loading && directoryItems.length === 0 && fileItems.length === 0 ? (
+              <EmptyLine label="No notes in this folder" />
+            ) : null}
           </div>
         </aside>
 
@@ -416,6 +478,15 @@ export default function KnowledgePage() {
             </div>
             {selectedFile ? (
               <div className="ml-auto flex shrink-0 items-center gap-1">
+                <Button ghost size="icon" onClick={() => void loadTree(parentPath(selectedFile.path))} aria-label="Open parent folder">
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+                <Button ghost size="icon" onClick={() => openFile(selectedFile.path)} aria-label="Reload note">
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </Button>
+                <Button ghost size="icon" onClick={copySelectedPath} aria-label="Copy note path">
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
                 <ModeButton active={viewMode === "preview"} label="Preview" onClick={() => setViewMode("preview")} icon={Eye} />
                 <ModeButton active={viewMode === "edit"} label="Edit" onClick={() => setViewMode("edit")} icon={Edit3} />
                 <ModeButton active={viewMode === "split"} label="Split" onClick={() => setViewMode("split")} icon={Columns2} />
@@ -530,9 +601,9 @@ export default function KnowledgePage() {
             </section>
           ) : null}
 
-          {results.length > 0 ? (
+          {results.length > 0 || searchedQuery ? (
             <section className="border border-current/20 bg-background-base/35">
-              <PanelHeader icon={Search} title="Search results" meta={`${results.length}`} />
+              <PanelHeader icon={Search} title="Search results" meta={`${results.length}`} action={clearSearch} />
               <div className="max-h-64 overflow-auto p-2">
                 {results.map((item) => (
                   <SideButton
@@ -543,6 +614,7 @@ export default function KnowledgePage() {
                     onClick={() => openFile(item.path)}
                   />
                 ))}
+                {searchEmpty ? <EmptyLine label={`No results for ${searchedQuery}`} /> : null}
               </div>
             </section>
           ) : null}
@@ -606,11 +678,34 @@ export default function KnowledgePage() {
           </section>
 
           <section className="border border-current/20 bg-background-base/35">
-            <PanelHeader icon={Network} title="Graph" meta={`${graph?.nodes.length ?? 0} · ${graph?.edges.length ?? 0}`} />
+            <PanelHeader
+              icon={Network}
+              title="Graph"
+              meta={graphMode === "global"
+                ? `GLOBAL · ${graph?.nodes.length ?? 0}/${graph?.node_count ?? 0} · ${graph?.edges.length ?? 0}`
+                : `LOCAL D${graph?.depth ?? GRAPH_DEPTH} · ${graph?.nodes.length ?? 0} · ${graph?.edges.length ?? 0}`}
+            />
             <div className="p-2">
+              <div className="mb-2 grid grid-cols-2 gap-1">
+                <Button
+                  ghost={graphMode !== "global"}
+                  size="sm"
+                  onClick={() => changeGraphMode("global")}
+                >
+                  Global
+                </Button>
+                <Button
+                  ghost={graphMode !== "local"}
+                  size="sm"
+                  onClick={() => changeGraphMode("local")}
+                  disabled={!selectedFile}
+                >
+                  Local
+                </Button>
+              </div>
               {graph && graph.nodes.length > 1 ? (
                 <GraphMap
-                  key={graph.path}
+                  key={`${graphMode}:${graph.path}:${graph.nodes.length}`}
                   graph={graph}
                   selectedPath={selectedFile?.path ?? ""}
                   zoom={graphZoom}
@@ -619,7 +714,7 @@ export default function KnowledgePage() {
                   onOpen={openFile}
                 />
               ) : selectedFile ? (
-                <EmptyLine label="No local graph" />
+                <EmptyLine label={graphMode === "global" ? "No global graph" : "No local graph"} />
               ) : null}
             </div>
           </section>
@@ -764,24 +859,37 @@ function GraphMap({
   const [customPositions, setCustomPositions] = useState<Record<string, GraphPosition>>({});
   const [dragState, setDragState] = useState<GraphDragState | null>(null);
 
+  const isGlobalGraph = graph.mode === "global";
+
   const baseNodes = useMemo(() => {
     const centerX = 150;
-    const centerY = 120;
-    const radius = 82;
-    const outer = graph.nodes.filter((node) => node.path !== selectedPath);
+    const centerY = 150;
+    const selected = graph.nodes.find((node) => node.path === selectedPath);
+    const sortedNodes = [...graph.nodes].sort((a, b) => (b.degree ?? 0) - (a.degree ?? 0));
+    const focusNode = selected ?? sortedNodes[0];
+    const outer = graph.nodes.filter((node) => node.path !== focusNode?.path);
     const positioned = outer.map((node, index) => {
+      if (isGlobalGraph) {
+        const normalized = Math.sqrt((index + 1) / Math.max(1, outer.length));
+        const angle = index * 2.399963229728653;
+        const radius = 18 + normalized * 124;
+        return {
+          ...node,
+          x: centerX + Math.cos(angle) * radius,
+          y: centerY + Math.sin(angle) * radius,
+        };
+      }
       const angle = (Math.PI * 2 * index) / Math.max(1, outer.length) - Math.PI / 2;
       return {
         ...node,
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius,
+        x: centerX + Math.cos(angle) * 82,
+        y: centerY + Math.sin(angle) * 82,
       };
     });
-    const selected = graph.nodes.find((node) => node.path === selectedPath);
-    return selected
-      ? [{ ...selected, x: centerX, y: centerY }, ...positioned]
+    return focusNode
+      ? [{ ...focusNode, x: centerX, y: centerY }, ...positioned]
       : positioned;
-  }, [graph.nodes, selectedPath]);
+  }, [graph.nodes, isGlobalGraph, selectedPath]);
 
   const nodes = useMemo(
     () => baseNodes.map((node) => ({ ...node, ...(customPositions[node.path] ?? {}) })),
@@ -847,7 +955,10 @@ function GraphMap({
         role="img"
         aria-label="Knowledge graph"
         viewBox={`${viewOffset} ${viewOffset} ${viewSize} ${viewSize}`}
-        className="h-56 w-full touch-none select-none border border-current/10 bg-background-base/45"
+        className={cn(
+          "w-full touch-none select-none border border-current/10 bg-background-base/45",
+          isGlobalGraph ? "h-72" : "h-56",
+        )}
         onPointerMove={onGraphPointerMove}
         onPointerUp={() => setDragState(null)}
         onPointerLeave={() => setDragState(null)}
@@ -868,8 +979,13 @@ function GraphMap({
             />
           );
         })}
-        {nodes.map((node) => {
+        {nodes.map((node, index) => {
           const active = node.path === selectedPath;
+          const degree = node.degree ?? 1;
+          const radius = isGlobalGraph
+            ? Math.min(active ? 14 : 9, 2.8 + Math.sqrt(Math.max(1, degree)) * 1.8)
+            : active ? 18 : 12;
+          const showLabel = !isGlobalGraph || active || (index < 10 && degree > 1);
           return (
             <g
               key={node.id}
@@ -877,21 +993,24 @@ function GraphMap({
               onPointerDown={(event) => onNodePointerDown(event, node.path)}
               onPointerUp={(event) => onNodePointerUp(event, node.path)}
             >
+              <title>{`${node.label} · ${node.path}`}</title>
               <circle
                 cx={node.x}
                 cy={node.y}
-                r={active ? 18 : 12}
-                className={active ? "fill-primary/75 stroke-primary" : "fill-midground/20 stroke-midground/50"}
-                strokeWidth="1.5"
+                r={radius}
+                className={active ? "fill-primary/80 stroke-primary" : "fill-midground/35 stroke-midground/55"}
+                strokeWidth={active ? "2" : "1.2"}
               />
-              <text
-                x={node.x}
-                y={node.y + (active ? 31 : 24)}
-                textAnchor="middle"
-                className="pointer-events-none fill-midground text-[9px]"
-              >
-                {node.label.length > 18 ? `${node.label.slice(0, 17)}...` : node.label}
-              </text>
+              {showLabel ? (
+                <text
+                  x={node.x}
+                  y={node.y + radius + 10}
+                  textAnchor="middle"
+                  className="pointer-events-none fill-midground text-[8px]"
+                >
+                  {node.label.length > 18 ? `${node.label.slice(0, 17)}...` : node.label}
+                </text>
+              ) : null}
             </g>
           );
         })}

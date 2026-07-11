@@ -146,16 +146,17 @@ def finalize_turn(
                     exc_info=True,
                 )
 
-    # Determine if conversation completed successfully
-    normal_text_response = str(_turn_exit_reason).startswith("text_response(")
-    completed = (
-        final_response is not None
-        and not failed
-        and (
-            api_call_count < agent.max_iterations
-            or normal_text_response
-        )
+    # Determine completion from the canonical terminal outcome, not response
+    # presence. A failed/interrupted/partial/blocked/unresolved/cancelled exit
+    # can still carry assistant text, but that text is not a completed turn.
+    _turn_outcome = classify_turn_outcome(
+        final_response=final_response,
+        failed=failed,
+        interrupted=interrupted,
+        _turn_exit_reason=_turn_exit_reason,
+        verification_status=getattr(agent, "_turn_verification_status", None),
     )
+    completed = _turn_outcome["outcome"] in {"verified", "completed_unverified"}
 
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
@@ -422,13 +423,8 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
-    _turn_outcome = classify_turn_outcome(
-        final_response=final_response,
-        failed=failed,
-        interrupted=interrupted,
-        _turn_exit_reason=_turn_exit_reason,
-        verification_status=getattr(agent, "_turn_verification_status", None),
-    )
+    # ``_turn_outcome`` was computed before cleanup so trajectory persistence
+    # receives the same canonical completion decision as the returned result.
 
     # Build result with interrupt info if applicable
     result = {

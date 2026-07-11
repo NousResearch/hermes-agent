@@ -267,6 +267,45 @@ def test_pending_response_does_not_mask_later_terminal_exit(
     assert agent._handle_max_iterations_called is False
 
 
+@pytest.mark.parametrize(
+    ("exit_reason", "failed", "interrupted", "expected_outcome"),
+    [
+        ("provider_failure", False, False, "failed"),
+        ("error_near_max_iterations(provider error)", False, False, "failed"),
+        ("interrupted_by_user", False, True, "interrupted"),
+        ("tool_timeout", False, False, "unresolved"),
+        ("unresolved_side_effect", False, False, "unresolved"),
+        ("guardrail_halt", False, False, "blocked"),
+        ("cancelled", False, False, "cancelled"),
+        ("partial_stream_recovery", False, False, "partial"),
+    ],
+)
+def test_non_empty_response_cannot_make_terminal_non_success_completed(
+    monkeypatch, exit_reason, failed, interrupted, expected_outcome
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=59)
+
+    result = finalize_turn(
+        agent,
+        final_response="response emitted before the terminal exit",
+        api_call_count=1,
+        interrupted=interrupted,
+        failed=failed,
+        messages=[{"role": "user", "content": "task"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason=exit_reason,
+    )
+
+    assert result["completed"] is False
+    assert result["outcome"] == expected_outcome
+
+
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")

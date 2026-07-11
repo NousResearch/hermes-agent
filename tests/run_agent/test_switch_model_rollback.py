@@ -228,6 +228,67 @@ def test_switch_model_resets_codex_reasoning_replay_flag():
         )
 
     assert agent._codex_reasoning_replay_enabled is True
+
+
+def test_restore_primary_runtime_restores_codex_reasoning_replay_flag():
+    """The switch snapshot must survive fallback activation/restoration.
+
+    A Codex-mode model switch updates ``_primary_runtime`` so future turns
+    restore that runtime after a transient fallback. If the replay flag is not
+    stored there, fallback restoration can resurrect the stale non-codex flag
+    even though the primary runtime is codex_responses.
+    """
+    from agent.agent_runtime_helpers import restore_primary_runtime
+
+    class _Compressor:
+        model = "grok-4"
+        base_url = "https://api.x.ai/v1"
+        api_key = "xai-key"
+        provider = "xai-oauth"
+        api_mode = "codex_responses"
+        context_length = 128_000
+        threshold_tokens = 96_000
+
+        def update_model(self, **kwargs):
+            self.updated = kwargs
+
+    agent = _make_agent_openrouter()
+    agent.context_compressor = _Compressor()
+    agent._transport_cache = {"old": object()}
+    agent._rate_limited_until = 0
+    agent._credential_pool = None
+    agent._create_openai_client = lambda *_a, **_kw: MagicMock(name="CodexClient")
+
+    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="grok-4",
+            new_provider="xai-oauth",
+            api_key="xai-key",
+            base_url="https://api.x.ai/v1",
+            api_mode="codex_responses",
+        )
+
+    assert agent._primary_runtime["api_mode"] == "codex_responses"
+    assert agent._primary_runtime["codex_reasoning_replay_enabled"] is True
+
+    # Simulate a fallback turn perturbing live runtime state before the next
+    # turn restores the primary runtime.
+    agent._fallback_activated = True
+    agent.model = "fallback-model"
+    agent.provider = "openrouter"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    agent.api_mode = "chat_completions"
+    agent._codex_reasoning_replay_enabled = False
+
+    with (
+        patch("agent.chat_completion_helpers._reset_stale_streak"),
+        patch("agent.chat_completion_helpers.rewrite_prompt_model_identity"),
+    ):
+        assert restore_primary_runtime(agent) is True
+
+    assert agent.api_mode == "codex_responses"
+    assert agent.provider == "xai-oauth"
+    assert agent._codex_reasoning_replay_enabled is True
     assert agent.api_mode == "codex_responses"
 
     # Now switch away to non-codex

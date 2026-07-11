@@ -13504,7 +13504,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         }
 
     async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
-        """Create/pin the managed System topic after /topic activation when possible."""
+        """Create the managed System topic after /topic activation when possible.
+
+        The intro message is sent but NOT pinned by default — pinning mutates
+        user-owned chat state (creates a persistent pinned-message banner in
+        Telegram's topic UI) and ``/topic`` is an opt-in setup command, not an
+        authorization to permanently rewrite the chat's pin state. Operators
+        who DO want the intro pinned can opt in via
+        ``gateway.telegram.pin_system_topic_intro: true`` in config.yaml.
+        """
         adapter = self._adapter_for_source(source)
         if adapter is None or not source.chat_id:
             return
@@ -13532,6 +13540,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not message_id:
             return
 
+        # Opt-in pin. Default off — see docstring for rationale.
+        if not self._telegram_pin_system_topic_intro_enabled():
+            return
         bot = getattr(adapter, "_bot", None)
         if bot is None or not hasattr(bot, "pin_chat_message"):
             return
@@ -13543,6 +13554,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
+
+    def _telegram_pin_system_topic_intro_enabled(self) -> bool:
+        """Read the opt-in flag from config.yaml.
+
+        Path: ``gateway.telegram.pin_system_topic_intro`` (bool, default false).
+        Uses the same ``_load_gateway_config`` helper as other gateway-only
+        reads so behavior stays consistent across config edits (#62466)."""
+        try:
+            cfg = _load_gateway_config()
+        except Exception:
+            return False
+        tg = cfg.get("telegram") if isinstance(cfg, dict) else None
+        if not isinstance(tg, dict):
+            return False
+        return bool(tg.get("pin_system_topic_intro", False))
 
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""

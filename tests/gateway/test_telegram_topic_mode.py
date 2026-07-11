@@ -851,6 +851,10 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
 @pytest.mark.asyncio
 async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
+    """The /topic command creates the System topic and sends its intro. The
+    intro is NOT pinned by default — pinning is a separate, opt-in choice
+    (gateway.telegram.pin_system_topic_intro in config.yaml) so /topic
+    never silently rewrites user-owned chat pin state (#62466)."""
     import gateway.run as gateway_run
 
     session_db = SessionDB(db_path=tmp_path / "state.db")
@@ -868,6 +872,12 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
+    # Opt-in is off by default → no pin.
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_telegram_pin_system_topic_intro_enabled",
+        lambda self: False,
+    )
 
     result = await runner._handle_message(_make_event("/topic"))
 
@@ -878,11 +888,93 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
         "System topic for Hermes commands and status.",
         metadata={"thread_id": "4242"},
     )
+    bot.pin_chat_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_topic_root_command_pins_when_opted_in(tmp_path, monkeypatch):
+    """Opt-in via config (gateway.telegram.pin_system_topic_intro: true)
+    re-enables the pin so operators who DO want the persistent banner
+    can get it explicitly (#62466)."""
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter._create_dm_topic.return_value = 4242
+    adapter.send.return_value = SimpleNamespace(success=True, message_id="777")
+    bot = AsyncMock()
+    bot.get_me.return_value = {
+        "has_topics_enabled": True,
+        "allows_users_to_create_topics": True,
+    }
+    adapter._bot = bot
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_telegram_pin_system_topic_intro_enabled",
+        lambda self: True,
+    )
+
+    result = await runner._handle_message(_make_event("/topic"))
+
+    assert "Telegram multi-session topics are enabled" in result
     bot.pin_chat_message.assert_awaited_once_with(
         chat_id=208214988,
         message_id=777,
         disable_notification=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_pin_opt_in_reads_config_default_false(tmp_path, monkeypatch):
+    """``_telegram_pin_system_topic_intro_enabled`` must default to False
+    when no config is present so /topic never pins out of the box
+    (#62466)."""
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    # Empty config / no telegram key → must be False, never raise.
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    assert runner._telegram_pin_system_topic_intro_enabled() is False
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_config", lambda: {"telegram": {}}
+    )
+    assert runner._telegram_pin_system_topic_intro_enabled() is False
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"telegram": {"pin_system_topic_intro": False}},
+    )
+    assert runner._telegram_pin_system_topic_intro_enabled() is False
+    # Only an explicit True flips it on.
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"telegram": {"pin_system_topic_intro": True}},
+    )
+    assert runner._telegram_pin_system_topic_intro_enabled() is True
+
+
+@pytest.mark.asyncio
+async def test_telegram_pin_opt_in_tolerates_loader_failure(tmp_path, monkeypatch):
+    """If the config loader raises (malformed YAML, IO error), the
+    helper must return False rather than propagate — failing to read a
+    preference must NEVER block /topic from working (#62466)."""
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+
+    def _boom():
+        raise OSError("simulated YAML parse failure")
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", _boom)
+    assert runner._telegram_pin_system_topic_intro_enabled() is False
 
 
 @pytest.mark.asyncio

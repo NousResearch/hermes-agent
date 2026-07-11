@@ -57,6 +57,7 @@ from hermes_constants import display_hermes_home
 from hermes_cli.voice_interaction import (
     elevenlabs_pronunciation_locators,
     prepare_spoken_text,
+    resolve_voice_tts_profile,
 )
 
 logger = logging.getLogger(__name__)
@@ -2201,7 +2202,7 @@ def text_to_speech_tool(
         elevenlabs_model = tts_config["elevenlabs"].get("model_id", elevenlabs_model)
     text = prepare_spoken_text(
         text,
-        config={"tts": tts_config, "voice": voice_config},
+        config={"tts": tts_config, "voice": resolve_voice_tts_profile(voice_config)},
         model_id=elevenlabs_model if provider == "elevenlabs" else "",
     )
     if not text:
@@ -2649,8 +2650,9 @@ def stream_tts_to_speaker(
         model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
 
         tts_config = _load_tts_config()
-        voice_config = _load_voice_config()
+        voice_config = resolve_voice_tts_profile(_load_voice_config())
         el_config = tts_config.get("elevenlabs", {})
+        pronunciation_locators = elevenlabs_pronunciation_locators(tts_config)
         voice_id = el_config.get("voice_id", voice_id)
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
@@ -2725,12 +2727,15 @@ def stream_tts_to_speaker(
             if len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
+                convert_kwargs = {
+                    "text": cleaned,
+                    "voice_id": voice_id,
+                    "model_id": model_id,
+                    "output_format": "pcm_24000",
+                }
+                if pronunciation_locators:
+                    convert_kwargs["pronunciation_dictionary_locators"] = pronunciation_locators
+                audio_iter = client.text_to_speech.convert(**convert_kwargs)
                 if output_stream is not None:
                     for chunk in audio_iter:
                         if stop_event.is_set():

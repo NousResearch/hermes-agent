@@ -11697,15 +11697,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
 
-            # Approval-aware voice behavior: speak the request at the same time
-            # the modal is shown, before tool execution blocks waiting for the
-            # user's decision.
-            if self._voice_tts:
-                try:
-                    self._voice_speak_response("I need approval to run that command.")
-                except Exception as exc:
-                    logger.debug("voice approval prompt skipped: %s", exc)
-
             self._approval_state = {
                 "command": command,
                 "description": description,
@@ -11714,6 +11705,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+
+            # Approval-aware voice behavior: show the modal first, then schedule
+            # the spoken request without blocking the approval UI or delaying the
+            # wait state. Tool execution remains paused on response_queue below.
+            if self._voice_tts:
+                try:
+                    self._voice_speak_response_async("I need approval to run that command.")
+                except Exception as exc:
+                    logger.debug("voice approval prompt skipped: %s", exc)
 
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
@@ -12305,7 +12305,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     from hermes_cli.voice_interaction import choose_voice_acknowledgement
                     ack = choose_voice_acknowledgement(message)
                     if ack:
-                        self._voice_speak_response(ack)
+                        self._voice_speak_response_async(ack)
                 except Exception as exc:
                     logger.debug("voice acknowledgement skipped: %s", exc)
 

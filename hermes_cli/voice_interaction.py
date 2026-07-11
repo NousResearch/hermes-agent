@@ -176,11 +176,39 @@ def strip_markdown_for_speech(text: str) -> str:
     return s.strip()
 
 
+def resolve_voice_tts_profile(voice_config: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return voice config with the active ``voice.tts_profile`` applied.
+
+    Profiles are intentionally conservative: they can disable normalization or
+    expressive tags for a mode, but they do not enable expressive tags unless
+    the user also explicitly set ``expressive_tags_enabled``.
+    """
+    if not isinstance(voice_config, Mapping):
+        return {}
+    resolved = dict(voice_config)
+    profiles = voice_config.get("tts_profiles")
+    profile_name = str(voice_config.get("tts_profile") or "").strip()
+    profile = (
+        profiles.get(profile_name)
+        if isinstance(profiles, Mapping) and profile_name
+        else None
+    )
+    if not isinstance(profile, Mapping):
+        return resolved
+    resolved["active_tts_profile"] = profile_name
+    if "normalize" in profile:
+        resolved["normalize"] = bool(profile.get("normalize"))
+    if "expressive_tags" in profile and not bool(profile.get("expressive_tags")):
+        resolved["expressive_tags_enabled"] = False
+    return resolved
+
+
 def expressive_tags_allowed(config: Mapping[str, Any], model_id: str) -> bool:
     voice_cfg = config.get("voice", {}) if isinstance(config, Mapping) else {}
     tts_cfg = config.get("tts", {}) if isinstance(config, Mapping) else {}
     if not isinstance(voice_cfg, Mapping):
         voice_cfg = {}
+    voice_cfg = resolve_voice_tts_profile(voice_cfg)
     if not isinstance(tts_cfg, Mapping):
         tts_cfg = {}
     enabled = bool(voice_cfg.get("expressive_tags_enabled", False) or tts_cfg.get("expressive_tags_enabled", False))
@@ -210,9 +238,16 @@ def strip_unsupported_expressive_tags(text: str, *, config: Mapping[str, Any] | 
 
 def prepare_spoken_text(text: str, *, config: Mapping[str, Any] | None = None, model_id: str = "") -> str:
     """Clean final text for TTS: no markdown/code/JSON spam, then technical normalization."""
+    voice_cfg: Mapping[str, Any] = {}
+    if isinstance(config, Mapping):
+        maybe_voice = config.get("voice", {})
+        voice_cfg = resolve_voice_tts_profile(
+            maybe_voice if isinstance(maybe_voice, Mapping) else {}
+        )
     s = strip_markdown_for_speech(text)
     s = strip_unsupported_expressive_tags(s, config=config, model_id=model_id)
-    s = normalize_technical_text(s)
+    if voice_cfg.get("normalize", True):
+        s = normalize_technical_text(s)
     return re.sub(r"\s+", " ", s).strip()
 
 

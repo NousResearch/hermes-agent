@@ -1808,6 +1808,43 @@ function getVenvPython(venvRoot) {
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
 
+/**
+ * Read pyvenv.cfg from a venv root and resolve the base Python interpreter.
+ *
+ * uv-created Windows venvs write ``pyvenv.cfg`` with a ``home`` key
+ * pointing at the base Python directory (e.g.
+ * ``C:\Users\me\AppData\Local\Programs\Python\Python311``).
+ * `venv/Scripts/python.exe` loads native ``.pyd`` extensions from the venv,
+ * which Windows locks while the process lives — blocking ``hermes update``.
+ * Using the base Python with ``PYTHONPATH`` set to include the source root
+ * and venv site-packages (already done by ``buildDesktopBackendEnv``)
+ * avoids those locks entirely.  Mirrors ``_resolve_detached_python`` in
+ * ``hermes_cli/gateway_windows.py``.
+ *
+ * Returns the path to the base ``python.exe``, or ``null`` when the venv
+ * is not uv-created, the config file can't be read, or the base Python
+ * doesn't exist at the expected location.
+ */
+function resolveBasePythonFromVenvCfg(venvRoot) {
+  if (!venvRoot || !IS_WINDOWS) return null
+
+  try {
+    const cfgPath = path.join(venvRoot, 'pyvenv.cfg')
+    const cfg = fs.readFileSync(cfgPath, 'utf8')
+
+    // PEP 405: ``home = <path>`` (case-insensitive).
+    const homeMatch = cfg.match(/^home\s*=\s*(.+)$/im)
+    if (!homeMatch) return null
+
+    const baseDir = homeMatch[1].trim()
+    const basePython = path.join(baseDir, 'python.exe')
+
+    return fileExists(basePython) ? basePython : null
+  } catch {
+    return null
+  }
+}
+
 function makeDashboardReadyFile() {
   const dir = path.join(app.getPath('userData'), 'backend-ready')
   fs.mkdirSync(dir, { recursive: true })

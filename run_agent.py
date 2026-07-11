@@ -4113,11 +4113,27 @@ class AIAgent:
 
         return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
 
+    def _uses_shared_request_client(self) -> bool:
+        """True when per-request API calls should reuse ``self.client``.
+
+        MoA is an in-process facade. ACP backends (copilot-acp / devin-acp)
+        keep a warm local subprocess — spawning a fresh client per request
+        would kill process reuse and re-pay CLI cold start every turn.
+        """
+        if self.provider == "moa":
+            return True
+        try:
+            from agent.acp_client_factory import is_acp_provider
+
+            return is_acp_provider(self.provider, getattr(self, "base_url", None))
+        except Exception:
+            return False
+
     def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa":
+        if self._uses_shared_request_client():
             return primary_client
         if isinstance(primary_client, Mock):
             return primary_client
@@ -4142,6 +4158,11 @@ class AIAgent:
         return self._create_openai_client(request_kwargs, reason=reason, shared=False)
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
+        # Shared primary clients (MoA / ACP) are reused across turns; only
+        # ephemeral request-scoped OpenAI clients should be closed here.
+        primary = getattr(self, "client", None)
+        if client is not None and primary is not None and client is primary:
+            return
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
@@ -4159,6 +4180,11 @@ class AIAgent:
         — which is where the FD release belongs.
         """
         if client is None:
+            return
+        primary = getattr(self, "client", None)
+        if primary is not None and client is primary:
+            # ACP subprocess has no TCP pool to half-close; leave it for the
+            # owning turn / agent.close() path.
             return
         try:
             shutdown_count = self._force_close_tcp_sockets(client)

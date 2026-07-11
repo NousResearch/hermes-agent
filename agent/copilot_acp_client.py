@@ -1,9 +1,13 @@
 """OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
 
 This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+backend. Hermes keeps the ACP subprocess warm across turns on the same client
+instance (process reuse), opens a fresh ACP session per prompt (Hermes already
+embeds full conversation history), collects text chunks, and converts the
+result into the minimal shape Hermes expects from an OpenAI client.
+
+Disable process reuse with ``HERMES_ACP_PROCESS_REUSE=0`` (falls back to
+spawn-per-request).
 """
 
 from __future__ import annotations
@@ -32,6 +36,12 @@ from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+_REUSE_DISABLE_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def _acp_process_reuse_enabled() -> bool:
+    raw = os.getenv("HERMES_ACP_PROCESS_REUSE", "1").strip().lower()
+    return raw not in _REUSE_DISABLE_VALUES
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
@@ -445,25 +455,52 @@ class CopilotACPClient:
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
+        self._reuse_enabled = _acp_process_reuse_enabled()
+        # Transport state for process reuse (guarded by _rpc_lock).
         self._active_process: subprocess.Popen[str] | None = None
         self._active_process_lock = threading.Lock()
+        self._rpc_lock = threading.Lock()
+        self._inbox: queue.Queue[dict[str, Any]] | None = None
+        self._stderr_tail: deque[str] | None = None
+        self._next_rpc_id = 0
+        self._initialized = False
+        self._spawn_count = 0  # test/metrics: how many times we Popen'd
 
     def close(self) -> None:
+        """Tear down the ACP subprocess and mark the client closed."""
+        with self._rpc_lock:
+            self._reset_transport(mark_closed=True)
+
+    def _reset_transport(self, *, mark_closed: bool = False) -> None:
+        """Kill any live process and clear reuse state. Caller holds ``_rpc_lock``."""
         proc: subprocess.Popen[str] | None
         with self._active_process_lock:
             proc = self._active_process
             self._active_process = None
-        self.is_closed = True
+        self._inbox = None
+        self._stderr_tail = None
+        self._next_rpc_id = 0
+        self._initialized = False
+        if mark_closed:
+            self.is_closed = True
         if proc is None:
             return
         try:
-            proc.terminate()
-            proc.wait(timeout=2)
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
         except Exception:
             try:
                 proc.kill()
             except Exception:
                 pass
+
+    def _process_alive(self) -> bool:
+        proc = self._active_process
+        return proc is not None and proc.poll() is None
 
     def _create_chat_completion(
         self,
@@ -529,7 +566,7 @@ class CopilotACPClient:
             return _completion_to_stream_chunks(completion)
         return completion
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _spawn_process(self) -> subprocess.Popen[str]:
         label = self._acp_display_name
         try:
             proc = subprocess.Popen(
@@ -558,6 +595,11 @@ class CopilotACPClient:
 
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
         stderr_tail: deque[str] = deque(maxlen=40)
+        self._inbox = inbox
+        self._stderr_tail = stderr_tail
+        self._next_rpc_id = 0
+        self._initialized = False
+        self._spawn_count += 1
 
         def _stdout_reader() -> None:
             if proc.stdout is None:
@@ -574,121 +616,155 @@ class CopilotACPClient:
             for line in proc.stderr:
                 stderr_tail.append(line.rstrip("\n"))
 
-        out_thread = threading.Thread(target=_stdout_reader, daemon=True)
-        err_thread = threading.Thread(target=_stderr_reader, daemon=True)
-        out_thread.start()
-        err_thread.start()
+        threading.Thread(target=_stdout_reader, daemon=True).start()
+        threading.Thread(target=_stderr_reader, daemon=True).start()
+        return proc
 
-        next_id = 0
+    def _rpc(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout_seconds: float,
+        text_parts: list[str] | None = None,
+        reasoning_parts: list[str] | None = None,
+    ) -> Any:
+        """Send one JSON-RPC request on the live transport. Caller holds ``_rpc_lock``."""
+        label = self._acp_display_name
+        proc = self._active_process
+        inbox = self._inbox
+        stderr_tail = self._stderr_tail
+        if proc is None or inbox is None or stderr_tail is None or proc.stdin is None:
+            raise RuntimeError(f"{label} transport is not ready.")
 
-        def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None) -> Any:
-            nonlocal next_id
-            next_id += 1
-            request_id = next_id
-            payload = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params,
-            }
-            proc.stdin.write(json.dumps(payload) + "\n")
-            proc.stdin.flush()
+        self._next_rpc_id += 1
+        request_id = self._next_rpc_id
+        payload = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }
+        proc.stdin.write(json.dumps(payload) + "\n")
+        proc.stdin.flush()
 
-            deadline = time.monotonic() + timeout_seconds
-            while time.monotonic() < deadline:
-                if proc.poll() is not None:
-                    break
-                try:
-                    msg = inbox.get(timeout=0.1)
-                except queue.Empty:
-                    continue
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                msg = inbox.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
-                if self._handle_server_message(
-                    msg,
-                    process=proc,
-                    cwd=self._acp_cwd,
-                    text_parts=text_parts,
-                    reasoning_parts=reasoning_parts,
-                ):
-                    continue
-
-                if msg.get("id") != request_id:
-                    continue
-                if "error" in msg:
-                    err = msg.get("error") or {}
-                    raise RuntimeError(
-                        f"{label} {method} failed: {err.get('message') or err}"
-                    )
-                return msg.get("result")
-
-            stderr_text = "\n".join(stderr_tail).strip()
-            if proc.poll() is not None and stderr_text:
-                if _is_gh_copilot_deprecation_message(stderr_text):
-                    raise RuntimeError(
-                        "Hermes ACP mode requires the NEW GitHub Copilot CLI "
-                        "(github.com/github/copilot-cli), but the binary it just "
-                        "spawned is the deprecated `gh copilot` extension.\n\n"
-                        "Install the new CLI:\n"
-                        "  npm install -g @github/copilot\n"
-                        "  # then verify with: copilot --help\n\n"
-                        "If `copilot` already resolves to the new CLI but you still see this,\n"
-                        "point Hermes at it explicitly:\n"
-                        "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
-                        "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
-                        "directly with a Copilot subscription token) via `hermes setup`.\n\n"
-                        f"Original error:\n{stderr_text}"
-                    )
-                raise RuntimeError(f"{label} process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for {label} response to {method}.")
-
-        try:
-            _request(
-                "initialize",
-                {
-                    "protocolVersion": 1,
-                    "clientCapabilities": {
-                        "fs": {
-                            "readTextFile": True,
-                            "writeTextFile": True,
-                        }
-                    },
-                    "clientInfo": {
-                        "name": "hermes-agent",
-                        "title": "Hermes Agent",
-                        "version": "0.0.0",
-                    },
-                },
-            )
-            session = _request(
-                "session/new",
-                {
-                    "cwd": self._acp_cwd,
-                    "mcpServers": [],
-                },
-            ) or {}
-            session_id = str(session.get("sessionId") or "").strip()
-            if not session_id:
-                raise RuntimeError(f"{label} did not return a sessionId.")
-
-            text_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            _request(
-                "session/prompt",
-                {
-                    "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        }
-                    ],
-                },
+            if self._handle_server_message(
+                msg,
+                process=proc,
+                cwd=self._acp_cwd,
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
-            )
-            return "".join(text_parts), "".join(reasoning_parts)
-        finally:
-            self.close()
+            ):
+                continue
+
+            if msg.get("id") != request_id:
+                continue
+            if "error" in msg:
+                err = msg.get("error") or {}
+                raise RuntimeError(
+                    f"{label} {method} failed: {err.get('message') or err}"
+                )
+            return msg.get("result")
+
+        stderr_text = "\n".join(stderr_tail).strip()
+        if proc.poll() is not None and stderr_text:
+            if _is_gh_copilot_deprecation_message(stderr_text):
+                raise RuntimeError(
+                    "Hermes ACP mode requires the NEW GitHub Copilot CLI "
+                    "(github.com/github/copilot-cli), but the binary it just "
+                    "spawned is the deprecated `gh copilot` extension.\n\n"
+                    "Install the new CLI:\n"
+                    "  npm install -g @github/copilot\n"
+                    "  # then verify with: copilot --help\n\n"
+                    "If `copilot` already resolves to the new CLI but you still see this,\n"
+                    "point Hermes at it explicitly:\n"
+                    "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
+                    "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\n"
+                    "directly with a Copilot subscription token) via `hermes setup`.\n\n"
+                    f"Original error:\n{stderr_text}"
+                )
+            raise RuntimeError(f"{label} process exited early: {stderr_text}")
+        raise TimeoutError(f"Timed out waiting for {label} response to {method}.")
+
+    def _ensure_initialized(self, *, timeout_seconds: float) -> None:
+        """Spawn (if needed) and run ACP ``initialize`` once per process."""
+        if self._process_alive() and self._initialized:
+            return
+        if not self._process_alive():
+            self._reset_transport(mark_closed=False)
+            self._spawn_process()
+        self._rpc(
+            "initialize",
+            {
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": {
+                        "readTextFile": True,
+                        "writeTextFile": True,
+                    }
+                },
+                "clientInfo": {
+                    "name": "hermes-agent",
+                    "title": "Hermes Agent",
+                    "version": "0.0.0",
+                },
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        self._initialized = True
+
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        label = self._acp_display_name
+        with self._rpc_lock:
+            try:
+                self._ensure_initialized(timeout_seconds=timeout_seconds)
+                session = self._rpc(
+                    "session/new",
+                    {
+                        "cwd": self._acp_cwd,
+                        "mcpServers": [],
+                    },
+                    timeout_seconds=timeout_seconds,
+                ) or {}
+                session_id = str(session.get("sessionId") or "").strip()
+                if not session_id:
+                    raise RuntimeError(f"{label} did not return a sessionId.")
+
+                text_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                self._rpc(
+                    "session/prompt",
+                    {
+                        "sessionId": session_id,
+                        "prompt": [
+                            {
+                                "type": "text",
+                                "text": prompt_text,
+                            }
+                        ],
+                    },
+                    timeout_seconds=timeout_seconds,
+                    text_parts=text_parts,
+                    reasoning_parts=reasoning_parts,
+                )
+                return "".join(text_parts), "".join(reasoning_parts)
+            except Exception:
+                # Drop a possibly-poisoned transport so the next call gets a
+                # clean process rather than fighting a half-dead inbox.
+                self._reset_transport(mark_closed=False)
+                raise
+            finally:
+                if not self._reuse_enabled:
+                    self._reset_transport(mark_closed=True)
 
     def _handle_server_message(
         self,

@@ -294,6 +294,19 @@ class TestRegisterRoutes:
         assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3d4/messages") is True
         # 6-hex branch/thread session id shape must also match.
         assert token_auth.is_token_route("/api/sessions/20260702_143022_a1b2c3") is True
+        assert token_auth.is_token_route("/api/sessions/cron_abcdef012345_20260707_093920") is True
+        # api_server-sourced sessions accept a CALLER-SUPPLIED id verbatim
+        # (only length/unsafe-char checked, see gateway/platforms/api_server.py)
+        # -- no finite shape enumeration can cover this, so the regex matches
+        # any single path segment except the known sibling literals instead.
+        # This is the exact bug reported as "session expired" on open.
+        assert token_auth.is_token_route("/api/sessions/38fc8942-f0a4-4cd2-899f-c385235ecb81") is True
+        assert (
+            token_auth.is_token_route("/api/sessions/38fc8942-f0a4-4cd2-899f-c385235ecb81/messages")
+            is True
+        )
+        assert token_auth.is_token_route("/api/sessions/api_1783759212_a1b2c3d4") is True
+        assert token_auth.is_token_route("/api/sessions/some-arbitrary-caller-chosen-id") is True
 
     @pytest.mark.parametrize(
         "path",
@@ -313,6 +326,31 @@ class TestRegisterRoutes:
         _require_dashboard_admin, see search_sessions's own docstring) for
         the Mini App's Sessions search box, which the design only ever
         shows to admins. See test_registers_sessions_search_admin_only below.
+        """
+        self._register(monkeypatch)
+        assert token_auth.is_token_route(path) is False
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/sessions/search/messages",
+            "/api/sessions/stats/messages",
+            "/api/sessions/empty/messages",
+            "/api/sessions/bulk-delete/messages",
+            "/api/sessions/prune/messages",
+            "/api/sessions/search/resume",
+            "/api/sessions/stats/resume",
+        ],
+    )
+    def test_does_not_register_sibling_literal_routes_with_suffix(self, monkeypatch, path):
+        """Regression test: the sibling exclusion in _SESSION_ID_SHAPE used a
+        bare `$` in its negative lookahead, which anchors to the end of the
+        whole matched string -- not the end of the id segment. Against
+        _SESSION_MESSAGES_RE/_SESSION_RESUME_RE (which append "/messages" or
+        "/resume" after the id shape), "search" followed by "/messages" never
+        equals "search$", so the lookahead silently passed and this seam
+        dispatched on '/api/sessions/search/messages' etc. Fixed by anchoring
+        the lookahead to a segment boundary, `(?:/|$)`, instead.
         """
         self._register(monkeypatch)
         assert token_auth.is_token_route(path) is False

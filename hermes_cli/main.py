@@ -5421,6 +5421,83 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+_DESKTOP_REBUILD_BACKUP_DIRNAME = ".rebuild-backup"
+
+
+def _backup_desktop_unpacked_app(desktop_dir: Path) -> Optional[tuple[Path, Path]]:
+    """Move the current unpacked desktop app aside before a repack.
+
+    before-pack.cjs wipes ``appOutDir`` (e.g. ``release/win-unpacked`` holding
+    the live ``Hermes.exe``) so the pack always stages into a clean tree — but
+    the Electron download/extract runs *after* that wipe, so a pack that fails
+    (corrupt cached zip, blocked download, proxy timeout) destroys the only
+    executable the user has and turns their desktop shortcut into a dead link
+    (#44225). Renaming the directory aside keeps a same-volume copy we can
+    restore if the pack ultimately fails, while the hook still finds a clean
+    tree at the original path.
+
+    The backup lives under ``release/.rebuild-backup/`` — NOT a sibling rename
+    — because ``_purge_electron_build_cache`` rmtree's ``release/*-unpacked``
+    between retries and ``_desktop_packaged_executable`` globs ``mac*``; a
+    sibling name would match one of those and either get purged mid-retry or
+    masquerade as the freshly-built app.
+
+    Returns ``(original, backup)``, or ``None`` when there is nothing to back
+    up or the rename failed — in which case the build proceeds exactly as it
+    did before this guard existed. Best-effort: never raises.
+    """
+    exe = _desktop_packaged_executable(desktop_dir)
+    if exe is None:
+        return None
+    try:
+        release_dir = (desktop_dir / "release").resolve()
+        unpacked = exe.resolve()
+    except OSError:
+        return None
+    # Walk up from the executable to the directory directly under release/
+    # (win-unpacked, mac-arm64, linux-unpacked, …) — that is electron-builder's
+    # appOutDir, the unit the before-pack hook deletes.
+    while unpacked.parent != release_dir:
+        if unpacked.parent == unpacked:  # hit filesystem root: exe not under release/
+            return None
+        unpacked = unpacked.parent
+    backup = release_dir / _DESKTOP_REBUILD_BACKUP_DIRNAME / unpacked.name
+    try:
+        if backup.exists():
+            shutil.rmtree(backup)
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        unpacked.rename(backup)
+    except OSError:
+        return None
+    return unpacked, backup
+
+
+def _restore_desktop_unpacked_app(original: Path, backup: Path) -> bool:
+    """Put the pre-rebuild unpacked app back after a failed pack.
+
+    A failed pack may have left a partial tree at ``original``; that tree is a
+    pure build artifact the next pack wipes anyway, so it is safe to discard in
+    favor of the known-good backup. Best-effort: never raises.
+    """
+    try:
+        if original.exists():
+            shutil.rmtree(original)
+        backup.rename(original)
+    except OSError:
+        return False
+    _discard_desktop_unpacked_backup(backup)  # remove the now-empty holder dir
+    return True
+
+
+def _discard_desktop_unpacked_backup(backup: Path) -> None:
+    """Drop the pre-rebuild backup once the new pack has succeeded."""
+    try:
+        shutil.rmtree(backup, ignore_errors=True)
+        backup.parent.rmdir()  # only succeeds when no other backup remains
+    except OSError:
+        pass
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -5708,6 +5785,7 @@ def cmd_gui(args: argparse.Namespace):
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
+            backup_entry = None
             if not source_mode:
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
@@ -5717,6 +5795,10 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+                # Park the current unpacked app outside the pack's blast radius
+                # so a failed rebuild can't leave the user with no executable
+                # at all (#44225); restored below if every retry fails.
+                backup_entry = _backup_desktop_unpacked_app(desktop_dir)
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if (
                 build_result.returncode != 0
@@ -5762,6 +5844,9 @@ def cmd_gui(args: argparse.Namespace):
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
+                if backup_entry is not None and _restore_desktop_unpacked_app(*backup_entry):
+                    print("  ↩ Restored the previous desktop app build — the existing")
+                    print("    install (and its shortcuts) keep working until a rebuild succeeds.")
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
@@ -5770,6 +5855,14 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
+            if backup_entry is not None:
+                if _desktop_packaged_executable(desktop_dir) is None:
+                    # Pack reported success but left no launchable app (seen
+                    # with misconfigured targets): the old build is still the
+                    # only working one, so put it back instead of dropping it.
+                    _restore_desktop_unpacked_app(*backup_entry)
+                else:
+                    _discard_desktop_unpacked_backup(backup_entry[1])
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
                 # Locally-built apps are ad-hoc signed; make them relaunchable after

@@ -716,18 +716,29 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     # Executable EXISTS at failure time → late failure, not a corrupt download.
-    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
     monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+
+    # The #44225 backup guard parks the pre-existing app under
+    # release/.rebuild-backup before the pack, and before-pack.cjs then wipes
+    # appOutDir. A real late failure (e.g. macOS code signing) still leaves the
+    # freshly-assembled Hermes.app at appOutDir, which is the executable-present
+    # signal #40187's fast-fail keys on — so the pack mock must re-materialize
+    # it, exactly as before-pack + assembly do on disk, or the discriminator
+    # would misread this as the empty appOutDir of a corrupt download.
+    def _pack_leaves_app(cmd, **kwargs):
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 1)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
          patch("hermes_cli.main._redownload_electron_dist", return_value=True) as mock_dl, \
-         patch("hermes_cli.main.subprocess.run", return_value=pack_fail) as mock_run, \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_leaves_app) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
@@ -1056,3 +1067,168 @@ def test_desktop_launch_options_survives_config_error():
         flags, gpu = cli_main._desktop_launch_options()
     assert flags == []
     assert gpu == "auto"
+
+
+# ---------------------------------------------------------------------------
+# #44225: a failed pack must not destroy the only working desktop app.
+# before-pack.cjs wipes appOutDir before the Electron download/extract, so
+# without the backup/restore guard a failed rebuild (corrupt cache, blocked
+# download) leaves the user's shortcut pointing at a deleted Hermes.exe.
+# ---------------------------------------------------------------------------
+
+
+def test_backup_desktop_unpacked_app_moves_dir_into_holder(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    desktop_dir = root / "apps" / "desktop"
+
+    entry = cli_main._backup_desktop_unpacked_app(desktop_dir)
+
+    assert entry is not None
+    original, backup = entry
+    assert original == (desktop_dir / "release" / "win-unpacked").resolve()
+    assert backup == original.parent / ".rebuild-backup" / "win-unpacked"
+    assert not original.exists()
+    assert (backup / "Hermes.exe").exists()
+    assert not exe.exists()
+
+
+def test_backup_desktop_unpacked_app_none_without_packaged_app(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+    assert cli_main._backup_desktop_unpacked_app(root / "apps" / "desktop") is None
+
+
+def test_backup_resolves_mac_app_bundle_to_appoutdir(tmp_path, monkeypatch):
+    """On macOS the exe is nested in Hermes.app; the unit moved aside must be
+    the directory directly under release/ (electron-builder's appOutDir)."""
+    root = _make_desktop_tree(tmp_path)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    desktop_dir = root / "apps" / "desktop"
+
+    entry = cli_main._backup_desktop_unpacked_app(desktop_dir)
+
+    assert entry is not None
+    original, backup = entry
+    assert original == (desktop_dir / "release" / "mac-arm64").resolve()
+    assert (backup / "Hermes.app" / "Contents" / "MacOS" / "Hermes").exists()
+
+
+def test_backup_survives_electron_cache_purge(tmp_path, monkeypatch):
+    """_purge_electron_build_cache rmtree's release/*-unpacked between retries;
+    the parked copy must sit outside that glob or a retry destroys it too."""
+    root = _make_desktop_tree(tmp_path)
+    _make_packaged_executable(root, monkeypatch, platform="win32")
+    desktop_dir = root / "apps" / "desktop"
+
+    entry = cli_main._backup_desktop_unpacked_app(desktop_dir)
+    assert entry is not None
+    _, backup = entry
+
+    with patch("hermes_cli.main._electron_download_cache_dirs", return_value=[]):
+        cli_main._purge_electron_build_cache(desktop_dir)
+
+    assert (backup / "Hermes.exe").exists()
+
+
+def test_backup_not_mistaken_for_packaged_executable(tmp_path, monkeypatch):
+    """The parked mac bundle must not match the mac* detection glob, or a
+    failed --build-only would report the dead backup as a launchable app."""
+    root = _make_desktop_tree(tmp_path)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    desktop_dir = root / "apps" / "desktop"
+
+    assert cli_main._backup_desktop_unpacked_app(desktop_dir) is not None
+    assert cli_main._desktop_packaged_executable(desktop_dir) is None
+
+
+def test_restore_desktop_unpacked_app_replaces_partial_tree(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    exe.write_text("good build", encoding="utf-8")
+    desktop_dir = root / "apps" / "desktop"
+
+    original, backup = cli_main._backup_desktop_unpacked_app(desktop_dir)
+    # Simulate a pack that died mid-stage: partial tree, no executable.
+    original.mkdir(parents=True)
+    (original / "resources").mkdir()
+
+    assert cli_main._restore_desktop_unpacked_app(original, backup) is True
+    assert exe.read_text(encoding="utf-8") == "good build"
+    assert not (original / "resources").exists()
+    assert not backup.parent.exists()  # empty .rebuild-backup holder removed
+
+
+def test_gui_pack_failure_restores_previous_packaged_app(tmp_path, monkeypatch, capsys):
+    """End-to-end: every pack attempt fails → old app is back where the
+    desktop shortcut points, and the backup holder is gone."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    packaged_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.setenv("ELECTRON_MIRROR", "https://example.test/electron/")
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main.subprocess.run", return_value=pack_fail), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert exc.value.code == 1
+    assert packaged_exe.read_text(encoding="utf-8") == "good build"
+    assert not (root / "apps" / "desktop" / "release" / ".rebuild-backup").exists()
+    out = capsys.readouterr().out
+    assert "Restored the previous desktop app build" in out
+
+
+def test_gui_pack_success_discards_backup_and_uses_new_build(tmp_path, monkeypatch):
+    """A pack that produces a fresh app drops the parked copy."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    packaged_exe.write_text("old build", encoding="utf-8")
+    desktop_dir = root / "apps" / "desktop"
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    def _pack(cmd, **kwargs):
+        # Real pack re-creates the unpacked tree from scratch.
+        packaged_exe.parent.mkdir(parents=True, exist_ok=True)
+        packaged_exe.write_text("new build", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack):
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert packaged_exe.read_text(encoding="utf-8") == "new build"
+    assert not (desktop_dir / "release" / ".rebuild-backup").exists()
+
+
+def test_gui_pack_success_without_artifact_restores_backup(tmp_path, monkeypatch):
+    """Zero exit but no launchable app (misconfigured targets): keep the old
+    build rather than deleting the only working one."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="win32")
+    packaged_exe.write_text("good build", encoding="utf-8")
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="C:\\npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", return_value=pack_ok):
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert packaged_exe.read_text(encoding="utf-8") == "good build"

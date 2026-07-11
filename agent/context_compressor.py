@@ -233,8 +233,12 @@ _HIGH_SIGNAL_ANCHOR_MAX_CHARS = 800
 # scarce anchor budget and can fossilize ordinary requests across compactions.
 _CORRECTION_SIGNAL_RE = re.compile(
     r"(?:\bactually\b[^.!?。！？]{0,80}\b(?:use|choose|switch|change|keep|prefer|"
-    r"do\s+not|don't|instead)\b|\b(?:instead|rather\s+than|do\s+not|"
-    r"don't|never\s+mind|stop\s+using|switch(?:ed)?\s+to|"
+    r"do\s+not\s+(?:use|modify|change|remove|add|keep|choose|switch)|"
+    r"don't\s+(?:use|modify|change|remove|add|keep|choose|switch))\b|"
+    r"(?:^|[.!?]\s+)(?:please\s+)?(?:do\s+not|don't)\s+"
+    r"(?:use|modify|change|remove|add|keep|choose|switch)\b|"
+    r"(?:^|[.!?]\s+)instead\s*,?\s*(?:use|choose|switch|change|keep|prefer)\b|"
+    r"\b(?:rather\s+than|never\s+mind|stop\s+using|switch(?:ed)?\s+to|"
     r"changed?\s+(?:it\s+)?to|correction)\b|"
     r"\b(?:use|choose|keep|prefer)\b[^.!?。！？]{0,80}(?:,\s*)?\bnot\b|"
     r"(?:其实[^.!?。！？]{0,60}(?:改|用|不要|选择|决定)|改成|改用|不要|不再|"

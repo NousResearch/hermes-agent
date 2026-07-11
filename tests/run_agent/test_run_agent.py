@@ -4784,8 +4784,13 @@ class TestRunConversation:
         assert result["final_response"] == "Part 1 Part 2"
 
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        second_call_kwargs = agent.client.chat.completions.create.call_args_list[1].kwargs
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+        assert "text-only" in second_call_messages[-1]["content"]
+        assert "tools" not in second_call_kwargs
+        assert "tool_choice" not in second_call_kwargs
+        assert "parallel_tool_calls" not in second_call_kwargs
 
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
         """Continuation retries must not shrink a higher provider default cap."""

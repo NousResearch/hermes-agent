@@ -453,9 +453,28 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
     else:
         return (
             "[System: Your previous response was truncated by the output "
-            "length limit. Continue exactly where you left off. Do not "
-            "restart or repeat prior text. Finish the answer directly.]"
+            "length limit. This recovery call is text-only: do not call or "
+            "describe tools. Output only the unfinished sections. Start at "
+            "the next missing heading with no continuation preamble, do not "
+            "restart or repeat any prior heading, table, or paragraph, and "
+            "finish the answer directly.]"
         )
+
+
+def _force_text_only_length_continuation(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove tool surfaces from an output-length continuation request.
+
+    The first response already spent its tool phase and emitted user-visible
+    text.  A synthetic continuation exists only to finish that text.  Leaving
+    the tool schema attached contradicts the prompt and lets a local model
+    reopen investigation, which either executes unwanted work or trips the
+    terminal tool-call guard.  Return a shallow copy so middleware snapshots
+    of the original request remain untouched.
+    """
+    bounded = dict(api_kwargs)
+    for key in ("tools", "tool_choice", "parallel_tool_calls"):
+        bounded.pop(key, None)
+    return bounded
 
 
 # Shared recovery hint appended to every content-policy refusal message. Both
@@ -1172,6 +1191,8 @@ def run_conversation(
                         allow_stream=False,
                         is_github_responses=agent._is_copilot_url(),
                     )
+                if length_continue_retries > 0:
+                    api_kwargs = _force_text_only_length_continuation(api_kwargs)
                 # Copilot x-initiator: the first API call of a user turn is
                 # marked "user" so Copilot bills a premium request; tool-loop
                 # follow-ups keep the default "agent" header (#3040).
@@ -1249,7 +1270,7 @@ def run_conversation(
                             if isinstance(request_messages, list)
                             else [],
                             message_count=len(api_messages),
-                            tool_count=len(agent.tools or []),
+                            tool_count=len(api_kwargs.get("tools") or []),
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=agent.max_tokens,

@@ -252,6 +252,8 @@ class TestLengthContinuationPromptBranching:
     def test_real_truncation_uses_length_prompt(self):
         prompt = self._simulate_branch("chatcmpl-abc123")
         assert "output length limit" in prompt
+        assert "text-only" in prompt
+        assert "next missing heading" in prompt
         assert "network error" not in prompt
 
     def test_no_id_falls_through_to_length_prompt(self):

@@ -6,7 +6,9 @@ on:
 
 concurrency:
   group: typecheck-${{ github.ref }}
-  cancel-in-progress: true
+  # Match the caller's (ci.yml) PR-only cancellation policy so post-merge
+  # Typecheck runs on successive pushes to main are not cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   typecheck:

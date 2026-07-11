@@ -71,8 +71,10 @@ def test_db_flush_drops_verification_scaffolding(tmp_path, monkeypatch):
 
     messages = [
         {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "premature done", "_verification_stop_synthetic": True},
-        {"role": "user", "content": "[System: run tests]", "_verification_stop_synthetic": True},
+        # The assistant response is NOT flagged synthetic — it persists.
+        {"role": "assistant", "content": "premature done"},
+        # Only the nudge is synthetic — it gets dropped.
+        {"role": "system", "content": "[System: run tests]", "_verification_stop_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
 
@@ -83,8 +85,8 @@ def test_db_flush_drops_verification_scaffolding(tmp_path, monkeypatch):
         for _args, kwargs in agent._session_db.append_message.call_args_list
     ]
     assert "hi" in persisted
+    assert "premature done" in persisted
     assert "verified and clean" in persisted
-    assert "premature done" not in persisted
     assert "[System: run tests]" not in persisted
 
 
@@ -95,8 +97,10 @@ def test_json_log_drops_verification_scaffolding(tmp_path, monkeypatch):
 
     messages = [
         {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "premature done", "_pre_verify_synthetic": True},
-        {"role": "user", "content": "[System: run tests]", "_pre_verify_synthetic": True},
+        # The assistant response is NOT flagged synthetic — it persists.
+        {"role": "assistant", "content": "premature done"},
+        # Only the nudge is synthetic — it gets dropped.
+        {"role": "system", "content": "[System: run tests]", "_pre_verify_synthetic": True},
         {"role": "assistant", "content": "verified and clean"},
     ]
 
@@ -106,5 +110,5 @@ def test_json_log_drops_verification_scaffolding(tmp_path, monkeypatch):
     assert log_file.exists()
     data = json.loads(log_file.read_text(encoding="utf-8"))
     contents = [m.get("content") for m in data["messages"]]
-    assert contents == ["hi", "verified and clean"]
+    assert contents == ["hi", "premature done", "verified and clean"]
     assert all(not m.get("_pre_verify_synthetic") for m in data["messages"])

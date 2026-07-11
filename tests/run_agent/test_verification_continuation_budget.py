@@ -54,7 +54,7 @@ def _assert_pending_response_survives(agent, result):
     assert [message["role"] for message in result["messages"]] == [
         "user",
         "assistant",
-        "user",
+        "system",
         "assistant",
     ]
 
@@ -75,7 +75,11 @@ def test_verify_on_stop_preserves_composed_report_at_budget_limit(agent, monkeyp
         result = agent.run_conversation("edit changed.py")
 
     _assert_pending_response_survives(agent, result)
-    assert result["messages"][1]["_verification_stop_synthetic"] is True
+    # The assistant response (messages[1]) is no longer flagged synthetic —
+    # it persists to the DB and is emitted to the UI so the user sees the
+    # full answer while verification runs. Only the nudge (messages[2])
+    # remains synthetic. (#62657)
+    assert "_verification_stop_synthetic" not in result["messages"][1]
     assert result["messages"][2]["_verification_stop_synthetic"] is True
 
 
@@ -100,7 +104,8 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
         result = agent.run_conversation("edit changed.py")
 
     _assert_pending_response_survives(agent, result)
-    assert result["messages"][1]["_pre_verify_synthetic"] is True
+    # Same as verify-on-stop: only the nudge is synthetic. (#62657)
+    assert "_pre_verify_synthetic" not in result["messages"][1]
     assert result["messages"][2]["_pre_verify_synthetic"] is True
 
 
@@ -144,3 +149,38 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
     assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
     assert result["completed"] is True
     agent._handle_max_iterations.assert_not_called()
+
+
+def test_verify_on_stop_emits_interim_response_to_ui(agent, monkeypatch):
+    """The full assistant response must reach the UI when verification stop
+    triggers — not just the terse post-verification reply. (#62657)
+    """
+    emitted = []
+    agent.interim_assistant_callback = lambda text, **kw: emitted.append(text)
+
+    def model_call(_api_kwargs):
+        agent._turn_file_mutation_paths = {"changed.py"}
+        return _response("full detailed report with tables and analysis")
+
+    agent._interruptible_api_call = model_call
+    agent._handle_max_iterations = MagicMock(return_value="replacement summary")
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+
+    with (
+        patch("agent.verification_stop.build_verify_on_stop_nudge", return_value="verify it"),
+        patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+    ):
+        result = agent.run_conversation("edit changed.py")
+
+    # The full response was emitted to the UI callback.
+    assert any("full detailed report" in e for e in emitted), (
+        f"expected full response in emitted messages, got: {emitted}"
+    )
+    # The response was also persisted to the in-memory message list without
+    # the synthetic flag.
+    assistant_msgs = [m for m in result["messages"] if m["role"] == "assistant"]
+    assert any(
+        "full detailed report" in (m.get("content") or "")
+        and "_verification_stop_synthetic" not in m
+        for m in assistant_msgs
+    )

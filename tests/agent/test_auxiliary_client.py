@@ -5653,3 +5653,112 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+# =========================================================================
+# Auxiliary usage recording in _validate_llm_response
+# =========================================================================
+
+
+class TestAuxiliaryUsageRecording:
+    """Tests for thread-local auxiliary usage recording via _validate_llm_response."""
+
+    def test_records_when_session_active(self, monkeypatch):
+        """When _aux_session is active, _validate_llm_response calls
+        record_auxiliary_usage with token counts from the response."""
+        import agent.auxiliary_client as aux
+        from unittest.mock import MagicMock
+
+        # Set thread-local state directly
+        aux._aux_session.active = True
+        aux._aux_session.session_id = "sid-1"
+        aux._aux_session.provider = "gemini"
+        aux._aux_session.model = "gemini-2.5-flash"
+        aux._aux_session.task = "vision"
+
+        mock_db = MagicMock()
+        monkeypatch.setattr(
+            "hermes_state.get_session_db", lambda: mock_db
+        )
+
+        # Build a response with usage data
+        usage = MagicMock()
+        usage.prompt_tokens = 123
+        usage.completion_tokens = 456
+        response = MagicMock()
+        response.usage = usage
+        response.choices = [MagicMock()]
+        response.choices[0].message = MagicMock(content="test")
+
+        aux._validate_llm_response(response, task="vision")
+
+        mock_db.record_auxiliary_usage.assert_called_once_with(
+            session_id="sid-1",
+            task="vision",
+            provider="gemini",
+            model="gemini-2.5-flash",
+            input_tokens=123,
+            output_tokens=456,
+        )
+        # Clean up
+        aux._aux_session.active = False
+
+    def test_skips_when_session_inactive(self):
+        """When _aux_session is not active, no recording occurs."""
+        import agent.auxiliary_client as aux
+        from unittest.mock import MagicMock, patch
+
+        with patch("agent.auxiliary_client.getattr") as mock_getattr:
+            mock_getattr.return_value = False
+            response = MagicMock()
+            response.choices = [MagicMock()]
+            response.choices[0].message = MagicMock(content="test")
+
+            # Should not raise
+            aux._validate_llm_response(response, task="vision")
+
+    def test_recording_failure_does_not_block_response(self, monkeypatch):
+        """A DB error during recording is silently caught — the response
+        must still be validated and returned."""
+        import agent.auxiliary_client as aux
+        from unittest.mock import MagicMock
+
+        aux._aux_session.active = True
+        aux._aux_session.session_id = "sid-1"
+        aux._aux_session.provider = "g"
+        aux._aux_session.model = "m"
+        aux._aux_session.task = "t"
+
+        mock_db = MagicMock()
+        mock_db.record_auxiliary_usage.side_effect = RuntimeError("db locked")
+        monkeypatch.setattr("hermes_state.get_session_db", lambda: mock_db)
+
+        response = MagicMock()
+        response.usage = MagicMock(prompt_tokens=1, completion_tokens=2)
+        response.choices = [MagicMock()]
+        response.choices[0].message = MagicMock(content="still works")
+
+        # Must not raise — recording failure is best-effort
+        result = aux._validate_llm_response(response, task="vision")
+        assert result is response
+
+    def test_clears_session_after_recording(self, monkeypatch):
+        """After recording (or failure), clear_aux_session is called."""
+        import agent.auxiliary_client as aux
+        from unittest.mock import MagicMock, patch
+
+        aux._aux_session.active = True
+        aux._aux_session.session_id = "s"
+        aux._aux_session.provider = "p"
+        aux._aux_session.model = "m"
+        aux._aux_session.task = "t"
+
+        with patch("hermes_state.get_session_db", return_value=MagicMock()), \
+             patch.object(aux, "clear_aux_session") as mock_clear:
+            response = MagicMock()
+            response.usage = MagicMock(prompt_tokens=0, completion_tokens=0)
+            response.choices = [MagicMock()]
+            response.choices[0].message = MagicMock(content="ok")
+
+            aux._validate_llm_response(response, task="vision")
+            mock_clear.assert_called_once()

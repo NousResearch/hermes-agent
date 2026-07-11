@@ -5750,3 +5750,68 @@ class TestGetMessagesPagination:
         self._seed(db, n=5)
         rows = db.get_messages("s1", offset=3)
         assert [m["content"] for m in rows] == ["msg-3", "msg-4"]
+
+
+# =========================================================================
+# Auxiliary usage recording
+# =========================================================================
+
+
+class TestAuxiliaryUsage:
+    """Tests for the auxiliary_usage table and record_auxiliary_usage()."""
+
+    def test_record_basic(self, db):
+        """record_auxiliary_usage inserts a row with correct values."""
+        db.record_auxiliary_usage(
+            session_id="sid-1",
+            task="vision",
+            provider="gemini",
+            model="gemini-2.5-flash",
+            input_tokens=100,
+            output_tokens=200,
+        )
+        rows = db._conn.execute(
+            "SELECT session_id, task, provider, model, input_tokens, output_tokens "
+            "FROM auxiliary_usage"
+        ).fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["session_id"] == "sid-1"
+        assert row["task"] == "vision"
+        assert row["provider"] == "gemini"
+        assert row["model"] == "gemini-2.5-flash"
+        assert row["input_tokens"] == 100
+        assert row["output_tokens"] == 200
+
+    def test_record_multiple_calls(self, db):
+        """Multiple calls insert multiple rows (not upsert)."""
+        for i in range(3):
+            db.record_auxiliary_usage(
+                session_id="sid-1",
+                task="vision",
+                provider="gemini",
+                model="g2f",
+                input_tokens=10,
+                output_tokens=20,
+            )
+        rows = db._conn.execute("SELECT COUNT(*) FROM auxiliary_usage").fetchall()
+        assert rows[0][0] == 3
+
+    def test_record_defaults(self, db):
+        """Default/None values are stored as empty strings or 0."""
+        db.record_auxiliary_usage(session_id="s", task="t")
+        rows = db._conn.execute(
+            "SELECT provider, model, input_tokens, output_tokens FROM auxiliary_usage"
+        ).fetchall()
+        row = rows[0]
+        assert row["provider"] is None
+        assert row["model"] is None
+        assert row["input_tokens"] == 0
+        assert row["output_tokens"] == 0
+
+    def test_record_created_at_is_set(self, db):
+        """created_at is populated automatically."""
+        db.record_auxiliary_usage(session_id="s", task="t")
+        rows = db._conn.execute("SELECT created_at FROM auxiliary_usage").fetchall()
+        assert rows[0][0] is not None
+        assert rows[0][0] > 0

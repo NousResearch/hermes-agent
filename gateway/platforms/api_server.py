@@ -18,6 +18,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/steer      — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
@@ -1493,6 +1494,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "run_steer": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -1519,6 +1521,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
@@ -4629,6 +4632,98 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
+
+    async def _handle_steer_run(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_text = body.get("text")
+        if raw_text is None:
+            raw_text = body.get("input")
+        text = str(raw_text or "").strip()
+        if not text:
+            return web.json_response(
+                _openai_error("Missing or empty 'text' field", code="invalid_steer_text"),
+                status=400,
+            )
+
+        agent = self._active_run_agents.get(run_id)
+        if agent is None:
+            return web.json_response(
+                _openai_error(
+                    f"Run is not active or no longer steerable: {run_id}",
+                    code="not_steerable",
+                    param="run_id",
+                ),
+                status=409,
+            )
+
+        steer_fn = getattr(agent, "steer", None)
+        if not callable(steer_fn):
+            return web.json_response(
+                _openai_error(
+                    f"Run does not support steering: {run_id}",
+                    code="steer_not_supported",
+                    param="run_id",
+                ),
+                status=409,
+            )
+
+        try:
+            accepted = bool(steer_fn(text))
+        except Exception as exc:
+            logger.exception("[api_server] steer for run %s failed", run_id)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        if not accepted:
+            return web.json_response(
+                _openai_error("Steer rejected", code="steer_rejected"),
+                status=409,
+            )
+
+        source = str(body.get("source") or "api").strip() or "api"
+        visibility = str(body.get("visibility") or "event").strip().lower() or "event"
+        event = {
+            "event": "run.steer.accepted",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "source": source,
+            "visibility": visibility,
+        }
+        self._set_run_status(run_id, "running", last_event="run.steer.accepted")
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait(event)
+            except Exception:
+                pass
+
+        return web.json_response(
+            {
+                "object": "hermes.run.steer",
+                "run_id": run_id,
+                "accepted": True,
+                "status": "accepted",
+                "delivery": "pending",
+            },
+            status=202,
+        )
+
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
         auth_err = self._check_auth(request)
@@ -4806,6 +4901,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
+            self._app.router.add_post("/v1/runs/{run_id}/steer", self._handle_steer_run)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering

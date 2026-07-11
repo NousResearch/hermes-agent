@@ -261,6 +261,13 @@ class VideoLibraryStore:
         with self.connect() as conn:
             return _row(conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone())
 
+    def get_clip(self, clip_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            item = _clip_row(conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone())
+            if item is not None:
+                item["tags"] = self._clip_tags(conn, clip_id)
+            return item
+
     def list_assets(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             return [dict(row) for row in conn.execute("SELECT * FROM assets ORDER BY created_at DESC, id").fetchall()]
@@ -331,6 +338,24 @@ class VideoLibraryStore:
                 raise KeyError(f"unknown video clip: {clip_id}")
             self._replace_clip_tags_in_conn(conn, clip_id, tags, now=_now_ms())
             return self._clip_tags(conn, clip_id)
+
+    def update_clip_materialization(self, clip_id: str, file_path: Path | str) -> dict[str, Any]:
+        resolved = Path(file_path).expanduser().resolve(strict=True)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE clips
+                SET file_path = ?, materialized = 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (str(resolved), _now_ms(), clip_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown video clip: {clip_id}")
+            item = _clip_row(conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone())
+            assert item is not None
+            item["tags"] = self._clip_tags(conn, clip_id)
+            return item
 
     def _replace_clip_tags_in_conn(
         self,

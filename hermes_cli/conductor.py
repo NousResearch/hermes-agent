@@ -1971,6 +1971,7 @@ def _secrets_dispatch(raw: str) -> dict:
     +æ://secrets status            → file present? count? (no values)
     +æ://secrets list              → keys + kinds + masked preview (no raw value)
     +æ://secrets get <KEY>         → resolve value for an agent (masked in stdout)
+    +æ://secrets sources           → candidate paths + which exist (debug handoff)
     +æ://secrets path              → where the local source lives
     """
     rest = raw.split("secrets", 1)[1].strip() if "secrets" in raw else ""
@@ -1998,6 +1999,19 @@ def _secrets_dispatch(raw: str) -> dict:
     if action == "path":
         return {"ok": True, "stdout": f"secrets source: {src or '(none found)'}\n",
                 "surface": {"kind": "secrets", "local_only": True, "path": src}}
+
+    if action == "sources":
+        lines = ["secrets candidate sources (first existing wins):"]
+        for i, p in enumerate(DEFAULT_PATHS):
+            if not p:
+                continue
+            mark = "OK " if os.path.exists(p) else "absent"
+            lines.append(f"  [{mark}] {p}")
+        envp = os.environ.get("HERMES_SECRETS")
+        if envp:
+            lines.append(f"  [env] HERMES_SECRETS={envp} -> {'OK' if os.path.exists(envp) else 'absent'}")
+        return {"ok": True, "stdout": "\n".join(lines) + "\n",
+                "surface": {"kind": "secrets", "local_only": True, "paths": DEFAULT_PATHS}}
 
     if action == "status":
         if not src or not os.path.exists(src):

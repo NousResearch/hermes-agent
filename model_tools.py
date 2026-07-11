@@ -498,18 +498,28 @@ def _compute_tool_definitions(
     # separate sentences, which causes the model to hallucinate calls to
     # those tools when they're missing (#43099).
     if "browser_navigate" in available_tool_names:
-        web_tools_available = {"web_search", "web_extract"} & available_tool_names
+        web_search_available = "web_search" in available_tool_names
         web_extract_available = "web_extract" in available_tool_names
         terminal_available = "terminal" in available_tool_names
-        if not web_tools_available or not (web_extract_available and terminal_available):
+        if not (web_search_available and web_extract_available and terminal_available):
             for i, td in enumerate(filtered_tools):
                 if td.get("function", {}).get("name") != "browser_navigate":
                     continue
                 desc = td["function"].get("description", "")
-                if not web_tools_available:
+                if not web_search_available and not web_extract_available:
                     desc = desc.replace(
                         " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
                         "",
+                    )
+                elif not web_extract_available:
+                    desc = desc.replace(
+                        "prefer web_search or web_extract (faster, cheaper).",
+                        "prefer web_search (faster, cheaper).",
+                    )
+                elif not web_search_available:
+                    desc = desc.replace(
+                        "prefer web_search or web_extract (faster, cheaper).",
+                        "prefer web_extract (faster, cheaper).",
                     )
                 if not web_extract_available and not terminal_available:
                     desc = desc.replace(

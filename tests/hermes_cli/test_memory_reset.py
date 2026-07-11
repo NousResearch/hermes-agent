@@ -31,31 +31,26 @@ def memory_env(tmp_path, monkeypatch):
     return hermes_home, memories
 
 
-def _run_memory_reset(target="all", yes=False, monkeypatch=None, confirm_input="no"):
-    """Invoke the memory reset logic from cmd_memory in main.py.
-
-    Simulates what happens when `hermes memory reset` is run.
-    """
+def _run_memory_reset(target="all", yes=False, monkeypatch=None, confirm_input="no", all_scopes=False):
+    """Invoke the real cmd_memory handler."""
+    from types import SimpleNamespace
     from hermes_constants import get_hermes_home
+    from hermes_cli.main import cmd_memory
 
     mem_dir = get_hermes_home() / "memories"
-    files_to_reset = []
-    if target in {"all", "memory"}:
-        files_to_reset.append(("MEMORY.md", "agent notes"))
-    if target in {"all", "user"}:
-        files_to_reset.append(("USER.md", "user profile"))
-
-    existing = [(f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()]
-    if not existing:
-        return "nothing"
-
+    before = set(mem_dir.glob("**/*.md"))
+    args = SimpleNamespace(memory_command="reset", target=target, yes=yes, all_scopes=all_scopes)
     if not yes:
-        if confirm_input != "yes":
-            return "cancelled"
-
-    for f, desc in existing:
-        (mem_dir / f).unlink()
-
+        import builtins
+        original = builtins.input
+        builtins.input = lambda _prompt: confirm_input
+        try: cmd_memory(args)
+        finally: builtins.input = original
+    else:
+        cmd_memory(args)
+    after = set(mem_dir.glob("**/*.md"))
+    if not before: return "nothing"
+    if before == after: return "cancelled"
     return "deleted"
 
 
@@ -99,6 +94,22 @@ class TestMemoryReset:
 
         result = _run_memory_reset(target="all", yes=True)
         assert result == "nothing"
+
+    def test_default_reset_does_not_delete_scoped_namespaces(self, memory_env):
+        _home, memories = memory_env
+        scoped = memories / "scopes" / "abc123"
+        scoped.mkdir(parents=True)
+        (scoped / "MEMORY.md").write_text("scoped", encoding="utf-8")
+        _run_memory_reset(target="all", yes=True)
+        assert (scoped / "MEMORY.md").exists()
+
+    def test_all_scopes_requires_explicit_flag(self, memory_env):
+        _home, memories = memory_env
+        scoped = memories / "scopes" / "abc123"
+        scoped.mkdir(parents=True)
+        (scoped / "MEMORY.md").write_text("scoped", encoding="utf-8")
+        _run_memory_reset(target="all", yes=True, all_scopes=True)
+        assert not (scoped / "MEMORY.md").exists()
 
     def test_reset_confirmation_denied(self, memory_env):
         """Without --yes and without typing 'yes', should be cancelled."""

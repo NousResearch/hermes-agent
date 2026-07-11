@@ -1002,6 +1002,19 @@ def compress_context(
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)
 
+        # A rotating compression boundary changes the durable session id without
+        # calling reset_session_state(). Rebind scoped built-in/provider memory
+        # before the provider switch hook so session/local-conversation scopes
+        # move to the continuation namespace. In-place compression is a no-op.
+        if _old_sid:
+            try:
+                agent._rebind_memory_scope(agent.session_id)
+            except Exception as _mem_scope_err:
+                logger.debug(
+                    "memory scope rebind during compression failed: %s",
+                    _mem_scope_err,
+                )
+
         # Notify memory providers of the compaction boundary so provider-cached
         # per-session state (Hindsight's _document_id, accumulated turn buffers,
         # counters) refreshes. reset=False because the logical conversation

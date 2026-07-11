@@ -368,6 +368,24 @@ class MemoryManager:
         # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
+        # Scope keys are registered by AIAgent when a durable session id is
+        # rebound. Keying by session id keeps rapid queued /new boundaries
+        # from consuming a later session's scope key.
+        self._session_scope_keys: Dict[str, Optional[str]] = {}
+        self._session_scope_lock = threading.Lock()
+
+    def bind_session_scope(self, session_id: str, scope_key: Optional[str]) -> None:
+        """Bind the provider namespace key that belongs to *session_id*.
+
+        The binding is consumed by ``on_session_switch``. It is stored on the
+        manager rather than process-global state so concurrent agents/chats
+        cannot overwrite each other, and rapid queued switches remain matched
+        to their own durable session id.
+        """
+        if not session_id:
+            return
+        with self._session_scope_lock:
+            self._session_scope_keys[str(session_id)] = scope_key
 
     # -- Registration --------------------------------------------------------
 
@@ -500,6 +518,12 @@ class MemoryManager:
         """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
+            return ""
+        if not self._ensure_session_scope_ready(session_id):
+            logger.warning(
+                "Memory prefetch skipped: scope transition for session %s is still pending",
+                session_id,
+            )
             return ""
         parts = []
         for provider in self._providers:
@@ -688,6 +712,25 @@ class MemoryManager:
         except Exception:
             return False
 
+    def _ensure_session_scope_ready(self, session_id: str) -> bool:
+        """Wait for a queued scope rotation before touching provider state.
+
+        Session-boundary extraction is asynchronous, but provider reads/tools
+        must never run against the previous namespace. Wait up to the normal
+        provider drain timeout; on timeout callers skip/fail closed rather than
+        leaking old-scope data.
+        """
+        if not session_id:
+            return True
+        with self._session_scope_lock:
+            pending = str(session_id) in self._session_scope_keys
+        if not pending:
+            return True
+        if not self.flush_pending(timeout=_SYNC_DRAIN_TIMEOUT_S):
+            return False
+        with self._session_scope_lock:
+            return str(session_id) not in self._session_scope_keys
+
     # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -746,6 +789,11 @@ class MemoryManager:
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
+        session_id = str(kwargs.get("session_id") or "")
+        if not self._ensure_session_scope_ready(session_id):
+            return tool_error(
+                "Memory scope transition is still pending; retry this tool call"
+            )
         try:
             return provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
@@ -858,6 +906,14 @@ class MemoryManager:
         """
         if not new_session_id:
             return
+        # Consume the scope key registered for this exact durable session.
+        # Presence matters: ``None`` explicitly means revert to the provider's
+        # unscoped/base namespace.
+        with self._session_scope_lock:
+            _has_scope_binding = str(new_session_id) in self._session_scope_keys
+            _scope_key = self._session_scope_keys.pop(str(new_session_id), None)
+        if _has_scope_binding and "memory_scope_key" not in kwargs:
+            kwargs["memory_scope_key"] = _scope_key
         # Only forward ``rewound`` when it's actually set. Passing it
         # unconditionally would inject ``rewound=False`` into every
         # provider's **kwargs for the common /resume, /branch, /new, and

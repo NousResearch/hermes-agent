@@ -30,7 +30,22 @@ def parse_node_kind(node_id: str) -> str:
 def _memories_dir() -> Path:
     from hermes_constants import get_hermes_home
 
-    return get_hermes_home() / "memories"
+    base = get_hermes_home() / "memories"
+    # Honour active memory scope if set (see agent/memory_scope.py).
+    # Uses the concurrency-safe session context (ContextVar-backed)
+    # so concurrent gateway chats each resolve their own scope.
+    try:
+        from agent.memory_scope import resolve_active_scope_key
+        suffix = resolve_active_scope_key()
+        if suffix:
+            # Sanitize for path safety (scope suffixes are hashes, but
+            # defensive guarding here is still correct).
+            safe = "".join(c for c in suffix if c.isalnum() or c in ("_", "-"))
+            if safe:
+                return base / "scopes" / safe
+    except Exception:
+        pass
+    return base
 
 
 def _parse_memory_id(node_id: str) -> tuple[str, int]:

@@ -324,8 +324,10 @@ export default function SystemPage() {
     onDelete: useCallback(
       async (target: string) => {
         try {
+          const allScopes = target === "all-scopes";
           const res = await api.resetMemory(
-            target as "all" | "memory" | "user",
+            allScopes ? "all" : (target as "all" | "memory" | "user"),
+            allScopes,
           );
           showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
           loadAll();
@@ -1122,9 +1124,12 @@ export default function SystemPage() {
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
-                Built-in files — MEMORY.md:{" "}
+                Built-in identity ({memory?.scope ?? "identity"}) — MEMORY.md:{" "}
                 {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
                 {formatBytes(memory?.builtin_files.user ?? 0)}
+                {memory?.builtin_scopes?.namespaces ? (
+                  <> · Scoped: {memory.builtin_scopes.namespaces} namespaces / {formatBytes(memory.builtin_scopes.memory + memory.builtin_scopes.user)}</>
+                ) : null}
               </span>
               <div className="flex items-center gap-2 ml-auto">
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
@@ -1134,8 +1139,13 @@ export default function SystemPage() {
                   Reset USER.md
                 </Button>
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
-                  Reset all
+                  Reset identity
                 </Button>
+                {(memory?.builtin_scopes?.namespaces ?? 0) > 0 && (
+                  <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all-scopes")}>
+                    Reset all scopes
+                  </Button>
+                )}
               </div>
             </div>
           </CardContent>

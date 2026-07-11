@@ -557,6 +557,41 @@ class TestWebServerEndpoints:
 
         assert failures == []
 
+
+    def test_memory_status_reports_identity_and_scoped_totals(self, tmp_path, monkeypatch):
+        import tools.memory_tool as memory_tool
+        import hermes_cli.web_server as web_server
+        memories = tmp_path / "memories"
+        scoped = memories / "scopes" / "abc123"
+        scoped.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text("identity")
+        (scoped / "USER.md").write_text("scoped")
+        monkeypatch.setattr(memory_tool, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(web_server, "load_config", lambda: {"memory": {"scope": "user"}})
+        data = self.client.get("/api/memory").json()
+        assert data["scope"] == "user"
+        assert data["builtin_files"]["memory"] == len("identity")
+        assert data["builtin_scopes"]["user"] == len("scoped")
+        assert data["builtin_scopes"]["namespaces"] == 1
+
+    def test_memory_reset_requires_explicit_all_scopes(self, tmp_path, monkeypatch):
+        import tools.memory_tool as memory_tool
+        import hermes_cli.web_server as web_server
+        memories = tmp_path / "memories"
+        scoped = memories / "scopes" / "abc123"
+        scoped.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text("identity")
+        (scoped / "MEMORY.md").write_text("scoped")
+        monkeypatch.setattr(memory_tool, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(web_server, "get_hermes_home", lambda: tmp_path)
+        response = self.client.post("/api/memory/reset", json={"target": "all"})
+        assert response.status_code == 200
+        assert not (memories / "MEMORY.md").exists()
+        assert (scoped / "MEMORY.md").exists()
+        response = self.client.post("/api/memory/reset", json={"target": "all", "all_scopes": True})
+        assert response.status_code == 200
+        assert not (scoped / "MEMORY.md").exists()
+
     def test_memory_provider_payloads_include_manifest_setup_hints(self):
         resp = self.client.get("/api/memory")
 

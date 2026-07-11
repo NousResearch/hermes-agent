@@ -1393,6 +1393,13 @@ def init_agent(
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 10
+    agent._memory_scope = "identity"
+    agent._memory_scope_key = None
+    agent._memory_scope_suffix = "default"
+    agent._memory_scope_context = {}
+    agent._memory_profile_name = "default"
+    agent._memory_char_limit = 2200
+    agent._user_char_limit = 1375
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     if not skip_memory:
@@ -1401,11 +1408,56 @@ def init_agent(
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+
+            # --- Memory scope isolation (agent/memory_scope.py) ---
+            from agent.memory_scope import (
+                resolve_scope_key as _resolve_scope_key,
+                resolve_scope_suffix as _resolve_scope_suffix,
+                DEFAULT_SCOPE as _DEFAULT_MEM_SCOPE,
+            )
+            _mem_scope = str(mem_config.get("scope", _DEFAULT_MEM_SCOPE)).strip().lower()
+            _profile_name = "default"
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile_name = get_active_profile_name() or "default"
+            except Exception:
+                pass
+            _scope_key = _resolve_scope_key(
+                _mem_scope,
+                agent_identity=_profile_name,
+                platform=platform or "cli",
+                user_id=user_id or "",
+                user_id_alt=user_id_alt or "",
+                chat_id=chat_id or "",
+                chat_type=chat_type or "",
+                thread_id=thread_id or "",
+                gateway_session_key=gateway_session_key or "",
+                session_id=agent.session_id,
+            )
+            _scope_suffix = _resolve_scope_suffix(_mem_scope, _scope_key, _profile_name)
+            agent._memory_scope = _mem_scope
+            agent._memory_scope_key = _scope_key
+            agent._memory_scope_suffix = _scope_suffix
+            agent._memory_profile_name = _profile_name
+            agent._memory_char_limit = int(mem_config.get("memory_char_limit", 2200))
+            agent._user_char_limit = int(mem_config.get("user_char_limit", 1375))
+            agent._memory_scope_context = {
+                "agent_identity": _profile_name,
+                "platform": platform or "cli",
+                "user_id": user_id or "",
+                "user_id_alt": user_id_alt or "",
+                "chat_id": chat_id or "",
+                "chat_type": chat_type or "",
+                "thread_id": thread_id or "",
+                "gateway_session_key": gateway_session_key or "",
+            }
+
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(
-                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                    user_char_limit=mem_config.get("user_char_limit", 1375),
+                    memory_char_limit=agent._memory_char_limit,
+                    user_char_limit=agent._user_char_limit,
+                    scope_suffix=_scope_key,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:
@@ -1426,13 +1478,25 @@ def init_agent(
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
+                    _supported_scopes = getattr(
+                        _mp, "supported_memory_scopes", frozenset({"identity"})
+                    )
+                    if _mem_scope not in _supported_scopes:
+                        _ra().logger.error(
+                            "Memory provider '%s' does not support memory.scope=%s; "
+                            "external memory is disabled to prevent cross-scope access",
+                            _mem_provider_name,
+                            _mem_scope,
+                        )
+                    else:
+                        agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
                         "hermes_home": str(get_hermes_home()),
                         "agent_context": "primary",
+                        "memory_scope": _mem_scope,
                     }
                     if _init_kwargs["platform"] == "cli":
                         _init_kwargs["warning_callback"] = agent._emit_warning
@@ -1472,6 +1536,13 @@ def init_agent(
                         _init_kwargs["agent_workspace"] = "hermes"
                     except Exception:
                         pass
+                    # Thread the raw scope key for provider-level isolation.
+                    # Providers own their namespace prefix, so passing only the
+                    # hash avoids duplicating profile identity in names such as
+                    # ``hermes_default_default_<hash>``.
+                    if _scope_key is not None:
+                        _init_kwargs["memory_scope_key"] = _scope_key
+
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:

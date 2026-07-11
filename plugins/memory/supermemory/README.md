@@ -73,6 +73,36 @@ When enabled, Hermes can:
 
 The session is written once via the conversations endpoint, which drives Supermemory's entity extraction and profile building while keeping a clean, retrievable full transcript.
 
+## Memory Scope Isolation
+
+By default, all conversations sharing the same Hermes profile read and write
+the same memory (both built-in files and provider containers). The `memory.scope`
+config option enables per-user, per-chat, or per-session isolation:
+
+```yaml
+memory:
+  scope: conversation
+```
+
+| Scope | Behaviour | Persists across `/new`? |
+|-------|-----------|------------------------|
+| `identity` (default) | Profile-global — all chats share memory | Yes |
+| `user` | One namespace per platform user | Yes |
+| `conversation` | One namespace per gateway DM/group/channel/topic/thread; local CLI/Desktop uses the durable session | Yes for gateway conversations; local `/new` starts a new conversation |
+| `session` | One namespace per durable Hermes session | No — rebinds on session rotation |
+
+When a non-identity scope is active:
+
+- **Built-in memory** (`MEMORY.md` / `USER.md`) is always scoped — stored under `memories/scopes/<scope-suffix>/` instead of the base `memories/` directory.
+- **Supermemory** container gets the scope suffix appended (e.g. `hermes_default_a4c981…`). This is the only external provider that currently honours `memory.scope`.
+- **Custom containers** (Supermemory multi-container mode) remain unchanged — they are deliberately cross-conversation knowledge spaces.
+
+> **Provider coverage:** Built-in memory always honours scope. External providers must explicitly declare and implement each supported mode. Currently only Supermemory supports non-`identity` scopes; other providers are disabled with an error when a narrower scope is configured so they cannot silently access shared remote memory.
+
+Scope keys are 16-character SHA256-derived pseudonymous hashes of stable identifiers. Raw chat IDs, phone numbers, and user IDs are not written into paths or container tags; low-entropy identifiers should not be treated as anonymized against offline enumeration.
+
+Fallbacks: local CLI/Desktop `conversation` scope uses the durable session ID; local `user` scope has no platform user and therefore falls back to `identity`. If no identifier required by the selected scope is available, Hermes falls back to `identity` with a debug log.
+
 ## Profile-Scoped Containers
 
 Use `{identity}` in the `container_tag` to scope memories per Hermes profile:

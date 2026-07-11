@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 class RecordingMemoryProvider:
     name = "recording"
+    supported_memory_scopes = frozenset({"identity", "user", "conversation", "session"})
 
     def __init__(self):
         self.init_kwargs = None
@@ -92,6 +93,64 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["platform"] == "feishu"
     assert "warning_callback" not in provider.init_kwargs
     assert "status_callback" not in provider.init_kwargs
+
+
+def test_aiagent_forwards_raw_scope_key_to_provider_without_identity_prefix():
+    """Provider receives only the hash; it owns its namespace/profile prefix."""
+    from agent.memory_scope import scope_hash
+
+    provider = RecordingMemoryProvider()
+    cfg = {
+        "memory": {"provider": "recording", "scope": "user"},
+        "agent": {},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("hermes_cli.profiles.get_active_profile_name", return_value="default"),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-scoped",
+            platform="whatsapp",
+            user_id="123@lid",
+        )
+
+    assert provider.init_kwargs["memory_scope_key"] == scope_hash(
+        "hermes-memory:v1:user:whatsapp:123@lid"
+    )
+    assert "memory_scope_suffix" not in provider.init_kwargs
+
+
+def test_unsupported_provider_is_disabled_for_non_identity_scope():
+    class IdentityOnlyProvider(RecordingMemoryProvider):
+        supported_memory_scopes = frozenset({"identity"})
+
+    provider = IdentityOnlyProvider()
+    cfg = {"memory": {"provider": "recording", "scope": "conversation"}, "agent": {}}
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+        agent = AIAgent(api_key="test", base_url="https://example.invalid/v1", quiet_mode=True, skip_context_files=True, skip_memory=False, session_id="s")
+    assert agent._memory_manager is None
+    assert provider.init_kwargs is None
 
 
 class CoreShadowProvider:

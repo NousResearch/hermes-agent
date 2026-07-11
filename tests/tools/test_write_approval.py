@@ -137,6 +137,32 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
 
+
+def test_cli_memory_approve_without_live_agent_honors_active_scope(hermes_home, capsys):
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import write_approval as wa
+    from tools.memory_tool import load_on_disk_store, memory_tool
+    config = load_config()
+    config.setdefault("memory", {}).update({"write_approval": True, "scope": "user"})
+    save_config(config)
+    tokens = set_session_vars(platform="whatsapp", user_id="scoped-user")
+    try:
+        staging = load_on_disk_store()
+        result = json.loads(memory_tool("add", "memory", "scoped approval", store=staging))
+        assert result.get("pending_id")
+        handler = CLICommandsMixin.__new__(CLICommandsMixin)
+        handler.agent = None
+        handler._handle_memory_command("/memory approve all")
+        assert wa.pending_count("memory") == 0
+        reloaded = load_on_disk_store()
+        assert any("scoped approval" in e for e in reloaded.memory_entries)
+        assert reloaded._get_mem_dir().parent.name == "scopes"
+        assert not (reloaded._get_mem_dir().parent.parent / "MEMORY.md").exists()
+    finally:
+        clear_session_vars(tokens)
+
 def test_load_on_disk_store_honors_configured_char_limits(hermes_home, monkeypatch):
     """load_on_disk_store() must read memory.memory_char_limit /
     user_char_limit from config so approvals applied without a live agent

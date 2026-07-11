@@ -694,6 +694,80 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine carry_over_new_session_context during transition: %s", exc)
 
+    def _rebind_memory_scope(self, new_session_id: Optional[str] = None) -> None:
+        """Rebind built-in and provider memory when a session boundary changes scope.
+
+        ``session`` scope always changes on a durable session rotation. Local
+        CLI/Desktop ``conversation`` scope also uses the durable session id as
+        its boundary when no gateway conversation key exists. Gateway
+        conversation and user scopes normally resolve to the same key and are
+        therefore no-ops here.
+        """
+        scope = getattr(self, "_memory_scope", "identity") or "identity"
+        if scope == "identity":
+            return
+
+        target_session_id = str(
+            new_session_id or getattr(self, "session_id", "") or ""
+        )
+        context = dict(getattr(self, "_memory_scope_context", {}) or {})
+        try:
+            from agent.memory_scope import resolve_scope_key
+
+            scope_key = resolve_scope_key(
+                scope,
+                **context,
+                session_id=target_session_id,
+            )
+            scope_suffix = scope_key
+        except Exception as exc:
+            logger.debug("memory scope rebind resolution failed: %s", exc)
+            return
+
+        old_key = getattr(self, "_memory_scope_key", None)
+        if scope_key == old_key:
+            return
+
+        # Built-in memory writes are persisted immediately, so replacing the
+        # loaded store at the boundary cannot strand an in-memory write buffer.
+        if getattr(self, "_memory_store", None) is not None:
+            try:
+                from tools.memory_tool import MemoryStore
+
+                store = MemoryStore(
+                    memory_char_limit=getattr(self, "_memory_char_limit", 2200),
+                    user_char_limit=getattr(self, "_user_char_limit", 1375),
+                    scope_suffix=scope_key,
+                )
+                store.load_from_disk()
+                self._memory_store = store
+            except Exception as exc:
+                logger.warning(
+                    "Memory store scope rebind failed; retaining prior scope: %s",
+                    exc,
+                )
+                return
+
+        self._memory_scope_key = scope_key
+        self._memory_scope_suffix = scope_suffix
+
+        # Providers flush old-session state before consuming this exact
+        # session-id-keyed binding in MemoryManager.on_session_switch().
+        manager = getattr(self, "_memory_manager", None)
+        if manager is not None and target_session_id:
+            try:
+                manager.bind_session_scope(target_session_id, scope_key)
+            except Exception as exc:
+                logger.debug("memory provider scope bind failed: %s", exc)
+
+        # Scope changes only happen at a session boundary. Rebuild the prompt
+        # so the new MEMORY.md / USER.md snapshot is injected, without breaking
+        # cache stability inside a live conversation.
+        try:
+            self._invalidate_system_prompt()
+        except Exception:
+            self._cached_system_prompt = None
+
     def reset_session_state(
         self,
         previous_messages: Optional[list] = None,
@@ -767,6 +841,11 @@ class AIAgent:
                 engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
+
+        # Re-resolve memory namespaces after the durable session id changes.
+        # This is intentionally centralized here so CLI, TUI/Desktop, resume,
+        # branch, compression splits, and gateway rotations share one contract.
+        self._rebind_memory_scope(target_session_id)
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """

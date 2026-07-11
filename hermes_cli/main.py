@@ -12758,30 +12758,32 @@ def cmd_memory(args):
         print("  Saved to config.yaml\n")
     elif sub == "reset":
         from hermes_constants import get_hermes_home, display_hermes_home
+        from tools.memory_tool import iter_builtin_memory_files, reset_builtin_memory
 
         mem_dir = get_hermes_home() / "memories"
         target = getattr(args, "target", "all")
-        files_to_reset = []
-        if target in {"all", "memory"}:
-            files_to_reset.append(("MEMORY.md", "agent notes"))
-        if target in {"all", "user"}:
-            files_to_reset.append(("USER.md", "user profile"))
+        all_scopes = bool(getattr(args, "all_scopes", False))
+        descriptions = {"memory": "agent notes", "user": "user profile"}
+        existing = []
+        for namespace, file_target, path in iter_builtin_memory_files(
+            include_scopes=all_scopes
+        ):
+            if target != "all" and file_target != target:
+                continue
+            existing.append((namespace, file_target, path, descriptions[file_target]))
 
-        # Check what exists
-        existing = [
-            (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
-        ]
         if not existing:
+            scope_note = " across all scopes" if all_scopes else " in identity scope"
             print(
-                f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n"
+                f"\n  Nothing to reset — no memory files found{scope_note} "
+                f"under {display_hermes_home()}/memories/\n"
             )
             return
 
         print("\n  This will permanently erase the following memory files:")
-        for f, desc in existing:
-            path = mem_dir / f
+        for _namespace, _file_target, path, desc in existing:
             size = path.stat().st_size
-            print(f"    ◆ {f} ({desc}) — {size:,} bytes")
+            print(f"    ◆ {path.relative_to(mem_dir)} ({desc}) — {size:,} bytes")
 
         if not getattr(args, "yes", False):
             try:
@@ -12793,13 +12795,13 @@ def cmd_memory(args):
                 print("  Cancelled.\n")
                 return
 
-        for f, desc in existing:
-            (mem_dir / f).unlink()
-            print(f"  ✓ Deleted {f} ({desc})")
+        deleted = reset_builtin_memory(target=target, include_scopes=all_scopes)
+        for path in deleted:
+            print(f"  ✓ Deleted {path.relative_to(mem_dir)}")
 
-        print(
-            "\n  Memory reset complete. New sessions will start with a blank slate."
-        )
+        print("\n  Memory reset complete.")
+        if not all_scopes:
+            print("  Scoped user/conversation/session namespaces were left untouched.")
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
     else:
         from hermes_cli.memory_setup import memory_command

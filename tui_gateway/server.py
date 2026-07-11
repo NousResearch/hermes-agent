@@ -2009,6 +2009,7 @@ def _set_session_context(
                     break
         return set_session_vars(
             session_key=session_key,
+            session_id=session_key,
             source=source,
             cwd=resolved,
             ui_session_id=ui_session_id,

@@ -190,6 +190,21 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
+    def test_connect_accepts_is_reconnect_param(self):
+        """connect() must accept is_reconnect for interface conformance with
+        the base adapter, which the reconnect watcher calls with
+        is_reconnect=True."""
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client init"))
+
+        # Both forms must not raise TypeError.
+        connected_default = asyncio.run(adapter.connect())
+        connected_explicit = asyncio.run(adapter.connect(is_reconnect=True))
+        assert connected_default is False
+        assert connected_explicit is False
+
 
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling

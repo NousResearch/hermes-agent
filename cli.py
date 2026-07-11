@@ -543,6 +543,8 @@ def load_cli_config() -> Dict[str, Any]:
                 if key == "model":
                     continue  # Already handled above
                 if key in file_config:
+                    if isinstance(defaults[key], dict) and file_config[key] is None:
+                        continue
                     if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
                         defaults[key].update(file_config[key])
                     else:
@@ -1110,6 +1112,19 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             )
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
+            # A /new shortly before exit leaves its end→switch boundary task
+            # (old-session extraction, LLM-bound) queued on the memory
+            # manager's serialized worker. shutdown_all()'s drain only waits
+            # ~5s and cancels queued tasks, so give pending work a bounded
+            # head start via the manager's own barrier — otherwise a
+            # "/new then quit" silently drops the old session's extraction.
+            # The 30s exit watchdog remains the hard backstop.
+            _mm = getattr(_active_agent_ref, '_memory_manager', None)
+            if _mm is not None and hasattr(_mm, 'flush_pending'):
+                try:
+                    _mm.flush_pending(timeout=10)
+                except Exception:
+                    pass
             # Forward the agent's own transcript so memory providers'
             # ``on_session_end`` hooks see the real conversation instead of
             # an empty list (#15165). ``_session_messages`` is set on
@@ -4847,6 +4862,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pet_event = state
         self._pet_event_until = time.monotonic() + secs
 
+    def _on_reaction(self, kind: str) -> None:
+        """User affection (ily / <3 / good bot), core-detected — the pet's share
+        of the vibe signal that plays hearts on the TUI/desktop. Flash a celebrate."""
+        if kind == "vibe":
+            self._pet_flash("jump")
+
     def _pet_react_turn_end(self) -> None:
         """Flash the end-of-turn beat: failed on error, jump on a finished plan, else wave."""
         if not self._pet_enabled:
@@ -6956,17 +6977,69 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             return False
 
+    def _launch_session_boundary_memory_flush(
+        self,
+        history_snapshot: list,
+        *,
+        session_id: Optional[str] = None,
+    ) -> Optional[list]:
+        """Stage old-session memory extraction so /new stays responsive.
+
+        The context-engine ``on_session_end`` boundary is delivered
+        synchronously here: it is cheap (local state clear, no LLM call) and
+        ordering-sensitive — it must land before ``reset_session_state()``
+        rebinds the engine to the new session.
+
+        The memory-provider half (LLM-bound extraction, seconds) is NOT run
+        here. The returned snapshot is handed by ``new_session()`` to
+        ``MemoryManager.commit_session_boundary_async`` as a single
+        end→switch task on the manager's serialized background worker, so
+        extraction can never race the provider rebinding (providers key off
+        internal ``_session_id`` state — a late ``on_session_end`` after
+        ``on_session_switch`` would misattribute the old transcript to the
+        new session).
+
+        Returns the history snapshot to queue, or ``None`` when there is
+        nothing to extract (no agent / empty history / no memory manager).
+        """
+        agent = getattr(self, "agent", None)
+        if not agent or not history_snapshot:
+            return None
+
+        engine = getattr(agent, "context_compressor", None)
+        if engine is not None and hasattr(engine, "on_session_end"):
+            try:
+                engine.on_session_end(session_id or "", history_snapshot)
+            except Exception:
+                logger.debug(
+                    "Context engine on_session_end failed at /new boundary",
+                    exc_info=True,
+                )
+
+        # No provider extraction to queue when no memory manager is
+        # configured — new_session() falls back to the inline switch path.
+        if getattr(agent, "_memory_manager", None) is None:
+            return None
+        return history_snapshot
+
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
+        old_session_id = self.session_id
+        _boundary_snapshot = None
         if self.agent and self.conversation_history:
-            # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
+            # Deliver the context-engine boundary synchronously and get back
+            # the history snapshot for the deferred provider extraction —
+            # queued below (after rotation) so /new never blocks on the
+            # LLM-bound extraction call.
+            _boundary_snapshot = self._launch_session_boundary_memory_flush(
+                list(self.conversation_history),
+                session_id=old_session_id,
+            )
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
-        old_session_id = self.session_id
         if self._session_db and old_session_id:
             # Flush any un-persisted messages from the current turn to the
             # old session *before* rotating.  /new can be called mid-turn
@@ -7054,15 +7127,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # per-session state (_session_turns, _turn_counter, _document_id).
             # Fires BEFORE the plugin on_session_reset hook (shell hooks only
             # see the new id; Python providers see the transition). See #6672.
+            #
+            # When the old session has history, end-of-session extraction
+            # (LLM-bound, seconds) and this switch are queued as ONE task on
+            # the memory manager's serialized worker — end strictly before
+            # switch, without blocking /new (#16454). With no history there
+            # is nothing to extract; switch inline as before.
             try:
                 _mm = getattr(self.agent, "_memory_manager", None)
                 if _mm is not None:
-                    _mm.on_session_switch(
-                        self.session_id,
-                        parent_session_id=old_session_id or "",
-                        reset=True,
-                        reason="new_session",
-                    )
+                    if _boundary_snapshot:
+                        _mm.commit_session_boundary_async(
+                            _boundary_snapshot,
+                            new_session_id=self.session_id,
+                            parent_session_id=old_session_id or "",
+                            reason="new_session",
+                        )
+                    else:
+                        _mm.on_session_switch(
+                            self.session_id,
+                            parent_session_id=old_session_id or "",
+                            reset=True,
+                            reason="new_session",
+                        )
             except Exception:
                 pass
             self._notify_session_boundary("on_session_reset")
@@ -7072,7 +7159,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"(^_^)v New session started: {title}")
             else:
                 print("(^_^)v New session started!")
-
 
 
     def _consume_pending_resume_selection(self, text: str) -> bool:

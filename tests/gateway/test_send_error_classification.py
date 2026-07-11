@@ -30,6 +30,8 @@ class _FakeBadRequest(Exception):
         ("Forbidden: user is deactivated", "forbidden"),
         ("Bad Request: not enough rights to send text messages", "forbidden"),
         ("Bad Request: chat not found", "not_found"),
+        ("Bad Request: PEER_ID_INVALID", "not_found"),
+        ("Bad Request: group chat was migrated to a supergroup chat", "not_found"),
         ("Bad Request: message to edit not found", "not_found"),
         ("Too Many Requests: retry after 12", "rate_limited"),
         ("Flood control exceeded", "rate_limited"),

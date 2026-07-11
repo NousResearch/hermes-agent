@@ -1921,7 +1921,21 @@ SEND_ERROR_KINDS = frozenset(
 # dead.  ``classify_send_error`` collapses both into ``"not_found"``;
 # ``is_chat_level_not_found`` recovers the distinction for the dead-target path.
 # See gateway.dead_targets.
-_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
+_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = (
+    "chat not found",
+    # Telegram-specific chat-level failures: the target chat_id itself is
+    # permanently unusable, not a sub-part of an otherwise-reachable chat.
+    # PEER_ID_INVALID: the bot cannot resolve the chat_id at all (e.g. never
+    # started a DM with that user, or the id references a deleted entity) —
+    # unlike the thread/message-level not_found substrings below, there is no
+    # "sub-chat" reading of this failure. "group chat was migrated to a
+    # supergroup chat": the old chat_id is retired in favor of a new
+    # supergroup id; every future send to the old id fails identically. Both
+    # were previously unclassified ("unknown"), so the dead-target path never
+    # short-circuited retries against them — see #56225.
+    "peer_id_invalid",
+    "group chat was migrated",
+)
 _SUBCHAT_NOT_FOUND_SUBSTRINGS = (
     "message to edit not found",
     "message to reply not found",

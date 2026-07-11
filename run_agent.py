@@ -857,6 +857,7 @@ class AIAgent:
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
+        openrouter_min_coding_score: Optional[float] = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
@@ -1120,6 +1121,7 @@ class AIAgent:
         self.provider_sort = provider_sort
         self.provider_require_parameters = provider_require_parameters
         self.provider_data_collection = provider_data_collection
+        self.openrouter_min_coding_score = openrouter_min_coding_score
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets

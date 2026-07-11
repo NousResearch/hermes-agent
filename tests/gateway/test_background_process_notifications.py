@@ -556,3 +556,58 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+async def test_finished_notification_strips_ansi_output(monkeypatch, tmp_path):
+    """Salvage of #13122 by @euyua9: finished notifications must strip ANSI."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[31merror line\x1b[0m\n",
+            exited=True,
+            exit_code=1,
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    sent_message = adapter.send.await_args.args[1]
+    assert "\x1b[" not in sent_message
+    assert "error line" in sent_message
+
+async def test_running_notification_strips_ansi_output(monkeypatch, tmp_path):
+    """Salvage of #13122 by @euyua9: running status updates must strip ANSI."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="\x1b[32mbuilding...\x1b[0m\n",
+            exited=False,
+            exit_code=None,
+        ),
+        None,
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    sent_message = adapter.send.await_args.args[1]
+    assert "\x1b[" not in sent_message
+    assert "building..." in sent_message

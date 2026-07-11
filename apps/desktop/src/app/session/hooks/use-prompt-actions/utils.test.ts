@@ -14,7 +14,8 @@ import {
   isSessionNotFoundError,
   slashStatusText,
   visibleUserIndexAtOrdinal,
-  visibleUserOrdinal
+  visibleUserOrdinal,
+  withFileAttachRetry
 } from './utils'
 
 describe('isSessionIdCandidate', () => {
@@ -79,7 +80,17 @@ describe('friendlyRemoteAttachError', () => {
     expect(err.message).toBe('pic.png is too large to upload to the remote gateway (max 16 MB).')
   })
 
-  it('passes non-cap errors through', () => {
+  it('rewrites a missing chunk RPC as a backend update requirement', () => {
+    const err = friendlyRemoteAttachError(
+      new Error('method not found: file.attach.begin'),
+      'deck.pptx'
+    )
+    expect(err.message).toBe(
+      'The remote Hermes backend is too old for large-file uploads. Update the backend and try again.'
+    )
+  })
+
+  it('passes unrelated errors through', () => {
     const original = new Error('something else')
     expect(friendlyRemoteAttachError(original, 'pic.png')).toBe(original)
   })
@@ -108,7 +119,40 @@ describe('appendText', () => {
   })
 })
 
-describe('visible user ordinals', () => {
+describe('file attachment retry', () => {
+  it('retries transient gateway failures and returns the eventual result', async () => {
+    let calls = 0
+    const result = await withFileAttachRetry(
+      async () => {
+        calls += 1
+        if (calls < 3) {
+          throw new Error('request timed out: file.attach.chunk')
+        }
+        return 'ok'
+      },
+      [0, 0]
+    )
+
+    expect(result).toBe('ok')
+    expect(calls).toBe(3)
+  })
+
+  it('does not retry permanent validation errors', async () => {
+    let calls = 0
+    await expect(
+      withFileAttachRetry(
+        async () => {
+          calls += 1
+          throw new Error('unexpected offset')
+        },
+        [0, 0]
+      )
+    ).rejects.toThrow('unexpected offset')
+    expect(calls).toBe(1)
+  })
+})
+
+describe('visible message ordinals', () => {
   const messages = [
     { role: 'user', hidden: false },
     { role: 'assistant' },

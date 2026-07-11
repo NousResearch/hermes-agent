@@ -6,8 +6,12 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import {
+  createFileSnapshotForIpc,
   DEFAULT_FETCH_TIMEOUT_MS,
   encryptDesktopSecret,
+  normalizeFileChunkReadRange,
+  readFileChunkForIpc,
+  releaseFileSnapshotForIpc,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
@@ -28,6 +32,98 @@ test('resolveTimeoutMs falls back to defaults and accepts overrides', () => {
   assert.equal(resolveTimeoutMs(0), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs(-25), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs('2750'), 2750)
+})
+
+test('normalizeFileChunkReadRange accepts safe integers and rejects unsafe ranges', () => {
+  assert.deepEqual(normalizeFileChunkReadRange(0, 512), { offset: 0, maxBytes: 512 })
+  assert.deepEqual(normalizeFileChunkReadRange(7, undefined), { offset: 7, maxBytes: undefined })
+
+  for (const offset of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+    assert.throws(() => normalizeFileChunkReadRange(offset, 512), /offset must be a non-negative safe integer/)
+  }
+  for (const maxBytes of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+    assert.throws(() => normalizeFileChunkReadRange(0, maxBytes), /maxBytes must be a positive safe integer/)
+  }
+})
+
+test('readFileChunkForIpc returns bounded bytes and stable file metadata', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-chunk-'))
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
+  const filePath = path.join(tempDir, 'notes.txt')
+  fs.writeFileSync(filePath, 'hello world', 'utf8')
+
+  const chunk = await readFileChunkForIpc(filePath, 2, 4)
+
+  assert.equal(chunk.buffer.toString('utf8'), 'llo ')
+  assert.equal(chunk.byteSize, 11)
+  assert.equal(chunk.bytesRead, 4)
+  assert.equal(chunk.done, false)
+  const sourceStat = fs.statSync(filePath)
+  const realStat = fs.statSync(chunk.realPath)
+  assert.equal(`${realStat.dev}:${realStat.ino}`, `${sourceStat.dev}:${sourceStat.ino}`)
+  assert.equal(typeof chunk.fileId, 'string')
+  assert.ok(chunk.fileId.length > 0)
+  assert.equal(Number.isFinite(chunk.mtimeMs), true)
+})
+
+test('readFileChunkForIpc opens the validated realpath after a symlink swap', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-symlink-swap-'))
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
+  const safePath = path.join(tempDir, 'safe.txt')
+  const otherPath = path.join(tempDir, 'other.txt')
+  const linkPath = path.join(tempDir, 'selected.txt')
+  fs.writeFileSync(safePath, 'SAFE', 'utf8')
+  fs.writeFileSync(otherPath, 'OTHER', 'utf8')
+
+  try {
+    fs.symlinkSync(safePath, linkPath, 'file')
+  } catch (error) {
+    const code = error && typeof error === 'object' ? error.code : ''
+    if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') {
+      t.skip(`file symlinks unavailable on this host (${code})`)
+      return
+    }
+    throw error
+  }
+
+  const originalRealpath = fs.promises.realpath
+  let swapped = false
+  fs.promises.realpath = (async (requestedPath: fs.PathLike) => {
+    const result = await originalRealpath(requestedPath)
+    if (!swapped && path.resolve(String(requestedPath)) === path.resolve(linkPath)) {
+      swapped = true
+      fs.unlinkSync(linkPath)
+      fs.symlinkSync(otherPath, linkPath, 'file')
+    }
+    return result
+  }) as typeof fs.promises.realpath
+  t.after(() => {
+    fs.promises.realpath = originalRealpath
+  })
+
+  const chunk = await readFileChunkForIpc(linkPath, 0, 4)
+  assert.equal(chunk.buffer.toString('utf8'), 'SAFE')
+})
+
+test('file upload snapshot remains immutable after same-inode same-size source rewrite with restored mtime', async t => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-snapshot-'))
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))
+  const snapshotRoot = path.join(tempDir, 'snapshots')
+  const sourcePath = path.join(tempDir, 'selected.bin')
+  fs.writeFileSync(sourcePath, 'ABCDEFGH', 'utf8')
+  const sourceStat = fs.statSync(sourcePath)
+
+  const snapshot = await createFileSnapshotForIpc(sourcePath, snapshotRoot)
+
+  fs.writeFileSync(sourcePath, '12345678', 'utf8')
+  fs.utimesSync(sourcePath, sourceStat.atime, sourceStat.mtime)
+  const first = await readFileChunkForIpc(snapshot.path, 0, 4)
+  const second = await readFileChunkForIpc(snapshot.path, 4, 4)
+
+  assert.equal(first.buffer.toString('utf8') + second.buffer.toString('utf8'), 'ABCDEFGH')
+  assert.equal(snapshot.byteSize, 8)
+  assert.equal(await releaseFileSnapshotForIpc(snapshot.path, snapshotRoot), true)
+  assert.equal(fs.existsSync(snapshot.path), false)
 })
 
 test('encryptDesktopSecret requires available secure storage', () => {

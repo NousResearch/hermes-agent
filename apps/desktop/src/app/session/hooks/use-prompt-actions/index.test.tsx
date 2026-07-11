@@ -8,6 +8,8 @@ import { $composerAttachments, $composerDraft, type ComposerAttachment, setCompo
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
+import type { GatewayRequest } from './utils'
+
 import { uploadComposerAttachment, usePromptActions } from '.'
 
 vi.mock('@/hermes', () => ({
@@ -23,6 +25,7 @@ vi.mock('@/hermes', () => ({
 // the stored sessions table and 404s on a runtime id. session.title accepts
 // the runtime id directly.
 const RUNTIME_SESSION_ID = 'rt-abc123'
+const FILE_ATTACH_CAPABILITIES = { contract: 5, request_id_cancel: true } as const
 
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -846,7 +849,488 @@ describe('usePromptActions file attachment sync', () => {
     }
   }
 
-  it('uploads file bytes via file.attach on a remote gateway and submits the rewritten ref', async () => {
+  function desktopWithSnapshot(readFileChunkBase64: NonNullable<Window['hermesDesktop']>['readFileChunkBase64']) {
+    return {
+      createFileUploadSnapshot: vi.fn(async (filePath: string) => ({ path: filePath })),
+      readFileChunkBase64,
+      releaseFileUploadSnapshot: vi.fn(async () => true)
+    }
+  }
+
+  it('uploads file bytes in chunks on a remote gateway and submits the rewritten ref', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,SHOULD_NOT_USE')
+    const snapshotPath = 'C:/Temp/hermes-upload.snapshot'
+    const createFileUploadSnapshot = vi.fn(async () => ({ path: snapshotPath }))
+    const releaseFileUploadSnapshot = vi.fn(async () => true)
+    const readFileChunkBase64 = vi.fn(async (_path: string, offset: number, maxBytes?: number) => {
+      if (offset === 0 && maxBytes === 1) {
+        return {
+          base64: 'aA==',
+          byteSize: 11,
+          bytesRead: 1,
+          done: false,
+          fileId: '1:2',
+          mtimeMs: 100,
+          path: '/Users/alice/Downloads/report.txt'
+        }
+      }
+
+      if (offset === 0) {
+        return {
+          base64: 'aGVsbG8=',
+          byteSize: 11,
+          bytesRead: 5,
+          done: false,
+          fileId: '1:2',
+          mtimeMs: 100,
+          path: '/Users/alice/Downloads/report.txt'
+        }
+      }
+
+      return {
+        base64: 'IHdvcmxk',
+        byteSize: 11,
+        bytesRead: 6,
+        done: true,
+        fileId: '1:2',
+        mtimeMs: 100,
+        path: '/Users/alice/Downloads/report.txt'
+      }
+    })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { createFileUploadSnapshot, readFileChunkBase64, readFileDataUrl, releaseFileUploadSnapshot }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+      if (method === 'file.attach.begin') {
+        return { max_chunk_bytes: 8, received: 0, upload_id: 'upload-1' } as never
+      }
+
+      if (method === 'file.attach.chunk') {
+        return {
+          received: Number(params?.offset ?? 0) + (params?.content_base64 === 'aGVsbG8=' ? 5 : 6),
+          upload_id: 'upload-1'
+        } as never
+      }
+
+      if (method === 'file.attach.finish') {
+        return {
+          attached: true,
+          path: '/remote/work/.hermes/desktop-attachments/report.txt',
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('convert this to epub', { attachments: [fileAttachment()] })
+
+    expect(ok).toBe(true)
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    expect(createFileUploadSnapshot).toHaveBeenCalledWith('/Users/alice/Downloads/report.txt')
+    expect(readFileChunkBase64).toHaveBeenNthCalledWith(1, snapshotPath, 0, 1)
+    expect(readFileChunkBase64).toHaveBeenNthCalledWith(2, snapshotPath, 0, 8)
+    expect(readFileChunkBase64).toHaveBeenNthCalledWith(3, snapshotPath, 5, 8)
+    expect(releaseFileUploadSnapshot).toHaveBeenCalledWith(snapshotPath)
+    expect(calls.map(c => c.method)).toEqual([
+      'file.attach.capabilities',
+      'file.attach.begin',
+      'file.attach.chunk',
+      'file.attach.chunk',
+      'file.attach.finish',
+      'prompt.submit'
+    ])
+    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[1]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      path: '/Users/alice/Downloads/report.txt',
+      name: 'report.txt',
+      request_id: expect.any(String),
+      size: 11
+    })
+    expect(calls[2]?.params).toMatchObject({
+      content_base64: 'aGVsbG8=',
+      offset: 0,
+      session_id: RUNTIME_SESSION_ID,
+      upload_id: 'upload-1'
+    })
+    expect(calls[3]?.params).toMatchObject({
+      content_base64: 'IHdvcmxk',
+      offset: 5,
+      session_id: RUNTIME_SESSION_ID,
+      upload_id: 'upload-1'
+    })
+    expect(calls[5]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
+    })
+  })
+
+  it('refuses resumable upload before begin when request-id cancellation is unavailable', async () => {
+    const metadata = {
+      base64: 'eA==',
+      byteSize: 1,
+      bytesRead: 1,
+      done: true,
+      fileId: '1:2',
+      mtimeMs: 100,
+      path: '/Users/alice/Downloads/report.txt'
+    }
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileChunkBase64: vi.fn(async () => metadata) }
+    })
+    const methods: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+      if (method === 'file.attach.capabilities') {
+        return { contract: 4, request_id_cancel: false } as never
+      }
+      if (method === 'file.attach.begin') {
+        return { max_chunk_bytes: 8, received: 0, upload_id: 'unsafe-upload' } as never
+      }
+      if (method === 'file.attach.chunk') {
+        return { received: 1, upload_id: 'unsafe-upload' } as never
+      }
+      if (method === 'file.attach.finish') {
+        return { attached: true, path: '/remote/report.txt', ref_text: '@file:report.txt', uploaded: true } as never
+      }
+      return {} as never
+    })
+
+    await expect(
+      uploadComposerAttachment(fileAttachment(), {
+        remote: true,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      })
+    ).rejects.toThrow(/request-id cancellation/i)
+
+    expect(methods).toEqual(['file.attach.capabilities'])
+  })
+
+  it('refuses resumable upload before begin when the capability contract is malformed', async () => {
+    const metadata = {
+      base64: 'eA==',
+      byteSize: 1,
+      bytesRead: 1,
+      done: true,
+      fileId: '1:2',
+      mtimeMs: 100,
+      path: '/Users/alice/Downloads/report.txt'
+    }
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileChunkBase64: vi.fn(async () => metadata) }
+    })
+
+    const methods: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+      if (method === 'file.attach.capabilities') {
+        return { contract: 'unknown', request_id_cancel: true } as never
+      }
+      if (method === 'file.attach.begin') {
+        return { upload_id: 'must-not-begin', chunk_bytes: 1 } as never
+      }
+      return {} as never
+    })
+
+    await expect(
+      uploadComposerAttachment(fileAttachment(), {
+        remote: true,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      })
+    ).rejects.toThrow(/request-id cancellation/i)
+
+    expect(methods).toEqual(['file.attach.capabilities'])
+  })
+
+  it('retries a timed-out begin with one stable idempotency key', async () => {
+    const metadata = {
+      base64: 'eA==',
+      byteSize: 1,
+      bytesRead: 1,
+      done: true,
+      fileId: '1:2',
+      mtimeMs: 100,
+      path: '/Users/alice/Downloads/report.txt'
+    }
+    const readFileChunkBase64 = vi.fn(async () => metadata)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: desktopWithSnapshot(readFileChunkBase64)
+    })
+    const beginParams: Array<Record<string, unknown> | undefined> = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+      if (method === 'file.attach.begin') {
+        beginParams.push(params)
+        if (beginParams.length === 1) {
+          throw new Error('request timed out: file.attach.begin')
+        }
+        return { max_chunk_bytes: 8, received: 0, upload_id: 'upload-begin-retry' } as never
+      }
+      if (method === 'file.attach.chunk') {
+        return { received: 1, upload_id: 'upload-begin-retry' } as never
+      }
+      if (method === 'file.attach.finish') {
+        return {
+          attached: true,
+          path: '/remote/work/report.txt',
+          ref_text: '@file:report.txt',
+          uploaded: true
+        } as never
+      }
+      return { cancelled: true } as never
+    })
+
+    const result = await uploadComposerAttachment(fileAttachment(), {
+      remote: true,
+      requestGateway,
+      sessionId: RUNTIME_SESSION_ID
+    })
+
+    expect(beginParams).toHaveLength(2)
+    expect(beginParams[0]?.request_id).toEqual(expect.any(String))
+    expect(beginParams[1]?.request_id).toBe(beginParams[0]?.request_id)
+    expect(result.refText).toBe('@file:report.txt')
+  })
+
+  it('cancels by request_id when every begin response is lost', async () => {
+    const metadata = {
+      base64: 'eA==',
+      byteSize: 1,
+      bytesRead: 1,
+      done: true,
+      fileId: '1:2',
+      mtimeMs: 100,
+      path: '/Users/alice/Downloads/report.txt'
+    }
+    const readFileChunkBase64 = vi.fn(async () => metadata)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: desktopWithSnapshot(readFileChunkBase64)
+    })
+    const beginParams: Array<Record<string, unknown> | undefined> = []
+    const cancelParams: Array<Record<string, unknown> | undefined> = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+      if (method === 'file.attach.begin') {
+        beginParams.push(params)
+        throw new Error('request timed out: file.attach.begin')
+      }
+      if (method === 'file.attach.cancel') {
+        cancelParams.push(params)
+        if (cancelParams.length === 1) {
+          throw new Error('request timed out: file.attach.cancel')
+        }
+        return { cancelled: true } as never
+      }
+      return {} as never
+    })
+
+    await expect(
+      uploadComposerAttachment(fileAttachment(), {
+        remote: true,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      })
+    ).rejects.toThrow(/timed out/i)
+
+    expect(beginParams).toHaveLength(3)
+    expect(beginParams.every(params => params?.request_id === beginParams[0]?.request_id)).toBe(true)
+    expect(cancelParams).toHaveLength(2)
+    expect(cancelParams[0]).toEqual({
+      request_id: beginParams[0]?.request_id,
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(cancelParams[1]).toEqual(cancelParams[0])
+  })
+
+  it('retries a timed-out chunk without restarting the whole upload', async () => {
+    const metadata = {
+      base64: 'eA==',
+      byteSize: 1,
+      bytesRead: 1,
+      done: true,
+      fileId: '1:2',
+      mtimeMs: 100,
+      path: '/Users/alice/Downloads/report.txt'
+    }
+    const readFileChunkBase64 = vi.fn(async () => metadata)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: desktopWithSnapshot(readFileChunkBase64)
+    })
+    let chunkCalls = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+      if (method === 'file.attach.begin') {
+        return { max_chunk_bytes: 8, received: 0, upload_id: 'upload-retry' } as never
+      }
+      if (method === 'file.attach.chunk') {
+        chunkCalls += 1
+        if (chunkCalls === 1) {
+          throw new Error('request timed out: file.attach.chunk')
+        }
+        return { received: 1, upload_id: 'upload-retry' } as never
+      }
+      if (method === 'file.attach.finish') {
+        return {
+          attached: true,
+          path: '/remote/work/report.txt',
+          ref_text: '@file:report.txt',
+          uploaded: true
+        } as never
+      }
+      return { cancelled: true } as never
+    })
+
+    const result = await uploadComposerAttachment(fileAttachment(), {
+      remote: true,
+      requestGateway,
+      sessionId: RUNTIME_SESSION_ID
+    })
+
+    expect(chunkCalls).toBe(2)
+    expect(result.refText).toBe('@file:report.txt')
+    expect(requestGateway.mock.calls.map(call => call[0])).not.toContain('file.attach.cancel')
+  })
+
+  it('retries a timed-out idempotent finish', async () => {
+    const metadata = {
+      base64: 'eA==',
+      byteSize: 1,
+      bytesRead: 1,
+      done: true,
+      fileId: '1:2',
+      filePath: '/tmp/report.txt',
+      mtimeMs: 10,
+      name: 'report.txt'
+    }
+    const readFileChunkBase64 = vi.fn().mockResolvedValue(metadata)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: desktopWithSnapshot(readFileChunkBase64)
+    })
+
+    let finishAttempts = 0
+    const calls: Array<{ method: string; params?: unknown }> = []
+    const requestGateway = vi.fn(async (method: string, params?: unknown) => {
+      calls.push({ method, params })
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+      if (method === 'file.attach.begin') {
+        return { max_chunk_bytes: 8, received: 0, upload_id: 'upload-finish-retry' }
+      }
+      if (method === 'file.attach.chunk') {
+        return { received: 1, upload_id: 'upload-finish-retry' }
+      }
+      if (method === 'file.attach.finish') {
+        finishAttempts += 1
+        if (finishAttempts === 1) {
+          throw new Error('request timed out')
+        }
+        return {
+          attached: true,
+          name: 'report.txt',
+          path: '/workspace/report.txt',
+          ref_path: '.hermes/desktop-attachments/report.txt',
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        }
+      }
+      return { cancelled: true }
+    }) as unknown as GatewayRequest
+
+    const result = await uploadComposerAttachment(fileAttachment(), {
+      remote: true,
+      requestGateway,
+      sessionId: 'session-finish-retry'
+    })
+
+    expect(result).toMatchObject({
+      attachedSessionId: 'session-finish-retry',
+      refText: '@file:.hermes/desktop-attachments/report.txt'
+    })
+    expect(calls.filter((call) => call.method === 'file.attach.finish')).toHaveLength(2)
+    expect(calls.some((call) => call.method === 'file.attach.cancel')).toBe(false)
+  })
+
+  it('cancels the upload when the selected file changes after the metadata probe', async () => {
+    const readFileChunkBase64 = vi
+      .fn()
+      .mockResolvedValueOnce({
+        base64: 'aA==',
+        byteSize: 5,
+        bytesRead: 1,
+        done: false,
+        fileId: '1:2',
+        mtimeMs: 100,
+        path: '/Users/alice/Downloads/report.txt'
+      })
+      .mockResolvedValueOnce({
+        base64: 'aGVsbG8=',
+        byteSize: 5,
+        bytesRead: 5,
+        done: true,
+        fileId: '1:3',
+        mtimeMs: 101,
+        path: '/Users/alice/Downloads/report.txt'
+      })
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: desktopWithSnapshot(readFileChunkBase64)
+    })
+    const methods: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+      if (method === 'file.attach.begin') {
+        return { max_chunk_bytes: 8, received: 0, upload_id: 'upload-change' } as never
+      }
+      return { cancelled: true } as never
+    })
+
+    await expect(
+      uploadComposerAttachment(fileAttachment(), {
+        remote: true,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      })
+    ).rejects.toThrow(/changed while it was being uploaded/i)
+
+    expect(methods).toEqual(['file.attach.capabilities', 'file.attach.begin', 'file.attach.cancel'])
+  })
+
+  it('falls back to legacy file.attach data_url upload when chunk reads are unavailable', async () => {
     // Remote gateway can't read the client-disk path, so the desktop must upload
     // the bytes and submit the workspace-relative ref the gateway hands back —
     // not the original /Users/... path (which would dead-end as "outside the
@@ -861,6 +1345,10 @@ describe('usePromptActions file attachment sync', () => {
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
+
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
 
       if (method === 'file.attach') {
         return {
@@ -882,17 +1370,45 @@ describe('usePromptActions file attachment sync', () => {
     const ok = await handle!.submitText('convert this to epub', { attachments: [fileAttachment()] })
 
     expect(ok).toBe(true)
-    expect(calls.map(c => c.method)).toEqual(['file.attach', 'prompt.submit'])
-    expect(calls[0]?.params).toMatchObject({
+    expect(calls.map(c => c.method)).toEqual(['file.attach.capabilities', 'file.attach', 'prompt.submit'])
+    expect(calls[1]?.params).toMatchObject({
       session_id: RUNTIME_SESSION_ID,
       path: '/Users/alice/Downloads/report.txt',
       name: 'report.txt',
       data_url: 'data:text/plain;base64,aGVsbG8='
     })
-    expect(calls[1]?.params).toEqual({
+    expect(calls[2]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
+  })
+
+  it('refuses legacy file.attach mutation when contract-5 capability cannot be proven', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+    const methods: string[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      methods.push(method)
+      if (method === 'file.attach.capabilities') {
+        return { contract: Number.NaN, request_id_cancel: true } as never
+      }
+      throw new Error(`unexpected mutating method: ${method}`)
+    })
+
+    await expect(
+      uploadComposerAttachment(fileAttachment(), {
+        remote: true,
+        requestGateway,
+        sessionId: RUNTIME_SESSION_ID
+      })
+    ).rejects.toThrow(/request-id cancellation/i)
+
+    expect(methods).toEqual(['file.attach.capabilities'])
+    expect(readFileDataUrl).not.toHaveBeenCalled()
   })
 
   it('passes a path-less @file: ref straight through (no path = nothing to upload)', async () => {
@@ -1004,6 +1520,10 @@ describe('usePromptActions eager-upload races', () => {
 
     const requestGateway = vi.fn(async (method: string) => {
       methods.push(method)
+
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
 
       if (method === 'file.attach') {
         // Block until released so submit runs while the upload is in flight.
@@ -1239,7 +1759,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
-    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       text: 'message during starved loop'
@@ -1338,6 +1858,10 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
     const requestGateway = vi.fn(async (method: string) => {
       calls.push(method)
 
+      if (method === 'file.attach.capabilities') {
+        return FILE_ATTACH_CAPABILITIES as never
+      }
+
       if (method === 'file.attach') {
         return {
           attached: true,
@@ -1433,7 +1957,7 @@ describe('uploadComposerAttachment remote read failures', () => {
       }
     })
 
-    const requestGateway = vi.fn(async () => ({}) as never)
+    const requestGateway = vi.fn(async () => FILE_ATTACH_CAPABILITIES as never)
 
     await expect(
       uploadComposerAttachment(
@@ -1442,8 +1966,12 @@ describe('uploadComposerAttachment remote read failures', () => {
       )
     ).rejects.toThrow('huge.csv is too large to upload to the remote gateway (max 16 MB).')
 
-    // The cap is hit before any gateway round-trip.
-    expect(requestGateway).not.toHaveBeenCalled()
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'file.attach.capabilities',
+      { session_id: RUNTIME_SESSION_ID },
+      120_000
+    )
   })
 
   it('passes non-cap read errors through unchanged', async () => {
@@ -1459,7 +1987,11 @@ describe('uploadComposerAttachment remote read failures', () => {
     await expect(
       uploadComposerAttachment(
         { id: 'file:gone', kind: 'file', label: 'gone.csv', path: '/abs/gone.csv' },
-        { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
+        {
+          remote: true,
+          requestGateway: vi.fn(async () => FILE_ATTACH_CAPABILITIES as never),
+          sessionId: RUNTIME_SESSION_ID
+        }
       )
     ).rejects.toThrow('ENOENT: no such file')
   })

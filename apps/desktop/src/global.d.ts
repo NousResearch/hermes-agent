@@ -10,6 +10,8 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
+      // Explicit updater readiness handshake after the primary React tree commits.
+      signalRendererReady?: () => void
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
@@ -74,7 +76,10 @@ declare global {
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
+      createFileUploadSnapshot?: (filePath: string) => Promise<HermesFileUploadSnapshot>
+      releaseFileUploadSnapshot?: (snapshotPath: string) => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
+      readFileChunkBase64?: (filePath: string, offset: number, maxBytes?: number) => Promise<HermesReadFileChunkResult>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>
@@ -627,6 +632,25 @@ export interface HermesPreviewTarget {
   renderMode?: 'preview' | 'source'
   source: string
   url: string
+}
+
+export interface HermesFileUploadSnapshot {
+  byteSize?: number
+  fileId?: string
+  mtimeMs?: number
+  path: string
+}
+
+export interface HermesReadFileChunkResult {
+  base64: string
+  byteSize: number
+  bytesRead: number
+  done: boolean
+  fileId: string
+  mimeType?: string
+  mtimeMs: number
+  name?: string
+  path: string
 }
 
 export interface HermesReadFileTextResult {

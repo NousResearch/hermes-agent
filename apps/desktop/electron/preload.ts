@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
+  signalRendererReady: () => ipcRenderer.send('hermes:renderer-ready'),
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
@@ -59,7 +60,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
+  createFileUploadSnapshot: filePath => ipcRenderer.invoke('hermes:createFileUploadSnapshot', filePath),
+  releaseFileUploadSnapshot: snapshotPath => ipcRenderer.invoke('hermes:releaseFileUploadSnapshot', snapshotPath),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
+  readFileChunkBase64: (filePath, offset, maxBytes) =>
+    ipcRenderer.invoke('hermes:readFileChunkBase64', { filePath, offset, maxBytes }),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),

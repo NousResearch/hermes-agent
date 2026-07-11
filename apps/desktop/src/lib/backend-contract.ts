@@ -1,0 +1,1 @@
+export const REQUIRED_BACKEND_CONTRACT = 5

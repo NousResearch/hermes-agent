@@ -92,7 +92,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.config import Platform
 
@@ -1067,7 +1069,12 @@ class LineAdapter(BasePlatformAdapter):
             "file": ".bin",
         }.get(msg_type, ".bin")
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "audio":
+                return cache_audio_from_bytes(data, ext=ext)
+            elif msg_type == "video":
+                return cache_video_from_bytes(data, ext=ext)
+            else:
+                return cache_image_from_bytes(data, ext=ext)
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None

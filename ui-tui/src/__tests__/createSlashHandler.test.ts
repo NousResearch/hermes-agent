@@ -209,7 +209,7 @@ describe('createSlashHandler', () => {
       confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
-      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter --session'
     })
   })
 

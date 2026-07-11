@@ -1875,6 +1875,10 @@ export const ja = defineLocale({
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
+      fireworks: {
+        short: 'モデル API に直接接続',
+        description: 'Fireworks AI がホストするモデルに直接アクセスします。'
+      },
       openrouter: {
         short: '1 つのキーで多くのモデル',
         description: '1 つのキーで数百のモデルをホスト。新規インストールのデフォルトとして最適。'

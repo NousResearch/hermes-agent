@@ -10,3 +10,6 @@
 [submodule "vendor/neuro-sdk"]
 	path = vendor/neuro-sdk
 	url = https://github.com/VedalAI/neuro-sdk.git
+[submodule "vendor/openmanus"]
+	path = vendor/openmanus
+	url = https://github.com/FoundationAgents/OpenManus.git

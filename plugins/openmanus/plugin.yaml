@@ -1,0 +1,15 @@
+name: openmanus
+version: 0.1.0
+description: "Run the pinned FoundationAgents/OpenManus agent behind Hermes workspace, approval, and receipt boundaries."
+author: "Hermes Agent"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - openmanus_capabilities
+  - openmanus_run
+  - openmanus_wide_research
+provides_cli:
+  - openmanus

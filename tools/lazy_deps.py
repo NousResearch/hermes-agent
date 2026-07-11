@@ -188,7 +188,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "qrcode==7.4.2",
     ),
     "platform.feishu": (
-        "lark-oapi==1.5.3",
+        "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
     # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
@@ -466,7 +466,7 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
         return (
             "unsupported on Windows: Matrix E2EE depends on python-olm, "
             "which has no Windows wheel and requires make + libolm to build "
-            "from sdist. Run Hermes under WSL to use Matrix on Windows."
+            "from sdist. Run HT AI Agent under WSL to use Matrix on Windows."
         )
     return None
 

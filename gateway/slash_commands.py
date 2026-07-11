@@ -167,6 +167,24 @@ class GatewaySlashCommandsMixin:
         if _qe is not None:
             _qe.pop(session_key, None)
 
+        # The old conversation's in-flight async delegations end WITH it
+        # (#55578): after the reset rotates the session id, their completions
+        # would have no live owner — a dangling subagent can only burn tokens
+        # and park an orphaned payload on the shared queue. Interrupt by the
+        # expiring durable session id (delegations dispatched from gateway
+        # chats are pinned to it via parent_session_id) and by the routing
+        # key as a fallback for older records.
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(old_entry, "session_id", "") or ""),
+                reason="session_reset",
+            )
+        except Exception:
+            pass
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
@@ -3244,18 +3262,23 @@ class GatewaySlashCommandsMixin:
                 # at it; in place the original transcript is untouched) and lets
                 # the outer handler surface a "compress failed" banner instead.
                 #
-                # The rewrite runs when EITHER rotation produced a new id OR
-                # in-place compaction succeeded. It is skipped in the THIRD
-                # case: _compress_context could NOT rotate AND was not in-place
-                # (e.g. legacy mode but _session_db unavailable / the DB split
-                # raised) — there session_id is unchanged for a FAILURE reason,
-                # and rewrite_transcript() would DELETE the original messages and
-                # replace them with only the compressed summary (permanent data
-                # loss #44794, #39704). In in-place mode the unchanged id is
-                # SUCCESS, so the rewrite is exactly right (and is the durable
-                # write when the throwaway /compress agent has no _session_db of
-                # its own).
-                if rotated or _in_place:
+                # Only rewrite the transcript when rotation produced a NEW
+                # session id.  In-place compaction does NOT need a rewrite:
+                # archive_and_compact() has already soft-archived the previous
+                # active rows and inserted the compacted messages as the new
+                # active set inside _compress_context().  Calling
+                # rewrite_transcript() after in-place compaction would invoke
+                # replace_messages(active_only=False) which DELETEs ALL rows —
+                # including the archived turns that archive_and_compact()
+                # deliberately preserved (silent data loss, #61145).
+                #
+                # The third case: _compress_context could NOT rotate AND was
+                # not in-place (e.g. legacy mode but _session_db unavailable /
+                # the DB split raised) — there session_id is unchanged for a
+                # FAILURE reason, and rewrite_transcript() would DELETE the
+                # original messages and replace them with only the compressed
+                # summary (permanent data loss #44794, #39704).
+                if rotated:
                     if not self.session_store.rewrite_transcript(
                         new_session_id, compressed
                     ):
@@ -3263,13 +3286,16 @@ class GatewaySlashCommandsMixin:
                             f"failed to persist compressed transcript for "
                             f"session {new_session_id}"
                         )
-                    if rotated:
-                        session_entry.session_id = new_session_id
-                        self.session_store._save()
-                        await asyncio.to_thread(
-                            self._sync_telegram_topic_binding,
-                            source, session_entry, reason="compress-command",
-                        )
+                    session_entry.session_id = new_session_id
+                    self.session_store._save()
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding,
+                        source, session_entry, reason="compress-command",
+                    )
+                elif _in_place:
+                    # archive_and_compact() already persisted the compacted
+                    # transcript inside _compress_context — nothing to do.
+                    pass
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
@@ -4498,7 +4524,7 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.update.platform_not_messaging")
 
         if is_managed():
-            return f"✗ {format_managed_message('update Hermes Agent')}"
+            return f"✗ {format_managed_message('update HT AI Agent')}"
 
         project_root = Path(__file__).parent.parent.resolve()
         git_dir = project_root / '.git'

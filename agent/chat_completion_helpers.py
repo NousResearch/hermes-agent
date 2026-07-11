@@ -1399,6 +1399,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = agent.provider
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1543,6 +1544,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
+        )
+        # The buffered line above is dropped on successful recovery, but a
+        # provider/model switch is a durable state change operators must see
+        # even when the fallback succeeds.  Record a one-shot notice that the
+        # success path surfaces exactly once via _emit_pending_fallback_notice
+        # (see run_agent.py); it is discarded on terminal failure since the
+        # buffered line is flushed instead.  See fallback-observability fix.
+        agent._pending_fallback_notice = (
+            f"🔄 Switched to fallback model: {old_model} via {old_provider} "
+            f"→ {fb_model} via {fb_provider}"
         )
         logger.info(
             "Fallback activated: %s → %s (%s)",

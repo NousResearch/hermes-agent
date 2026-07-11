@@ -2989,7 +2989,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
 
-        self._plugin_service_manager = GatewayServiceManager()
+        self._plugin_service_manager = GatewayServiceManager(
+            self._plugin_service_adapters
+        )
 
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
@@ -6718,14 +6720,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return True
 
+    def _plugin_service_adapters(self) -> Dict[str, "BasePlatformAdapter"]:
+        """Build a string-keyed mapping of all connected adapters.
+
+        Primary adapters are keyed by ``platform.value``; secondary
+        profile adapters are keyed by ``f"{profile_name}/{platform.value}"``.
+        Called by the plugin-service manager on each
+        ``GatewayServiceContext.adapters`` access so services observe
+        reconnect-driven adapter changes without exposing the runner.
+        """
+        snapshot: Dict[str, "BasePlatformAdapter"] = {
+            platform.value: adapter for platform, adapter in self.adapters.items()
+        }
+        for profile_name, profile_map in self._profile_adapters.items():
+            for platform, adapter in profile_map.items():
+                snapshot[f"{profile_name}/{platform.value}"] = adapter
+        return snapshot
+
     async def _start_plugin_gateway_services(self) -> None:
         """Start plugin-registered gateway services after adapters connect.
 
-        Builds a string-keyed snapshot of all connected adapters (primary
-        and secondary-profile) and hands it to the service manager. No-op
-        when no plugins registered services or when no adapters connected.
-        The manager's started guard ensures exactly-once even across
-        reconnect-triggered calls.
+        No-op when no plugins registered services. The manager's
+        started guard ensures exactly-once even across
+        reconnect-triggered calls; reconnect-driven adapter changes
+        become visible to already-running services through the
+        context's resolver without launching a duplicate service.
         """
         from hermes_cli.plugins import get_plugin_manager
 
@@ -6735,15 +6754,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         mgr = getattr(self, "_plugin_service_manager", None)
         if mgr is None:
             return
-        adapters_snapshot = {
-            platform.value: adapter for platform, adapter in self.adapters.items()
-        }
-        for profile_name, profile_map in self._profile_adapters.items():
-            for platform, adapter in profile_map.items():
-                adapters_snapshot[f"{profile_name}/{platform.value}"] = adapter
-        await mgr.start_services(
-            registrations, adapters_snapshot,
-        )
+        await mgr.start_services(registrations)
 
     async def start(self) -> bool:
         """

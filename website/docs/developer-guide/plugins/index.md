@@ -912,7 +912,7 @@ This is the public way for plugins to participate in Slack interactivity. Older 
 
 ### Register a gateway service
 
-Plugins can register an async service that runs alongside the gateway. The service receives a read-only snapshot of successfully connected platform adapters and can interact with them directly.
+Plugins can register an async service that runs alongside the gateway. The service receives a live, read-only view of successfully connected platform adapters and can interact with them directly.
 
 ```python
 """Plugin that logs the gateway's connected adapters at startup."""
@@ -927,7 +927,7 @@ async def log_connected_adapters(context):
     """Log platform adapters connected at startup, then wait until cancelled."""
     names = ", ".join(context.adapters.keys())
     logger.info("Gateway service started; connected adapters: %s", names)
-    # Adapters is a static snapshot — see lifecycle below.
+    # Adapters is a live read-only view — see lifecycle below.
     # Wait until shutdown cancels this task.
     await asyncio.Event().wait()
 
@@ -946,13 +946,13 @@ def register(ctx):
 | Guarantee | Detail |
 |-----------|--------|
 | **Start timing** | The service is launched after all platform adapters have connected and the gateway runner has set its internal running flag. |
-| **Context** | The service receives a `GatewayServiceContext` whose `.adapters` property is a read-only mapping of connected platform adapters keyed by name. The context never exposes the gateway runner or any mutable runner state. |
-| **Run once** | Each service is started at most once per runner lifecycle. Reconnect events (disconnect + reconnect) do NOT restart the service. |
+| **Context** | The service receives a `GatewayServiceContext` whose `.adapters` property returns a fresh read-only mapping of currently connected platform adapters keyed by name. Each access reflects the live adapter set — including adapters added by a later reconnect — without ever exposing the gateway runner or any mutable runner state. A held reference stays stable; only a new access sees the new state. |
+| **Run once** | Each service is started at most once per runner lifecycle. Reconnect events (disconnect + reconnect) do NOT restart the service; reconnect-driven adapter changes become visible through the next `.adapters` access. |
 | **Failure isolation** | Startup and runtime exceptions are logged with plugin provenance and do not prevent other services from starting or the gateway from continuing. |
-| **Shutdown** | On gateway stop, every running service task is cancelled and awaited before adapters disconnect. |
+| **Shutdown** | On gateway stop, every running service task is cancelled and awaited before adapters disconnect. A service that suppresses cancellation is detached after a host-owned bounded timeout so it cannot block shutdown; its eventual completion (or failure) is observed and logged with provenance. |
 | **Duplicate rejection** | If two plugins register a service with the same `name`, the second registration is rejected with a log warning and the original keeps running. |
 
-A plugin **cannot** use a gateway service to manipulate the runner, agent tools, system prompt, config, sessions, or the plugin registry. The service has access only to the adapter snapshot provided by the gateway.
+A plugin **cannot** use a gateway service to manipulate the runner, agent tools, system prompt, config, sessions, or the plugin registry. The service has access only to the live read-only adapter view provided by the gateway.
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

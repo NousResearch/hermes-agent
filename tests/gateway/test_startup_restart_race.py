@@ -83,7 +83,9 @@ def make_startup_runner(tmp_path):
     runner._background_tasks = set()
     runner._failed_platforms = {}
     runner._voice_mode = {}
-    runner._plugin_service_manager = GatewayServiceManager()
+    runner._plugin_service_manager = GatewayServiceManager(
+        runner._plugin_service_adapters
+    )
 
     runner.hooks = MagicMock()
     runner.hooks.loaded_hooks = []

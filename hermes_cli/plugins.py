@@ -1250,7 +1250,7 @@ class PluginContext:
         """Register an async gateway service under a unique name.
 
         The service is an ``async`` callable that receives a
-        ``GatewayServiceContext`` (a read-only snapshot of connected
+        ``GatewayServiceContext`` (a live read-only view of connected
         adapters) and runs concurrently with the gateway. The host starts
         it after adapters connect and stops it before adapter disconnect.
 

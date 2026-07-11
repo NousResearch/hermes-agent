@@ -213,6 +213,7 @@ class TestPayloadShape:
                         "argument_keys": ["content", "path", "token"],
                         "targets": {
                             "path": "/private/report.json",
+                            "url": "https://user:password@example.test:8443/upload?token=secret",
                             "token": "must-not-leak",
                         },
                     },
@@ -226,7 +227,10 @@ class TestPayloadShape:
             "tool_name": "write_file",
             "tool_input": {
                 "argument_keys": ["content", "path", "token"],
-                "targets": {"path": "/private/report.json"},
+                "targets": {
+                    "path": "/private/report.json",
+                    "url": "https://example.test:8443/upload",
+                },
             },
             "input_bytes": 128,
             "output_bytes": 32,
@@ -237,7 +241,7 @@ class TestPayloadShape:
         summary = _summarize_tool_arguments(json.dumps({
             "path": "/workspace/report.json",
             "content": "private report contents",
-            "url": "https://example.test/upload?token=secret#fragment",
+            "url": "https://user:password@example.test:8443/upload?token=secret#fragment",
             "command": "curl -H 'Authorization: secret' example.test",
         }))
 
@@ -245,7 +249,7 @@ class TestPayloadShape:
             "argument_keys": ["command", "content", "path", "url"],
             "targets": {
                 "path": "/workspace/report.json",
-                "url": "https://example.test/upload",
+                "url": "https://example.test:8443/upload",
             },
         }
 

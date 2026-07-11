@@ -210,6 +210,12 @@ function validatedAutoPreviewTarget(candidate: string, includeRelative: boolean)
       return null
     }
   } else {
+    // Protocol-relative network URLs start with `//` and must not be treated as
+    // absolute POSIX paths just because they begin with a slash.
+    if (target.startsWith('//')) {
+      return null
+    }
+
     const isAbsolute =
       target.startsWith('/') || target.startsWith('~/') || /^[A-Za-z]:(?:\\|\/)/.test(target)
 

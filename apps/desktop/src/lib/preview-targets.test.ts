@@ -150,6 +150,12 @@ describe('automatic local preview target detection', () => {
     expect(extractAutoPreviewTargets('Visit http://localhost:5173 or https://example.com/report.pdf')).toEqual([])
   })
 
+  it('does not treat protocol-relative network URLs as absolute local paths', () => {
+    expect(
+      extractAutoPreviewTargets('See //example.com/report.md and //localhost/tmp/chart.png before /tmp/real.md')
+    ).toEqual(['/tmp/real.md'])
+  })
+
   it('ignores domains and secret-looking paths', () => {
     expect(
       extractAutoPreviewTargets(

@@ -914,7 +914,9 @@ def init_agent(
                 client_kwargs["timeout"] = _provider_timeout
             if agent.provider in {"copilot-acp", "devin-acp"}:
                 client_kwargs["command"] = agent.acp_command
-                client_kwargs["args"] = agent.acp_args
+                # Prefer None over [] so the ACP client can apply provider
+                # defaults when a call site forgot to forward runtime args.
+                client_kwargs["args"] = agent.acp_args or None
             effective_base = base_url
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers

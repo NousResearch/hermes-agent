@@ -13,7 +13,7 @@ import os
 import shlex
 from typing import Any
 
-from agent.copilot_acp_client import CopilotACPClient
+from agent.copilot_acp_client import CopilotACPClient, _coalesce_acp_args
 
 ACP_MARKER_BASE_URL = "acp://devin"
 
@@ -37,6 +37,13 @@ def _resolve_args() -> list[str]:
 class DevinACPClient(CopilotACPClient):
     """Minimal OpenAI-client-compatible facade for Devin CLI ACP."""
 
+    _acp_display_name = "Devin ACP"
+    _default_model_name = "devin-acp"
+    _install_hint = (
+        "Install Devin CLI (https://docs.devin.ai/cli) and run "
+        "`devin auth login`, or set HERMES_DEVIN_ACP_COMMAND/DEVIN_CLI_PATH."
+    )
+
     def __init__(
         self,
         *,
@@ -50,15 +57,24 @@ class DevinACPClient(CopilotACPClient):
         args: list[str] | None = None,
         **kwargs: Any,
     ):
+        # Resolve against Devin defaults *before* super(), so an empty
+        # ``args=[]`` from incomplete call-site wiring cannot fall through to
+        # CopilotACPClient's module-level ``_resolve_args()`` (``--acp --stdio``).
+        resolved_command = acp_command or command or _resolve_command()
+        resolved_args = _coalesce_acp_args(acp_args, args, _resolve_args)
         super().__init__(
             api_key=api_key or "devin-acp",
             base_url=base_url or ACP_MARKER_BASE_URL,
             default_headers=default_headers,
-            acp_command=acp_command or command or _resolve_command(),
-            acp_args=list(acp_args if acp_args is not None else (args if args is not None else _resolve_args())),
+            acp_command=resolved_command,
+            acp_args=resolved_args,
             acp_cwd=acp_cwd,
             **kwargs,
         )
+        # Parent stores args via its own default_args_fn; re-assert Devin's
+        # resolved argv in case kwargs still carried a stale empty list.
+        self._acp_command = resolved_command
+        self._acp_args = resolved_args
 
     def _create_chat_completion(
         self,
@@ -80,20 +96,3 @@ class DevinACPClient(CopilotACPClient):
             stream=stream,
             **kwargs,
         )
-
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
-        try:
-            return super()._run_prompt(prompt_text, timeout_seconds=timeout_seconds)
-        except RuntimeError as exc:
-            msg = str(exc)
-            if "Could not start Copilot ACP command" in msg:
-                raise RuntimeError(
-                    f"Could not start Devin ACP command '{self._acp_command}'. "
-                    "Install Devin CLI (https://docs.devin.ai/cli) and run "
-                    "`devin auth login`, or set HERMES_DEVIN_ACP_COMMAND/DEVIN_CLI_PATH."
-                ) from exc
-            if "Copilot ACP process did not expose" in msg:
-                raise RuntimeError(
-                    "Devin ACP process did not expose stdin/stdout pipes."
-                ) from exc
-            raise

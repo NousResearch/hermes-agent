@@ -390,6 +390,11 @@ def _run_agent(
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         model=effective_model,
+        # ACP external-process providers (copilot-acp, devin-acp) need the
+        # resolved CLI command/args; without these, empty agent.acp_args can
+        # fall through to the wrong provider defaults.
+        acp_command=runtime.get("command"),
+        acp_args=runtime.get("args"),
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",

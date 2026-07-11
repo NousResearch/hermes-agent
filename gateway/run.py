@@ -1742,9 +1742,24 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+# Platforms where dm_policy/group_policy: "open" exposes the gateway to
+# unauthenticated peers (i.e. anyone can message the bot handle/number).
+# These are the platforms where an open policy without allow-all opt-in is a
+# genuine security risk and the startup gate should refuse to boot.
+#
+# Platforms where the transport itself binds the bot to a single authenticated
+# peer at provisioning (e.g. Weixin iLink ClawBot: bot_token is fused to one
+# ilink_user_id, no second user can ever reach the bot) are deliberately
+# excluded here -- on those platforms open_admits_unbound_peers=False on the
+# adapter class, and "open" admits exactly the one already-authenticated bound
+# user.  The gate would be a false positive and would break upgrades for users
+# who ran open legitimately under v0.17 (issue #62553).
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
-    Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
+    # Platform.WEIXIN is intentionally absent: iLink ClawBot (bot_type=3) is
+    # transport-bound to the single user who scanned the QR at provisioning.
+    # open_admits_unbound_peers=False on WeixinAdapter; the gate is a
+    # false positive here.  See gateway/platforms/weixin.py and issue #62553.
     Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
     Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
     Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS"),

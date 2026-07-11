@@ -1147,6 +1147,15 @@ class WeixinAdapter(BasePlatformAdapter):
     # fallback "send-final-only" path so the cursor (▉) is never left visible.
     SUPPORTS_MESSAGE_EDITING = False
 
+    # iLink ClawBot (bot_type=3) is cryptographically bound at provisioning to
+    # the single WeChat user who scanned the QR code.  The issued bot_token
+    # embeds that user's ilink_user_id; from_user_id is always the scanner and
+    # the bot cannot be discovered, added, or messaged by any second user.
+    # dm_policy: "open" therefore admits exactly the one already-authenticated
+    # bound user — there is no external surface, and the startup open-policy
+    # gate is a false positive on this platform (issue #62553).
+    open_admits_unbound_peers = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEIXIN)
         extra = config.extra or {}

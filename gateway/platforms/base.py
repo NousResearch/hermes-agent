@@ -2915,6 +2915,17 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
+    # Whether dm_policy/group_policy: "open" exposes this adapter to peers
+    # the transport has NOT already authenticated or bound at provisioning.
+    # True (default) for public-reachable platforms where anyone can message
+    # the bot handle (Telegram, WhatsApp, Signal, etc.) — "open" = open to
+    # the world, and the startup gate is correct to require allow-all opt-in.
+    # False for transport-bound adapters where the bot is cryptographically
+    # fused to a single peer at provisioning: on these platforms "open" admits
+    # exactly the one already-authenticated bound user, so there is no external
+    # surface for the gate to protect (issue #62553).
+    open_admits_unbound_peers: bool = True
+
     async def create_handoff_thread(
         self,
         parent_chat_id: str,

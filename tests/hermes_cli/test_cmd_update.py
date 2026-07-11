@@ -593,7 +593,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": [], "warnings": []},
-        ) as mock_migrate:
+        ) as mock_migrate, patch(
+            "hermes_cli.profiles.list_profiles", return_value=[]
+        ):
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
             )
@@ -629,7 +631,9 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.migrate_config",
             return_value={"env_added": [], "config_added": [], "warnings": []},
-        ), patch("hermes_cli.main.sys") as mock_sys:
+        ), patch("hermes_cli.main.sys") as mock_sys, patch(
+            "hermes_cli.profiles.list_profiles", return_value=[]
+        ):
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
             mock_run.side_effect = _make_run_side_effect(

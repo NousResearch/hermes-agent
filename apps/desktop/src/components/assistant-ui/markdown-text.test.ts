@@ -134,6 +134,24 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://example.com/wiki/Foo_(bar)>')
   })
 
+  it('preserves a trailing balanced pair after an earlier stray closing paren', () => {
+    const output = preprocessMarkdown('See https://example.com/a)(b)')
+
+    expect(output).toContain('<https://example.com/a)(b)>')
+  })
+
+  it('strips three wrapper closing parens from raw-url autolinks', () => {
+    const output = preprocessMarkdown('(((https://example.com/page)))')
+
+    expect(output).toBe('(((<https://example.com/page>)))')
+  })
+
+  it('preserves an unmatched opening paren at the end of a raw URL', () => {
+    const output = preprocessMarkdown('https://example.com/foo(')
+
+    expect(output).toContain('<https://example.com/foo(>')
+  })
+
   it('strips only the wrapper closing paren around balanced-paren URLs', () => {
     const output = preprocessMarkdown('(https://example.com/wiki/Foo_(bar))')
 

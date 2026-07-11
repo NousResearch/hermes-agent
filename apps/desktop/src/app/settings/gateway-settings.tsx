@@ -111,7 +111,12 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
-export function GatewaySettings() {
+interface GatewaySettingsProps {
+  onConnected?: () => void
+  remoteOnly?: boolean
+}
+
+export function GatewaySettings({ onConnected, remoteOnly = false }: GatewaySettingsProps = {}) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
@@ -120,6 +125,7 @@ export function GatewaySettings() {
   const [previewingSwitch, setPreviewingSwitch] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
+  const [remoteOnlyBuild, setRemoteOnlyBuild] = useState(remoteOnly)
   const [remoteToken, setRemoteToken] = useState('')
   const [lastTest, setLastTest] = useState<null | string>(null)
 
@@ -154,6 +160,23 @@ export function GatewaySettings() {
   // each profile can point at its own backend.
   const [scope, setScope] = useState<null | string>(null)
   const profiles = useStore($profiles)
+
+  useEffect(() => {
+    if (remoteOnly) {
+      return
+    }
+
+    void window.hermesDesktop
+      ?.getDesktopCapabilities?.()
+      .then(capabilities => setRemoteOnlyBuild(capabilities.remoteOnly))
+      .catch(() => undefined)
+  }, [remoteOnly])
+
+  useEffect(() => {
+    if (remoteOnlyBuild && state.mode === 'local') {
+      setState(current => ({ ...current, mode: 'remote' }))
+    }
+  }, [remoteOnlyBuild, state.mode])
 
   useEffect(() => {
     void refreshActiveProfile()
@@ -368,6 +391,11 @@ export function GatewaySettings() {
 
       setState(next)
       setRemoteToken('')
+
+      if (apply) {
+        onConnected?.()
+      }
+
       notify({
         kind: 'success',
         title: apply ? g.restartingTitle : g.savedTitle,
@@ -655,6 +683,7 @@ export function GatewaySettings() {
       })
 
       setState(next)
+      onConnected?.()
       notify({ kind: 'success', title: g.cloudConnectedTitle, message: g.cloudConnectedTo(agent.name) })
     } catch (err) {
       if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
@@ -721,7 +750,7 @@ export function GatewaySettings() {
         </p>
       </div>
 
-      {namedProfiles.length > 0 ? (
+      {!remoteOnlyBuild && namedProfiles.length > 0 ? (
         <div className="mb-5 grid gap-2">
           <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
             {g.appliesTo}
@@ -757,15 +786,22 @@ export function GatewaySettings() {
         <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
           {g.modeTitle}
         </div>
-        <div className="grid auto-rows-fr grid-cols-1 gap-2 min-[42rem]:grid-cols-3">
-          <ModeCard
-            active={state.mode === 'local'}
-            description={g.localDesc}
-            disabled={state.envOverride}
-            icon={Monitor}
-            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={g.localTitle}
-          />
+        <div
+          className={cn(
+            'grid auto-rows-fr grid-cols-1 gap-2',
+            remoteOnlyBuild ? 'min-[42rem]:grid-cols-2' : 'min-[42rem]:grid-cols-3'
+          )}
+        >
+          {!remoteOnlyBuild ? (
+            <ModeCard
+              active={state.mode === 'local'}
+              description={g.localDesc}
+              disabled={state.envOverride}
+              icon={Monitor}
+              onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
+              title={g.localTitle}
+            />
+          ) : null}
           <ModeCard
             active={state.mode === 'cloud'}
             description={g.cloudDesc}

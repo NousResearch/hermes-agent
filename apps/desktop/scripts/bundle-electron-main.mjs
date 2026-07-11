@@ -29,9 +29,11 @@ const external = ['electron', 'node-pty', 'fs']
 // behaves like a packaged build. Dev bundles (`--dev`) leave the env alone
 // so HERMES_DESKTOP_DEV_SERVER / source-tree resolution keep working.
 const isDev = process.argv.includes('--dev')
-const define = isDev
-  ? {}
-  : { 'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true) }
+const remoteOnly = process.argv.includes('--remote-only')
+const define = {
+  ...(isDev ? {} : { 'process.env.HERMES_DESKTOP_IS_PACKAGED': JSON.stringify(true) }),
+  ...(remoteOnly ? { 'process.env.HERMES_DESKTOP_REMOTE_ONLY': JSON.stringify('1') } : {})
+}
 
 // Bundle main.ts → dist/electron-main.mjs
 await build({
@@ -48,7 +50,7 @@ await build({
   define,
   logLevel: 'info',
 })
-console.log(`bundled ${mainOut}${isDev ? ' (dev)' : ''}`)
+console.log(`bundled ${mainOut}${isDev ? ' (dev)' : ''}${remoteOnly ? ' (remote-only)' : ''}`)
 
 // Bundle preload.ts → dist/electron-preload.js
 await build({
@@ -62,4 +64,4 @@ await build({
   define,
   logLevel: 'info',
 })
-console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}`)
+console.log(`bundled ${preloadOut}${isDev ? ' (dev)' : ''}${remoteOnly ? ' (remote-only)' : ''}`)

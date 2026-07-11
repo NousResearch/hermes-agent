@@ -48,6 +48,7 @@ declare global {
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      getDesktopCapabilities: () => Promise<DesktopCapabilities>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -255,6 +256,10 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+}
+
+export interface DesktopCapabilities {
+  remoteOnly: boolean
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

@@ -55,6 +55,11 @@ import {
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
 import {
+  assertConnectionModeAllowed,
+  createRemoteConnectionGate,
+  shouldResumeRemoteConnectionGate
+} from './desktop-build-mode'
+import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -138,6 +143,7 @@ if (USER_DATA_OVERRIDE) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+const REMOTE_ONLY = process.env.HERMES_DESKTOP_REMOTE_ONLY === '1'
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -257,8 +263,11 @@ function loadInstallStamp() {
         })
       }
     } catch (e) {
-      console.warn(`[hermes] install-stamp.json found at ${p} , but parsing failed with ${e}`)
-      // Either ENOENT or malformed JSON; try the next candidate
+      if (e?.code !== 'ENOENT') {
+        console.warn(`[hermes] install-stamp.json found at ${p}, but parsing failed with ${e}`)
+      }
+
+      // Missing is expected in dev and remote-only builds; try the next candidate.
     }
   }
 
@@ -271,7 +280,7 @@ if (INSTALL_STAMP) {
   console.log(
     `[hermes] install stamp: ${INSTALL_STAMP.commit.slice(0, 12)}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
   )
-} else if (IS_PACKAGED) {
+} else if (IS_PACKAGED && !REMOTE_ONLY) {
   // Dev builds without a stamp are normal; packaged builds without one
   // mean the bootstrap won't know what to clone. Surface clearly.
   console.error(
@@ -387,10 +396,13 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
-// desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
-// errors.log, gateway.log produced by hermes_logging.setup_logging — one log
-// directory per user, regardless of which UI surface produced the line.
-const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+// Full desktop logs sit beside the agent logs. The standalone client has no
+// HERMES_HOME, so keep its log in Electron's isolated user-data directory.
+
+const DESKTOP_LOG_PATH = REMOTE_ONLY
+  ? path.join(app.getPath('userData'), 'logs', 'desktop.log')
+  : path.join(HERMES_HOME, 'logs', 'desktop.log')
+
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
@@ -802,6 +814,7 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+const remoteConnectionGate = createRemoteConnectionGate()
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -6244,6 +6257,7 @@ async function probeRemoteAuthMode(rawUrl) {
 }
 
 async function testDesktopConnectionConfig(input: any = {}) {
+  assertConnectionModeAllowed(input.mode, REMOTE_ONLY)
   const config = coerceDesktopConnectionConfig(input, readDesktopConnectionConfig(), { persistToken: false })
   const key = connectionScopeKey(input.profile)
   // The block under test: a per-profile entry or the global remote. Coerce has
@@ -6549,6 +6563,10 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
+  if (REMOTE_ONLY) {
+    throw new Error(`Profile "${profile}" requires a remote Hermes connection in this desktop build.`)
+  }
+
   const token = crypto.randomBytes(32).toString('base64url')
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
@@ -6758,7 +6776,23 @@ async function startHermes() {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
-    const remote = await resolveRemoteBackend(primaryProfileKey())
+    let remote = await resolveRemoteBackend(primaryProfileKey())
+
+    if (!remote && REMOTE_ONLY) {
+      updateBootProgress({
+        phase: 'backend.remote.setup',
+        message: 'Waiting for a remote Hermes connection',
+        progress: 12,
+        running: true,
+        error: null
+      })
+      await remoteConnectionGate.wait()
+      remote = await resolveRemoteBackend(primaryProfileKey())
+
+      if (!remote) {
+        throw new Error('Remote connection setup did not produce a usable Hermes connection.')
+      }
+    }
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
@@ -7636,6 +7670,9 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('hermes:desktop-capabilities', async () => ({
+  remoteOnly: REMOTE_ONLY
+}))
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
@@ -7690,16 +7727,24 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
+  assertConnectionModeAllowed(payload?.mode, REMOTE_ONLY)
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
+  assertConnectionModeAllowed(payload?.mode, REMOTE_ONLY)
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
   const key = connectionScopeKey(payload?.profile)
+
+  if (shouldResumeRemoteConnectionGate(REMOTE_ONLY, key, remoteConnectionGate.hasWaiter())) {
+    remoteConnectionGate.resume()
+
+    return sanitizeDesktopConnectionConfig(config, payload?.profile)
+  }
 
   if (key && key !== primaryProfileKey()) {
     // Editing a NON-primary profile's connection: don't disturb the window's
@@ -8964,6 +9009,10 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
+  if (REMOTE_ONLY) {
+    return
+  }
+
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can

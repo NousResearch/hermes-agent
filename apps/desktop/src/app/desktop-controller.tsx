@@ -9,6 +9,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
+import { RemoteGatewaySetupOverlay } from '@/components/remote-gateway-setup-overlay'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { isFocusWithin } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -1047,6 +1048,7 @@ export function DesktopController() {
   const overlays = (
     <>
       <RemoteDisplayBanner />
+      {!isSecondaryWindow() && <RemoteGatewaySetupOverlay />}
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay

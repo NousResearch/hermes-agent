@@ -36,6 +36,10 @@ It builds and launches the GUI against your existing install — same config, ke
 
 Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/).
 
+### Standalone remote client
+
+The Linux AppImage and Flatpak remote-client builds contain only the Electron app. They do not install or launch a local Python Hermes runtime. On first launch, connect the app to Hermes Cloud or to an existing `hermes serve` instance; the connection is stored separately from the full desktop app, so both variants can be installed together.
+
 ---
 
 ## Updating
@@ -80,14 +84,23 @@ npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 npm run dist:mac     # DMG + zip
 npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
+npm run dist:remote:linux    # standalone AppImage + Flatpak
+npm run dist:remote:appimage # standalone AppImage only
+npm run dist:remote:flatpak  # standalone Flatpak only
 npm run pack         # unpacked app under release/ (no installer)
 ```
+
+Remote-client artifacts are written to `release/remote/`. Building Flatpak requires `flatpak`, `flatpak-builder`, and the `org.freedesktop.Platform//24.08` plus `org.freedesktop.Sdk//24.08` runtimes on the build machine.
 
 Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
 ### How it works
 
 The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers/troubleshooting. The renderer (React, in `src/`) talks to a headless backend the app launches for you — a `hermes serve` process that serves the `tui_gateway` JSON-RPC/WebSocket API — through the framework-agnostic client in [`apps/shared`](../shared/) (the same client the web dashboard consumes), and reuses the agent runtime rather than embedding `hermes --tui`. The app is **self-contained**: it runs its own `hermes serve` backend and never opens or requires the web dashboard UI. (For backward compatibility, a runtime that predates the `serve` command automatically falls back to a headless `dashboard --no-open` — see `electron/backend-command.ts` — so mid-upgrade installs never break.) The install, backend-resolution, and self-update logic all live in `electron/main.ts`.
+
+The remote-client flavor bakes `HERMES_DESKTOP_REMOTE_ONLY=1` into the Electron bundles. It rejects local connection modes before backend resolution, omits the install stamp used by bootstrap, and waits for first-run remote configuration instead of probing for Python or cloning Hermes Agent. Its app ID, user-data directory, executable, and artifacts are distinct from the full desktop app.
+
+The Flatpak grants network, Wayland/X11, audio, GPU, notification, FileManager, and Secret Service access, but not blanket home-directory access. Agent workspace data and tool calls come from the connected Hermes host. The embedded desktop terminal remains client-local; inside Flatpak it is limited to the sandbox and desktop portals.
 
 ### Verification
 
@@ -102,7 +115,7 @@ npm run test:desktop:all
 
 ### Troubleshooting
 
-Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.
+Full-app boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks). Standalone-client logs live under the app's user-data directory (`Hermes Remote/logs/desktop.log`) and are available through **Settings → Gateway → Open logs**.
 
 **macOS / Linux:**
 

@@ -65,6 +65,30 @@ def test_validate_rejects_media_model_on_custom_provider_pointed_at_xai():
     assert "context window of 1,024 tokens" in result["message"]
 
 
+def test_validate_does_not_autocorrect_media_model_on_custom_xai_endpoint():
+    with (
+        patch(
+            "hermes_cli.models.probe_api_models",
+            return_value={
+                "models": ["grok-4.3", "grok-imagine-video"],
+                "probed_url": "https://api.x.ai/v1/models",
+            },
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=1_024),
+    ):
+        result = validate_requested_model(
+            "grok-iamgine-video",
+            "custom:xai-direct",
+            api_key="dummy",
+            base_url="https://api.x.ai/v1",
+        )
+
+    assert result["accepted"] is False
+    assert result["persist"] is False
+    assert result.get("hard_reject") is True
+    assert "context window of 1,024 tokens" in result["message"]
+
+
 def test_validate_does_not_apply_xai_floor_to_other_custom_endpoints():
     with patch(
         "hermes_cli.models.probe_api_models",

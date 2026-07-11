@@ -4196,6 +4196,9 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
+                floor_rejection = _reject_below_main_context_floor(auto[0])
+                if floor_rejection is not None:
+                    return floor_rejection
                 return {
                     "accepted": True,
                     "persist": True,

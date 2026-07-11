@@ -10613,6 +10613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
                 _msg_config_ctx = None
                 _msg_cfg = None
+                _msg_model_cfg = {}
                 _msg_custom_providers = []
                 try:
                     _msg_cfg = _load_gateway_config()

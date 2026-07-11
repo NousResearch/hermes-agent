@@ -43,6 +43,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
   oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
+  // Hermes Cloud: one portal login powers discovery + silent per-agent sign-in
+  // (cloud-auto-discovery Phase 3).
+  cloud: {
+    status: () => ipcRenderer.invoke('hermes:cloud:status'),
+    login: () => ipcRenderer.invoke('hermes:cloud:login'),
+    logout: () => ipcRenderer.invoke('hermes:cloud:logout'),
+    discover: org => ipcRenderer.invoke('hermes:cloud:discover', org),
+    agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl)
+  },
   profile: {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
@@ -194,6 +203,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:backend-exit', listener)
 
     return () => ipcRenderer.removeListener('hermes:backend-exit', listener)
+  },
+  // Soft gateway-mode apply finished tearing down the primary backend. Renderer
+  // should wipe session lists + re-dial without a window reload.
+  onConnectionApplied: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:connection:applied', listener)
+
+    return () => ipcRenderer.removeListener('hermes:connection:applied', listener)
   },
   onPowerResume: callback => {
     const listener = () => callback()

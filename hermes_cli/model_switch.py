@@ -548,7 +548,12 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
 
     # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
     # Lower number = preferred
-    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0}
+    # "sol" is the flagship tier of the GPT-5.6 series (sol > terra > luna);
+    # without it, alias resolution would tiebreak alphabetically and pick
+    # luna (the cheapest) for `/model gpt`. Unlike pro/max/plus/turbo it is a
+    # series codename, not a generic quality word — revisit if another vendor
+    # ever ships a "-sol" suffix that isn't a flagship.
+    _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0, "sol": 0}
     suffix_rank = _SUFFIX_RANK.get(suffix, 1)
 
     return version_key + (suffix_rank, suffix)
@@ -2208,6 +2213,7 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
                 }
@@ -2230,7 +2236,10 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            for model_id in _declared_model_ids(entry.get("models", {})):
+            declared_models = _declared_model_ids(entry.get("models", {}))
+            if declared_models:
+                groups[group_key]["has_explicit_models"] = True
+            for model_id in declared_models:
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
 
@@ -2293,11 +2302,13 @@ def list_authenticated_providers(
             #   the (possibly partial) ``models:`` subset configured for
             #   context-length overrides with the full live catalog.
             #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list
-            #   (or top-level ``model:``), the user is narrowing a public
-            #   endpoint to a specific subset (e.g. ollama.com /v1/models
-            #   returns 35 models but the user only wants 4). Preserve the
-            #   explicit list and skip live discovery.
+            # - Without an api_key but with an explicit ``models:`` list,
+            #   the user is narrowing a public endpoint to a specific subset
+            #   (e.g. ollama.com /v1/models returns 35 models but the user
+            #   only wants 4). Preserve the explicit list and skip live
+            #   discovery. The singular ``model:`` field is only the current
+            #   active selection and must not suppress discovery on local
+            #   no-key endpoints.
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
@@ -2315,7 +2326,7 @@ def list_authenticated_providers(
             should_probe = (
                 _can_probe_custom_provider(row_is_current=_grp_is_current)
                 and bool(api_url)
-                and (bool(api_key) or not grp["models"])
+                and (bool(api_key) or not grp.get("has_explicit_models"))
                 and grp.get("discover_models", True)
             )
             if should_probe:

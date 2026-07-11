@@ -530,11 +530,44 @@ export const en: Translations = {
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
+      modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
       remoteTitle: 'Remote gateway',
-      remoteDesc:
-        'Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
+      remoteAuthHint:
+        'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      cloudTitle: 'Hermes Cloud',
+      cloudDesc: 'Sign in once to Hermes Cloud and pick from the agents on your account — no URL to paste.',
+      cloudSignInTitle: 'Hermes Cloud',
+      cloudSignIn: 'Sign in to Hermes Cloud',
+      cloudSignedIn: 'Signed in to Hermes Cloud',
+      cloudNeedsSignIn: 'Sign in to Hermes Cloud to discover the agents on your account.',
+      cloudSignedInDesc: 'You are signed in. Pick an agent below; the session refreshes automatically.',
+      cloudAgentsTitle: 'Your agents',
+      cloudOrgPickerTitle: 'Choose an organization',
+      cloudOrgSelect: 'Select',
+      cloudOrgChange: 'Change org',
+      cloudOrgRole: role => `Role: ${role}`,
+      cloudLoadingAgents: 'Loading your agents…',
+      cloudNoAgents: {
+        before: 'No agents found on this account. Create one in the ',
+        linkText: 'Nous portal',
+        after: ', then refresh.'
+      },
+      cloudRefresh: 'Refresh',
+      cloudConnect: 'Connect',
+      cloudConnecting: 'Connecting…',
+      cloudDiscoverFailed: 'Could not load your Hermes Cloud agents',
+      cloudConnectFailed: 'Could not connect to that agent',
+      cloudSignInFailed: 'Hermes Cloud sign-in failed',
+      cloudSignedOutTitle: 'Signed out of Hermes Cloud',
+      cloudSignedOutMessage: 'Cleared the Hermes Cloud session.',
+      cloudConnectedTitle: 'Connected',
+      cloudConnectedPill: 'Connected',
+      cloudConnectedTo: name => `Connected to ${name}.`,
+      cloudAgentProvisioning: 'Provisioning…',
+      cloudStatusLabel: status => `Status: ${status}`,
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
@@ -568,7 +601,7 @@ export const en: Translations = {
       enterUrlFirst: 'Enter a remote URL first.',
       restartingTitle: 'Gateway connection restarting',
       savedTitle: 'Gateway settings saved',
-      restartingMessage: 'Hermes Desktop will reconnect using the saved settings.',
+      restartingMessage: 'Hermes Desktop will reconnect using the saved settings — the shell stays open.',
       savedMessage: 'Saved for the next restart.',
       connectedTo: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
       reachableTitle: 'Remote gateway reachable',
@@ -1897,6 +1930,10 @@ export const en: Translations = {
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
+      fireworks: {
+        short: 'direct model API',
+        description: 'Direct access to models hosted by Fireworks AI.'
+      },
       openrouter: {
         short: 'one key, many models',
         description: 'Hosts hundreds of models behind a single key. Good default for new installs.'

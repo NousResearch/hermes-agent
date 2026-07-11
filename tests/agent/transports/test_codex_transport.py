@@ -138,7 +138,7 @@ class TestCodexBuildKwargs:
                     {
                         "type": "message",
                         "role": "assistant",
-                        "status": "completed",
+                        "status": "in_progress",
                         "content": [{"type": "output_text", "text": "pong"}],
                         "id": "msg_short_but_connection_scoped",
                         "phase": "final_answer",
@@ -153,6 +153,33 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert "id" not in message_item
         assert message_item["phase"] == "final_answer"
+        assert message_item["status"] == "in_progress"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+    def test_github_responses_requires_literal_true(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_id",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses="false",
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert message_item["id"] == "msg_short_id"
 
     def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
         messages = [

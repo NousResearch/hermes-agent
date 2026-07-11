@@ -33,6 +33,8 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `DEVIN_CLI_PATH` | Alias for `HERMES_DEVIN_ACP_COMMAND` |
 | `HERMES_DEVIN_ACP_ARGS` | Override Devin ACP arguments (default: `acp`) |
 | `DEVIN_ACP_BASE_URL` | Override Devin ACP marker URL (default: `acp://devin`) |
+| `HERMES_ACP_PROCESS_REUSE` | Keep the ACP subprocess warm across turns (`1`/`true` default; set `0` to spawn per request) |
+| `HERMES_ACP_SESSION_REUSE` | Continue the same ACP `sessionId` when history grows (`1` default when process reuse is on; set `0` for `session/new` every prompt) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
 | `COPILOT_API_BASE_URL` | Override the Copilot API base URL (`copilot` provider) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |

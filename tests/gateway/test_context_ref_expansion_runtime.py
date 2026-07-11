@@ -280,6 +280,52 @@ async def test_at_reference_passes_compatible_custom_provider_context(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_at_reference_applies_custom_runtime_budget_to_preprocessor(monkeypatch):
+    """The custom runtime's real budget must reach reference expansion."""
+    runner = _make_runner()
+    source = _source()
+    captured = {}
+    custom_providers = [{
+        "name": "private",
+        "base_url": "https://private.example/v1",
+        "models": {"session/model": {"context_length": 32768}},
+    }]
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"model": {"default": "global/model", "context_length": 128000}, "custom_providers": custom_providers},
+    )
+    monkeypatch.setattr(runner, "_resolve_session_agent_runtime", lambda **_kwargs: (
+        "session/model",
+        {"provider": "custom:private", "api_key": "test", "base_url": "https://private.example/v1"},
+    ))
+
+    import hermes_cli.config as config_mod
+    import agent.model_metadata as model_meta_mod
+    import agent.context_references as ctx_mod
+
+    monkeypatch.setattr(config_mod, "get_compatible_custom_providers", lambda _cfg: custom_providers)
+    monkeypatch.setattr(config_mod, "get_custom_provider_context_length", lambda **_kwargs: 32768)
+
+    async def _fake_get_context(_model, **kwargs):
+        captured["config_context_length"] = kwargs["config_context_length"]
+        return kwargs["config_context_length"]
+
+    async def _preprocess(message, *, context_length, **_kwargs):
+        captured["preprocessor_budget"] = context_length
+        return ContextReferenceResult(message="expanded", original_message=message, expanded=True)
+
+    monkeypatch.setattr(model_meta_mod, "get_model_context_length_async", _fake_get_context)
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _preprocess)
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text="@file:note", source=source), source=source, history=[]
+    )
+    assert result == "expanded"
+    assert captured == {"config_context_length": 32768, "preprocessor_budget": 32768}
+
+
+@pytest.mark.asyncio
 async def test_at_reference_ignores_global_context_for_session_model_override(monkeypatch):
     """A session model override must not inherit another model's global limit."""
     runner = _make_runner()

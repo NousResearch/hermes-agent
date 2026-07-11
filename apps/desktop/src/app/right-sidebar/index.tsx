@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $connection, $currentCwd } from '@/store/session'
+import { $activeSessionId, $connection, $currentCwd, $selectedStoredSessionId } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
@@ -41,9 +41,12 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
+  const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const connection = useStore($connection)
   const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
-  const workspace = useBrowserWorkspace(currentCwd, connectionKey)
+  const sessionKey = selectedStoredSessionId || activeSessionId || 'detached'
+  const workspace = useBrowserWorkspace(currentCwd, connectionKey, sessionKey)
   const browserCwd = workspace.location
   const hasWorkspace = Boolean(browserCwd || currentCwd)
 
@@ -58,7 +61,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     rootError,
     rootLoading,
     setNodeOpen
-  } = useProjectTree(browserCwd)
+  } = useProjectTree(browserCwd, sessionKey)
 
   const canCollapse = Object.values(openState).some(Boolean)
 
@@ -238,6 +241,7 @@ function compactLocation(path: string): string {
   if (path === '/') {
     return '/'
   }
+
   const parts = path.split(/[\\/]+/).filter(Boolean)
 
   return parts.slice(-2).join(' / ') || path
@@ -306,6 +310,7 @@ function WorkspaceLocationControls({
       if (result.error) {
         throw new Error(result.error)
       }
+
       browserNavigate(candidate)
       setEditing(false)
     } catch {
@@ -439,6 +444,7 @@ function CreateEntryDialog({
     if (!kind || !nextName || busy) {
       return
     }
+
     setBusy(true)
     setError(null)
 

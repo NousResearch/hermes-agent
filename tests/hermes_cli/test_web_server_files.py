@@ -658,10 +658,11 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
 
-    # Listing the credential dir itself yields nothing exploitable: every child
-    # is filtered because the parent component is a credential dir.
-    mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
-    assert [e["name"] for e in mcp_listing.json()["entries"]] == []
+    # Listing the credential directory itself is denied, rather than returning a
+    # successful response that implies the sensitive path is browsable.
+    for directory in (mcp_dir, pairing_dir):
+        listing = client.get("/api/files", params={"path": str(directory)})
+        assert listing.status_code == 403
 
 
 def test_benign_subdir_file_still_browsable(forced_files_client):

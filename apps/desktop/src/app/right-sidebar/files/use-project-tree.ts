@@ -106,6 +106,7 @@ const initialState: ProjectTreeState = {
 const inflight = new Set<string>()
 const $projectTree = atom<ProjectTreeState>(initialState)
 const snapshots = new Map<string, ProjectTreeState>()
+const SNAPSHOT_LIMIT = 24
 let nextRootRequestId = 0
 let lastConnectionKey = ''
 let activeConnectionKey = 'local:'
@@ -117,11 +118,38 @@ let revalidateQueued = false
 // slow cadence so the tree self-heals instead of staying "UNREADABLE" forever.
 const ROOT_ERROR_RETRY_MS = 3_000
 
+function rememberSnapshot(key: string, state: ProjectTreeState): void {
+  snapshots.delete(key)
+  snapshots.set(key, state)
+
+  while (snapshots.size > SNAPSHOT_LIMIT) {
+    const oldest = snapshots.keys().next().value
+
+    if (oldest === undefined) {
+      break
+    }
+
+    snapshots.delete(oldest)
+  }
+}
+
+function readSnapshot(key: string): ProjectTreeState | undefined {
+  const snapshot = snapshots.get(key)
+
+  if (snapshot) {
+    snapshots.delete(key)
+    snapshots.set(key, snapshot)
+  }
+
+  return snapshot
+}
+
 function setProjectTree(updater: (current: ProjectTreeState) => ProjectTreeState) {
   const next = updater($projectTree.get())
   $projectTree.set(next)
+
   if (next.cwd && next.loaded) {
-    snapshots.set(`${activeConnectionKey}:${next.cwd}`, next)
+    rememberSnapshot(`${activeConnectionKey}:${next.cwd}`, next)
   }
 }
 
@@ -163,18 +191,17 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
     return
   }
 
-  const current = $projectTree.get()
+  let current = $projectTree.get()
 
   if (!force && current.cwd === cwd && (current.loaded || current.rootLoading)) {
     return
   }
 
-  const cached = snapshots.get(`${activeConnectionKey}:${cwd}`)
+  const cached = readSnapshot(`${activeConnectionKey}:${cwd}`)
 
   if (!force && current.cwd !== cwd && cached) {
-    $projectTree.set(cached)
-
-    return
+    current = { ...cached, rootLoading: true }
+    $projectTree.set(current)
   }
 
   const requestId = nextRootRequestId + 1
@@ -310,11 +337,11 @@ async function revalidateTree(cwd: string): Promise<void> {
  * disclosure caret shows for unloaded folders. `refreshRoot` invalidates the
  * whole tree (used after cwd change or manual refresh).
  */
-export function useProjectTree(cwd: string): UseProjectTreeResult {
+export function useProjectTree(cwd: string, sessionKey = 'detached'): UseProjectTreeResult {
   const state = useStore($projectTree)
   const connection = useStore($connection)
   const workspaceTick = useStore($workspaceChangeTick)
-  const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
+  const connectionKey = `${sessionKey}:${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
 

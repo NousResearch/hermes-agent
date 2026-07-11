@@ -3,12 +3,14 @@ import { atom } from 'nanostores'
 import { useEffect } from 'react'
 
 const HISTORY_LIMIT = 50
+const WORKSPACE_LIMIT = 24
 
 export interface BrowserWorkspaceState {
   back: string[]
   connectionKey: string
   forward: string[]
   location: string
+  sessionKey: string
   sessionRoot: string
 }
 
@@ -17,10 +19,36 @@ const initialState: BrowserWorkspaceState = {
   connectionKey: '',
   forward: [],
   location: '',
+  sessionKey: '',
   sessionRoot: ''
 }
 
 export const $browserWorkspace = atom<BrowserWorkspaceState>(initialState)
+const workspaces = new Map<string, BrowserWorkspaceState>()
+
+function registryKey(sessionKey: string, connectionKey: string): string {
+  return `${sessionKey}\0${connectionKey}`
+}
+
+function setWorkspace(next: BrowserWorkspaceState): void {
+  $browserWorkspace.set(next)
+
+  if (next.sessionKey && next.connectionKey) {
+    const key = registryKey(next.sessionKey, next.connectionKey)
+    workspaces.delete(key)
+    workspaces.set(key, next)
+
+    while (workspaces.size > WORKSPACE_LIMIT) {
+      const oldest = workspaces.keys().next().value
+
+      if (oldest === undefined) {
+        break
+      }
+
+      workspaces.delete(oldest)
+    }
+  }
+}
 
 function bounded(items: string[]): string[] {
   return items.slice(-HISTORY_LIMIT)
@@ -46,6 +74,7 @@ export function browserParentPath(path: string): string {
   if (!value || value === '/' || /^[A-Za-z]:[\\/]?$/.test(value)) {
     return value
   }
+
   const index = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'))
 
   if (index < 0) {
@@ -68,20 +97,26 @@ export function getBrowserWorkspace(): BrowserWorkspaceState {
 }
 
 export function resetBrowserWorkspace(): void {
+  workspaces.clear()
   $browserWorkspace.set(initialState)
 }
 
-export function syncBrowserWorkspace(sessionCwd: string, connectionKey: string): void {
+export function syncBrowserWorkspace(sessionCwd: string, connectionKey: string, sessionKey = 'detached'): void {
   const cwd = clean(sessionCwd)
   const current = $browserWorkspace.get()
 
-  if (current.connectionKey !== connectionKey) {
-    $browserWorkspace.set({ back: [], connectionKey, forward: [], location: cwd, sessionRoot: cwd })
+  if (current.connectionKey !== connectionKey || current.sessionKey !== sessionKey) {
+    const saved = workspaces.get(registryKey(sessionKey, connectionKey))
+    setWorkspace(
+      saved
+        ? { ...saved, sessionRoot: cwd }
+        : { back: [], connectionKey, forward: [], location: cwd, sessionKey, sessionRoot: cwd }
+    )
 
     return
   }
 
-  $browserWorkspace.set({ ...current, location: current.location || cwd, sessionRoot: cwd })
+  setWorkspace({ ...current, location: current.location || cwd, sessionRoot: cwd })
 }
 
 export function browserNavigate(nextPath: string): void {
@@ -91,7 +126,8 @@ export function browserNavigate(nextPath: string): void {
   if (!next || next === current.location) {
     return
   }
-  $browserWorkspace.set({
+
+  setWorkspace({
     ...current,
     back: current.location ? bounded([...current.back, current.location]) : current.back,
     forward: [],
@@ -106,7 +142,8 @@ export function browserBack(): void {
   if (!next) {
     return
   }
-  $browserWorkspace.set({
+
+  setWorkspace({
     ...current,
     back: current.back.slice(0, -1),
     forward: current.location ? [current.location, ...current.forward].slice(0, HISTORY_LIMIT) : current.forward,
@@ -121,7 +158,8 @@ export function browserForward(): void {
   if (!next) {
     return
   }
-  $browserWorkspace.set({
+
+  setWorkspace({
     ...current,
     back: current.location ? bounded([...current.back, current.location]) : current.back,
     forward: rest,
@@ -138,9 +176,13 @@ export function browserSessionRoot(): void {
   browserNavigate($browserWorkspace.get().sessionRoot)
 }
 
-export function useBrowserWorkspace(sessionCwd: string, connectionKey: string): BrowserWorkspaceState {
+export function useBrowserWorkspace(
+  sessionCwd: string,
+  connectionKey: string,
+  sessionKey: string
+): BrowserWorkspaceState {
   const state = useStore($browserWorkspace)
-  useEffect(() => syncBrowserWorkspace(sessionCwd, connectionKey), [connectionKey, sessionCwd])
+  useEffect(() => syncBrowserWorkspace(sessionCwd, connectionKey, sessionKey), [connectionKey, sessionCwd, sessionKey])
 
   return state
 }

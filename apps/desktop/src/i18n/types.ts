@@ -90,6 +90,27 @@ export interface Translations {
     off: string
   }
 
+  editorSearch: {
+    find: string
+    replace: string
+    findReplace: string
+    next: string
+    previous: string
+    selectAll: string
+    matchCase: string
+    regexp: string
+    wholeWord: string
+    replaceAll: string
+    close: string
+    noResults: string
+    invalidRegex: string
+    currentMatch: string
+    onLine: string
+    replacedMatchOnLine: string
+    replacedMatches: string
+    matchCount: (current: number, total: number) => string
+  }
+
   fileMenu: {
     revealFinder: string
     revealExplorer: string
@@ -107,6 +128,7 @@ export interface Translations {
     moveConfirm: string
     deleteTitle: (name: string) => string
     deleteBody: string
+    deleteRemoteBody: string
     pathCopied: string
   }
 

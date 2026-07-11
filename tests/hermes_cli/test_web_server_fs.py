@@ -209,7 +209,7 @@ def test_fs_mutations_create_rename_move_and_delete(client, tmp_path):
     )
     assert moved.status_code == 200
     deleted = client.post(
-        "/api/fs/delete", json={"path": str(archive / "renamed.txt"), "browserRoot": str(root)}
+        "/api/fs/delete", json={"path": str(archive / "renamed.txt"), "browserRoot": str(archive)}
     )
     assert deleted.status_code == 200
     assert not (archive / "renamed.txt").exists()
@@ -262,3 +262,122 @@ def test_fs_mutations_reject_roots_descendants_collisions_and_sensitive_paths(cl
     assert symlink.is_symlink()
     assert broken_create.status_code == 409
     assert broken_symlink.is_symlink()
+
+
+def test_fs_locked_root_confines_reads_writes_and_mutations(client, tmp_path, monkeypatch):
+    root = tmp_path / "managed"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    inside_file = root / "inside.txt"
+    outside_file = outside / "outside.txt"
+    inside_file.write_text("inside")
+    outside_file.write_text("outside")
+    monkeypatch.setenv(web_server._MANAGED_FILES_ROOT_ENV, str(root))
+
+    assert client.get("/api/fs/list", params={"path": str(outside)}).status_code == 403
+    assert client.get("/api/fs/read-text", params={"path": str(outside_file)}).status_code == 403
+    assert client.get("/api/fs/read-data-url", params={"path": str(outside_file)}).status_code == 403
+    assert client.get("/api/fs/git-root", params={"path": str(outside)}).status_code == 403
+    assert client.post("/api/fs/write-text", json={"path": str(outside_file), "content": "changed"}).status_code == 403
+    assert client.post("/api/fs/mkdir", json={"parent": str(outside), "name": "escaped"}).status_code == 403
+    assert client.post("/api/fs/rename", json={"path": str(outside_file), "name": "renamed.txt"}).status_code == 403
+    assert (
+        client.post(
+            "/api/fs/move",
+            json={"source": str(inside_file), "destination": str(outside), "browserRoot": str(root)},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/fs/delete", json={"path": str(outside_file), "browserRoot": str(root)}
+        ).status_code
+        == 403
+    )
+
+    assert inside_file.read_text() == "inside"
+    assert outside_file.read_text() == "outside"
+    assert not (outside / "escaped").exists()
+
+
+def test_fs_locked_root_cannot_be_deleted_with_a_fake_browser_root(client, tmp_path, monkeypatch):
+    root = tmp_path / "managed"
+    root.mkdir()
+    (root / "keep.txt").write_text("keep")
+    monkeypatch.setenv(web_server._MANAGED_FILES_ROOT_ENV, str(root))
+
+    response = client.post(
+        "/api/fs/delete",
+        json={"path": str(root), "browserRoot": str(tmp_path / "fake-root")},
+    )
+
+    assert response.status_code in {400, 403}
+    assert (root / "keep.txt").read_text() == "keep"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [Path(".ssh/id_ed25519"), Path(".gnupg/private.key"), Path("mcp-tokens/server.json")],
+)
+def test_fs_mutations_reject_credential_trees(client, tmp_path, monkeypatch, relative):
+    root = tmp_path / "managed"
+    target = root / relative
+    target.parent.mkdir(parents=True)
+    target.write_text("secret")
+    monkeypatch.setenv(web_server._MANAGED_FILES_ROOT_ENV, str(root))
+
+    response = client.post(
+        "/api/fs/delete", json={"path": str(target), "browserRoot": str(root)}
+    )
+
+    assert response.status_code == 403
+    assert target.read_text() == "secret"
+
+
+def test_fs_mutations_resolve_sensitive_ancestor_symlinks(client, tmp_path, monkeypatch):
+    root = tmp_path / "managed"
+    sensitive = root / ".gnupg"
+    sensitive.mkdir(parents=True)
+    target = sensitive / "id_ed25519"
+    target.write_text("secret")
+    alias = root / "ordinary"
+    alias.symlink_to(sensitive, target_is_directory=True)
+    monkeypatch.setenv(web_server._MANAGED_FILES_ROOT_ENV, str(root))
+
+    response = client.post(
+        "/api/fs/delete", json={"path": str(alias / target.name), "browserRoot": str(root)}
+    )
+
+    assert response.status_code == 403
+    assert target.read_text() == "secret"
+
+
+def test_fs_rename_never_overwrites_a_destination_inserted_after_collision_check(
+    client, tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "source.txt"
+    destination = root / "destination.txt"
+    source.write_text("source")
+    original_exists = getattr(web_server, "_fs_mutation_exists")
+    inserted = False
+
+    def racing_exists(target):
+        nonlocal inserted
+        exists = original_exists(target)
+        if target == destination and not exists and not inserted:
+            destination.write_text("victim")
+            inserted = True
+        return exists
+
+    monkeypatch.setattr(web_server, "_fs_mutation_exists", racing_exists)
+
+    response = client.post(
+        "/api/fs/rename", json={"path": str(source), "name": destination.name}
+    )
+
+    assert response.status_code == 409
+    assert source.read_text() == "source"
+    assert destination.read_text() == "victim"

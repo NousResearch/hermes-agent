@@ -16,6 +16,7 @@ import atexit
 import base64
 import binascii
 import concurrent.futures
+import errno
 import functools
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1288,9 +1289,14 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "google_oauth.json",
     "webhook_subscriptions.json",
     "bws_cache.json",
-    # git's credential-store helper cache (agent.file_safety blocks this too).
+    # git and common CLI credential-store files.
     ".git-credentials",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
 })
+
+_SENSITIVE_MANAGED_FILE_EXTENSIONS = frozenset({".kdbx", ".key", ".p12", ".pem", ".pfx"})
 
 # Directory names whose entire subtree is credential material. Both canonical
 # guards deny these as directory trees, not basenames:
@@ -1302,6 +1308,8 @@ _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
 # so these trees are blocked wherever they appear under the browsable root,
 # without needing to resolve them relative to HERMES_HOME.
 _SENSITIVE_MANAGED_DIR_NAMES = frozenset({
+    ".gnupg",
+    ".ssh",
     "mcp-tokens",
     "pairing",
 })
@@ -1325,6 +1333,10 @@ def _is_sensitive_filename(name: str) -> bool:
     lowered = name.lower()
     if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
         return True
+    if Path(lowered).suffix in _SENSITIVE_MANAGED_FILE_EXTENSIONS:
+        return True
+    if lowered.startswith("id_") and not lowered.endswith(".pub"):
+        return True
     return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
 
 
@@ -1340,10 +1352,8 @@ def _is_sensitive_path(path: Path) -> bool:
     the canonical guards cover as directory trees but a basename-only check
     would miss.
 
-    Read-side only: this guards list/read/download (the #57505 exfil surface).
-    The write endpoints (upload/mkdir/delete) are a separate threat class
-    handled by the write-path checks; extending this guard to them is out of
-    scope for this fix.
+    This guard is shared by every read and write path in both managed-files and
+    workspace-files APIs so the policy cannot drift between transports.
     """
     if _is_sensitive_filename(path.name):
         return True
@@ -1718,8 +1728,29 @@ def _resolve_managed_path(
 
     if root is not None and not _path_is_under(root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
+    if _is_sensitive_path(resolved):
+        action = "Mutation" if for_write else "Access"
+        raise HTTPException(status_code=403, detail=f"{action} of sensitive files is not allowed")
 
     return policy, resolved, str(resolved)
+
+
+def _fs_request_path(
+    raw_path: str,
+    request: Request,
+    *,
+    preserve_leaf_symlink: bool = False,
+    for_write: bool = False,
+) -> tuple[ManagedFilesPolicy, Path]:
+    """Resolve a workspace path and enforce the authoritative managed-files policy."""
+    policy = _managed_files_policy(request)
+    target = _fs_path(raw_path, preserve_leaf_symlink=preserve_leaf_symlink)
+    if policy.locked_root is not None and not _path_is_under(policy.locked_root, target):
+        raise HTTPException(status_code=403, detail="Path is outside the managed files root")
+    if _is_sensitive_path(target):
+        action = "Mutation" if for_write else "Access"
+        raise HTTPException(status_code=403, detail=f"{action} of sensitive files is not allowed")
+    return policy, target
 
 
 def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
@@ -2142,13 +2173,47 @@ def _fs_mutation_exists(target: Path) -> bool:
         raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
 
 
-def _fs_guard_mutation_path(target: Path, *, browser_root: Path | None = None) -> None:
+def _fs_guard_mutation_path(
+    target: Path,
+    *,
+    browser_root: Path | None = None,
+    locked_root: Path | None = None,
+) -> None:
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot mutate the filesystem root")
-    if browser_root is not None and target == browser_root:
-        raise HTTPException(status_code=400, detail="Cannot mutate the browser root")
+    if locked_root is not None and target == locked_root:
+        raise HTTPException(status_code=400, detail="Cannot mutate the managed files root")
+    if browser_root is not None:
+        if browser_root.parent == browser_root:
+            raise HTTPException(status_code=400, detail="Filesystem root cannot be a browser mutation root")
+        if target == browser_root:
+            raise HTTPException(status_code=400, detail="Cannot mutate the browser root")
+        if not _path_is_under(browser_root, target):
+            raise HTTPException(status_code=403, detail="Path is outside the browser root")
     if _is_sensitive_path(target):
         raise HTTPException(status_code=403, detail="Sensitive paths cannot be mutated")
+
+
+def _fs_move_no_replace(source: Path, target: Path, source_stat: os.stat_result) -> None:
+    """Relocate without ever replacing a concurrently-created file."""
+    try:
+        if stat.S_ISREG(source_stat.st_mode):
+            os.link(source, target, follow_symlinks=False)
+            try:
+                source.unlink()
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+            return
+        source.rename(target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail=f'"{target.name}" already exists')
+    except OSError as exc:
+        if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise HTTPException(status_code=409, detail=f'"{target.name}" already exists')
+        if exc.errno == errno.EXDEV:
+            raise HTTPException(status_code=409, detail="Cross-volume moves are not supported")
+        raise
 
 
 class FsMkdir(BaseModel):
@@ -2173,12 +2238,14 @@ class FsMove(BaseModel):
 
 
 @app.post("/api/fs/mkdir")
-async def fs_mkdir(payload: FsMkdir):
-    parent = _fs_path(payload.parent)
+async def fs_mkdir(payload: FsMkdir, request: Request):
+    policy, parent = _fs_request_path(payload.parent, request, for_write=True)
     name = _fs_basename(payload.name)
     _fs_mutation_stat(parent, directory=True)
-    target = _fs_path(str(parent / name), preserve_leaf_symlink=True)
-    _fs_guard_mutation_path(target)
+    _, target = _fs_request_path(
+        str(parent / name), request, preserve_leaf_symlink=True, for_write=True
+    )
+    _fs_guard_mutation_path(target, locked_root=policy.locked_root)
     if _fs_mutation_exists(target):
         raise HTTPException(status_code=409, detail=f'"{name}" already exists')
     try:
@@ -2193,12 +2260,14 @@ async def fs_mkdir(payload: FsMkdir):
 
 
 @app.post("/api/fs/create-file")
-async def fs_create_file(payload: FsMkdir):
-    parent = _fs_path(payload.parent)
+async def fs_create_file(payload: FsMkdir, request: Request):
+    policy, parent = _fs_request_path(payload.parent, request, for_write=True)
     name = _fs_basename(payload.name)
     _fs_mutation_stat(parent, directory=True)
-    target = _fs_path(str(parent / name), preserve_leaf_symlink=True)
-    _fs_guard_mutation_path(target)
+    _, target = _fs_request_path(
+        str(parent / name), request, preserve_leaf_symlink=True, for_write=True
+    )
+    _fs_guard_mutation_path(target, locked_root=policy.locked_root)
     if _fs_mutation_exists(target):
         raise HTTPException(status_code=409, detail=f'"{name}" already exists')
 
@@ -2218,21 +2287,23 @@ async def fs_create_file(payload: FsMkdir):
 
 
 @app.post("/api/fs/rename")
-async def fs_rename(payload: FsRename):
-    source = _fs_path(payload.path, preserve_leaf_symlink=True)
+async def fs_rename(payload: FsRename, request: Request):
+    policy, source = _fs_request_path(
+        payload.path, request, preserve_leaf_symlink=True, for_write=True
+    )
     name = _fs_basename(payload.name)
-    _fs_guard_mutation_path(source)
-    _fs_mutation_stat(source)
-    target = _fs_path(str(source.parent / name), preserve_leaf_symlink=True)
-    _fs_guard_mutation_path(target)
+    _fs_guard_mutation_path(source, locked_root=policy.locked_root)
+    source_stat = _fs_mutation_stat(source)
+    _, target = _fs_request_path(
+        str(source.parent / name), request, preserve_leaf_symlink=True, for_write=True
+    )
+    _fs_guard_mutation_path(target, locked_root=policy.locked_root)
     if source == target:
         return {"ok": True, "path": str(target)}
     if _fs_mutation_exists(target):
         raise HTTPException(status_code=409, detail=f'"{name}" already exists')
     try:
-        await asyncio.to_thread(source.rename, target)
-    except FileExistsError:
-        raise HTTPException(status_code=409, detail=f'"{name}" already exists')
+        await asyncio.to_thread(_fs_move_no_replace, source, target, source_stat)
     except PermissionError:
         raise HTTPException(status_code=403, detail="Path is not writable")
     except OSError as exc:
@@ -2241,10 +2312,16 @@ async def fs_rename(payload: FsRename):
 
 
 @app.post("/api/fs/delete")
-async def fs_delete(payload: FsDelete):
-    target = _fs_path(payload.path, preserve_leaf_symlink=True)
-    browser_root = _fs_path(payload.browserRoot, preserve_leaf_symlink=True)
-    _fs_guard_mutation_path(target, browser_root=browser_root)
+async def fs_delete(payload: FsDelete, request: Request):
+    policy, target = _fs_request_path(
+        payload.path, request, preserve_leaf_symlink=True, for_write=True
+    )
+    _, browser_root = _fs_request_path(
+        payload.browserRoot, request, preserve_leaf_symlink=True, for_write=True
+    )
+    _fs_guard_mutation_path(
+        target, browser_root=browser_root, locked_root=policy.locked_root
+    )
     st = _fs_mutation_stat(target)
     try:
         if stat.S_ISDIR(st.st_mode):
@@ -2259,23 +2336,29 @@ async def fs_delete(payload: FsDelete):
 
 
 @app.post("/api/fs/move")
-async def fs_move(payload: FsMove):
-    source = _fs_path(payload.source, preserve_leaf_symlink=True)
-    destination = _fs_path(payload.destination)
-    browser_root = _fs_path(payload.browserRoot, preserve_leaf_symlink=True)
-    _fs_guard_mutation_path(source, browser_root=browser_root)
+async def fs_move(payload: FsMove, request: Request):
+    policy, source = _fs_request_path(
+        payload.source, request, preserve_leaf_symlink=True, for_write=True
+    )
+    _, destination = _fs_request_path(payload.destination, request, for_write=True)
+    _, browser_root = _fs_request_path(
+        payload.browserRoot, request, preserve_leaf_symlink=True, for_write=True
+    )
+    _fs_guard_mutation_path(
+        source, browser_root=browser_root, locked_root=policy.locked_root
+    )
     source_st = _fs_mutation_stat(source)
     _fs_mutation_stat(destination, directory=True)
     if stat.S_ISDIR(source_st.st_mode) and (destination == source or source in destination.parents):
         raise HTTPException(status_code=400, detail="Cannot move a directory into itself or a descendant")
-    target = _fs_path(str(destination / source.name), preserve_leaf_symlink=True)
-    _fs_guard_mutation_path(target)
+    _, target = _fs_request_path(
+        str(destination / source.name), request, preserve_leaf_symlink=True, for_write=True
+    )
+    _fs_guard_mutation_path(target, locked_root=policy.locked_root)
     if _fs_mutation_exists(target):
         raise HTTPException(status_code=409, detail=f'"{source.name}" already exists')
     try:
-        await asyncio.to_thread(shutil.move, str(source), str(target))
-    except FileExistsError:
-        raise HTTPException(status_code=409, detail=f'"{source.name}" already exists')
+        await asyncio.to_thread(_fs_move_no_replace, source, target, source_st)
     except PermissionError:
         raise HTTPException(status_code=403, detail="Path is not writable")
     except OSError as exc:
@@ -2284,17 +2367,18 @@ async def fs_move(payload: FsMove):
 
 
 @app.get("/api/fs/list")
-async def fs_list(path: str):
-    target = _fs_path(path)
+async def fs_list(path: str, request: Request):
+    _, target = _fs_request_path(path, request)
     try:
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN:
+                entry_path = target / entry.name
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(entry_path):
                     continue
                 entries.append({
                     "name": entry.name,
-                    "path": str(target / entry.name),
+                    "path": str(entry_path),
                     "isDirectory": entry.is_dir(follow_symlinks=False),
                 })
         entries.sort(key=lambda item: (not item["isDirectory"], item["name"].lower(), item["name"]))
@@ -2310,8 +2394,9 @@ async def fs_list(path: str):
 
 
 @app.get("/api/fs/read-text")
-async def fs_read_text(path: str):
-    target, st = _fs_regular_file(_fs_path(path))
+async def fs_read_text(path: str, request: Request):
+    _, requested = _fs_request_path(path, request)
+    target, st = _fs_regular_file(requested)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     bytes_to_read = min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
@@ -2339,7 +2424,7 @@ class FsWriteText(BaseModel):
 
 
 @app.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText):
+async def fs_write_text(payload: FsWriteText, request: Request):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the local Electron ``hermes:fs:writeText`` hardening: the path is
@@ -2350,13 +2435,15 @@ async def fs_write_text(payload: FsWriteText):
     original. Stale-on-disk detection is the client's job (re-read before save),
     so both transports behave identically.
     """
-    target = _fs_path(payload.path)
+    _, target = _fs_request_path(
+        payload.path, request, preserve_leaf_symlink=True, for_write=True
+    )
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
     try:
-        st: Optional[os.stat_result] = target.stat()
+        st: Optional[os.stat_result] = target.lstat()
     except FileNotFoundError:
         st = None
     except PermissionError:
@@ -2386,8 +2473,9 @@ async def fs_write_text(payload: FsWriteText):
 
 
 @app.get("/api/fs/read-data-url")
-async def fs_read_data_url(path: str):
-    target, st = _fs_regular_file(_fs_path(path))
+async def fs_read_data_url(path: str, request: Request):
+    _, requested = _fs_request_path(path, request)
+    target, st = _fs_regular_file(requested)
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     try:
@@ -2400,19 +2488,25 @@ async def fs_read_data_url(path: str):
 
 
 @app.get("/api/fs/git-root")
-async def fs_git_root(path: str):
-    target = _fs_path(path)
+async def fs_git_root(path: str, request: Request):
+    policy, target = _fs_request_path(path, request)
     try:
         st = target.stat()
         start = target if stat.S_ISDIR(st.st_mode) else target.parent
     except OSError:
         start = target
-    return {"root": _fs_find_git_root(start)}
+    root = _fs_find_git_root(start)
+    if root is not None and policy.locked_root is not None:
+        resolved_root = Path(root).resolve(strict=False)
+        if not _path_is_under(policy.locked_root, resolved_root):
+            root = None
+    return {"root": root}
 
 
 @app.get("/api/fs/default-cwd")
-async def fs_default_cwd():
-    cwd = _fs_default_cwd()
+async def fs_default_cwd(request: Request):
+    policy = _managed_files_policy(request)
+    cwd = str(policy.locked_root) if policy.locked_root is not None else _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}
 
 

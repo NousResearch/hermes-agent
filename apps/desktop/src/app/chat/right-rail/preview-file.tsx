@@ -15,7 +15,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
-import { CodeEditor } from '@/components/chat/code-editor'
+import { CodeEditor, type CodeEditorApi } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
@@ -388,14 +388,16 @@ function PreviewModeSwitcher({
 
 // Cancel / Save controls rendered as the header's trailing slot (not a bar of
 // their own) so edit mode reuses the read-mode header row verbatim.
-function EditControls({
+export function EditControls({
   dirty,
   onCancel,
+  onFindReplace,
   onSave,
   saving
 }: {
   dirty: boolean
   onCancel: () => void
+  onFindReplace: () => void
   onSave: () => void
   saving: boolean
 }) {
@@ -403,6 +405,15 @@ function EditControls({
 
   return (
     <>
+      <button
+        aria-label={t.editorSearch.findReplace}
+        className="flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        onClick={onFindReplace}
+        title={`${t.editorSearch.findReplace} (Ctrl+H / ⌘⌥F)`}
+        type="button"
+      >
+        {t.editorSearch.findReplace}
+      </button>
       <button
         className="flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={onCancel}
@@ -575,6 +586,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [editing, setEditing] = useState(false)
   const draftRef = useRef('')
   const baselineRef = useRef('')
+  const editorApiRef = useRef<CodeEditorApi | null>(null)
   const [dirty, setDirty] = useState(false)
   const [editorKey, setEditorKey] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -822,7 +834,15 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           active="source"
           modes={[]}
           onSelect={() => {}}
-          trailing={<EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />}
+          trailing={
+            <EditControls
+              dirty={dirty}
+              onCancel={cancelEdit}
+              onFindReplace={() => editorApiRef.current?.findReplace()}
+              onSave={() => void saveEdit()}
+              saving={saving}
+            />
+          }
         />
         {conflict && (
           <div className="shrink-0 border-b border-amber-400/40 bg-amber-50 px-3 py-2 text-[0.7rem] text-amber-900 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-100">
@@ -853,6 +873,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         )}
         <div className="min-h-0 flex-1 overflow-hidden">
           <CodeEditor
+            apiRef={editorApiRef}
             filePath={filePath}
             initialValue={baselineRef.current}
             key={editorKey}

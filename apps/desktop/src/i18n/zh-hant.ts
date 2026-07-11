@@ -45,6 +45,27 @@ export const zhHant = defineLocale({
     off: '關閉'
   },
 
+  editorSearch: {
+    find: '查找',
+    replace: '取代',
+    findReplace: '查找和取代',
+    next: '下一個相符項目',
+    previous: '上一個相符項目',
+    selectAll: '選取所有相符項目',
+    matchCase: '區分大小寫',
+    regexp: '規則運算式',
+    wholeWord: '全字相符',
+    replaceAll: '全部取代',
+    close: '關閉搜尋',
+    noResults: '沒有結果',
+    invalidRegex: '無效的規則運算式',
+    currentMatch: '目前的相符項目',
+    onLine: '位於行',
+    replacedMatchOnLine: '已取代第 $ 行的相符項目',
+    replacedMatches: '已取代 $ 個相符項目',
+    matchCount: (current, total) => `${current} / ${total}`
+  },
+
   fileMenu: {
     revealFinder: '在 Finder 中顯示',
     revealExplorer: '在檔案總管中顯示',
@@ -62,6 +83,7 @@ export const zhHant = defineLocale({
     moveConfirm: '移動',
     deleteTitle: name => `刪除 ${name}？`,
     deleteBody: '將移至垃圾桶，你可以從那裡還原。',
+    deleteRemoteBody: '這會從遠端電腦永久刪除此項目，且無法復原。',
     pathCopied: '已複製路徑'
   },
 

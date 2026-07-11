@@ -45,6 +45,27 @@ export const ja = defineLocale({
     off: 'オフ'
   },
 
+  editorSearch: {
+    find: '検索',
+    replace: '置換',
+    findReplace: '検索と置換',
+    next: '次の一致',
+    previous: '前の一致',
+    selectAll: 'すべての一致を選択',
+    matchCase: '大文字と小文字を区別',
+    regexp: '正規表現',
+    wholeWord: '単語単位',
+    replaceAll: 'すべて置換',
+    close: '検索を閉じる',
+    noResults: '一致なし',
+    invalidRegex: '無効な正規表現',
+    currentMatch: '現在の一致',
+    onLine: '行番号',
+    replacedMatchOnLine: '$ 行目の一致を置換しました',
+    replacedMatches: '$ 件の一致を置換しました',
+    matchCount: (current, total) => `${current} / ${total}`
+  },
+
   fileMenu: {
     revealFinder: 'Finder で表示',
     revealExplorer: 'エクスプローラーで表示',
@@ -62,6 +83,7 @@ export const ja = defineLocale({
     moveConfirm: '移動',
     deleteTitle: name => `${name} を削除しますか？`,
     deleteBody: 'ゴミ箱に移動します。そこから復元できます。',
+    deleteRemoteBody: 'リモートマシンから完全に削除されます。この操作は元に戻せません。',
     pathCopied: 'パスをコピーしました'
   },
 

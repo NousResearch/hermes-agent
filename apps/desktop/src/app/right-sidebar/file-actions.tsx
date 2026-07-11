@@ -30,7 +30,6 @@ import {
   revealFile,
   toRelativePath
 } from '@/store/file-actions'
-import { notifyError } from '@/store/notifications'
 
 const IS_WIN = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')
 
@@ -43,6 +42,10 @@ function parentWorkspacePath(value: string): string {
   const slash = normalized.lastIndexOf('/')
 
   return slash <= 0 ? '/' : normalized.slice(0, slash)
+}
+
+function actionErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : translateNow('errors.genericFailure')
 }
 
 // F2 starts a rename anywhere; Enter starts one when a row is focused (VS Code).
@@ -120,21 +123,26 @@ export function FileEntryContextMenu({
 export function FileActionDialogs() {
   const { t } = useI18n()
   const dialog = useStore($fileActionDialog)
+  const remoteFs = isDesktopFsRemoteMode()
   const deleting = dialog?.kind === 'delete'
   const moving = dialog?.kind === 'move'
   const [destination, setDestination] = useState('')
+  const [moveBusy, setMoveBusy] = useState(false)
+  const [moveError, setMoveError] = useState<string | null>(null)
   const sourceParent = moving ? parentWorkspacePath(dialog.path) : ''
   const destinationUnchanged = moving && normalizeWorkspacePath(destination.trim()) === sourceParent
 
   useEffect(() => {
     setDestination(moving ? (dialog.browserRoot ?? '') : '')
+    setMoveBusy(false)
+    setMoveError(null)
   }, [dialog, moving])
 
   return (
     <>
       <ConfirmDialog
         confirmLabel={t.fileMenu.delete}
-        description={t.fileMenu.deleteBody}
+        description={remoteFs ? t.fileMenu.deleteRemoteBody : t.fileMenu.deleteBody}
         destructive
         onClose={closeFileActionDialog}
         onConfirm={() => {
@@ -145,7 +153,7 @@ export function FileActionDialogs() {
         open={deleting}
         title={deleting ? t.fileMenu.deleteTitle(dialog.name) : ''}
       />
-      <Dialog onOpenChange={open => !open && closeFileActionDialog()} open={moving}>
+      <Dialog onOpenChange={open => !open && !moveBusy && closeFileActionDialog()} open={moving}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{moving ? t.fileMenu.moveTitle(dialog.name) : ''}</DialogTitle>
@@ -163,31 +171,47 @@ export function FileActionDialogs() {
               autoComplete="off"
               autoCorrect="off"
               className="h-8 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-input) px-2 text-sm text-foreground outline-none focus:border-(--ui-accent)"
-              onChange={event => setDestination(event.target.value)}
+              onChange={event => {
+                setDestination(event.target.value)
+                setMoveError(null)
+              }}
               spellCheck={false}
               value={destination}
             />
           </label>
+          {moveError ? (
+            <div
+              className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              role="alert"
+            >
+              {moveError}
+            </div>
+          ) : null}
           <DialogFooter>
-            <Button onClick={closeFileActionDialog} variant="secondary">
+            <Button disabled={moveBusy} onClick={closeFileActionDialog} variant="secondary">
               {t.common.cancel}
             </Button>
             <Button
-              disabled={!moving || !destination.trim() || destinationUnchanged}
+              disabled={moveBusy || !moving || !destination.trim() || destinationUnchanged}
               onClick={async () => {
                 if (!moving) {
                   return
                 }
 
+                setMoveBusy(true)
+                setMoveError(null)
+
                 try {
                   await executeFileMove(dialog.path, destination.trim(), dialog.browserRoot ?? '')
                   closeFileActionDialog()
                 } catch (error) {
-                  notifyError(error, translateNow('errors.genericFailure'))
+                  setMoveError(actionErrorMessage(error))
+                } finally {
+                  setMoveBusy(false)
                 }
               }}
             >
-              {t.fileMenu.moveConfirm}
+              {moveBusy ? t.common.loading : t.fileMenu.moveConfirm}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -209,72 +233,108 @@ interface InlineRenameInputProps {
  *  row's label when `$renamingPath === path`. */
 export function InlineRenameInput({ className, name, path }: InlineRenameInputProps) {
   const [value, setValue] = useState(name)
-  // Enter then the resulting blur must not both commit; latch on first finish.
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  // Enter then the resulting blur must not both commit; latch on a successful
+  // commit or explicit cancel, while failed commits remain retryable.
   const done = useRef(false)
+  const savingRef = useRef(false)
+  const inputRef = useRef<HTMLInputElement>(null)
   // Focus churn right after mount (context-menu close, arborist refocus, the
   // fall-through click on the row) would blur→commit→cancel instantly; ignore
   // blurs in this window and grab focus back instead.
   const mountedAt = useRef(Date.now())
 
   const finish = async (commit: boolean) => {
-    if (done.current) {
+    if (done.current || savingRef.current) {
       return
     }
 
-    done.current = true
     const next = value.trim()
 
-    if (commit && next && next !== name) {
-      try {
-        await executeFileRename(path, next)
-      } catch (error) {
-        notifyError(error, translateNow('errors.genericFailure'))
-      }
+    if (!commit || !next || next === name) {
+      done.current = true
+      cancelInlineRename()
+
+      return
     }
 
-    cancelInlineRename()
+    savingRef.current = true
+    setSaving(true)
+    setError(null)
+
+    try {
+      await executeFileRename(path, next)
+      done.current = true
+      cancelInlineRename()
+    } catch (renameError) {
+      setError(actionErrorMessage(renameError))
+      window.setTimeout(() => inputRef.current?.focus(), 0)
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   return (
-    <input
-      aria-label={translateNow('fileMenu.renameLabel')}
-      autoCapitalize="off"
-      autoComplete="off"
-      autoCorrect="off"
-      autoFocus
-      className={cn(
-        'min-w-0 flex-1 rounded-sm border border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-(--ui-bg-elevated) px-1 py-0 text-xs text-foreground outline-none',
-        className
-      )}
-      onBlur={event => {
-        if (Date.now() - mountedAt.current < 250) {
-          event.currentTarget.focus()
+    <>
+      <input
+        aria-invalid={Boolean(error)}
+        aria-label={translateNow('fileMenu.renameLabel')}
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        autoFocus
+        className={cn(
+          'min-w-0 flex-1 rounded-sm border border-[color-mix(in_srgb,var(--dt-composer-ring)_55%,transparent)] bg-(--ui-bg-elevated) px-1 py-0 text-xs text-foreground outline-none',
+          error && 'border-destructive',
+          className
+        )}
+        onBlur={event => {
+          if (savingRef.current) {
+            return
+          }
 
-          return
-        }
+          if (Date.now() - mountedAt.current < 250) {
+            event.currentTarget.focus()
 
-        void finish(true)
-      }}
-      onChange={event => setValue(event.target.value)}
-      onClick={event => event.stopPropagation()}
-      onDoubleClick={event => event.stopPropagation()}
-      onFocus={event => {
-        const dot = event.currentTarget.value.lastIndexOf('.')
-        event.currentTarget.setSelectionRange(0, dot > 0 ? dot : event.currentTarget.value.length)
-      }}
-      onKeyDown={event => {
-        event.stopPropagation()
+            return
+          }
 
-        if (event.key === 'Enter') {
-          event.preventDefault()
           void finish(true)
-        } else if (event.key === 'Escape') {
-          event.preventDefault()
-          void finish(false)
-        }
-      }}
-      spellCheck={false}
-      value={value}
-    />
+        }}
+        onChange={event => {
+          setValue(event.target.value)
+          setError(null)
+        }}
+        onClick={event => event.stopPropagation()}
+        onDoubleClick={event => event.stopPropagation()}
+        onFocus={event => {
+          const dot = event.currentTarget.value.lastIndexOf('.')
+          event.currentTarget.setSelectionRange(0, dot > 0 ? dot : event.currentTarget.value.length)
+        }}
+        onKeyDown={event => {
+          event.stopPropagation()
+
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            void finish(true)
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            void finish(false)
+          }
+        }}
+        readOnly={saving}
+        ref={inputRef}
+        spellCheck={false}
+        title={error ?? undefined}
+        value={value}
+      />
+      {error ? (
+        <span className="max-w-32 shrink-0 truncate text-[0.625rem] text-destructive" role="alert" title={error}>
+          {error}
+        </span>
+      ) : null}
+    </>
   )
 }

@@ -45,6 +45,27 @@ export const zh: Translations = {
     off: '关'
   },
 
+  editorSearch: {
+    find: '查找',
+    replace: '替换',
+    findReplace: '查找和替换',
+    next: '下一个匹配项',
+    previous: '上一个匹配项',
+    selectAll: '选择所有匹配项',
+    matchCase: '区分大小写',
+    regexp: '正则表达式',
+    wholeWord: '全字匹配',
+    replaceAll: '全部替换',
+    close: '关闭搜索',
+    noResults: '无结果',
+    invalidRegex: '无效的正则表达式',
+    currentMatch: '当前匹配项',
+    onLine: '位于行',
+    replacedMatchOnLine: '已替换第 $ 行的匹配项',
+    replacedMatches: '已替换 $ 个匹配项',
+    matchCount: (current, total) => `${current} / ${total}`
+  },
+
   fileMenu: {
     revealFinder: '在访达中显示',
     revealExplorer: '在文件资源管理器中显示',
@@ -62,6 +83,7 @@ export const zh: Translations = {
     moveConfirm: '移动',
     deleteTitle: name => `删除 ${name}？`,
     deleteBody: '将移至废纸篓，你可以从那里恢复。',
+    deleteRemoteBody: '这会从远程计算机永久删除该项目，且无法撤销。',
     pathCopied: '已复制路径'
   },
 

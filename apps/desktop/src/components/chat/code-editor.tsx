@@ -1,10 +1,20 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { bracketMatching, indentOnInput, LanguageDescription } from '@codemirror/language'
 import { languages } from '@codemirror/language-data'
+import {
+  getSearchQuery,
+  openSearchPanel,
+  search,
+  searchKeymap,
+  searchPanelOpen,
+  type SearchQuery
+} from '@codemirror/search'
 import { Compartment, EditorState } from '@codemirror/state'
 import { Decoration, drawSelection, EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { type RefObject, useEffect, useRef } from 'react'
 
+import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
 import { tryFormatJson } from '@/lib/json-format'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/themes/context'
@@ -33,6 +43,7 @@ function applyFormatJson(view: EditorView, onError?: (error: string) => void): F
 /** Imperative surface for callers that drive selection from outside (e.g. a
  *  config list focusing its block in the document). */
 export interface CodeEditorApi {
+  findReplace: () => boolean
   formatJson: () => FormatOutcome
   setCursor: (pos: number) => void
 }
@@ -97,6 +108,150 @@ function baseName(filePath: string): string {
   )
 }
 
+type EditorSearchCopy = Translations['editorSearch']
+
+function searchPhrases(copy: EditorSearchCopy): Record<string, string> {
+  return {
+    Find: copy.find,
+    Replace: copy.replace,
+    all: copy.selectAll,
+    'by word': copy.wholeWord,
+    close: copy.close,
+    'current match': copy.currentMatch,
+    'match case': copy.matchCase,
+    next: copy.next,
+    'on line': copy.onLine,
+    previous: copy.previous,
+    regexp: copy.regexp,
+    replace: copy.replace,
+    'replace all': copy.replaceAll,
+    'replaced $ matches': copy.replacedMatches,
+    'replaced match on line $': copy.replacedMatchOnLine
+  }
+}
+
+function searchTargetChanged(previous: SearchQuery, next: SearchQuery): boolean {
+  return (
+    previous.search !== next.search ||
+    previous.caseSensitive !== next.caseSensitive ||
+    previous.regexp !== next.regexp ||
+    previous.wholeWord !== next.wholeWord
+  )
+}
+
+function selectFirstSearchMatch(view: EditorView, query: SearchQuery) {
+  if (!query.valid || !query.search) {
+    return
+  }
+
+  const first = query.getCursor(view.state).next()
+
+  if (!first.done) {
+    view.dispatch({
+      scrollIntoView: true,
+      selection: { anchor: first.value.from, head: first.value.to }
+    })
+  }
+}
+
+function updateSearchMatchStatus(view: EditorView, copy: EditorSearchCopy) {
+  const panel = view.dom.querySelector<HTMLElement>('.cm-search')
+
+  if (!panel) {
+    return
+  }
+
+  let status = panel.querySelector<HTMLElement>('.cm-search-match-status')
+
+  if (!status) {
+    status = document.createElement('span')
+    status.className = 'cm-search-match-status'
+    status.setAttribute('aria-live', 'polite')
+    status.setAttribute('role', 'status')
+    panel.insertBefore(status, panel.querySelector('button[name="close"]'))
+  }
+
+  const query = getSearchQuery(view.state)
+
+  if (!query.search) {
+    status.textContent = ''
+
+    return
+  }
+
+  if (!query.valid) {
+    status.textContent = copy.invalidRegex
+
+    return
+  }
+
+  const selection = view.state.selection.main
+  const cursor = query.getCursor(view.state)
+  let current = -1
+  let nextAtOrAfterCursor = -1
+  let total = 0
+
+  for (let next = cursor.next(); !next.done; next = cursor.next()) {
+    const match = next.value
+
+    if (current < 0 && match.from === selection.from && match.to === selection.to) {
+      current = total
+    }
+
+    if (nextAtOrAfterCursor < 0 && match.from >= selection.head) {
+      nextAtOrAfterCursor = total
+    }
+
+    total++
+  }
+
+  if (total === 0) {
+    status.textContent = copy.noResults
+
+    return
+  }
+
+  if (current < 0) {
+    current = nextAtOrAfterCursor
+  }
+
+  status.textContent = copy.matchCount((current < 0 ? 0 : current) + 1, total)
+}
+
+function refreshSearchMatchStatus(view: EditorView, copy: EditorSearchCopy) {
+  if (view.dom.querySelector('.cm-search')) {
+    updateSearchMatchStatus(view, copy)
+
+    return
+  }
+
+  queueMicrotask(() => {
+    if (view.dom.isConnected) {
+      updateSearchMatchStatus(view, copy)
+    }
+  })
+}
+
+function openFindPanel(view: EditorView, copy: EditorSearchCopy): boolean {
+  openSearchPanel(view)
+  refreshSearchMatchStatus(view, copy)
+
+  return true
+}
+
+function openFindReplacePanel(view: EditorView, copy: EditorSearchCopy): boolean {
+  openFindPanel(view, copy)
+
+  queueMicrotask(() => {
+    const field = view.dom.querySelector<HTMLInputElement>('.cm-search input[name="replace"]')
+
+    field?.focus()
+    field?.select()
+  })
+
+  return true
+}
+
 // Mirror SourceView's geometry/typography 1:1 so toggling preview⇄edit never
 // shifts the file. CM's base stylesheet targets some of these with two-class
 // selectors (e.g. `.cm-lineNumbers .cm-gutterElement`) that out-specify a bare
@@ -155,6 +310,77 @@ const LAYOUT_THEME = EditorView.theme({
     lineHeight: ROW_HEIGHT,
     overflow: 'auto'
   },
+  '.cm-search': {
+    alignItems: 'center',
+    backgroundColor: 'var(--ui-bg-elevated)',
+    display: 'grid',
+    fontFamily: 'var(--font-sans)',
+    fontSize: '0.625rem',
+    gap: '0.25rem 0.375rem',
+    gridTemplateColumns: 'minmax(7rem, 1fr) auto auto auto',
+    overflowX: 'auto',
+    padding: '0.375rem 1.75rem 0.375rem 0.5rem'
+  },
+  '.cm-search br': {
+    display: 'none'
+  },
+  '.cm-search .cm-textfield': {
+    backgroundColor: 'var(--dt-background)',
+    border: '1px solid var(--dt-input)',
+    borderRadius: '0.25rem',
+    color: 'var(--dt-foreground)',
+    fontFamily: 'var(--font-sans)',
+    fontSize: '0.625rem',
+    minWidth: '0',
+    padding: '0.1875rem 0.375rem',
+    width: '100%'
+  },
+  '.cm-search .cm-textfield::placeholder': {
+    color: 'color-mix(in srgb, var(--dt-foreground) 58%, transparent)'
+  },
+  '.cm-search .cm-button': {
+    backgroundColor: 'var(--dt-secondary)',
+    backgroundImage: 'none',
+    border: '1px solid var(--dt-border)',
+    borderRadius: '0.25rem',
+    color: 'var(--dt-secondary-foreground)',
+    fontFamily: 'var(--font-sans)',
+    fontSize: '0.625rem',
+    lineHeight: '1rem',
+    padding: '0.125rem 0.375rem',
+    whiteSpace: 'nowrap'
+  },
+  '.cm-search label': {
+    alignItems: 'center',
+    color: 'color-mix(in srgb, var(--dt-foreground) 72%, transparent)',
+    display: 'inline-flex',
+    gap: '0.1875rem',
+    whiteSpace: 'nowrap'
+  },
+  '.cm-search input[type="checkbox"]': {
+    accentColor: 'var(--dt-primary)',
+    height: '0.75rem',
+    margin: '0',
+    width: '0.75rem'
+  },
+  '.cm-search input[name="search"]': { gridColumn: '1', gridRow: '1' },
+  '.cm-search button[name="next"]': { gridColumn: '2', gridRow: '1' },
+  '.cm-search button[name="prev"]': { gridColumn: '3', gridRow: '1' },
+  '.cm-search button[name="select"]': { gridColumn: '4', gridRow: '1' },
+  '.cm-search label:has(input[name="case"])': { gridColumn: '1', gridRow: '2' },
+  '.cm-search label:has(input[name="re"])': { gridColumn: '2', gridRow: '2' },
+  '.cm-search label:has(input[name="word"])': { gridColumn: '3', gridRow: '2' },
+  '.cm-search input[name="replace"]': { gridColumn: '1', gridRow: '3' },
+  '.cm-search button[name="replace"]': { gridColumn: '2', gridRow: '3' },
+  '.cm-search button[name="replaceAll"]': { gridColumn: '3', gridRow: '3' },
+  '.cm-search-match-status': {
+    color: 'color-mix(in srgb, var(--dt-foreground) 82%, transparent)',
+    fontVariantNumeric: 'tabular-nums',
+    gridColumn: '4',
+    gridRow: '2',
+    justifySelf: 'end',
+    whiteSpace: 'nowrap'
+  },
   '.cm-hermes-active-block': {
     backgroundColor: 'color-mix(in srgb, var(--dt-foreground) 5%, transparent)'
   }
@@ -168,12 +394,13 @@ const FRAMED_THEME = EditorView.theme({
   '.cm-line': { padding: '0' }
 })
 
-// A deliberately small CodeMirror 6 surface for *spot edits* — not an IDE: line
-// numbers, history, selection, bracket matching, syntax highlighting. No fold
-// gutter, autocomplete, or active-line chrome, so it reads like the preview it
-// replaces. It owns its own buffer; the parent tracks dirty via `onChange` and
-// resets by remounting. ⌘/Ctrl+S and ⌘/Ctrl+Enter save; Esc cancels; the app's
-// light/dark mode is followed live without losing the cursor.
+// A deliberately compact CodeMirror 6 surface for *spot edits* — not an IDE:
+// line numbers, history, selection, bracket matching, syntax highlighting, and
+// a full Windows-style Find/Replace panel. No fold gutter, autocomplete, or
+// active-line chrome, so it reads like the preview it replaces. It owns its own
+// buffer; the parent tracks dirty via `onChange` and resets by remounting.
+// ⌘/Ctrl+F finds, Ctrl+H (⌘⌥F on macOS) opens replacement, ⌘/Ctrl+S and
+// ⌘/Ctrl+Enter save, and Esc closes search before it cancels editing.
 export function CodeEditor({
   apiRef,
   className,
@@ -189,10 +416,12 @@ export function CodeEditor({
   onFormatJsonError,
   onSave
 }: CodeEditorProps) {
+  const { t } = useI18n()
   const { resolvedMode } = useTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const languageConf = useRef(new Compartment())
+  const searchPhrasesConf = useRef(new Compartment())
   const themeConf = useRef(new Compartment())
   const highlightConf = useRef(new Compartment())
   const editableConf = useRef(new Compartment())
@@ -202,12 +431,14 @@ export function CodeEditor({
   const onFormatJsonErrorRef = useRef(onFormatJsonError)
   const onSaveRef = useRef(onSave)
   const formatJsonRef = useRef(formatJson)
+  const searchCopyRef = useRef(t.editorSearch)
   onCancelRef.current = onCancel
   onChangeRef.current = onChange
   onCursorChangeRef.current = onCursorChange
   onFormatJsonErrorRef.current = onFormatJsonError
   onSaveRef.current = onSave
   formatJsonRef.current = formatJson
+  searchCopyRef.current = t.editorSearch
 
   useEffect(() => {
     const host = hostRef.current
@@ -234,16 +465,24 @@ export function CodeEditor({
       return true
     }
 
+    const runFind = (view: EditorView) => openFindPanel(view, searchCopyRef.current)
+    const runFindReplace = (view: EditorView) => openFindReplacePanel(view, searchCopyRef.current)
+
     const state = EditorState.create({
       doc: initialValue,
       extensions: [
         // Gutter only outside framed mode — framed prose reads better flush.
         ...(framed ? [] : [lineNumbers()]),
         history(),
+        EditorState.allowMultipleSelections.of(true),
         drawSelection(),
         indentOnInput(),
         bracketMatching(),
+        search(),
         keymap.of([
+          { key: 'Mod-f', preventDefault: true, run: runFind },
+          { key: 'Ctrl-h', mac: 'Mod-Alt-f', preventDefault: true, run: runFindReplace },
+          ...searchKeymap,
           ...defaultKeymap,
           ...historyKeymap,
           indentWithTab,
@@ -264,6 +503,7 @@ export function CodeEditor({
           }
         ]),
         languageConf.current.of([]),
+        searchPhrasesConf.current.of(EditorState.phrases.of(searchPhrases(searchCopyRef.current))),
         themeConf.current.of(githubEditorTheme(isDark)),
         highlightConf.current.of([]),
         editableConf.current.of(EditorState.readOnly.of(disabled)),
@@ -274,6 +514,23 @@ export function CodeEditor({
 
           if (update.selectionSet || update.docChanged) {
             onCursorChangeRef.current?.(update.state.selection.main.head)
+          }
+
+          if (searchPanelOpen(update.state)) {
+            const previousQuery = getSearchQuery(update.startState)
+            const nextQuery = getSearchQuery(update.state)
+
+            if (searchTargetChanged(previousQuery, nextQuery)) {
+              queueMicrotask(() => {
+                const currentQuery = getSearchQuery(update.view.state)
+
+                if (viewRef.current === update.view && !searchTargetChanged(nextQuery, currentQuery)) {
+                  selectFirstSearchMatch(update.view, currentQuery)
+                }
+              })
+            }
+
+            refreshSearchMatchStatus(update.view, searchCopyRef.current)
           }
         }),
         LAYOUT_THEME,
@@ -289,6 +546,11 @@ export function CodeEditor({
 
     if (apiRef) {
       apiRef.current = {
+        findReplace: () => {
+          const view = viewRef.current
+
+          return view ? openFindReplacePanel(view, searchCopyRef.current) : false
+        },
         formatJson: () => {
           const view = viewRef.current
 
@@ -350,6 +612,18 @@ export function CodeEditor({
       effects: themeConf.current.reconfigure(githubEditorTheme(resolvedMode === 'dark'))
     })
   }, [resolvedMode])
+
+  useEffect(() => {
+    const view = viewRef.current
+
+    view?.dispatch({
+      effects: searchPhrasesConf.current.reconfigure(EditorState.phrases.of(searchPhrases(t.editorSearch)))
+    })
+
+    if (view && searchPanelOpen(view.state)) {
+      refreshSearchMatchStatus(view, t.editorSearch)
+    }
+  }, [t.editorSearch])
 
   const highlightFrom = highlight?.from
   const highlightTo = highlight?.to

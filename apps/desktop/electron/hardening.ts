@@ -8,7 +8,21 @@ const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
-const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
+const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.key', '.p12', '.pem', '.pfx'])
+
+const SENSITIVE_CREDENTIAL_BASENAMES = new Set([
+  '.anthropic_oauth.json',
+  '.git-credentials',
+  'auth.json',
+  'auth.lock',
+  'bws_cache.json',
+  'config.yaml',
+  'credentials',
+  'google_oauth.json',
+  'google_oauth_pending.json',
+  'google_token.json',
+  'webhook_subscriptions.json'
+])
 
 function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
   const fallback =
@@ -79,11 +93,19 @@ function sensitiveFileBlockReason(filePath) {
     return 'GPG key material is blocked.'
   }
 
+  if (normalized.includes('/mcp-tokens/') || normalized.includes('/pairing/')) {
+    return 'Hermes credential directories are blocked.'
+  }
+
   if (normalized.endsWith('/.aws/credentials')) {
     return 'AWS credential files are blocked.'
   }
 
-  if (basename === '.env') {
+  if (SENSITIVE_CREDENTIAL_BASENAMES.has(basename)) {
+    return `${basename} is blocked because it stores credentials or security configuration.`
+  }
+
+  if (basename === '.env' || basename === '.envrc') {
     return '.env files are blocked because they commonly contain secrets.'
   }
 
@@ -112,6 +134,7 @@ function sensitiveFileBlockReason(filePath) {
 
 function ipcPathError(code: any, message: string): Error & { code: any } {
   const error = new Error(message) as Error & { code: any }
+
   ;(error as any).code = code
 
   return error

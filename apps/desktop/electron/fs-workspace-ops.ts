@@ -17,19 +17,40 @@ function resolved(raw: unknown, purpose: string): string {
   return resolveRequestedPathForIpc(String(raw || '').trim(), { purpose })
 }
 
+async function resolvedMutable(raw: unknown, purpose: string): Promise<string> {
+  const lexical = resolved(raw, purpose)
+  const realParent = await fs.promises.realpath(path.dirname(lexical))
+
+  return path.join(realParent, path.basename(lexical))
+}
+
 function guardSensitive(target: string): void {
   if (sensitiveFileBlockReason(target)) {
     throw new Error('Sensitive paths cannot be mutated')
   }
 }
 
-function guardRoot(target: string, browserRoot?: unknown): void {
+function guardRoot(target: string, browserRoot?: string): void {
   if (path.parse(target).root === target) {
     throw new Error('Cannot mutate filesystem root')
   }
 
-  if (browserRoot && target === resolved(browserRoot, 'Browser root')) {
+  if (!browserRoot) {
+    return
+  }
+
+  if (path.parse(browserRoot).root === browserRoot) {
+    throw new Error('Filesystem root cannot be used as a browser mutation root')
+  }
+
+  if (target === browserRoot) {
     throw new Error('Cannot mutate browser root')
+  }
+
+  const relative = path.relative(browserRoot, target)
+
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('Path is outside browser root')
   }
 }
 
@@ -52,37 +73,72 @@ async function collision(target: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return false
     }
+
+    throw error
+  }
+}
+
+async function moveNoReplace(source: string, target: string, sourceStat: fs.Stats): Promise<void> {
+  try {
+    if (sourceStat.isFile()) {
+      await fs.promises.link(source, target)
+
+      try {
+        await fs.promises.unlink(source)
+      } catch (error) {
+        await fs.promises.unlink(target).catch(() => {})
+        throw error
+      }
+
+      return
+    }
+
+    await fs.promises.rename(source, target)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+
+    if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+      throw new Error(`"${path.basename(target)}" already exists`)
+    }
+
+    if (code === 'EXDEV') {
+      throw new Error('Cross-volume moves are not supported')
+    }
+
     throw error
   }
 }
 
 export async function createDirectoryForIpc(parentPath: unknown, rawName: unknown): Promise<{ path: string }> {
-  const parent = resolved(parentPath, 'Create folder')
+  const parent = await resolvedMutable(parentPath, 'Create folder')
   const name = validName(rawName)
   const parentStat = await statMutable(parent)
 
   if (!parentStat.isDirectory()) {
     throw new Error('Parent is not a directory')
   }
+
   const target = resolved(path.join(parent, name), 'Create folder')
   guardSensitive(target)
 
   if (await collision(target)) {
     throw new Error(`"${name}" already exists`)
   }
+
   await fs.promises.mkdir(target)
 
   return { path: target }
 }
 
 export async function createFileForIpc(parentPath: unknown, rawName: unknown): Promise<{ path: string }> {
-  const parent = resolved(parentPath, 'Create file')
+  const parent = await resolvedMutable(parentPath, 'Create file')
   const name = validName(rawName)
   const parentStat = await statMutable(parent)
 
   if (!parentStat.isDirectory()) {
     throw new Error('Parent is not a directory')
   }
+
   const target = resolved(path.join(parent, name), 'Create file')
   guardSensitive(target)
   const handle = await fs.promises.open(target, 'wx')
@@ -92,11 +148,11 @@ export async function createFileForIpc(parentPath: unknown, rawName: unknown): P
 }
 
 export async function renamePathForIpc(targetPath: unknown, rawName: unknown): Promise<{ path: string }> {
-  const source = resolved(targetPath, 'Rename path')
+  const source = await resolvedMutable(targetPath, 'Rename path')
   const name = validName(rawName)
   guardRoot(source)
   guardSensitive(source)
-  await statMutable(source)
+  const sourceStat = await statMutable(source)
   const target = resolved(path.join(path.dirname(source), name), 'Rename path')
   guardSensitive(target)
 
@@ -107,7 +163,8 @@ export async function renamePathForIpc(targetPath: unknown, rawName: unknown): P
   if (await collision(target)) {
     throw new Error(`"${name}" already exists`)
   }
-  await fs.promises.rename(source, target)
+
+  await moveNoReplace(source, target, sourceStat)
 
   return { path: target }
 }
@@ -117,9 +174,10 @@ export async function movePathForIpc(
   destinationPath: unknown,
   browserRoot?: unknown
 ): Promise<{ path: string }> {
-  const source = resolved(sourcePath, 'Move path')
-  const destination = resolved(destinationPath, 'Move destination')
-  guardRoot(source, browserRoot)
+  const source = await resolvedMutable(sourcePath, 'Move path')
+  const destination = await resolvedMutable(destinationPath, 'Move destination')
+  const resolvedBrowserRoot = browserRoot ? await resolvedMutable(browserRoot, 'Browser root') : undefined
+  guardRoot(source, resolvedBrowserRoot)
   guardSensitive(source)
   const sourceStat = await statMutable(source)
   const destinationStat = await statMutable(destination)
@@ -138,14 +196,16 @@ export async function movePathForIpc(
   if (await collision(target)) {
     throw new Error(`"${path.basename(source)}" already exists`)
   }
-  await fs.promises.rename(source, target)
+
+  await moveNoReplace(source, target, sourceStat)
 
   return { path: target }
 }
 
 export async function deletePathForIpc(targetPath: unknown, browserRoot?: unknown): Promise<string> {
-  const target = resolved(targetPath, 'Delete path')
-  guardRoot(target, browserRoot)
+  const target = await resolvedMutable(targetPath, 'Delete path')
+  const resolvedBrowserRoot = browserRoot ? await resolvedMutable(browserRoot, 'Browser root') : undefined
+  guardRoot(target, resolvedBrowserRoot)
   guardSensitive(target)
   await statMutable(target)
 

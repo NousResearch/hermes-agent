@@ -45,6 +45,27 @@ export const en: Translations = {
     off: 'Off'
   },
 
+  editorSearch: {
+    find: 'Find',
+    replace: 'Replace',
+    findReplace: 'Find and Replace',
+    next: 'Next',
+    previous: 'Previous',
+    selectAll: 'Select all',
+    matchCase: 'Match case',
+    regexp: 'Regular expression',
+    wholeWord: 'Whole word',
+    replaceAll: 'Replace all',
+    close: 'Close search',
+    noResults: 'No results',
+    invalidRegex: 'Invalid regular expression',
+    currentMatch: 'Current match',
+    onLine: 'on line',
+    replacedMatchOnLine: 'Replaced match on line $',
+    replacedMatches: 'Replaced $ matches',
+    matchCount: (current, total) => `${current} of ${total}`
+  },
+
   fileMenu: {
     revealFinder: 'Reveal in Finder',
     revealExplorer: 'Reveal in File Explorer',
@@ -62,6 +83,7 @@ export const en: Translations = {
     moveConfirm: 'Move',
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
+    deleteRemoteBody: 'This permanently deletes the item on the remote machine. This cannot be undone.',
     pathCopied: 'Path copied'
   },
 

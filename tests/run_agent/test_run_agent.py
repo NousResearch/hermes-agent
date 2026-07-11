@@ -4745,6 +4745,32 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_length_continuation_media_boundary_stays_delimited(self, agent):
+        """A MEDIA: tag at the truncation boundary must stay delimiter-separated
+        through the real continuation loop (regression for #60928).
+
+        If the join glued the parts, the tag would become
+        ``MEDIA:/tmp/img.pngcaption`` with no trailing delimiter and the
+        downstream cleanup regex could not strip it.
+        """
+        self._setup_agent(agent)
+        first = _mock_response(content="see MEDIA:/tmp/img.png", finish_reason="length")
+        second = _mock_response(content="caption text", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        final = result["final_response"]
+        assert "MEDIA:/tmp/img.png" in final
+        # The tag must not be glued to the following word.
+        assert "MEDIA:/tmp/img.pngcaption" not in final
+
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
         """Continuation retries must not shrink a higher provider default cap."""
         self._setup_agent(agent)

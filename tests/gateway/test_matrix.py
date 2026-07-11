@@ -2418,6 +2418,88 @@ class TestMatrixSyncLoop:
         await adapter.disconnect()
         assert adapter._invite_join_tasks == {}
 
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_resets_forbidden_syncerror_result_with_cursor(self):
+        """Result-object 403/M_FORBIDDEN with a stored cursor should reset and retry.
+
+        nio/mautrix can return SyncError-like objects instead of raising; the
+        non-exception branch must recover the same way as the exception path.
+        """
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        class ForbiddenSyncError:
+            http_status = 403
+            errcode = "M_FORBIDDEN"
+            message = "M_FORBIDDEN: Access Denied"
+
+            def __str__(self):
+                return self.message
+
+        sync_since = []
+
+        async def _sync(**kwargs):
+            sync_since.append(kwargs.get("since"))
+            if len(sync_since) == 1:
+                return ForbiddenSyncError()
+            adapter._closing = True
+            return {"rooms": {"join": {}}, "next_batch": "s-recovered"}
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value="s-poisoned")
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()):
+            await adapter._sync_loop()
+
+        assert sync_since == ["s-poisoned", None]
+        assert [
+            call.args[0]
+            for call in mock_sync_store.put_next_batch.await_args_list
+        ] == [None, "s-recovered"]
+        fake_client.handle_sync.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_forbidden_result_without_cursor(self):
+        """Result-object 403 with no stored cursor is terminal (not recoverable)."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        class ForbiddenSyncError:
+            http_status = 403
+            errcode = "M_FORBIDDEN"
+            message = "M_FORBIDDEN: Access Denied"
+
+            def __str__(self):
+                return self.message
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(return_value=ForbiddenSyncError())
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod.asyncio, "sleep", AsyncMock()) as sleep_mock:
+            await adapter._sync_loop()
+
+        fake_client.sync.assert_awaited_once()
+        mock_sync_store.put_next_batch.assert_not_awaited()
+        fake_client.handle_sync.assert_not_called()
+        sleep_mock.assert_not_awaited()
+
 class TestMatrixUploadAndSend:
     @pytest.mark.asyncio
     async def test_upload_unencrypted_room_uses_plain_url(self):

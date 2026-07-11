@@ -307,6 +307,15 @@ TOOL_CATEGORIES = {
                 "tts_provider": "gemini",
             },
             {
+                "name": "Fish Audio",
+                "badge": "paid",
+                "tag": "Expressive voices, voice cloning, S2-Pro model",
+                "env_vars": [
+                    {"key": "FISH_API_KEY", "prompt": "Fish Audio API key", "url": "https://fish.audio/app/api-keys/"},
+                ],
+                "tts_provider": "fish",
+            },
+            {
                 "name": "KittenTTS",
                 "badge": "local · free",
                 "tag": "Lightweight local ONNX TTS (~25MB), no API key",

@@ -77,7 +77,7 @@ class TTSProvider(abc.ABC):
         Lowercase, no spaces. Examples: ``cartesia``, ``fishaudio``,
         ``deepgram``. Names that collide with a built-in TTS provider
         (``edge``, ``openai``, ``elevenlabs``, ``minimax``, ``gemini``,
-        ``mistral``, ``xai``, ``piper``, ``kittentts``, ``neutts``) are
+        ``mistral``, ``xai``, ``fish``, ``piper``, ``kittentts``, ``neutts``) are
         rejected at registration time.
         """
 

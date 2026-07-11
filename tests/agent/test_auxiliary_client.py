@@ -33,6 +33,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_task_provider_model,
     _resolve_xai_oauth_for_aux,
+    _get_configured_fallback_timeout,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
 )
@@ -2473,6 +2474,36 @@ class TestAuxiliaryFallbackLayering:
         # Main agent fallback should NOT have been consulted — chain succeeded first
         main_called.assert_not_called()
 
+    def test_configured_chain_timeout_override_applies_to_fallback_call(self, monkeypatch):
+        """Configured fallback entries can carry their own timeout budget."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        chain_client = MagicMock()
+        chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from configured chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(chain_client, "gpt-4o-mini", "fallback_chain[0](openai)")), \
+             patch("agent.auxiliary_client._get_configured_fallback_timeout",
+                   return_value=90.0), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as main_called:
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert chain_client.chat.completions.create.called
+        assert chain_client.chat.completions.create.call_args.kwargs["timeout"] == 90.0
+        main_called.assert_not_called()
+
     def test_explicit_provider_falls_back_to_main_when_chain_exhausted(self, monkeypatch):
         """If configured fallback_chain returns nothing, main agent model is tried next."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -2638,6 +2669,25 @@ class TestAuxiliaryFallbackLayering:
         assert model == "gpt-5.4-mini"
         mock_openai.assert_called_once()
         assert mock_openai.call_args.kwargs["api_key"] == "codex-oauth-token"
+
+
+def test_get_configured_fallback_timeout_reads_entry_timeout():
+    with patch(
+        "agent.auxiliary_client._get_auxiliary_task_config",
+        return_value={
+            "fallback_chain": [
+                {"provider": "openai", "timeout": "90"},
+                {"provider": "custom"},
+                {"provider": "nous", "timeout": 0},
+            ]
+        },
+    ):
+        assert _get_configured_fallback_timeout(
+            "compression", "fallback_chain[0](openai)", 30.0) == 90.0
+        assert _get_configured_fallback_timeout(
+            "compression", "fallback_chain[1](custom)", 30.0) == 30.0
+        assert _get_configured_fallback_timeout(
+            "compression", "fallback_chain[2](nous)", 30.0) == 30.0
 
 
 class TestTryMainAgentModelFallback:

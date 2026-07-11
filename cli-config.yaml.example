@@ -522,6 +522,12 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     timeout: 30
+#     # Optional: give a fallback provider a larger budget than the primary
+#     # task timeout when real transcripts need more time to finish.
+#     # fallback_chain:
+#     #   - provider: "custom"
+#     #     model: "deepseek-v4-flash"
+#     #     timeout: 90
 #     max_concurrency: 3    # Limit parallel summaries to reduce request-burst 429s
 #     extra_body: {}        # Provider-specific OpenAI-compatible request fields
 #                           # Example for providers that support request-body

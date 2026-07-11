@@ -297,6 +297,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // When the management profile changes, force a FRESH PTY on the next
+  // connect: the keep-alive PTY registry keys on the per-browser attach
+  // token (hermes.pty.token.chat), which does NOT rotate on a profile
+  // change. Without forcing fresh, the server reattaches the still-living
+  // PTY of the PREVIOUS profile (spawned with the old HERMES_HOME) and
+  // silently ignores the new ?profile= param — so the chat stays stuck on
+  // the old profile even though the rest of the dashboard switched.
+  // Forcing fresh rotates the attach token so a brand-new PTY is spawned
+  // under the newly selected profile's HERMES_HOME.
+  const prevProfileRef = useRef(scopedProfile);
+  useEffect(() => {
+    if (prevProfileRef.current !== scopedProfile) {
+      forceFreshPtyRef.current = true;
+      prevProfileRef.current = scopedProfile;
+    }
+  }, [scopedProfile]);
   const channel = useMemo(
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],

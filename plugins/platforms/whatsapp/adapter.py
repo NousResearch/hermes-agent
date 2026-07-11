@@ -642,6 +642,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_process = subprocess.Popen(
                 [
                     find_node_executable("node") or "node",
+                    "--experimental-global-webcrypto",
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),

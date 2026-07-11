@@ -31,7 +31,11 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from agent.gemini_native_adapter import (
+    GeminiNativeClient,
+    is_native_gemini_base_url,
+    transcript_has_unsigned_gemini_tool_calls,
+)
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_sanitization import (
@@ -1531,39 +1535,35 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
 
 
 
-def _fallback_entry_incompatible_with_current_tool_history(agent, fb: dict) -> Optional[str]:
-    """Return a skip reason when a fallback cannot replay current tool history.
+def _native_gemini_fallback_transcript_skip_reason(agent, fb_client) -> Optional[str]:
+    """Return a skip reason when a resolved fallback cannot replay tool history.
 
     Native Gemini endpoints require Gemini-issued ``thought_signature`` metadata
-    (stored on tool calls as ``extra_content``) when replaying assistant
-    function-call parts. If the primary provider was not Gemini, existing tool
-    calls do not have those signatures, so switching into Gemini mid-transcript
-    produces a deterministic HTTP 400. Skip that fallback and try the next one.
+    (carried on tool calls via ``extra_content``) when replaying assistant
+    function-call parts. Tool calls produced elsewhere lack those signatures,
+    so switching into a native Gemini transport mid-transcript produces a
+    deterministic HTTP 400. Skip that fallback and try the next one.
+
+    Compatibility is decided from the *resolved* transport, never from
+    provider/model labels: ``resolve_provider_client()`` returns a
+    ``GeminiNativeClient`` only when the target endpoint speaks Gemini's
+    native REST API, so a ``gemini`` entry routed through Google's
+    OpenAI-compat ``/openai`` endpoint — or a Gemini-named model on an
+    aggregator — is never screened here.
+
+    Known conservative bias: ``_last_api_messages_for_fallback`` holds the
+    strict-sanitized outgoing copy, and strict-API sanitization strips
+    ``extra_content`` when the current model is not Gemini-family. Genuinely
+    signed history can therefore look unsigned after failing on a strict
+    non-Gemini provider; the guard then skips a fallback that might have
+    worked — the safe direction (never send a known-bad request).
     """
-    fb_provider = (fb.get("provider") or "").strip().lower()
-    fb_model = (fb.get("model") or "").strip().lower()
-    fb_base_url = (fb.get("base_url") or fb.get("baseUrl") or "").strip()
-    is_gemini_target = (
-        fb_provider == "gemini"
-        or fb_provider == "google"
-        or "gemini" in fb_model
-        or is_native_gemini_base_url(fb_base_url)
-    )
-    if not is_gemini_target:
+    if not isinstance(fb_client, GeminiNativeClient):
         return None
 
     messages = getattr(agent, "_last_api_messages_for_fallback", None) or []
-    for msg in messages:
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        tool_calls = msg.get("tool_calls") or []
-        if not isinstance(tool_calls, list):
-            continue
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            if tool_call.get("extra_content") is None:
-                return "gemini_thought_signature_missing_after_non_gemini_tool_calls"
+    if transcript_has_unsigned_gemini_tool_calls(messages):
+        return "gemini_thought_signature_missing_after_non_gemini_tool_calls"
     return None
 
 
@@ -1620,16 +1620,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
-
-    transcript_skip_reason = _fallback_entry_incompatible_with_current_tool_history(agent, fb)
-    if transcript_skip_reason:
-        logger.warning(
-            "Fallback skip: %s/%s is incompatible with current tool-call history (%s)",
-            fb_provider,
-            fb_model,
-            transcript_skip_reason,
-        )
-        return agent._try_activate_fallback(reason)
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
@@ -1699,6 +1689,26 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_provider)
             unavailable.add(fb_key)
             return agent._try_activate_fallback(reason)  # try next in chain
+
+        # Screen the *resolved* transport against the current tool-call
+        # history. Transcript-dependent, so the entry is NOT added to
+        # ``unavailable`` — a later turn without unsigned tool calls may
+        # use it.
+        transcript_skip_reason = _native_gemini_fallback_transcript_skip_reason(agent, fb_client)
+        if transcript_skip_reason:
+            logger.warning(
+                "Fallback skip: %s/%s resolved to a native Gemini endpoint "
+                "that cannot replay current tool-call history (%s)",
+                fb_provider,
+                fb_model,
+                transcript_skip_reason,
+            )
+            try:
+                fb_client.close()
+            except Exception:
+                pass
+            return agent._try_activate_fallback(reason)
+
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 

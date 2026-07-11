@@ -338,53 +338,262 @@ class TestFallbackChainDedup:
 
 # ── Gemini thought-signature fallback guard ────────────────────────────────
 
+GEMINI_OPENAI_COMPAT_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+_NO_EXTRA = object()
+
+
+def _tool_call_history(extra_content=_NO_EXTRA):
+    """One assistant tool call; ``extra_content`` present only when passed."""
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "terminal", "arguments": "{}"},
+    }
+    if extra_content is not _NO_EXTRA:
+        tool_call["extra_content"] = extra_content
+    return [{"role": "assistant", "tool_calls": [tool_call]}]
+
+
+def _gemini_routing_resolver(called, created=None):
+    """Fake resolve_provider_client mirroring the real gemini routing:
+    a GeminiNativeClient is returned only when the resolved base URL speaks
+    Gemini's native REST API (agent/auxiliary_client.py gemini branch).
+    """
+    from agent.gemini_native_adapter import (
+        DEFAULT_GEMINI_BASE_URL,
+        GeminiNativeClient,
+        is_native_gemini_base_url,
+    )
+
+    def _resolve(provider, model=None, raw_codex=False, **kwargs):
+        called.append((provider, model))
+        if provider in ("gemini", "google"):
+            base_url = kwargs.get("explicit_base_url") or DEFAULT_GEMINI_BASE_URL
+            if is_native_gemini_base_url(base_url):
+                client = GeminiNativeClient(api_key="test-key")
+                if created is not None:
+                    created.append(client)
+                return client, model
+            return _mock_client(base_url=base_url), model
+        return _mock_client(), model
+
+    return _resolve
+
+
+def _activate(agent, resolver):
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=resolver):
+        with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+            return agent._try_activate_fallback()
+
 
 class TestGeminiFallbackToolHistoryGuard:
+    def _agent_with_history(self, fbs, history):
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "anthropic"
+        agent.model = "claude-opus-4"
+        agent.context_compressor = None  # keep activation tail offline
+        agent._last_api_messages_for_fallback = history
+        return agent
+
     def test_skips_gemini_after_unsigned_tool_calls_and_uses_next_fallback(self):
         fbs = [
             {"provider": "gemini", "model": "gemini-3.1-flash-lite"},
             {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
         ]
-        agent = _make_agent(fallback_model=fbs)
-        agent.provider = "anthropic"
-        agent.model = "claude-opus-4"
-        agent._last_api_messages_for_fallback = [
+        agent = self._agent_with_history(fbs, _tool_call_history())
+
+        called = []
+        ok = _activate(agent, _gemini_routing_resolver(called))
+
+        assert ok is True
+        # Compatibility is decided from the *resolved* transport, so gemini is
+        # resolved first, then skipped in favor of the next entry.
+        assert called == [
+            ("gemini", "gemini-3.1-flash-lite"),
+            ("openrouter", "anthropic/claude-sonnet-4"),
+        ]
+        assert agent.provider == "openrouter"
+        assert agent.model == "anthropic/claude-sonnet-4"
+
+    def test_allows_gemini_before_tool_history(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        agent = self._agent_with_history(
+            [{"provider": "gemini", "model": "gemini-3.1-flash-lite"}], [])
+
+        called = []
+        ok = _activate(agent, _gemini_routing_resolver(called))
+
+        assert ok is True
+        assert called == [("gemini", "gemini-3.1-flash-lite")]
+        assert agent.provider == "gemini"
+        assert isinstance(agent.client, GeminiNativeClient)
+
+    def test_gemini_openai_compat_endpoint_not_skipped(self):
+        """provider: gemini + Google /openai endpoint is NOT native — it can
+        replay unsigned tool calls and must not be screened (#62332 review)."""
+        fbs = [{
+            "provider": "gemini",
+            "model": "gemini-3.1-flash-lite",
+            "base_url": GEMINI_OPENAI_COMPAT_URL,
+        }]
+        agent = self._agent_with_history(fbs, _tool_call_history())
+
+        called = []
+        ok = _activate(agent, _gemini_routing_resolver(called))
+
+        assert ok is True
+        assert called == [("gemini", "gemini-3.1-flash-lite")]
+        assert agent.provider == "gemini"
+        assert agent.base_url == GEMINI_OPENAI_COMPAT_URL
+
+    def test_gemini_named_aggregator_model_not_skipped(self):
+        """A Gemini-named model on an aggregator is not a native transport
+        and must not be skipped merely for its name (#62332 review)."""
+        fbs = [{"provider": "openrouter", "model": "google/gemini-2.5-pro"}]
+        agent = self._agent_with_history(fbs, _tool_call_history())
+
+        called = []
+        ok = _activate(agent, _gemini_routing_resolver(called))
+
+        assert ok is True
+        assert called == [("openrouter", "google/gemini-2.5-pro")]
+        assert agent.provider == "openrouter"
+
+    def test_google_provider_alias_screened_like_gemini(self):
+        fbs = [
+            {"provider": "google", "model": "gemini-3.1-flash-lite"},
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        ]
+        agent = self._agent_with_history(fbs, _tool_call_history())
+
+        called = []
+        ok = _activate(agent, _gemini_routing_resolver(called))
+
+        assert ok is True
+        assert called[0] == ("google", "gemini-3.1-flash-lite")
+        assert agent.provider == "openrouter"
+
+    def test_unsigned_extra_content_shapes_still_skip(self):
+        """Metadata presence alone is not a signature (#62332 review)."""
+        for extra in (
+            {},                                     # empty metadata
+            {"unrelated": {"x": 1}},                # non-signature metadata
+            {"google": {"thought_signature": ""}},  # empty signature value
+            "raw-string",                           # non-dict extra_content
+        ):
+            fbs = [
+                {"provider": "gemini", "model": "gemini-3.1-flash-lite"},
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            ]
+            agent = self._agent_with_history(fbs, _tool_call_history(extra))
+
+            called = []
+            ok = _activate(agent, _gemini_routing_resolver(called))
+
+            assert ok is True, f"extra_content={extra!r}"
+            assert agent.provider == "openrouter", (
+                f"extra_content={extra!r} must not count as a Gemini signature"
+            )
+
+    def test_valid_signature_shapes_allow_native_gemini(self):
+        for extra in (
+            {"google": {"thought_signature": "sig-abc"}},
+            {"google": {"thoughtSignature": "sig-abc"}},
+            {"google": "sig-abc"},
+            {"thought_signature": "sig-abc"},
+        ):
+            agent = self._agent_with_history(
+                [{"provider": "gemini", "model": "gemini-3.1-flash-lite"}],
+                _tool_call_history(extra))
+
+            called = []
+            ok = _activate(agent, _gemini_routing_resolver(called))
+
+            assert ok is True, f"extra_content={extra!r}"
+            assert agent.provider == "gemini", (
+                f"extra_content={extra!r} is a valid signature and must not skip"
+            )
+
+    def test_tool_role_tool_calls_do_not_block(self):
+        """The native adapter never emits functionCall parts for system or
+        tool/function roles, so residual unsigned ``tool_calls`` there (e.g.
+        a provider echo) must not skip a viable native Gemini fallback."""
+        history = [
             {
                 "role": "assistant",
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
                     "function": {"name": "terminal", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": "sig"}},
                 }],
-            }
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "ok",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }],
+            },
         ]
+        agent = self._agent_with_history(
+            [{"provider": "gemini", "model": "gemini-3.1-flash-lite"}], history)
 
         called = []
-        def _resolve(provider, model=None, raw_codex=False, **kwargs):
-            called.append((provider, model))
-            return _mock_client(), model
-
-        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
-            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
-                ok = agent._try_activate_fallback()
+        ok = _activate(agent, _gemini_routing_resolver(called))
 
         assert ok is True
-        assert called == [("openrouter", "anthropic/claude-sonnet-4")]
+        assert agent.provider == "gemini"
 
-    def test_allows_gemini_before_tool_history(self):
-        agent = _make_agent(fallback_model={"provider": "gemini", "model": "gemini-3.1-flash-lite"})
-        agent.provider = "openrouter"
-        agent.model = "anthropic/claude-sonnet-4"
-        agent._last_api_messages_for_fallback = []
+    def test_malformed_history_entries_do_not_crash_or_block(self):
+        history = [
+            "not-a-dict",
+            {"role": "assistant", "tool_calls": "not-a-list"},
+            {"role": "assistant", "tool_calls": [None, 42, "call"]},
+        ]
+        agent = self._agent_with_history(
+            [{"provider": "gemini", "model": "gemini-3.1-flash-lite"}], history)
 
         called = []
-        def _resolve(provider, model=None, raw_codex=False, **kwargs):
-            called.append((provider, model))
-            return _mock_client(), model
-
-        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
-            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
-                ok = agent._try_activate_fallback()
+        ok = _activate(agent, _gemini_routing_resolver(called))
 
         assert ok is True
-        assert called == [("gemini", "gemini-3.1-flash-lite")]
+        # The native adapter emits no functionCall part for non-dict tool
+        # calls, so none of these can trigger the missing-signature 400.
+        assert agent.provider == "gemini"
+
+    def test_gemini_only_chain_exhausts_without_permanent_blacklist(self):
+        agent = self._agent_with_history(
+            [{"provider": "gemini", "model": "gemini-3.1-flash-lite"}],
+            _tool_call_history())
+        original_client = agent.client
+
+        called = []
+        ok = _activate(agent, _gemini_routing_resolver(called))
+
+        assert ok is False
+        assert agent.provider == "anthropic"
+        assert agent.model == "claude-opus-4"
+        assert agent.client is original_client
+        # Transcript-dependent skip must not permanently blacklist the entry.
+        assert getattr(agent, "_unavailable_fallback_keys", set()) == set()
+
+    def test_skipped_native_client_is_closed(self):
+        agent = self._agent_with_history(
+            [
+                {"provider": "gemini", "model": "gemini-3.1-flash-lite"},
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            ],
+            _tool_call_history())
+
+        called, created = [], []
+        ok = _activate(agent, _gemini_routing_resolver(called, created))
+
+        assert ok is True
+        assert len(created) == 1
+        assert created[0].is_closed is True

@@ -511,3 +511,130 @@ def test_hermes_version_is_valid():
     assert _HERMES_VERSION != "0.0.0", (
         "Version should resolve from hermes_cli.__version__, not the fallback"
     )
+
+
+def _signature_test_tool_call(extra=None, include_extra=True):
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{}"},
+    }
+    if include_extra:
+        tool_call["extra_content"] = extra
+    return tool_call
+
+
+def test_tool_call_has_gemini_thought_signature_contract():
+    """The public signature check accepts exactly the shapes the adapter
+    replays as ``thoughtSignature`` and nothing else (#62332 review)."""
+    from agent.gemini_native_adapter import tool_call_has_gemini_thought_signature
+
+    for extra in (
+        {"google": {"thought_signature": "sig"}},
+        {"google": {"thoughtSignature": "sig"}},
+        {"google": "sig"},
+        {"thought_signature": "sig"},
+    ):
+        assert tool_call_has_gemini_thought_signature(
+            _signature_test_tool_call(extra)
+        ), f"extra_content={extra!r} should be a valid signature"
+
+    for extra in (
+        None,
+        {},
+        {"unrelated": {"x": 1}},
+        {"google": {}},
+        {"google": {"thought_signature": ""}},
+        "raw-string",
+    ):
+        assert not tool_call_has_gemini_thought_signature(
+            _signature_test_tool_call(extra)
+        ), f"extra_content={extra!r} should NOT be a valid signature"
+
+    assert not tool_call_has_gemini_thought_signature(
+        _signature_test_tool_call(include_extra=False))
+    assert not tool_call_has_gemini_thought_signature("not-a-dict")
+    assert not tool_call_has_gemini_thought_signature(None)
+
+
+def test_tool_call_has_signature_matches_translator_emission():
+    """The check and the request translator must never disagree: a tool call
+    passes the check iff translation emits a ``thoughtSignature`` part."""
+    from agent.gemini_native_adapter import (
+        _translate_tool_call_to_gemini,
+        tool_call_has_gemini_thought_signature,
+    )
+
+    shapes = (
+        {"google": {"thought_signature": "sig"}},
+        {"google": {"thoughtSignature": "sig"}},
+        {"google": "sig"},
+        {"thought_signature": "sig"},
+        None,
+        {},
+        {"unrelated": {"x": 1}},
+        {"google": {}},
+        {"google": {"thought_signature": ""}},
+        "raw-string",
+    )
+    for extra in shapes:
+        tool_call = _signature_test_tool_call(extra)
+        part = _translate_tool_call_to_gemini(tool_call)
+        assert ("thoughtSignature" in part) == tool_call_has_gemini_thought_signature(tool_call), (
+            f"check/translator disagreement for extra_content={extra!r}"
+        )
+
+
+def test_transcript_has_unsigned_gemini_tool_calls_scan_matches_replay():
+    """The transcript screen mirrors _build_gemini_contents: system/tool/
+    function roles never emit functionCall parts, malformed entries are
+    dropped, and any other role's unsigned tool call trips the screen."""
+    from agent.gemini_native_adapter import transcript_has_unsigned_gemini_tool_calls
+
+    signed = _signature_test_tool_call({"google": {"thought_signature": "sig"}})
+    unsigned = _signature_test_tool_call(include_extra=False)
+
+    # Unsigned assistant tool call → would 400 on replay.
+    assert transcript_has_unsigned_gemini_tool_calls(
+        [{"role": "assistant", "tool_calls": [unsigned]}])
+
+    # Fully signed history → replayable.
+    assert not transcript_has_unsigned_gemini_tool_calls(
+        [{"role": "assistant", "tool_calls": [signed]}])
+
+    # Roles the adapter skips before tool_calls translation cannot 400.
+    for role in ("system", "tool", "function"):
+        assert not transcript_has_unsigned_gemini_tool_calls(
+            [{"role": role, "tool_calls": [unsigned]}]
+        ), f"role={role} never emits functionCall parts"
+
+    # Non-assistant, non-skipped roles ARE replayed (adapter maps them to
+    # user-role contents and still translates tool_calls).
+    assert transcript_has_unsigned_gemini_tool_calls(
+        [{"role": "user", "tool_calls": [unsigned]}])
+
+    # Malformed shapes are dropped by translation, so they cannot block.
+    assert not transcript_has_unsigned_gemini_tool_calls(None)
+    assert not transcript_has_unsigned_gemini_tool_calls(
+        ["not-a-dict", {"role": "assistant", "tool_calls": "not-a-list"},
+         {"role": "assistant", "tool_calls": [None, 42]}])
+
+
+def test_transcript_screen_and_translator_share_case_insensitive_role_semantics():
+    """Mixed-case special roles must not slip unsigned function calls past
+    the screen while the translator replays them (#62332)."""
+    from agent.gemini_native_adapter import (
+        _build_gemini_contents,
+        transcript_has_unsigned_gemini_tool_calls,
+    )
+
+    unsigned = _signature_test_tool_call(include_extra=False)
+    for role in ("SYSTEM", "TOOL", "Function"):
+        messages = [{"role": role, "tool_calls": [unsigned]}]
+        assert not transcript_has_unsigned_gemini_tool_calls(messages)
+        contents, _ = _build_gemini_contents(messages)
+        assert all(
+            "functionCall" not in part
+            for content in contents
+            for part in content["parts"]
+        )

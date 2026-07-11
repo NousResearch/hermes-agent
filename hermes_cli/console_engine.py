@@ -31,7 +31,16 @@ LOCAL_CONTEXTS: frozenset[ConsoleContext] = frozenset({"local"})
 
 
 class ConsoleCommandError(RuntimeError):
-    """User-facing console command failure."""
+    """User-facing console command failure.
+
+    Carries an optional ``code`` so a non-zero command-handler exit status
+    (e.g. ``sys.exit(3)`` from an underlying CLI handler) survives the trip
+    through the console engine instead of being flattened to text.
+    """
+
+    def __init__(self, message: str, *, code: int = 0) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,7 @@ class ConsoleResult:
     output: str = ""
     command: str = ""
     confirmation_message: str = ""
+    exit_code: int = 0
 
 
 @dataclass(frozen=True)
@@ -71,7 +81,7 @@ def _capture_output(fn: Callable[[], object]) -> str:
             code = int(exc.code or 0)
     text = stdout.getvalue() + stderr.getvalue()
     if code:
-        raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
+        raise ConsoleCommandError(text.strip() or f"Command exited with status {code}", code=code)
     return text.rstrip()
 
 
@@ -627,7 +637,12 @@ class HermesConsoleEngine:
             self.history.append(raw_line)
             return ConsoleResult("ok", output=output, command=raw_line)
         except ConsoleCommandError as exc:
-            return ConsoleResult("error", output=str(exc).strip(), command=raw_line)
+            return ConsoleResult(
+                "error",
+                output=str(exc).strip(),
+                command=raw_line,
+                exit_code=getattr(exc, "code", 0) or 0,
+            )
 
     def help_text(self, subject: str | None = None) -> str:
         if subject:
@@ -1872,5 +1887,7 @@ def run_console_repl(
         if result.output:
             stream = stderr if result.status == "error" else stdout
             print(result.output, file=stream)
+        if result.status == "error":
+            return result.exit_code or 1
         if result.status == "exit":
             return 0

@@ -14933,6 +14933,7 @@ async def _console_send_result(
                 "id": command_id,
                 "status": "ok",
                 "command": command,
+                "exit_code": getattr(result, "exit_code", 0) or 0,
                 "prompt": _CONSOLE_PROMPT,
             },
         )
@@ -14957,6 +14958,7 @@ async def _console_send_result(
                 "id": command_id,
                 "status": "error",
                 "command": command,
+                "exit_code": getattr(result, "exit_code", 0) or 1,
                 "prompt": _CONSOLE_PROMPT,
             },
         )

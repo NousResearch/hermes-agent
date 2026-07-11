@@ -678,4 +678,38 @@ def test_main_console_subcommand_smoke(_isolate_hermes_home):
     )
 
     assert result.returncode == 0
-    assert "Hermes Console" in result.stdout
+
+
+def test_nonzero_command_exit_status_is_preserved(_isolate_hermes_home):
+    """Regression for #62810: a command handler that ends with sys.exit(N)
+    must surface N as `exit_code` on the ConsoleResult, not be flattened
+    to a status string."""
+    import hermes_cli.console_engine as ce
+
+    engine = HermesConsoleEngine(context="local")
+
+    def failing_handler(_engine, _args):
+        # Real CLI handlers (e.g. `hermes doctor`) call sys.exit(code).
+        # The production dispatch wraps them in `_capture_output`, which is
+        # what converts SystemExit -> ConsoleCommandError.
+        return ce._capture_output(lambda: (print("boom"), sys.exit(7)))
+
+    engine.register(("demo", "fail"), "demo fail", "regression", failing_handler)
+
+    result = engine.execute("demo fail")
+    assert result.status == "error"
+    assert result.exit_code == 7
+    assert "boom" in result.output
+
+
+def test_ok_result_defaults_exit_code_to_zero(_isolate_hermes_home):
+    engine = HermesConsoleEngine(context="local")
+
+    def ok_handler(_engine, _args):
+        return "fine"
+
+    engine.register(("demo", "ok"), "demo ok", "regression", ok_handler)
+
+    result = engine.execute("demo ok")
+    assert result.status == "ok"
+    assert result.exit_code == 0

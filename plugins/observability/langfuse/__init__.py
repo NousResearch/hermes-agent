@@ -531,9 +531,16 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
 
 
 def _serialize_assistant_message(message: Any) -> dict[str, Any]:
+    # Providers use different attribute names for reasoning:
+    #   - .reasoning          (Qwen, some OpenRouter paths)
+    #   - .reasoning_content  (DeepSeek, Moonshot/Kimi, Novita, OpenAI)
+    reasoning = (
+        getattr(message, "reasoning", None)
+        or getattr(message, "reasoning_content", None)
+    )
     return {
         "content": _safe_value(getattr(message, "content", None)),
-        "reasoning": _safe_value(getattr(message, "reasoning", None)),
+        "reasoning": _safe_value(reasoning),
         "tool_calls": _serialize_tool_calls(getattr(message, "tool_calls", None)),
     }
 

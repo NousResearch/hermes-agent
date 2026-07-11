@@ -1021,3 +1021,59 @@ class TestUsageFromSanitizedResponse:
 
         assert seen["resp"] is resp
         assert captured["usage_details"] == {"input": 7, "output": 3}
+
+
+# ---------------------------------------------------------------------------
+# _serialize_assistant_message reasoning field extraction
+# ---------------------------------------------------------------------------
+
+class TestSerializeAssistantMessage:
+    def _make_mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_serialize_reasoning_field(self):
+        """message.reasoning is serialized when present."""
+        mod = self._make_mod()
+
+        class _Msg:
+            content = "hello"
+            reasoning = "let me think..."
+
+        result = mod._serialize_assistant_message(_Msg())
+        assert result["reasoning"] == "let me think..."
+        assert result["content"] == "hello"
+
+    def test_serialize_reasoning_content_field(self):
+        """message.reasoning_content is serialized when .reasoning is absent."""
+        mod = self._make_mod()
+
+        class _Msg:
+            content = "hello"
+            reasoning_content = "deepseek thinking..."
+
+        result = mod._serialize_assistant_message(_Msg())
+        assert result["reasoning"] == "deepseek thinking..."
+
+    def test_reasoning_wins_over_reasoning_content(self):
+        """When both fields are present, .reasoning takes precedence."""
+        mod = self._make_mod()
+
+        class _Msg:
+            content = "hello"
+            reasoning = "qwen reasoning"
+            reasoning_content = "should not be used"
+
+        result = mod._serialize_assistant_message(_Msg())
+        assert result["reasoning"] == "qwen reasoning"
+
+    def test_no_reasoning_fields(self):
+        """When neither field is present, reasoning is None."""
+        mod = self._make_mod()
+
+        class _Msg:
+            content = "plain text"
+
+        result = mod._serialize_assistant_message(_Msg())
+        assert result["reasoning"] is None
+        assert result["content"] == "plain text"

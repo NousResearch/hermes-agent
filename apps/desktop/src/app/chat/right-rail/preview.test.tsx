@@ -130,6 +130,7 @@ describe('ChatPreviewRail workspace surfaces', () => {
     render(<ChatPreviewRail />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Snap layouts for one.txt' }))
+    expect(screen.getByRole('button', { name: 'Snap one.txt to right two thirds' })).toBeDefined()
     fireEvent.click(screen.getByRole('button', { name: 'Snap one.txt to top left quarter' }))
 
     expect($previewSurfaceLayouts.get()[tabId]?.placement).toBe('top-left-quarter')

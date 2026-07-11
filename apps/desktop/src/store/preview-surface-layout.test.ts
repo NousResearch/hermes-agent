@@ -42,6 +42,7 @@ describe('preview surface geometry', () => {
     expect(WIN11_SNAP_LAYOUTS.map(layout => layout.slots)).toEqual([
       ['left-half', 'right-half'],
       ['left-two-thirds', 'right-third'],
+      ['left-third', 'right-two-thirds'],
       ['left-third', 'center-third', 'right-third'],
       ['top-left-quarter', 'top-right-quarter', 'bottom-left-quarter', 'bottom-right-quarter']
     ])

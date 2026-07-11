@@ -30,13 +30,14 @@ export type PreviewSnapSlot =
 export type PreviewEdgePlacement = 'maximized' | PreviewSnapSlot
 
 export interface SnapLayoutDefinition {
-  id: 'halves' | 'quarters' | 'thirds' | 'two-thirds'
+  id: 'halves' | 'quarters' | 'thirds' | 'two-thirds-left' | 'two-thirds-right'
   slots: readonly PreviewSnapSlot[]
 }
 
 export const WIN11_SNAP_LAYOUTS: readonly SnapLayoutDefinition[] = [
   { id: 'halves', slots: ['left-half', 'right-half'] },
-  { id: 'two-thirds', slots: ['left-two-thirds', 'right-third'] },
+  { id: 'two-thirds-left', slots: ['left-two-thirds', 'right-third'] },
+  { id: 'two-thirds-right', slots: ['left-third', 'right-two-thirds'] },
   { id: 'thirds', slots: ['left-third', 'center-third', 'right-third'] },
   {
     id: 'quarters',

@@ -7,12 +7,10 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
-import ast
 import logging
 import os
 import re
 import shlex
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -114,125 +112,7 @@ _PREFIX_PATTERNS = [
     r"fpk_[A-Za-z0-9]{30,}",            # Fireworks AI project key
 ]
 
-# ── Auto-discovered tool env vars ──
-# Scans tools/*.py for registry.register(requires_env=[...]) at import time
-# so new tools are automatically covered without manual list maintenance.
-def _scan_tool_requires_env() -> "frozenset[str]":
-    """Parse tools/*.py ASTs for ``requires_env`` lists in registry.register() calls."""
-    tools_dir = Path(__file__).resolve().parent.parent / "tools"
-    envs: set[str] = set()
-    for path in sorted(tools_dir.glob("*.py")):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            # Match registry.register(...)
-            func = node.func
-            if not (isinstance(func, ast.Attribute) and func.attr == "register"):
-                continue
-            if not (isinstance(func.value, ast.Name) and func.value.id == "registry"):
-                continue
-            # Find requires_env kwarg
-            for kw in node.keywords:
-                if kw.arg == "requires_env" and isinstance(kw.value, ast.List):
-                    for elt in kw.value.elts:
-                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                            envs.add(elt.value)
-    return frozenset(envs)
 
-
-# Build the master set: manual list (covers provider keys and platform secrets
-# outside of tool requires_env) + auto-discovered tool env vars.
-def _build_secret_env_vars() -> "frozenset[str]":
-    manual: "frozenset[str]" = frozenset([
-        # ── LLM Provider API Keys ──
-        "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-        "OPENAI_API_KEY", "OPENROUTER_API_KEY",
-        "DEEPSEEK_API_KEY", "XAI_API_KEY", "GROQ_API_KEY",
-        "GOOGLE_API_KEY", "GEMINI_API_KEY",
-        "MISTRAL_API_KEY", "NOVITA_API_KEY",
-        "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-        "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
-        "XIAOMI_API_KEY", "KIMI_API_KEY", "KIMI_CN_API_KEY",
-        "DASHSCOPE_API_KEY", "ARCEEAI_API_KEY", "STEPFUN_API_KEY",
-        "NVIDIA_API_KEY", "OLLAMA_API_KEY",
-        "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
-        "AZURE_FOUNDRY_API_KEY", "LM_API_KEY", "OPENVIKING_API_KEY",
-        # ── OAuth / Copilot ──
-        "CLAUDE_CODE_OAUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GH_TOKEN",
-        # ── Tool API Keys (web, browser, media, search, voice, memory) ──
-        "TAVILY_API_KEY", "EXA_API_KEY", "PARALLEL_API_KEY",
-        "FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSER_USE_API_KEY",
-        "CAMOFOX_API_KEY", "BRAVE_SEARCH_API_KEY", "TENOR_API_KEY",
-        "FAL_KEY", "KREA_API_KEY", "CARTESIA_API_KEY",
-        "VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY",
-        "HONCHO_API_KEY", "MEM0_API_KEY", "SUPERMEMORY_API_KEY",
-        "RETAINDB_API_KEY", "BRV_API_KEY",
-        "QQ_STT_API_KEY", "GMI_API_KEY",
-        # ── HuggingFace ──
-        "HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACE_TOKEN", "HUGGING_FACE_HUB_TOKEN",
-        # ── Cloud / AWS ──
-        "AWS_SECRET_ACCESS_KEY", "AWS_BEARER_TOKEN_BEDROCK",
-        # ── Version Control ──
-        "GITHUB_TOKEN",
-        # ── Messaging Platforms ──
-        "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
-        "MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD", "MATTERMOST_TOKEN",
-        "SIGNAL_ACCOUNT", "WEIXIN_TOKEN",
-        "WECOM_SECRET", "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_CORP_SECRET",
-        "QQ_CLIENT_SECRET", "FEISHU_APP_SECRET", "FEISHU_VERIFICATION_TOKEN",
-        "DINGTALK_CLIENT_SECRET",
-        "IRC_NICKSERV_PASSWORD", "IRC_SERVER_PASSWORD",
-        "BLUEBUBBLES_PASSWORD",
-        # ── Email / SMS ──
-        "EMAIL_PASSWORD", "TWILIO_AUTH_TOKEN",
-        # ── Services ──
-        "LINEAR_API_KEY", "NOTION_API_KEY", "AIRTABLE_API_KEY",
-        "HINDSIGHT_API_KEY",
-        # ── Infrastructure ──
-        "SUDO_PASSWORD", "TOOL_GATEWAY_USER_TOKEN",
-        "API_SERVER_KEY", "WEBHOOK_SECRET",
-        "AZURE_CLIENT_SECRET", "OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN",
-        "LANGFUSE_SECRET_KEY", "HERMES_LANGFUSE_SECRET_KEY",
-        # ── Spotify ──
-        "HERMES_SPOTIFY_CLIENT_ID",
-    ])
-    try:
-        tool_envs = _scan_tool_requires_env()
-    except Exception:
-        tool_envs = frozenset()
-    return manual | tool_envs
-
-
-# Known Hermes environment variable names whose VALUES are secrets
-# (API keys, tokens, passwords, OAuth credentials). Built from a manual
-# list of provider/platform secrets + auto-discovered tool requires_env.
-# Redacts matching KEY=VALUE lines regardless of code_file mode.
-_HERMES_SECRET_ENV_VARS: "frozenset[str]" = _build_secret_env_vars()
-
-# Compiled alternation of known secret env var names for KEY=VALUE redaction.
-# Prefix-anchored per line (^) to avoid matching mid-prose identifiers.
-_HERMES_KNOWN_ENV_RE = re.compile(
-    r"^(\s*(?:export\s+)?(" + "|".join(sorted(_HERMES_SECRET_ENV_VARS, key=len, reverse=True)) + r"))\s*=\s*(['\"]?)(\S+?)\3(?=\s*(?:#.*)?$)",
-    re.MULTILINE,
-)
-
-
-def _redact_known_env(m: re.Match) -> str:
-    """Redact the value of a known Hermes secret env var assignment."""
-    prefix = m.group(1)  # "export VAR" or "VAR"
-    value = m.group(4)
-    # Skip programmatic env lookups (os.getenv, os.environ, etc.) as values
-    if _ENV_LOOKUP_VALUE_RE.match(value):
-        return m.group(0)
-    quote = m.group(3)
-    return f"{prefix}={quote}***{quote}"
 
 
 # Generic ENV assignment patterns: KEY=value where KEY contains a secret-like name.
@@ -669,14 +549,6 @@ def redact_sensitive_text(
         _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
-    # Known Hermes secret env vars — redact values regardless of code_file
-    # mode. Unlike the generic _ENV_ASSIGN_RE below (which matches any key
-    # containing API_KEY/TOKEN/etc.), this only fires for the specific env
-    # var names Hermes actually reads (OPENROUTER_API_KEY, GEMINI_API_KEY,
-    # etc.). False positives are impossible — no legitimate source code
-    # defines a variable literally named OPENROUTER_API_KEY=...
-    if "=" in text and _HERMES_SECRET_ENV_VARS:
-        text = _HERMES_KNOWN_ENV_RE.sub(_redact_known_env, text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
@@ -823,6 +695,65 @@ def redact_sensitive_text(
 # fixtures, ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
+# Commands that read file contents to stdout. When the target is a ``.env``
+# file, the output is a credential dump — the same as ``printenv`` — so the
+# ENV-assignment pass must run (code_file=False). Per AGENTS.md, ``.env`` is
+# for secrets only; behavioral settings belong in config.yaml, so running
+# the generic ENV redactor on ``.env`` content is the correct behavior.
+_FILE_READ_COMMANDS = frozenset({
+    "cat", "head", "tail", "type", "bat", "less", "more", "nl",
+    "zcat", "tac", "view", "batcat",
+})
+
+# Basenames that are treated as ``.env`` files for redaction purposes.
+# Matches the list in ``agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES``
+# so the two defenses stay aligned: if file_tools blocks a read, and the
+# agent falls back to ``cat``, the terminal redactor still catches it.
+_ENV_FILE_BASENAMES = frozenset({
+    ".env", ".env.local", ".env.development", ".env.production",
+    ".env.test", ".env.staging", ".envrc",
+})
+
+# Filename suffixes that look like ``.env`` but are NOT secret-bearing
+# (templates, examples). These are explicitly excluded so the agent can
+# read template files without redaction interfering.
+_ENV_FILE_EXCLUDE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def _command_reads_env_file(command: str) -> bool:
+    """Return True if ``command`` reads a ``.env`` file to stdout.
+
+    Detects file-read commands (``cat``, ``head``, ``tail``, etc.) where any
+    argument ends with a ``.env``-style basename and is NOT a template
+    (``.env.example``, ``.env.sample``). Handles pipelines and sequences.
+    """
+    if not command:
+        return False
+    segments = re.split(r"[|;&]+", command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        # Use plain split() instead of shlex.split — shlex treats backslashes
+        # as escape chars, which mangles Windows paths (``C:\Users\...\.env``).
+        # We only need the command name and filename, so shell quoting is not
+        # a concern here.
+        tokens = seg.split()
+        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
+            continue
+        # Check all arguments (skip flags like -n, -A, etc.)
+        for arg in tokens[1:]:
+            if arg.startswith("-"):
+                continue
+            # Strip any leading path to get the basename. Handle both / and \.
+            basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            # Exclude templates/examples.
+            if any(basename.endswith(suf) for suf in _ENV_FILE_EXCLUDE_SUFFIXES):
+                continue
+            if basename in _ENV_FILE_BASENAMES:
+                return True
+    return False
+
 
 def is_env_dump_command(command: str | None) -> bool:
     """Return True if ``command`` dumps environment variables to stdout.
@@ -858,10 +789,14 @@ def redact_terminal_output(
     Single redaction policy for ALL terminal-output surfaces — foreground
     ``terminal`` results AND background ``process(action=poll/log/wait)``
     output — so they can't diverge. Picks ``code_file`` based on whether
-    ``command`` is an environment dump:
+    ``command`` is an environment dump or reads a ``.env`` file:
 
     - env-dump command (``env``/``printenv``/``set``/``export``/``declare``)
       → ``code_file=False`` so the ENV-assignment pass masks opaque tokens.
+    - file-read command targeting a ``.env`` file (``cat .env``,
+      ``head .env.local``, etc.) → ``code_file=False`` for the same reason.
+      Per AGENTS.md, ``.env`` files contain only secrets, so the generic
+      ENV redactor is the correct pass — no list of known var names needed.
     - anything else (or unknown command) → ``code_file=True`` to avoid
       false positives on source/config dumps.
 
@@ -870,7 +805,8 @@ def redact_terminal_output(
     """
     if not output:
         return output
-    code_file = not is_env_dump_command(command or "")
+    cmd = command or ""
+    code_file = not (is_env_dump_command(cmd) or _command_reads_env_file(cmd))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

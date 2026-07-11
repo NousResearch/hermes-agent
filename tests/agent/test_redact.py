@@ -873,9 +873,10 @@ class TestTerminalOutputRedaction:
     """is_env_dump_command + redact_terminal_output — issue #43025.
 
     Terminal/process stdout must be redacted on every surface (foreground
-    `terminal` AND background `process(poll/log/wait)`). Env-dump commands get
-    the ENV-assignment pass so opaque tokens (no vendor prefix) are masked;
-    other commands stay on the code_file path to avoid false positives.
+    `terminal` AND background `process(poll/log/wait)`). Env-dump commands
+    and commands that read ``.env`` files get the ENV-assignment pass so
+    opaque tokens (no vendor prefix) are masked; other commands stay on
+    the code_file path to avoid false positives.
     """
 
     def test_is_env_dump_command_detection(self):
@@ -893,6 +894,53 @@ class TestTerminalOutputRedaction:
         assert not is_env_dump_command("")
         assert not is_env_dump_command(None)
 
+    # ── .env file detection (issue #61352 v2) ──
+
+    def test_command_reads_env_file_detection(self):
+        from agent.redact import _command_reads_env_file
+        # Basic detection
+        assert _command_reads_env_file("cat .env")
+        assert _command_reads_env_file("cat .env.local")
+        assert _command_reads_env_file("cat .env.production")
+        assert _command_reads_env_file("cat .envrc")
+        assert _command_reads_env_file("head .env")
+        assert _command_reads_env_file("tail .env")
+        assert _command_reads_env_file("type .env")
+        assert _command_reads_env_file("nl .env")
+        assert _command_reads_env_file("bat .env")
+        # With flags
+        assert _command_reads_env_file("cat -n .env")
+        assert _command_reads_env_file("cat -A .env")
+        # With paths
+        assert _command_reads_env_file("cat ~/.hermes/.env")
+        assert _command_reads_env_file("cat /home/user/project/.env")
+        assert _command_reads_env_file("cat ./config/.env.local")
+        # In a pipeline / sequence
+        assert _command_reads_env_file("cat .env | grep KEY")
+        assert _command_reads_env_file("echo '---' && cat .env")
+        # Windows-style backslash paths
+        assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+
+    def test_command_reads_env_file_excludes_templates(self):
+        from agent.redact import _command_reads_env_file
+        # Templates/examples should NOT trigger
+        assert not _command_reads_env_file("cat .env.example")
+        assert not _command_reads_env_file("cat .env.sample")
+        assert not _command_reads_env_file("cat .env.template")
+        assert not _command_reads_env_file("cat .env.dist")
+
+    def test_command_reads_env_file_rejects_non_env_files(self):
+        from agent.redact import _command_reads_env_file
+        assert not _command_reads_env_file("cat config.py")
+        assert not _command_reads_env_file("cat README.md")
+        assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
+        assert not _command_reads_env_file("python app.py")
+        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_env_file("")
+        assert not _command_reads_env_file(None)
+
+    # ── End-to-end redaction via redact_terminal_output ──
+
     def test_env_dump_masks_opaque_token(self):
         from agent.redact import redact_terminal_output
         out = "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u"
@@ -900,10 +948,69 @@ class TestTerminalOutputRedaction:
         assert "abc123randomopaquetokenvalue999" not in red
         assert "HOME=/home/u" in red
 
+    def test_cat_env_file_masks_opaque_token(self):
+        """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
+        from agent.redact import redact_terminal_output
+        out = (
+            "MISTRAL_API_KEY=abc123opaqueSecretValue\n"
+            "NOUS_API_KEY=xyz789opaqueKey\n"
+            "DEBUG=true\n"
+        )
+        red = redact_terminal_output(out, "cat .env")
+        assert "abc123opaqueSecretValue" not in red
+        assert "xyz789opaqueKey" not in red
+        assert "DEBUG=true" in red  # non-secret key preserved
+
+    def test_cat_env_file_with_flags_masks_opaque_token(self):
+        """cat -n .env → still detected as .env read."""
+        from agent.redact import redact_terminal_output
+        out = "     1\tMISTRAL_API_KEY=abc123opaqueSecretValue\n"
+        red = redact_terminal_output(out, "cat -n .env")
+        assert "abc123opaqueSecretValue" not in red
+
+    def test_cat_env_file_in_pipeline_masks_opaque_token(self):
+        """cat .env | grep KEY → still detected as .env read."""
+        from agent.redact import redact_terminal_output
+        out = "MISTRAL_API_KEY=abc123opaqueSecretValue"
+        red = redact_terminal_output(out, "cat .env | grep MISTRAL")
+        assert "abc123opaqueSecretValue" not in red
+
+    def test_cat_env_example_not_redacted_as_env(self):
+        """cat .env.example → NOT treated as .env read (template file)."""
+        from agent.redact import redact_terminal_output
+        out = "MISTRAL_API_KEY=placeholder_value_here"
+        red = redact_terminal_output(out, "cat .env.example")
+        # Should NOT be redacted by the ENV-assignment pass (code_file=True).
+        # The placeholder value should survive since it has no vendor prefix.
+        assert "placeholder_value_here" in red
+
+    def test_cat_env_local_masks_opaque_token(self):
+        """cat .env.local → detected as .env read."""
+        from agent.redact import redact_terminal_output
+        out = "CUSTOM_API_KEY=opaquecustomkey123456"
+        red = redact_terminal_output(out, "cat .env.local")
+        assert "opaquecustomkey123456" not in red
+
+    def test_cat_env_inline_comment_preserved(self):
+        """Inline comments after env values are preserved (issue #61352 review)."""
+        from agent.redact import redact_terminal_output
+        out = "MISTRAL_API_KEY=abc123secret # used for tests"
+        red = redact_terminal_output(out, "cat .env")
+        assert "abc123secret" not in red
+        assert "MISTRAL_API_KEY=*** # used for tests" in red
+
+    def test_cat_env_export_inline_comment_preserved(self):
+        """export KEY=VALUE # comment — comment preserved."""
+        from agent.redact import redact_terminal_output
+        out = "export MISTRAL_API_KEY=abc123secret # prod key"
+        red = redact_terminal_output(out, "cat .env")
+        assert "abc123secret" not in red
+        assert "export MISTRAL_API_KEY=*** # prod key" in red
+
     def test_non_env_command_preserves_source_false_positives(self):
         from agent.redact import redact_terminal_output
         # code_file path: MAX_TOKENS=100 is source, must survive; real sk- masked.
-        out = "MAX_TOKENS=100\nOPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012"
+        out = "MAX_TOKENS=100\nOPENAI_API_KEY=«redacted:sk-…»"
         red = redact_terminal_output(out, "cat config.py")
         assert "MAX_TOKENS=100" in red
         assert "abc123def456" not in red
@@ -912,7 +1019,7 @@ class TestTerminalOutputRedaction:
         from agent.redact import redact_terminal_output
         # No command → code_file=True; opaque non-prefix token NOT masked
         # (safe default avoids mangling arbitrary output), prefix still masked.
-        out = "OPAQUE=plainvalue123\nKEY=sk-proj-abc123def456ghi789jkl012"
+        out = "OPAQUE=plainvalue123\nKEY=«redacted:sk-…»"
         red = redact_terminal_output(out, None)
         assert "abc123def456" not in red
 
@@ -1046,88 +1153,3 @@ class TestRedactCdpUrl:
 
     def test_none_returns_empty(self):
         assert redact_cdp_url(None) == ""
-
-
-class TestKnownHermesSecretEnvVars:
-    """Tests for known Hermes secret env var redaction (code_file=True path).
-
-    The _HERMES_KNOWN_ENV_RE pass runs regardless of code_file mode so that
-    opaque API keys without recognized vendor prefixes are still redacted
-    when cat'ing .env files through the terminal.
-    """
-
-    def test_plain_env_var_redacted_under_code_file(self):
-        """Plain KEY=VALUE with known secret env var name is redacted."""
-        result = redact_sensitive_text(
-            "MISTRAL_API_KEY=abc123opaqueSecretValue", force=True, code_file=True
-        )
-        assert "abc123opaqueSecretValue" not in result
-        assert "MISTRAL_API_KEY=***" in result
-
-    def test_export_env_var_redacted_under_code_file(self):
-        """export KEY=VALUE is redacted."""
-        result = redact_sensitive_text(
-            "export MISTRAL_API_KEY=abc123opaqueSecretValue", force=True, code_file=True
-        )
-        assert "abc123opaqueSecretValue" not in result
-        assert "export MISTRAL_API_KEY=***" in result
-
-    def test_inline_comment_preserved_value_redacted(self):
-        """KEY=VALUE # comment — value redacted, comment preserved (issue #61352 review)."""
-        result = redact_sensitive_text(
-            "MISTRAL_API_KEY=abc123secret # used for tests",
-            force=True, code_file=True,
-        )
-        assert "abc123secret" not in result
-        assert "MISTRAL_API_KEY=*** # used for tests" in result
-
-    def test_export_inline_comment_preserved_value_redacted(self):
-        """export KEY=VALUE # comment — value redacted, comment preserved."""
-        result = redact_sensitive_text(
-            "export MISTRAL_API_KEY=abc123secret # prod key",
-            force=True, code_file=True,
-        )
-        assert "abc123secret" not in result
-        assert "export MISTRAL_API_KEY=*** # prod key" in result
-
-    def test_quoted_value_with_comment_redacted(self):
-        """KEY="value" # comment — quoted value redacted."""
-        result = redact_sensitive_text(
-            'MISTRAL_API_KEY="abc123secret" # comment',
-            force=True, code_file=True,
-        )
-        assert "abc123secret" not in result
-        assert 'MISTRAL_API_KEY="***" # comment' in result
-
-    def test_value_with_spaces_before_comment_redacted(self):
-        """KEY=value   # comment — extra spaces before comment handled."""
-        result = redact_sensitive_text(
-            "GEMINI_API_KEY=AQ.opaqueSecret   # my key",
-            force=True, code_file=True,
-        )
-        assert "AQ.opaqueSecret" not in result
-        assert "GEMINI_API_KEY=***   # my key" in result
-
-    def test_non_secret_var_passes_through_under_code_file(self):
-        """MAX_TOKENS=100 is NOT a known Hermes secret env var — must survive."""
-        result = redact_sensitive_text(
-            "MAX_TOKENS=100", force=True, code_file=True
-        )
-        assert result == "MAX_TOKENS=100"
-
-    def test_multiline_block_with_comments(self):
-        """Several known env vars in a multiline block, some with comments."""
-        text = (
-            "MISTRAL_API_KEY=abc123secret # mistral key\n"
-            "GEMINI_API_KEY=AQ.opaque456\n"
-            "MAX_TOKENS=100\n"
-            "TAVILY_API_KEY=tvly-secret789  # search key\n"
-        )
-        result = redact_sensitive_text(text, force=True, code_file=True)
-        assert "abc123secret" not in result
-        assert "AQ.opaque456" not in result
-        assert "tvly-secret789" not in result
-        assert "MAX_TOKENS=100" in result
-        assert "MISTRAL_API_KEY=*** # mistral key" in result
-        assert "GEMINI_API_KEY=***" in result
-        assert "TAVILY_API_KEY=***  # search key" in result

@@ -691,6 +691,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
         chat_type="dm",
     )
     runner = _make_runner(session_entry)
+    runner.config.multiplex_profiles = True
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     event = _make_event("/profile")
@@ -700,6 +701,37 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
 
     assert "**Profile:** `milo`" in result
     assert f"**Home:** `{profile_home}`" in result
+
+
+@pytest.mark.asyncio
+async def test_profile_command_ignores_stamp_when_multiplexing_off(monkeypatch, tmp_path):
+    """Without ``gateway.multiplex_profiles`` a stamped source is ignored:
+    /profile keeps reporting the active profile and the default home,
+    mirroring the multiplex gating in ``_run_agent`` and
+    ``_reset_notice_session_info``."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "milo"
+    profile_home.mkdir(parents=True)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    assert runner.config.multiplex_profiles is False
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    event = _make_event("/profile")
+    event.source.profile = "milo"
+
+    result = await runner._handle_profile_command(event)
+
+    assert "**Profile:** `default`" in result
+    assert f"**Home:** `{hermes_home}`" in result
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import signal
 from typing import Optional
@@ -85,7 +86,11 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def create_app(
+    adapter: UpstreamAdapter,
+    *,
+    downstream_token: Optional[str] = None,
+) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError(
@@ -109,6 +114,16 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         )
 
     async def handle_proxy(request: "web.Request") -> "web.StreamResponse":
+        if downstream_token:
+            supplied = request.headers.get("Authorization", "")
+            expected = f"Bearer {downstream_token}"
+            if not hmac.compare_digest(supplied, expected):
+                return _json_error(
+                    401,
+                    "A valid proxy bearer token is required.",
+                    code="proxy_auth_failed",
+                )
+
         # Extract the path *after* /v1
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
@@ -144,6 +159,9 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
 
             fwd_headers = _filter_request_headers(request.headers)
             fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+            # Provider headers are trusted adapter output and intentionally
+            # override any same-named values supplied by the downstream client.
+            fwd_headers.update(active_cred.extra_headers)
 
             logger.debug(
                 "proxy: forwarding %s %s -> %s (body=%d bytes)",
@@ -249,6 +267,8 @@ async def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     shutdown_event: Optional[asyncio.Event] = None,
+    *,
+    downstream_token: Optional[str] = None,
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set.
 
@@ -260,7 +280,7 @@ async def run_server(
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
-    app = create_app(adapter)
+    app = create_app(adapter, downstream_token=downstream_token)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

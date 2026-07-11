@@ -321,7 +321,7 @@ def build_gateway_parser(
     proxy_start.add_argument(
         "--provider",
         default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
+        help="Upstream provider: nous, openai-codex, or xai (default: nous). See `hermes proxy providers`.",
     )
     proxy_start.add_argument(
         "--host",
@@ -333,6 +333,14 @@ def build_gateway_parser(
         type=int,
         default=None,
         help="Bind port (default: 8645)",
+    )
+    proxy_start.add_argument(
+        "--auth-token-file",
+        default=None,
+        help=(
+            "Read the downstream bearer token from this file. Required for "
+            "non-loopback binds such as 0.0.0.0."
+        ),
     )
 
     proxy_subparsers.add_parser(

@@ -14,8 +14,8 @@ The proxy server is otherwise provider-agnostic.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import FrozenSet, Optional
+from dataclasses import dataclass, field
+from typing import FrozenSet, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,9 @@ class UpstreamCredential:
 
     expires_at: Optional[str] = None
     """ISO-8601 expiry timestamp for the bearer, when known. Informational."""
+
+    extra_headers: Mapping[str, str] = field(default_factory=dict)
+    """Provider-required headers applied after inbound headers are filtered."""
 
 
 class UpstreamAdapter(ABC):

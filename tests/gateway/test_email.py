@@ -1775,5 +1775,74 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestEmailAdapterSplitsLongMessages(unittest.TestCase):
+    """Verify EmailAdapter declares splits_long_messages=True to avoid truncation."""
+
+    def test_splits_long_messages_enabled(self):
+        """EmailAdapter should declare splits_long_messages=True."""
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        self.assertTrue(
+            EmailAdapter.splits_long_messages,
+            "EmailAdapter must declare splits_long_messages=True to avoid "
+            "gateway/delivery.py's MAX_PLATFORM_OUTPUT (4000 chars) truncation cap."
+        )
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_long_content_reaches_email_send_intact(self):
+        """Regression test: >4000-char content reaches EmailAdapter.send() without truncation."""
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+        from gateway.delivery import DeliveryRouter, DeliveryTarget
+        from plugins.platforms.email.adapter import EmailAdapter
+        from email.mime.text import MIMEText
+        import base64
+
+        # Mock the actual SMTP send to avoid network calls
+        with patch.object(EmailAdapter, '_connect_smtp') as mock_smtp:
+            mock_smtp_client = MagicMock()
+            mock_smtp.return_value = mock_smtp_client
+
+            # Set up adapter
+            config = GatewayConfig()
+            _apply_env_overrides(config)
+            adapter = EmailAdapter(config.platforms[Platform.EMAIL])
+            router = DeliveryRouter(config, adapters={Platform.EMAIL: adapter})
+
+            # Send content longer than MAX_PLATFORM_OUTPUT (4000 chars)
+            long_content = "x" * 5000
+            target = DeliveryTarget.parse("email:user@test.com")
+
+            import asyncio
+            asyncio.run(router._deliver_to_platform(target, long_content, metadata={"job_id": "test-email-job"}))
+
+            # Verify the full 5000 chars reached send() (no truncation)
+            mock_smtp_client.send_message.assert_called_once()
+            sent_msg = mock_smtp_client.send_message.call_args[0][0]
+            
+            # MIMEText encodes long text as base64; decode to verify
+            payload = sent_msg.get_payload(0).get_payload()
+            if sent_msg.get_payload(0).get_content_type() == "text/plain" and sent_msg.get_payload(0).get("Content-Transfer-Encoding") == "base64":
+                decoded = base64.b64decode(payload).decode('utf-8')
+            else:
+                decoded = payload
+            
+            self.assertEqual(
+                len(decoded),
+                5000,
+                "EmailAdapter.send() should receive the full 5000-char payload; "
+                "router should not truncate for splits_long_messages=True adapters."
+            )
+            self.assertEqual(
+                decoded,
+                long_content,
+                "EmailAdapter.send() should receive the exact original content."
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

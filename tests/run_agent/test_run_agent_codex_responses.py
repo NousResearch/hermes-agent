@@ -821,6 +821,34 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_run_conversation_codex_without_usage_keeps_context_meter(monkeypatch):
+    """Recovered Codex streams can lack usage; keep TUI context estimated."""
+    agent = _build_agent(monkeypatch)
+
+    def _response_without_usage(api_kwargs):
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="OK")],
+                )
+            ],
+            status="completed",
+            model="gpt-5-codex",
+        )
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _response_without_usage)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "OK"
+    compressor = getattr(agent, "context_compressor")
+    assert compressor.last_prompt_tokens > 0
+    assert agent.session_prompt_tokens == 0
+    assert agent.session_total_tokens == 0
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

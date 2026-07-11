@@ -7,7 +7,8 @@ import {
   coerceThinkingText,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  toRuntimeMessage
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -148,5 +149,23 @@ describe('parseSlashCommand', () => {
 
   it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
     expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
+  })
+})
+
+describe('toRuntimeMessage', () => {
+  it('carries sender device in user metadata custom fields', () => {
+    const runtimeMessage = toRuntimeMessage({
+      attachmentRefs: ['@file:src/a.ts'],
+      id: 'user-1',
+      parts: [{ text: 'hello', type: 'text' }],
+      role: 'user',
+      senderDevice: 'ko-mac',
+      timestamp: 42
+    })
+
+    expect(runtimeMessage.metadata?.custom).toMatchObject({
+      attachmentRefs: ['@file:src/a.ts'],
+      senderDevice: 'ko-mac'
+    })
   })
 })

@@ -155,6 +155,18 @@ describe('toChatMessages', () => {
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
+
+  it('maps sender_device onto user chat messages only', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'hello', sender_device: ' ko-mac ', timestamp: 1 },
+      { role: 'assistant', content: 'hi', sender_device: 'server', timestamp: 2 },
+      { role: 'user', content: 'blank sender', sender_device: '   ', timestamp: 3 }
+    ])
+
+    expect(messages[0].senderDevice).toBe('ko-mac')
+    expect(messages[1].senderDevice).toBeUndefined()
+    expect(messages[2].senderDevice).toBeUndefined()
+  })
 })
 
 describe('renderMediaTags', () => {

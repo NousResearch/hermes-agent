@@ -144,6 +144,15 @@ export const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // F-003 sender attribution: which device this message was typed on. The
+  // session is the channel; the device nickname is the sender identity until
+  // user accounts exist.
+  const senderDevice = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { senderDevice?: unknown }
+
+    return typeof custom.senderDevice === 'string' && custom.senderDevice.trim() ? custom.senderDevice.trim() : null
+  })
+
   // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
   // doesn't dominate the viewport while the response streams underneath; the
   // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
@@ -223,21 +232,32 @@ export const UserMessage: FC<{
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
-  const bubbleContent = hasBody && (
-    // Render the user's text through a minimal markdown pipeline:
-    // backtick `code` and ``` fenced ``` blocks, with directive chips
-    // (`@file:` etc.) still resolved inside the plain-text spans.
-    <div
-      className={cn(clampActive && 'sticky-human-clamp')}
-      data-clamped={clampActive && bodyClamped ? 'true' : undefined}
-    >
-      {/* Match the edit composer's collapsed line box (min-h-[1.25rem]) so
-          clicking to edit can't grow the bubble by a sub-pixel and reflow the
-          turn 1px. */}
-      <div className="min-h-[1.25rem]" ref={clampInnerRef}>
-        <UserMessageText className="wrap-anywhere" text={messageText} />
-      </div>
-    </div>
+  const bubbleContent = (senderDevice || hasBody) && (
+    <>
+      {/* Channels: surface who sent this message when it arrived from another
+          participant's device. */}
+      {senderDevice && (
+        <span className="-mb-0.5 block truncate text-[0.625rem] font-medium leading-none text-(--ui-text-tertiary)">
+          {senderDevice}
+        </span>
+      )}
+      {hasBody && (
+        // Render the user's text through a minimal markdown pipeline:
+        // backtick `code` and ``` fenced ``` blocks, with directive chips
+        // (`@file:` etc.) still resolved inside the plain-text spans.
+        <div
+          className={cn(clampActive && 'sticky-human-clamp')}
+          data-clamped={clampActive && bodyClamped ? 'true' : undefined}
+        >
+          {/* Match the edit composer's collapsed line box (min-h-[1.25rem]) so
+              clicking to edit can't grow the bubble by a sub-pixel and reflow the
+              turn 1px. */}
+          <div className="min-h-[1.25rem]" ref={clampInnerRef}>
+            <UserMessageText className="wrap-anywhere" text={messageText} />
+          </div>
+        </div>
+      )}
+    </>
   )
 
   return (

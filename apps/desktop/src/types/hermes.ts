@@ -372,6 +372,8 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   role: 'assistant' | 'system' | 'tool' | 'user'
+  /** Device a user message was typed on. */
+  sender_device?: null | string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

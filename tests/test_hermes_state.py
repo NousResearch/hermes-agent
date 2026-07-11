@@ -1048,6 +1048,65 @@ class TestMessageStorage:
         assert next(m for m in conv if m["role"] == "user").get("message_id") == "ext-1"
         assert "message_id" not in next(m for m in conv if m["role"] == "assistant")
 
+    def test_user_message_sender_device_is_local_metadata(self, db, monkeypatch):
+        """User rows get local attribution without changing prompt replay."""
+        monkeypatch.setattr("hermes_state.get_device_name", lambda: "ko-mac")
+        db.create_session(session_id="s_sender", source="desktop")
+        db.append_message("s_sender", role="user", content="hello")
+        db.append_message("s_sender", role="assistant", content="hi")
+        db.append_message("s_sender", role="tool", content="ok", tool_name="terminal")
+
+        msgs = db.get_messages("s_sender")
+        assert msgs[0]["sender_device"] == "ko-mac"
+        assert msgs[1]["sender_device"] is None
+        assert msgs[2]["sender_device"] is None
+
+        conv = db.get_messages_as_conversation("s_sender")
+        assert "sender_device" not in conv[0]
+        # Upstream's conversation projection now stamps a replay timestamp on
+        # every row; the invariant this guards is that sender attribution stays
+        # local metadata and never leaks into prompt replay.
+        assert {key: value for key, value in conv[0].items() if key != "timestamp"} == {
+            "role": "user",
+            "content": "hello",
+        }
+
+    def test_append_message_sender_device_override_and_failure(self, db, monkeypatch):
+        """Explicit sender attribution wins; resolver failures stay non-fatal."""
+        db.create_session(session_id="s_sender_override", source="desktop")
+        monkeypatch.setattr("hermes_state.get_device_name", lambda: "ko-mac")
+        db.append_message(
+            "s_sender_override",
+            role="user",
+            content="from the phone",
+            sender_device="iphone",
+        )
+
+        def _boom():
+            raise RuntimeError("device resolver unavailable")
+
+        monkeypatch.setattr("hermes_state.get_device_name", _boom)
+        db.append_message("s_sender_override", role="user", content="fallback")
+
+        msgs = db.get_messages("s_sender_override")
+        assert msgs[0]["sender_device"] == "iphone"
+        assert msgs[1]["sender_device"] is None
+
+    def test_replace_messages_preserves_sender_device(self, db):
+        """Transcript rewrites keep sender attribution for user rows."""
+        db.create_session(session_id="s_sender_replace", source="desktop")
+        db.replace_messages(
+            "s_sender_replace",
+            [
+                {"role": "user", "content": "typed elsewhere", "sender_device": "iphone"},
+                {"role": "assistant", "content": "ack"},
+            ],
+        )
+
+        msgs = db.get_messages("s_sender_replace")
+        assert msgs[0]["sender_device"] == "iphone"
+        assert msgs[1]["sender_device"] is None
+
     def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")
@@ -3248,11 +3307,12 @@ class TestSchemaInit:
             for r in migrated_db._conn.execute("PRAGMA table_info(messages)").fetchall()
         }
         assert "reasoning_content" in msg_cols
+        assert "sender_device" in msg_cols
 
         # The query that used to crash must now work
         cursor = migrated_db._conn.execute(
             "SELECT role, content, reasoning, reasoning_content, "
-            "reasoning_details, codex_reasoning_items "
+            "reasoning_details, codex_reasoning_items, sender_device "
             "FROM messages WHERE session_id = ?",
             ("s1",),
         )
@@ -3260,6 +3320,7 @@ class TestSchemaInit:
         assert row is not None
         assert row[0] == "assistant"
         assert row[3] is None  # reasoning_content NULL for old rows
+        assert row[6] is None  # sender_device NULL for old rows
 
         migrated_db.close()
 

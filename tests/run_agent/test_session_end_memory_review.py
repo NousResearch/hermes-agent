@@ -275,3 +275,76 @@ def test_background_memory_reviews_execute_serially(monkeypatch):
     assert not second.is_alive()
     assert max_active == 1
     assert agent._last_memory_review_thread is second
+
+
+def test_background_review_captures_parent_state_before_session_rotation(monkeypatch):
+    captured = {}
+    agent = SimpleNamespace(
+        model="old-model",
+        provider="old-provider",
+        platform="telegram",
+        session_id="old-session",
+        session_start="old-start",
+        enabled_toolsets=["memory"],
+        disabled_toolsets=["browser"],
+        _credential_pool=object(),
+        _memory_store=object(),
+        _memory_enabled=True,
+        _user_profile_enabled=False,
+        _cached_system_prompt="old-prompt",
+        memory_notifications="on",
+        _safe_print=MagicMock(),
+        background_review_callback=MagicMock(),
+        _emit_auxiliary_failure=MagicMock(),
+    )
+    monkeypatch.setattr(
+        background_review,
+        "_resolve_review_runtime",
+        lambda _agent: {
+            "model": "old-model",
+            "provider": "old-provider",
+            "api_key": "captured-key",
+        },
+    )
+
+    def fake_worker(_agent, _messages, _prompt, review_context=None):
+        captured.update(review_context or {})
+
+    monkeypatch.setattr(background_review, "_run_review_in_thread", fake_worker)
+
+    target, _prompt = background_review.spawn_background_review_thread(
+        agent,
+        _messages(),
+        review_memory=True,
+    )
+    agent.session_id = "new-session"
+    agent.model = "new-model"
+    agent._cached_system_prompt = "new-prompt"
+    target()
+
+    assert captured["session_id"] == "old-session"
+    assert captured["model"] == "old-model"
+    assert captured["cached_system_prompt"] == "old-prompt"
+    assert captured["runtime"]["api_key"] == "captured-key"
+
+
+def test_cli_new_schedules_builtin_review_without_external_memory_manager():
+    from cli import HermesCLI
+
+    agent, _thread = _reviewable_agent(pending_turns=2)
+    agent._memory_manager = None
+    agent.context_compressor = MagicMock()
+    console = object.__new__(HermesCLI)
+    console.agent = agent
+
+    queued = console._launch_session_boundary_memory_flush(
+        _messages(),
+        session_id="short-session",
+    )
+
+    assert queued is None
+    agent.context_compressor.on_session_end.assert_called_once_with(
+        "short-session", _messages()
+    )
+    agent._spawn_background_review.assert_called_once()
+    assert agent._turns_since_memory == 0

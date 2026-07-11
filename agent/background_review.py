@@ -717,6 +717,7 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    review_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -744,6 +745,7 @@ def _run_review_in_thread(
     except Exception:
         pass
 
+    context = review_context or _capture_review_context(agent)
     review_agent = None
     review_messages: List[Dict] = []
     try:
@@ -769,7 +771,7 @@ def _run_review_in_thread(
             # set auxiliary.background_review.{provider,model} to a different
             # model — that model's runtime (routed=True). The codex_app_server
             # -> codex_responses downgrade is applied inside the resolver.
-            _rt = _resolve_review_runtime(agent)
+            _rt = context["runtime"]
             _routed = bool(_rt.get("routed"))
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
@@ -790,18 +792,18 @@ def _run_review_in_thread(
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
-                model=_rt.get("model") or agent.model,
+                model=_rt.get("model") or context["model"],
                 max_iterations=16,
                 quiet_mode=True,
-                platform=agent.platform,
-                provider=_rt.get("provider") or agent.provider,
+                platform=context["platform"],
+                provider=_rt.get("provider") or context["provider"],
                 api_mode=_rt.get("api_mode"),
                 base_url=_rt.get("base_url") or None,
                 api_key=_rt.get("api_key") or None,
-                credential_pool=getattr(agent, "_credential_pool", None),
-                parent_session_id=agent.session_id,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                credential_pool=context["credential_pool"],
+                parent_session_id=context["session_id"],
+                enabled_toolsets=context["enabled_toolsets"],
+                disabled_toolsets=context["disabled_toolsets"],
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"
@@ -813,9 +815,9 @@ def _run_review_in_thread(
             # add late-connecting MCP tools to this fork and break that parity,
             # so opt the review fork out of it.
             review_agent._skip_mcp_refresh = True
-            review_agent._memory_store = agent._memory_store
-            review_agent._memory_enabled = agent._memory_enabled
-            review_agent._user_profile_enabled = agent._user_profile_enabled
+            review_agent._memory_store = context["memory_store"]
+            review_agent._memory_enabled = context["memory_enabled"]
+            review_agent._user_profile_enabled = context["user_profile_enabled"]
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
             # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
@@ -855,7 +857,7 @@ def _run_review_in_thread(
             # model the parent's cached prompt is for the wrong model/cache key
             # and would miss anyway, so let the routed fork build its own.
             if not _routed:
-                review_agent._cached_system_prompt = agent._cached_system_prompt
+                review_agent._cached_system_prompt = context["cached_system_prompt"]
                 # Defensive: pin session_start + session_id to the
                 # parent's so any code path that re-renders parts of
                 # the system prompt (compression, plugin hooks) still
@@ -863,8 +865,8 @@ def _run_review_in_thread(
                 # assignment above already short-circuits the normal
                 # rebuild path, but these pins guarantee parity even
                 # if a future code path bypasses the cache.
-                review_agent.session_start = agent.session_start
-            review_agent.session_id = agent.session_id
+                review_agent.session_start = context["session_start"]
+            review_agent.session_id = context["session_id"]
             # The fork shares the parent's live session_id (pinned above for
             # prefix-cache parity). It is single-lifecycle and calls close()
             # right after this run_conversation(); without opting out, close()
@@ -976,7 +978,7 @@ def _run_review_in_thread(
             actions = summarize_background_review_actions(
                 review_messages,
                 messages_snapshot,
-                notification_mode=getattr(agent, "memory_notifications", "on"),
+                notification_mode=context["memory_notifications"],
             )
         except Exception as e:
             logger.warning(
@@ -989,10 +991,10 @@ def _run_review_in_thread(
 
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
-            agent._safe_print(
+            context["safe_print"](
                 f"  💾 Self-improvement review: {summary}"
             )
-            _bg_cb = agent.background_review_callback
+            _bg_cb = context["background_review_callback"]
             if _bg_cb:
                 try:
                     _bg_cb(
@@ -1003,7 +1005,7 @@ def _run_review_in_thread(
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
-        agent._emit_auxiliary_failure("background review", e)
+        context["emit_auxiliary_failure"]("background review", e)
     finally:
         # Safety-net cleanup for the exception path.  Normal completion already
         # shut down inside the thread-scoped silence above.  Re-enter the
@@ -1031,6 +1033,37 @@ def _run_review_in_thread(
             pass
 
 
+def _capture_review_context(agent: Any) -> Dict[str, Any]:
+    """Capture parent state before a review thread can observe session rotation."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    return {
+        "runtime": dict(_resolve_review_runtime(agent)),
+        "model": getattr(agent, "model", ""),
+        "platform": getattr(agent, "platform", None),
+        "provider": getattr(agent, "provider", None),
+        "credential_pool": getattr(agent, "_credential_pool", None),
+        "session_id": getattr(agent, "session_id", "") or "",
+        "enabled_toolsets": list(enabled) if isinstance(enabled, (list, tuple)) else enabled,
+        "disabled_toolsets": list(disabled) if isinstance(disabled, (list, tuple)) else disabled,
+        "memory_store": getattr(agent, "_memory_store", None),
+        "memory_enabled": bool(getattr(agent, "_memory_enabled", False)),
+        "user_profile_enabled": bool(
+            getattr(agent, "_user_profile_enabled", False)
+        ),
+        "cached_system_prompt": getattr(agent, "_cached_system_prompt", None),
+        "session_start": getattr(agent, "session_start", None),
+        "memory_notifications": getattr(agent, "memory_notifications", "on"),
+        "safe_print": getattr(agent, "_safe_print", lambda *_args, **_kwargs: None),
+        "background_review_callback": getattr(
+            agent, "background_review_callback", None
+        ),
+        "emit_auxiliary_failure": getattr(
+            agent, "_emit_auxiliary_failure", lambda *_args, **_kwargs: None
+        ),
+    }
+
+
 def spawn_background_review_thread(
     agent: Any,
     messages_snapshot: List[Dict],
@@ -1053,8 +1086,10 @@ def spawn_background_review_thread(
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    review_context = _capture_review_context(agent)
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(agent, messages_snapshot, prompt, review_context)
 
     return _target, prompt
 

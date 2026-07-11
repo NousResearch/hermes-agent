@@ -7010,6 +7010,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     exc_info=True,
                 )
 
+        # Built-in MEMORY.md / USER.md review is independent of external
+        # providers. Schedule it while the agent still owns the old session id;
+        # the review fork captures that identity before /new rotates state.
+        try:
+            from agent.background_review import schedule_session_end_memory_review
+
+            schedule_session_end_memory_review(agent, history_snapshot)
+        except Exception:
+            logger.debug(
+                "Built-in memory review failed to schedule at /new boundary",
+                exc_info=True,
+            )
+
         # No provider extraction to queue when no memory manager is
         # configured — new_session() falls back to the inline switch path.
         if getattr(agent, "_memory_manager", None) is None:

@@ -113,6 +113,20 @@ def test_compression_preserves_old_session_key_for_kanban_poller(monkeypatch):
     assert session["_stale_session_keys"] == ["old-key"]
 
 
+def test_tui_poller_rewinds_cursor_when_delivery_fails_before_emit(kanban_home, monkeypatch):
+    task_id = _seed_sub("sess-key-1")
+
+    def _boom(*_args):
+        raise RuntimeError("emit failed")
+
+    monkeypatch.setattr(server, "_emit", _boom)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args: None)
+
+    server._poll_kanban_tui_subs("sid1", _session())
+
+    assert _cursor(task_id, "sess-key-1") == 0
+
+
 def test_tui_poller_leaves_foreign_subscription_unclaimed(kanban_home, monkeypatch):
     task_id = _seed_sub("other-sess")
     emitted = []

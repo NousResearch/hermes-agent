@@ -8403,9 +8403,11 @@ TERMINAL_KINDS = (
 
 def _poll_kanban_tui_subs(sid: str, session: dict) -> None:
     """Claim terminal Kanban events addressed to this TUI session."""
-    keys = {str(session.get("session_key") or "")}
-    keys.update(str(key) for key in session.get("_stale_session_keys", []) if key)
-    keys.discard("")
+    keys = {
+        str(k)
+        for k in (session.get("session_key"), *session.get("_stale_session_keys", ()))
+        if k
+    }
     if not keys:
         return
     try:

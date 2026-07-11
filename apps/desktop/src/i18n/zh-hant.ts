@@ -2170,7 +2170,7 @@ export const zhHant = defineLocale({
       run: '執行',
       command: '指令',
       moreOptions: '更多核准選項',
-      allowSession: '允許本工作階段',
+      allowSession: '本次工作階段內允許',
       alwaysAllowMenu: '一律允許…',
       jumpToApproval: '需要核准',
       reject: '拒絕',

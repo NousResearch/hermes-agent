@@ -3,8 +3,9 @@
 **Date:** 2026-07-12
 **Project:** hermes-agent
 **Requested by:** kevin
-**Change trigger:** `implementation-readiness-report-2026-07-12.md` marked the handoff `NEEDS WORK`.
+**Change trigger:** `implementation-readiness-report-2026-07-12.md` marked the handoff `NOT READY`.
 **Mode:** Automated batch correction. User approval for in-scope planning-artifact corrections was supplied by the workflow invocation.
+**Correct Course result:** BLOCKED for missing external Archon producer evidence; supported planning corrections were applied.
 
 ## 1. Issue Summary
 
@@ -14,6 +15,8 @@ The latest readiness evaluator found two issues:
 2. Minor: Story 2.3 contains a non-blocking future-adapter validation note that belongs with Story 3.4a or must be explicitly non-blocking.
 
 The local PRD, architecture, epics, UX contract, tracker, and contract fixtures are otherwise aligned. This is a completion-gate and story-scope clarification, not a Workflow Commander MVP scope change.
+
+The major issue cannot be fully resolved from local project facts because this handoff contains no captured external Archon producer runtime output. Unsupported completion proof remains unchanged and is not invented.
 
 ## 2. Impact Analysis
 
@@ -31,15 +34,16 @@ Use **Direct Adjustment with an explicit external blocker**.
 
 The in-scope planning corrections are:
 
-- Make the provider-dependent completion gate explicit in the local epics and isolated handoff contract.
+- Make the provider-dependent completion gate and current external-evidence absence explicit in the local epics.
 - Keep unsupported external producer proof out of the local handoff rather than inventing evidence.
-- Move the Story 2.3 future-adapter validation note into Story 3.4a's real-adapter validation text.
+- Remove future real-adapter wording from Story 2.3 and keep real provider-adapter cwd validation in Story 3.4a.
 
 Rollback and MVP review are not justified because the planning package is otherwise consistent.
 
 **Effort:** Low planning correction.
 **Risk:** Low. The changes affect planning and handoff text only.
 **Timeline impact:** Hermes-side implementation can proceed for locally satisfiable stories. Provider-dependent done claims remain blocked until the external Archon validation evidence is available.
+**Blocked facts:** captured external Archon producer output for provider binding lifecycle, workflow command, workflow event, and delivery/outbox status families.
 
 ## 4. Detailed Change Proposals
 
@@ -48,7 +52,7 @@ Rollback and MVP review are not justified because the planning package is otherw
 OLD:
 
 ```text
-Provider-dependent stories already kept dependency records, but the local handoff did not enumerate the external producer output families that remain missing before completion claims.
+Provider-dependent stories stated that local fixtures were not proof of external Archon producer compatibility, but the epics did not state the current evidence status in the Provider Completion Gate section.
 ```
 
 NEW:
@@ -56,6 +60,7 @@ NEW:
 ```text
 The epics and isolated handoff contract state that local fixtures are Hermes-side readiness evidence only.
 Provider-dependent stories must not be marked done until compatible external Archon producer output is supplied and validated for provider binding lifecycle output, workflow command output, workflow event output, and delivery/outbox status output.
+The epics now also state that no captured external Archon producer runtime output is present in this isolated handoff.
 ```
 
 Rationale: Local schemas and examples support Hermes implementation, but they do not prove external Archon producer compatibility.
@@ -65,13 +70,16 @@ Rationale: Local schemas and examples support Hermes implementation, but they do
 OLD:
 
 ```text
-Story 2.3 integration validation said Story 3.4a repeats cwd validation with the real provider adapter.
+Implementation Scope: ... minimal provider-action cwd port/test double used only to prove cwd propagation before real provider adapters exist.
+Blocking behavior: ... Real provider-adapter evidence is not required to complete Story 2.3.
+Acceptance Criteria: ... without requiring the Archon provider adapter to exist yet.
 ```
 
 NEW:
 
 ```text
-Story 2.3 now keeps only generic cwd enforcement and minimal provider-action test-double validation.
+Story 2.3 keeps only generic cwd enforcement and minimal provider-action test-double validation.
+Provider-specific adapter evidence is explicitly out of scope for Story 2.3.
 Story 3.4a's integration validation now explicitly owns real provider-adapter cwd validation through the Story 2.3 cwd guard.
 ```
 
@@ -85,8 +93,8 @@ Rationale: The real provider adapter is introduced in Epic 3, so adapter-specifi
 | Epic impact | Done | Epics remain valid; no resequencing or scope reduction required. |
 | Artifact conflict analysis | Done | No PRD, architecture, UX, or tracker mismatch remains. |
 | Path forward | Done | Direct Adjustment selected for planning text; external validation remains blocked. |
-| Proposal components | Done | Specific epics and handoff edits are captured above. |
-| Final handoff | Done with blocker | Provider-dependent stories remain gated by compatible Archon producer output. |
+| Proposal components | Done | Specific epics edits are captured above. |
+| Final handoff | BLOCKED for external validation | Batch-mode approval covers supported planning edits, but the major evidence gap requires missing external producer output. |
 
 ## 6. Implementation Handoff
 
@@ -110,5 +118,13 @@ Rationale: The real provider adapter is introduced in Epic 3, so adapter-specifi
 **Success criteria:**
 
 - Provider-dependent completion gating is explicit and unsupported external evidence is not invented.
-- Story 2.3 no longer contains the future real-adapter validation note in integration validation.
+- Story 2.3 no longer contains future real-adapter validation wording.
 - Story 3.4a owns real provider-adapter cwd validation.
+
+## 7. Corrections Applied
+
+| Artifact | Change | Reason |
+| --- | --- | --- |
+| `_bmad-output/planning-artifacts/epics.md` | Added current external evidence status to the Provider Completion Gate. | Addresses the major readiness finding without inventing missing Archon producer output. |
+| `_bmad-output/planning-artifacts/epics.md` | Tightened Story 2.3 wording so it owns generic cwd enforcement and the minimal provider-action test double only. | Addresses the minor readiness concern by keeping provider-specific adapter validation with Story 3.4a. |
+| `_bmad-output/planning-artifacts/sprint-change-proposal-2026-07-12.md` | Refreshed this proposal with the latest `NOT READY` trigger, BLOCKED result, missing facts, and applied corrections. | Completes the Correct Course handoff for the current readiness run. |

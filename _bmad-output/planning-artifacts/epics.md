@@ -53,6 +53,8 @@ Any Hermes story that depends on Archon producer output must keep its dependency
 Completion for those provider-dependent stories requires compatible external Archon producer output for every consumed command, provider binding, delivery-status, and workflow-event family, validated against the local `contracts/workflow-commander/` package.
 Until that external evidence is available, Hermes implementation may proceed against local fixtures where the story allows it, but final done claims remain blocked.
 
+Current external evidence status: no captured external Archon producer runtime output is present in this isolated handoff. Local contract validation is sufficient for Hermes-side implementation where a story allows fixture-driven work, but provider-dependent completion remains blocked until captured Archon producer output for provider binding lifecycle, workflow command, workflow event, and delivery/outbox status families is supplied and validated against the local package.
+
 ## Local NFR Coverage Map
 
 This map keeps the parent NFR traceability local to the Hermes handoff.
@@ -182,16 +184,16 @@ I want Hermes to run BMAD and provider actions from the Project Binding's explic
 so that planning artifacts and workflow execution always belong to the intended local project.
 
 Requirements Covered: FR-3.
-Implementation Scope: Hermes workflow-action cwd guard, audit capture, BMAD invocation cwd, and a minimal provider-action cwd port/test double used only to prove cwd propagation before real provider adapters exist.
+Implementation Scope: Hermes workflow-action cwd guard, audit capture, BMAD invocation cwd, and a minimal provider-action cwd port/test double used only to prove cwd propagation through the generic provider-action boundary.
 Depends on: hermes-agent Story 2.1c.
 Contract needed: Bound Project Cwd authority rule, BMAD execution cwd, workflow action audit record, and minimal provider-action cwd propagation interface for tests.
-Blocking behavior: Cwd enforcement can be completed when Hermes proves BMAD actions and the minimal provider-action test double receive the selected Project Binding cwd. Real provider-adapter evidence is not required to complete Story 2.3.
+Blocking behavior: Cwd enforcement can be completed when Hermes proves BMAD actions and the minimal provider-action test double receive the selected Project Binding cwd. Provider-specific adapter evidence is out of scope for Story 2.3.
 Integration validation: Cwd guard tests prove BMAD actions and test-double provider actions use the Bound Project Cwd and reject missing or invalid cwd before any external workflow action runs.
 
 Acceptance Criteria:
 
 - Given an enabled Project Binding with a valid Bound Project Cwd, when the user starts a BMAD planning workflow from Hermes, then Hermes runs the workflow with the Bound Project Cwd as the working directory and any BMAD artifacts produced through Hermes land under that project's configured `_bmad-output` location.
-- Given an enabled Project Binding with a valid Bound Project Cwd, when Hermes exercises the minimal provider-action cwd port, then Hermes passes the Bound Project Cwd to that port and records the cwd used for the action without requiring the Archon provider adapter to exist yet.
+- Given an enabled Project Binding with a valid Bound Project Cwd, when Hermes exercises the minimal provider-action cwd port, then Hermes passes the Bound Project Cwd to that port and records the cwd used for the action without requiring provider-specific adapter evidence in this story.
 - Given the selected project has no Bound Project Cwd, when the user attempts to start any BMAD or workflow provider action, then Hermes blocks the action and shows a diagnostic that identifies the missing cwd requirement.
 - Given a mounted BMAD skill is visible from a profile, when Hermes determines where a workflow action should run, then Hermes uses the active Project Binding cwd, not skill visibility, as the artifact placement and execution authority.
 - Given Hermes executes any project-bound workflow action, when the action completes, fails, or is cancelled, then Hermes persists an audit record containing the Project Binding id, profile identity, cwd, command or workflow name, started time, completed time if available, result state, and correlation id if available.

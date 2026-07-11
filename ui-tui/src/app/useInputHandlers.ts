@@ -26,6 +26,7 @@ const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl 
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
+export const shouldExitOnIdleCtrlC = (exitOnCtrlC = true) => exitOnCtrlC
 
 export function handleIdleHotkeyExit(
   actions: Pick<InputHandlerActions, 'die' | 'sys'>,
@@ -529,6 +530,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       if (cState.input || cState.inputBuf.length) {
         return cActions.clearIn()
+      }
+
+      if (!shouldExitOnIdleCtrlC(live.exitOnCtrlC)) {
+        return
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {

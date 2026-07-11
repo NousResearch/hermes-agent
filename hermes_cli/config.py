@@ -1844,6 +1844,10 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # TUI only: when true (default), an idle Ctrl+C keeps the historical
+        # one-press exit behavior. Set false to ignore idle Ctrl+C so only
+        # agent interrupts / input clears still fire.
+        "exit_on_ctrl_c": True,
         # Seconds between prompt_toolkit redraws in the classic CLI when idle.
         # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
         # last-turn) ticking and keeps the bottom chrome alive during idle —

@@ -155,6 +155,7 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
+  exit_on_ctrl_c?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>

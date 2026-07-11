@@ -39,6 +39,7 @@ describe('applyDisplay', () => {
     expect(setBell).toHaveBeenCalledWith(true)
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
+    expect(s.exitOnCtrlC).toBe(true)
     expect(s.inlineDiffs).toBe(false)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
@@ -62,6 +63,7 @@ describe('applyDisplay', () => {
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
+    expect(s.exitOnCtrlC).toBe(true)
     expect(s.inlineDiffs).toBe(true)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
@@ -290,6 +292,26 @@ describe('applyDisplay → busy_input_mode', () => {
 
     applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('queue')
+  })
+})
+
+describe('applyDisplay → exit_on_ctrl_c', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('threads display.exit_on_ctrl_c into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { exit_on_ctrl_c: false } } }, setBell)
+    expect($uiState.get().exitOnCtrlC).toBe(false)
+  })
+
+  it('defaults idle Ctrl+C exit to on when the toggle is missing', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().exitOnCtrlC).toBe(true)
   })
 })
 

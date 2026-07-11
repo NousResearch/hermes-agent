@@ -3901,6 +3901,25 @@ def run_conversation(
                     }
 
                 if retry_count >= max_retries:
+                    if classified.reason == FailoverReason.local_first_chunk_timeout:
+                        if agent._has_pending_fallback():
+                            meta = classified.error_context or {}
+                            waited = meta.get("elapsed")
+                            waited_text = (
+                                f" after {int(waited)}s"
+                                if isinstance(waited, (int, float)) and waited > 0
+                                else ""
+                            )
+                            agent._buffer_status(
+                                "⚠️ Local model produced no first chunk"
+                                f"{waited_text} — trying fallback..."
+                            )
+                        if agent._try_activate_fallback(reason=classified.reason):
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            continue
+                        _retry.primary_recovery_attempted = True
                     # Before falling back, try rebuilding the primary
                     # client once for transient transport errors (stale
                     # connection pool, TCP reset).  Only attempted once

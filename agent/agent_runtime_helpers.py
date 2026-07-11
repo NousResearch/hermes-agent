@@ -975,6 +975,12 @@ def try_recover_primary_transport(
     if agent._fallback_activated:
         return False
 
+    # The local first-chunk watchdog already proved this request was accepted
+    # but produced no SSE data. Rebuilding the same primary client just repeats
+    # the full TTFB wait; route to fallback or fail fast instead.
+    if getattr(api_error, "_hermes_local_first_chunk_timeout", False):
+        return False
+
     # Only for transient transport errors
     error_type = type(api_error).__name__
     if error_type not in _TRANSIENT_TRANSPORT_ERRORS:

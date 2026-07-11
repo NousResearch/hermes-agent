@@ -606,6 +606,33 @@ class TestChatCompletionsBuildKwargs:
         # Anthropic Messages API which requires the field.
         assert kw["max_tokens"] == 64000
 
+    def test_local_endpoint_gets_finite_default_max_tokens(self, transport, monkeypatch):
+        monkeypatch.delenv("HERMES_LOCAL_DEFAULT_MAX_TOKENS", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_MAX_TOKENS", raising=False)
+
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="qwen3.6-27b-256k",
+            messages=msgs,
+            base_url="http://127.0.0.1:9090/v1",
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+
+        assert kw["max_tokens"] == 8192
+
+    def test_local_endpoint_max_tokens_env_override(self, transport, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_DEFAULT_MAX_TOKENS", "4096")
+
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="qwen3.6-27b-256k",
+            messages=msgs,
+            base_url="http://127.0.0.1:9090/v1",
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+
+        assert kw["max_tokens"] == 4096
+
     def test_request_overrides_last(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

@@ -268,10 +268,12 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
     assert agent2._resolved_api_call_stale_timeout_base() == (90.0, True)
 
 
-def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monkeypatch, tmp_path):
+def test_default_non_stream_stale_timeout_is_finite_for_local_endpoints(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_NON_STREAM_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_RESPONSE_TIMEOUT", raising=False)
 
     from run_agent import AIAgent
     agent = AIAgent(
@@ -285,7 +287,7 @@ def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monk
         platform="cli",
     )
 
-    assert agent._compute_non_stream_stale_timeout([]) == float("inf")
+    assert agent._compute_non_stream_stale_timeout([]) == 120.0
 
 
 def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkeypatch, tmp_path):

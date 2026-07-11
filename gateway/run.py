@@ -12319,19 +12319,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source=source)
+        return self._format_session_info(source=source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(
+        self, source: Optional["SessionSource"] = None
+    ) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When ``source`` is provided, applies the same resolution chain as
+        ``_resolve_session_agent_runtime`` (``/model`` session override →
+        ``channel_overrides`` → global default) so the banner agrees with
+        the model the next agent turn will actually use. Without ``source``
+        the banner falls back to the global default — fine for CLI
+        introspection where no channel context exists.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
+
+        # Apply /model session override + channel_overrides so the banner
+        # reports the model the next agent turn will actually use, not the
+        # raw config default. Mirrors the priority chain in
+        # _resolve_session_agent_runtime.
+        if source is not None:
+            sess_override: Optional[dict] = None
+            try:
+                sk = self._session_key_for_source(source)
+            except Exception:
+                sk = None
+            if sk:
+                # Rehydrate persisted /model override (the in-memory dict
+                # is empty right after /new cleared it on disk too).
+                try:
+                    self._rehydrate_session_model_override(sk)
+                except Exception:
+                    pass
+                sess_override = self._session_model_overrides.get(sk)
+                if sess_override and sess_override.get("model"):
+                    model = sess_override["model"]
+            cfg = getattr(self, "config", None)
+            if cfg is not None:
+                ch = _get_channel_override(
+                    cfg,
+                    source.platform,
+                    str(source.chat_id) if source.chat_id else "",
+                    thread_id=(
+                        str(source.thread_id) if getattr(source, "thread_id", None) else None
+                    ),
+                    parent_id=(
+                        str(source.parent_chat_id)
+                        if getattr(source, "parent_chat_id", None)
+                        else None
+                    ),
+                )
+                if ch and ch.model:
+                    # channel_overrides loses to /model but wins over global
+                    if not (sess_override and sess_override.get("model")):
+                        model = ch.model
+
         config_context_length = None
         provider = None
         base_url = None

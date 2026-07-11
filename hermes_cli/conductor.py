@@ -1917,6 +1917,48 @@ _DISPATCHER.register("viewport://", _viewport_dispatch)
 _DISPATCHER.register("+æ://cuda-vlc", _cuda_vlc_dispatch)
 
 
+# ── +æ://vps — sovereign backbone node (Victus-local, liftable to any host) ──
+def _vps_dispatch(raw: str) -> dict:
+    """Route +æ://vps commands to the vps_node process.
+
+    +æ://vps status                  → backbone health + record counts
+    +æ://vps record <nsid> <json>    → write a signed ae.core record
+    +æ://vps route <vps://cmd>       → dispatch (e.g. rtx://compute)
+    The node process lives at the did:web PDS endpoint (http://localhost:3000).
+    """
+    import urllib.request, json as _json
+    rest = raw.split("vps", 1)[1].strip() if "vps" in raw else ""
+    parts = rest.split(" ", 1)
+    action = parts[0] if parts else "status"
+    arg = parts[1] if len(parts) > 1 else ""
+    host = os.environ.get("VPS_HOST", "127.0.0.1")
+    port = os.environ.get("VPS_PORT", "3000")
+    base = f"http://{host}:{port}"
+    try:
+        if action == "status":
+            with urllib.request.urlopen(f"{base}/xrpc/ae.vps.status", timeout=5) as r:
+                return {"ok": True, "surface": _json.loads(r.read())}
+        if action == "record":
+            nsid, _, val = arg.partition(" ")
+            payload = _json.dumps({"nsid": nsid, "value": _json.loads(val)}).encode()
+            req = urllib.request.Request(f"{base}/xrpc/ae.vps.record", data=payload,
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return {"ok": True, "surface": _json.loads(r.read())}
+        if action == "route":
+            payload = _json.dumps({"cmd": arg}).encode()
+            req = urllib.request.Request(f"{base}/xrpc/ae.vps.route", data=payload,
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return {"ok": True, "surface": _json.loads(r.read())}
+        return {"ok": False, "stderr": f"vps: unknown action '{action}' (status|record|route)"}
+    except Exception as exc:  # node not running / unreachable
+        return {"ok": False, "stderr": f"vps unreachable at {base}: {exc}"}
+
+
+_DISPATCHER.register("+æ://vps", _vps_dispatch)
+
+
 def _gauntlet_status() -> dict:
     nous = _dispatch("NOUS://") if "_nous_dispatch" in globals() else {"ok": True, "stdout": "NOUS://\n"}
     vlc = _dispatch("vlc://status")

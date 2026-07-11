@@ -4563,7 +4563,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
-            "provider": getattr(self, "provider", ""),
+            # Prefer agent.provider — it updates on fallback.
+            # self.provider reflects the originally configured provider and never
+            # changes mid-session.
+            "provider": getattr(agent, "provider", None) or getattr(self, "provider", ""),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),

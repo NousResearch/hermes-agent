@@ -546,6 +546,12 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     value = args[key]
     if isinstance(value, list):
         value = value[0] if value else ""
+    # web_search results forwarded into web_extract arrive as dict objects
+    # ({"url"/"href": ...}); coerce to the URL string so the preview shows the
+    # target instead of a raw dict repr (mirrors _display_url used by
+    # get_cute_tool_message for the same argument).
+    if isinstance(value, dict):
+        value = _display_url(value)
 
     preview = _oneline(str(value))
     if not preview:

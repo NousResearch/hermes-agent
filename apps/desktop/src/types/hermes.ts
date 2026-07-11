@@ -317,6 +317,7 @@ export interface SessionCreateResponse {
 
 export interface SessionInfo {
   archived?: boolean
+  pinned?: boolean
   cwd?: null | string
   /** Git branch checked out in {@link cwd} when the session started/resumed.
    *  The sidebar groups main-checkout sessions by this so feature-branch work
@@ -402,6 +403,7 @@ export interface SessionRuntimeInfo {
   install_warning?: string
   model?: string
   personality?: string
+  pinned?: boolean
   provider?: string
   reasoning_effort?: string
   running?: boolean

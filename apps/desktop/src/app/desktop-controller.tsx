@@ -410,6 +410,33 @@ export function DesktopController() {
     return onSessionsChanged(() => void refreshSessions().catch(() => undefined))
   }, [refreshSessions])
 
+  // Cross-MACHINE session-list sync: BroadcastChannel only reaches windows on
+  // this machine, and the gateway routes session.info events to the session's
+  // owning transport only — so a pin/title/create on another desktop never
+  // reaches this one live (it only showed up after an app restart). Re-pull the
+  // list on window focus and on a slow poll while focused, mirroring the
+  // poll-based livesync pattern.
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    const refresh = () => void refreshSessions().catch(() => undefined)
+
+    window.addEventListener('focus', refresh)
+
+    const timer = window.setInterval(() => {
+      if (typeof document.hasFocus !== 'function' || document.hasFocus()) {
+        refresh()
+      }
+    }, 30_000)
+
+    return () => {
+      window.removeEventListener('focus', refresh)
+      window.clearInterval(timer)
+    }
+  }, [refreshSessions])
+
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
 
@@ -422,9 +449,9 @@ export function DesktopController() {
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
-      unpinSession(pinId)
+      void unpinSession(pinId)
     } else {
-      pinSession(pinId)
+      void pinSession(pinId)
     }
   }, [])
 

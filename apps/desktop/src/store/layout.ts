@@ -1,9 +1,13 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { setSessionPinned as patchSessionPinned } from '@/hermes'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { arraysEqual, insertUniqueId } from '@/lib/storage'
+import { arraysEqual, readKey, writeKey } from '@/lib/storage'
+import { activeGateway } from '@/store/gateway'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, setSessions } from './session'
+import { broadcastSessionsChanged } from './session-sync'
 
 export const SIDEBAR_DEFAULT_WIDTH = 237
 export const SIDEBAR_MAX_WIDTH = 360
@@ -16,7 +20,7 @@ export const FILE_BROWSER_MAX_WIDTH = '20rem'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
-const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
+export const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
@@ -66,13 +70,58 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
   return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
 })
 
-export const $pinnedSessionIds = persistentAtom(SIDEBAR_PINNED_STORAGE_KEY, [] as string[], Codecs.stringArray)
+const $legacyPinnedSessionIds = atom(readLegacyPinnedSessionIds())
+
+export const $pinnedSessionIds: ReadableAtom<string[]> = computed(
+  [$sessions, $legacyPinnedSessionIds],
+  (sessions, legacyPinnedSessionIds) => {
+    const serverCapable = sessions.some(session => 'pinned' in session)
+
+    if (!serverCapable) {
+      return legacyPinnedSessionIds
+    }
+
+    const ids: string[] = []
+
+    for (const session of sessions) {
+      if (!session.pinned) {
+        continue
+      }
+
+      const id = pinIdForSession(session)
+
+      if (!ids.includes(id)) {
+        ids.push(id)
+      }
+    }
+
+    return ids
+  }
+)
 export const $sidebarSessionOrderIds = persistentAtom(
   SIDEBAR_SESSION_ORDER_STORAGE_KEY,
   [] as string[],
   Codecs.stringArray
 )
 export const $sidebarSessionOrderManual = persistentAtom(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false, Codecs.bool)
+// Manual drag-order of PINNED rows, kept per-device (local) and layered over the
+// server-synced pinned SET ($pinnedSessionIds). Pin membership syncs across
+// machines; the visual order is a local preference — reordering on one device
+// must not reshuffle another. Keyed by durable (lineage-root) pin ids so the
+// order survives a session's compression id-change. Empty = default order.
+const SIDEBAR_PINNED_ORDER_STORAGE_KEY = 'hermes.desktop.pinnedOrder'
+export const $sidebarPinnedOrderIds = persistentAtom(
+  SIDEBAR_PINNED_ORDER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
+
+export function setSidebarPinnedOrderIds(ids: string[]) {
+  if (!arraysEqual($sidebarPinnedOrderIds.get(), ids)) {
+    $sidebarPinnedOrderIds.set(ids)
+  }
+}
+
 export const $sidebarWorkspaceOrderIds = persistentAtom(
   SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY,
   [] as string[],
@@ -291,35 +340,105 @@ export function setSidebarResizing(resizing: boolean) {
   $isSidebarResizing.set(resizing)
 }
 
-export function pinSession(sessionId: string, index?: number) {
-  const prev = $pinnedSessionIds.get()
-  const next = insertUniqueId(prev, sessionId, index ?? prev.filter(id => id !== sessionId).length)
+export function readLegacyPinnedSessionIds(): string[] {
+  const raw = readKey(SIDEBAR_PINNED_STORAGE_KEY)
 
-  if (!arraysEqual(prev, next)) {
-    $pinnedSessionIds.set(next)
+  if (!raw) {
+    return []
+  }
+
+  try {
+    return Codecs.stringArray.decode(raw)
+  } catch {
+    return []
   }
 }
 
-export function unpinSession(sessionId: string) {
-  const prev = $pinnedSessionIds.get()
-  const next = prev.filter(id => id !== sessionId)
+function clearLegacyPinnedSessionIds() {
+  writeKey(SIDEBAR_PINNED_STORAGE_KEY, null)
+  $legacyPinnedSessionIds.set([])
+}
 
-  if (!arraysEqual(prev, next)) {
-    $pinnedSessionIds.set(next)
+export async function migrateLegacyPinnedSessions(
+  sessions: Array<{ id: string; _lineage_root_id?: null | string; pinned?: boolean }>,
+  pushPinned: (sessionId: string) => Promise<void>,
+  log: Pick<Console, 'info'> = console
+): Promise<number> {
+  const legacyIds = readLegacyPinnedSessionIds()
+
+  if (legacyIds.length === 0) {
+    return 0
+  }
+
+  const serverPinnedIds = new Set(sessions.filter(session => session.pinned).map(pinIdForSession))
+  const pushedIds = legacyIds.filter((id, index) => legacyIds.indexOf(id) === index && !serverPinnedIds.has(id))
+
+  await Promise.all(pushedIds.map(id => pushPinned(id)))
+  clearLegacyPinnedSessionIds()
+  log.info('server-side pinned sessions migration push count', {
+    pushed: pushedIds.length,
+    total: legacyIds.length
+  })
+
+  return pushedIds.length
+}
+
+function sessionMatchesPinId(session: { id: string; _lineage_root_id?: null | string }, pinId: string): boolean {
+  return session.id === pinId || session._lineage_root_id === pinId || pinIdForSession(session) === pinId
+}
+
+function pinIdForSession(session: { id: string; _lineage_root_id?: null | string }): string {
+  return session._lineage_root_id || session.id
+}
+
+function markSessionPinned(pinId: string, pinned: boolean) {
+  setSessions(prev =>
+    prev.map(session => (sessionMatchesPinId(session, pinId) ? { ...session, pinned } : session))
+  )
+}
+
+export async function setSessionPinned(sessionId: string, pinned: boolean): Promise<void> {
+  const session = $sessions.get().find(s => sessionMatchesPinId(s, sessionId))
+  const pinId = session ? pinIdForSession(session) : sessionId
+  const previous = $sessions.get()
+
+  markSessionPinned(pinId, pinned)
+
+  try {
+    const selectedStoredSessionId = $selectedStoredSessionId.get()
+
+    const runtimeId =
+      selectedStoredSessionId && (selectedStoredSessionId === sessionId || selectedStoredSessionId === pinId)
+        ? $activeSessionId.get()
+        : null
+
+    const gateway = runtimeId ? activeGateway() : null
+
+    if (gateway && runtimeId) {
+      try {
+        await gateway.request('session.pin', { session_id: runtimeId, pinned })
+        broadcastSessionsChanged()
+
+        return
+      } catch (err) {
+        console.warn('session.pin RPC failed; falling back to REST', err)
+      }
+    }
+
+    await patchSessionPinned(pinId, pinned, session?.profile)
+    broadcastSessionsChanged()
+  } catch (err) {
+    setSessions(previous)
+    throw err
   }
 }
 
-// Replace the whole pinned order at once (drag-reorder hands back the new order
-// rather than a single move). Keep only ids that are actually pinned so a stale
-// row can't smuggle an unpinned id into the store.
-export function setPinnedSessionOrder(ids: string[]) {
-  const prev = $pinnedSessionIds.get()
-  const pinned = new Set(prev)
-  const next = ids.filter(id => pinned.has(id))
+export function pinSession(sessionId: string): Promise<void> {
+  return setSessionPinned(sessionId, true)
+}
 
-  if (next.length === prev.length && !arraysEqual(prev, next)) {
-    $pinnedSessionIds.set(next)
-  }
+export function unpinSession(sessionId: string): Promise<void> {
+  return setSessionPinned(sessionId, false)
 }
 
 export function bumpSessionsLimit(step: number = SIDEBAR_SESSIONS_PAGE_SIZE) {

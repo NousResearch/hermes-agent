@@ -368,7 +368,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         </button>
                         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                           <RowIconButton
-                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                            onClick={() => void (pinned ? unpinSession(pinId) : pinSession(pinId))}
                             title={pinned ? cc.unpinSession : cc.pinSession}
                           >
                             {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}

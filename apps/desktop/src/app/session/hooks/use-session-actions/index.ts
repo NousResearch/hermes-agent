@@ -7,7 +7,6 @@ import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
-import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
@@ -22,7 +21,6 @@ import {
   $sessions,
   $yoloActive,
   type NewChatWorkspaceTarget,
-  sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -837,11 +835,6 @@ export function useSessionActions({
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
-      const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const removedPinId = removed ? sessionPinId(removed) : storedSessionId
-
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
@@ -850,8 +843,6 @@ export function useSessionActions({
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
-
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
       if (wasSelected) {
@@ -876,8 +867,6 @@ export function useSessionActions({
         }
 
         untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
-        $pinnedSessionIds.set(previousPinned)
-
         if (wasSelected) {
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
@@ -923,11 +912,6 @@ export function useSessionActions({
 
       const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const wasSelected = selectedStoredSessionId === storedSessionId
-      const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
-
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
@@ -935,8 +919,6 @@ export function useSessionActions({
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
-
       if (wasSelected) {
         startFreshSessionDraft(true)
       }
@@ -948,7 +930,6 @@ export function useSessionActions({
         // that race after the mutation succeeds so right-click → Archive does
         // not appear to do nothing until the next full refresh.
         setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
@@ -957,7 +938,6 @@ export function useSessionActions({
         }
 
         untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
-        $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
       }
     },

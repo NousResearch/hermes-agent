@@ -36,6 +36,7 @@ import {
   $sidebarMessagingOpenIds,
   $sidebarOpen,
   $sidebarOverlayMounted,
+  $sidebarPinnedOrderIds,
   $sidebarPinsOpen,
   $sidebarProjectOrderIds,
   $sidebarRecentsOpen,
@@ -45,9 +46,9 @@ import {
   $sidebarWorkspaceParentOrderIds,
   pinSession,
   SESSION_SEARCH_FOCUS_EVENT,
-  setPinnedSessionOrder,
   setSidebarAgentsGrouped,
   setSidebarCronOpen,
+  setSidebarPinnedOrderIds,
   setSidebarPinsOpen,
   setSidebarProjectOrderIds,
   setSidebarRecentsOpen,
@@ -360,6 +361,8 @@ export function ChatSidebar({
     return map
   }, [visibleSessions, cronSessions])
 
+  const pinnedOrderIds = useStore($sidebarPinnedOrderIds)
+
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
     const out: SessionInfo[] = []
@@ -373,8 +376,12 @@ export function ChatSidebar({
       }
     }
 
-    return out
-  }, [pinnedSessionIds, sessionByAnyId])
+    // Pin MEMBERSHIP is server-synced (order-independent); the local drag-order
+    // is layered on top. orderByIds surfaces newly-pinned rows (absent from the
+    // saved order) at the front and drops stale ids, so cross-device pins and
+    // local ordering coexist without either clobbering the other.
+    return orderByIds(out, sessionPinId, pinnedOrderIds)
+  }, [pinnedSessionIds, sessionByAnyId, pinnedOrderIds])
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
@@ -1017,16 +1024,15 @@ export function ChatSidebar({
   // it over the default sort, so stale/new ids reconcile on the next render.
   const reorderProjects = (ids: string[]) => setSidebarProjectOrderIds(ids)
 
-  // Sortable rows carry live session ids; the pinned store is keyed by durable
-  // (lineage-root) ids, so translate before persisting the new order.
+  // Restore pinned drag-reorder over the server-synced pin set. The sortable
+  // list reports live session ids; the order store is keyed by durable pin ids
+  // (lineage roots), so translate before persisting — same as the pinned store.
   const reorderPinned = (ids: string[]) =>
-    setPinnedSessionOrder(
-      ids.map(id => {
-        const session = sessionByAnyId.get(id)
+    setSidebarPinnedOrderIds(ids.map(id => {
+      const session = sessionByAnyId.get(id)
 
-        return session ? sessionPinId(session) : id
-      })
-    )
+      return session ? sessionPinId(session) : id
+    }))
 
   return (
     <Sidebar

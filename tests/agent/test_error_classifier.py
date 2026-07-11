@@ -841,6 +841,26 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_xai_invalid_encrypted_content_wording_uses_replay_recovery(self):
+        e = MockAPIError(
+            "Error code: 400 - Could not decrypt the provided encrypted_content. "
+            "Ensure the value is the unmodified encrypted_content from a previous response.",
+            status_code=400,
+            body={
+                "code": "Client specified an invalid argument",
+                "error": (
+                    "Could not decrypt the provided encrypted_content. Ensure the value "
+                    "is the unmodified encrypted_content from a previous response."
+                ),
+            },
+        )
+
+        result = classify_api_error(e, provider="xai-oauth", model="grok-4.3")
+
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     def test_invalid_encrypted_content_broad_message_match_does_not_catch_generic_parse_error(self):
         message = "Encrypted content could not be decrypted or parsed."
         e = MockAPIError(

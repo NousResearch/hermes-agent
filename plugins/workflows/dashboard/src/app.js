@@ -1,3 +1,6 @@
+import { graphItems as buildGraphItems, decorateGraphItems as decorateGraph } from "./graph.js";
+import { formatApiError as importedFormatApiError, createApi as buildApi } from "./api.js";
+
 (function () {
   "use strict";
 
@@ -41,36 +44,11 @@
     "edges: []",
   ].join("\n");
 
-  function api(path, options) {
-    return SDK.fetchJSON(API + path, options);
-  }
-
-  function formatApiError(err) {
-    let detail = err && err.detail ? err.detail : err;
-    if (typeof detail === "string") {
-      const jsonStart = detail.indexOf("{");
-      if (jsonStart !== -1) {
-        try {
-          const parsed = JSON.parse(detail.slice(jsonStart));
-          detail = parsed && parsed.detail ? parsed.detail : parsed;
-        } catch (_) {}
-      }
-    }
-    if (detail && typeof detail === "object") {
-      const parts = [];
-      if (detail.message) parts.push(String(detail.message));
-      else if (detail.detail && typeof detail.detail === "string") parts.push(String(detail.detail));
-      if (detail.hint) parts.push(String(detail.hint));
-      if (detail.code) parts.push("(" + String(detail.code) + ")");
-      return parts.join(" ");
-    }
-    if (err && err.message) return formatApiError(err.message);
-    return String(detail || err || "Unknown error");
-  }
-
-  function errorMessage(err) {
-    return formatApiError(err);
-  }
+  // ponytail: api + formatApiError come from ./api.js so calls and error
+  // formatting stay on a single path shared by tests and consumers.
+  const api = buildApi(SDK.fetchJSON, API);
+  const formatApiError = importedFormatApiError;
+  function errorMessage(err) { return importedFormatApiError(err); }
 
   const ASSISTANT_ERROR_HINTS = {
     workflow_assistant_runtime_error: "Check workflow assistant provider/model configuration, then retry or use Advanced YAML.",
@@ -145,21 +123,10 @@
     });
   }
 
-  function triggerList(spec) {
-    return asArray(spec && spec.triggers).map(function (trigger, index) {
-      const id = trigger.id || trigger.name || "trigger_" + (index + 1);
-      return Object.assign({ id: id, type: "trigger", trigger_type: trigger.type, specKind: "trigger" }, trigger || {});
-    });
-  }
-
-  function graphNodeList(spec) {
-    return triggerList(spec).concat(nodeList(spec));
-  }
-
   function isTriggerSource(spec, sourceId) {
     const requested = String(sourceId || "");
-    return triggerList(spec).some(function (trigger) {
-      return String(trigger.id || trigger.name || trigger.type || "") === requested;
+    return buildGraphItems(spec).some(function (item) {
+      return item.specKind === "trigger" && item.id === requested;
     });
   }
 
@@ -681,18 +648,23 @@
   };
 
   function buildFlowNodes(spec, statuses, selectedNode, onSelect, nodePositions) {
-    var posMap = nodePositions || {};
-    return graphNodeList(spec).map(function (node, index) {
-      const id = node.id || node.name || "node_" + (index + 1);
-      const kind = NODE_TYPES[node.type] ? node.type : "pass";
+    const items = decorateGraph(buildGraphItems(spec), statuses || {});
+    return items.map(function (item, index) {
+      const id = item.id || item.spec.id || item.spec.name || ("node_" + (index + 1));
+      const rendererType = item.rendererType;
+      const kind = NODE_TYPES[rendererType] ? rendererType : "pass";
+      const posMap = nodePositions || {};
       const savedPos = posMap[id];
       const pos = savedPos || { x: (index % 3) * 250, y: Math.floor(index / 3) * 155 };
+      const legacyNode = item.specKind === "trigger"
+        ? Object.assign({}, item.spec, { id: id, specKind: "trigger", type: "trigger", trigger_type: item.triggerType })
+        : Object.assign({}, item.spec, { id: id, specKind: "node", type: rendererType });
       return {
         id: id,
         type: kind,
         position: pos,
-        className: "hermes-workflows-rf-node-shell is-status-" + classSafe(statuses[id] || "idle") + (selectedNode && selectedNode.id === id ? " is-selected" : ""),
-        data: { id: id, node: node, status: statuses[id] || "idle", onSelect: onSelect },
+        className: "hermes-workflows-rf-node-shell is-status-" + classSafe(item.status) + (selectedNode && selectedNode.id === id ? " is-selected" : ""),
+        data: { id: id, node: legacyNode, status: item.status, onSelect: onSelect },
       };
     });
   }
@@ -984,6 +956,13 @@
   function WorkflowsPage() {
     const useState = React.useState;
     const useEffect = React.useEffect;
+    const useRef = React.useRef;
+    // ponytail: hold the React Flow instance so we can re-fit the viewport
+    // only when the ordered graph membership key changes. Status polling
+    // re-renders the flow without mutating membership, so nodePositions and
+    // the viewport must stay put.
+    const flowInstanceRef = useRef(null);
+    const membershipKeyRef = useRef("");
     const stateDefinitions = useState([]);
     const definitions = stateDefinitions[0];
     const setDefinitions = stateDefinitions[1];
@@ -1448,7 +1427,17 @@
       }).catch(fail).finally(function () { setFeedBusy(false); });
     }
 
-    function selectNodeForInspector(node) {
+    function selectNodeForInspector(item) {
+      // ponytail: graphItems gives us id/rendererType/specKind/triggerType.
+      // When the caller hands us a graphItem we re-attach the raw spec and
+      // legacy fields (specKind/type/trigger_type) on top so downstream
+      // inspector code keeps working without a per-callsite rewrite.
+      let node = item;
+      if (item && item.specKind && item.spec && typeof item.spec === "object") {
+        node = item.specKind === "trigger"
+          ? Object.assign({}, item.spec, { id: item.id, specKind: "trigger", type: "trigger", trigger_type: item.triggerType })
+          : Object.assign({}, item.spec, { id: item.id, specKind: "node", type: item.rendererType });
+      }
       setSelectedNode(node);
       setNodeJson(jsonBlock(node));
       setNodeMessage("");
@@ -1655,6 +1644,19 @@
       setFlowNodes(spec ? buildFlowNodes(spec, statuses, selectedNode, selectNodeForInspector, nodePositions) : []);
       setFlowEdges(spec ? buildFlowEdges(spec) : []);
     }, [draftSpec, editorText, events, selectedNode, nodePositions]);
+
+    useEffect(function () {
+      // ponytail: re-fit the React Flow viewport only when the ordered
+      // membership key changes — status polling is a status-only change.
+      const spec = activeSpec();
+      const key = buildGraphItems(spec || {}).map(function (item) {
+        return item.specKind + ":" + item.id;
+      }).join("|");
+      if (key && key !== membershipKeyRef.current && flowInstanceRef.current && typeof flowInstanceRef.current.fitView === "function") {
+        flowInstanceRef.current.fitView();
+      }
+      membershipKeyRef.current = key;
+    }, [draftSpec, editorText, flowNodes]);
 
     useEffect(function () {
       if (!error && !status) return undefined;
@@ -2396,21 +2398,22 @@
     }
 
     function renderCellList(spec) {
-      const nodes = graphNodeList(spec);
+      const nodes = buildGraphItems(spec);
       return h("section", { className: "hermes-workflows-cell-list", "aria-label": "Workflow cell list" },
         h("h3", null, "Workflow cell list"),
-        nodes.length ? nodes.map(function (node) {
-          const id = node.id || node.name || "node";
+        nodes.length ? nodes.map(function (item) {
+          const id = item.id || item.spec.name || "node";
+          const triggerType = item.specKind === "trigger" ? item.triggerType : item.rendererType;
           return h("button", {
             key: id,
             type: "button",
             className: "hermes-workflows-cell-list-item",
             "aria-label": "Edit cell " + safeString(id),
-            onClick: function () { selectNodeForInspector(node); },
+            onClick: function () { selectNodeForInspector(item); },
           },
             h("span", null, safeString(id)),
-            h("span", null, safeString(node.type || "unknown")),
-            h("span", null, node.type === "agent_task" ? safeString(providerValue(node) || "profile provider") : "—"),
+            h("span", null, safeString(triggerType || "unknown")),
+            h("span", null, triggerType === "agent_task" ? safeString(providerValue(item.spec) || "profile provider") : "—"),
             h("span", null, "Edit cell")
           );
         }) : h("p", { className: "hermes-workflows-muted" }, "No workflow cells available.")
@@ -2419,20 +2422,21 @@
 
 
     function renderSimpleGraph(spec) {
-      const nodes = graphNodeList(spec);
+      const items = buildGraphItems(spec);
       const edges = edgeList(spec);
       return h("div", { className: "hermes-workflows-graph-fallback" },
         renderCellList(spec),
-        nodes.length ? h("div", { className: "hermes-workflows-node-grid" }, nodes.map(function (node) {
-          const id = node.id || node.name || "node";
+        items.length ? h("div", { className: "hermes-workflows-node-grid" }, items.map(function (item) {
+          const id = item.id || item.spec.name || "node";
+          const triggerType = item.specKind === "trigger" ? item.triggerType : item.rendererType;
           return h("div", {
             key: id,
             className: "hermes-workflows-node-card",
-            onClick: function () { selectNodeForInspector(node); },
+            onClick: function () { selectNodeForInspector(item); },
           },
             h("h3", null, safeString(id)),
-            h("div", { className: "hermes-workflows-node-type" }, safeString(node.type)),
-            h("pre", { className: "hermes-workflows-pre" }, jsonBlock(node))
+            h("div", { className: "hermes-workflows-node-type" }, safeString(triggerType)),
+            h("pre", { className: "hermes-workflows-pre" }, jsonBlock(item.spec))
           );
         })) : h("p", { className: "hermes-workflows-muted" }, "No nodes to render."),
         h("div", { className: "hermes-workflows-stack" },
@@ -2753,9 +2757,10 @@
               nodes: flowNodes,
               edges: flowEdges,
               nodeTypes: NODE_TYPES,
-              fitView: true,
+              fitView: false,
               nodesDraggable: true,
               nodesConnectable: true,
+              onInit: function (instance) { flowInstanceRef.current = instance; },
               onNodeClick: function (_, node) {
                 if (node && node.data && node.data.node) selectNodeForInspector(node.data.node);
               },

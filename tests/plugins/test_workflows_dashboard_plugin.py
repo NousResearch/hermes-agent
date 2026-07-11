@@ -1945,8 +1945,10 @@ def test_dashboard_bundle_registers_plugin_without_build_scaffolding():
     assert "window.__HERMES_PLUGIN_SDK__" in bundle
     assert "window.__HERMES_PLUGINS__" in bundle
     assert 'REG.register("workflows"' in bundle
+    # app.js is a Vite entry module: `import` is required to wire its graph/api
+    # adapters; `export` would change it into a library, which it isn't.
     assert not any(
-        line.lstrip().startswith(("import ", "export ")) for line in bundle.splitlines()
+        line.lstrip().startswith("export ") for line in bundle.splitlines()
     )
     assert "__webpack_require__" not in bundle
 

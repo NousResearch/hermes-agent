@@ -1,4 +1,53 @@
 (function() {
+	//#region ../plugins/workflows/dashboard/src/graph.js
+	function graphItems(spec) {
+		const triggers = (spec?.triggers || []).map((trigger, index) => ({
+			id: trigger.id || trigger.name || `trigger_${index + 1}`,
+			rendererType: "trigger",
+			specKind: "trigger",
+			triggerType: trigger.type,
+			spec: trigger
+		}));
+		const nodes = Object.entries(spec?.nodes || {}).map(([id, node]) => ({
+			id,
+			rendererType: node.type,
+			specKind: "node",
+			triggerType: null,
+			spec: node
+		}));
+		return [...triggers, ...nodes];
+	}
+	function decorateGraphItems(items, statuses) {
+		return items.map((item) => ({
+			...item,
+			status: statuses[item.id] || "idle"
+		}));
+	}
+	//#endregion
+	//#region ../plugins/workflows/dashboard/src/api.js
+	function formatApiError(error) {
+		if (error instanceof Error && typeof error.message === "string") return formatApiError(error.message);
+		if (error && typeof error === "object") {
+			if (typeof error.message === "string" && error.message) return error.message;
+			if (typeof error.detail === "string" && error.detail) return formatApiError(error.detail);
+		}
+		if (typeof error === "string") {
+			const jsonStart = error.indexOf("{");
+			if (jsonStart !== -1) try {
+				return formatApiError(JSON.parse(error.slice(jsonStart)));
+			} catch {}
+			return error;
+		}
+		return "Unknown error";
+	}
+	function createApi(fetchJSON, basePath) {
+		if (typeof fetchJSON !== "function") throw new Error("createApi requires the SDK fetchJSON implementation");
+		const base = String(basePath || "").replace(/\/$/, "");
+		return function api(path, options) {
+			return fetchJSON(base + String(path || ""), options);
+		};
+	}
+	//#endregion
 	//#region ../plugins/workflows/dashboard/src/app.js
 	(function() {
 		"use strict";
@@ -60,29 +109,7 @@
 			"      ok: true",
 			"edges: []"
 		].join("\n");
-		function api(path, options) {
-			return SDK.fetchJSON(API + path, options);
-		}
-		function formatApiError(err) {
-			let detail = err && err.detail ? err.detail : err;
-			if (typeof detail === "string") {
-				const jsonStart = detail.indexOf("{");
-				if (jsonStart !== -1) try {
-					const parsed = JSON.parse(detail.slice(jsonStart));
-					detail = parsed && parsed.detail ? parsed.detail : parsed;
-				} catch (_) {}
-			}
-			if (detail && typeof detail === "object") {
-				const parts = [];
-				if (detail.message) parts.push(String(detail.message));
-				else if (detail.detail && typeof detail.detail === "string") parts.push(String(detail.detail));
-				if (detail.hint) parts.push(String(detail.hint));
-				if (detail.code) parts.push("(" + String(detail.code) + ")");
-				return parts.join(" ");
-			}
-			if (err && err.message) return formatApiError(err.message);
-			return String(detail || err || "Unknown error");
-		}
+		const api = createApi(SDK.fetchJSON, API);
 		function errorMessage(err) {
 			return formatApiError(err);
 		}
@@ -160,24 +187,10 @@
 				}, nodes[id] || {});
 			});
 		}
-		function triggerList(spec) {
-			return asArray(spec && spec.triggers).map(function(trigger, index) {
-				const id = trigger.id || trigger.name || "trigger_" + (index + 1);
-				return Object.assign({
-					id,
-					type: "trigger",
-					trigger_type: trigger.type,
-					specKind: "trigger"
-				}, trigger || {});
-			});
-		}
-		function graphNodeList(spec) {
-			return triggerList(spec).concat(nodeList(spec));
-		}
 		function isTriggerSource(spec, sourceId) {
 			const requested = String(sourceId || "");
-			return triggerList(spec).some(function(trigger) {
-				return String(trigger.id || trigger.name || trigger.type || "") === requested;
+			return graphItems(spec).some(function(item) {
+				return item.specKind === "trigger" && item.id === requested;
 			});
 		}
 		function splitPort(value) {
@@ -708,21 +721,33 @@
 			fail: makeWorkflowNode("fail")
 		};
 		function buildFlowNodes(spec, statuses, selectedNode, onSelect, nodePositions) {
-			var posMap = nodePositions || {};
-			return graphNodeList(spec).map(function(node, index) {
-				const id = node.id || node.name || "node_" + (index + 1);
+			return decorateGraphItems(graphItems(spec), statuses || {}).map(function(item, index) {
+				const id = item.id || item.spec.id || item.spec.name || "node_" + (index + 1);
+				const rendererType = item.rendererType;
+				const kind = NODE_TYPES[rendererType] ? rendererType : "pass";
+				const pos = (nodePositions || {})[id] || {
+					x: index % 3 * 250,
+					y: Math.floor(index / 3) * 155
+				};
+				const legacyNode = item.specKind === "trigger" ? Object.assign({}, item.spec, {
+					id,
+					specKind: "trigger",
+					type: "trigger",
+					trigger_type: item.triggerType
+				}) : Object.assign({}, item.spec, {
+					id,
+					specKind: "node",
+					type: rendererType
+				});
 				return {
 					id,
-					type: NODE_TYPES[node.type] ? node.type : "pass",
-					position: posMap[id] || {
-						x: index % 3 * 250,
-						y: Math.floor(index / 3) * 155
-					},
-					className: "hermes-workflows-rf-node-shell is-status-" + classSafe(statuses[id] || "idle") + (selectedNode && selectedNode.id === id ? " is-selected" : ""),
+					type: kind,
+					position: pos,
+					className: "hermes-workflows-rf-node-shell is-status-" + classSafe(item.status) + (selectedNode && selectedNode.id === id ? " is-selected" : ""),
 					data: {
 						id,
-						node,
-						status: statuses[id] || "idle",
+						node: legacyNode,
+						status: item.status,
 						onSelect
 					}
 				};
@@ -1004,6 +1029,9 @@
 		function WorkflowsPage() {
 			const useState = React.useState;
 			const useEffect = React.useEffect;
+			const useRef = React.useRef;
+			const flowInstanceRef = useRef(null);
+			const membershipKeyRef = useRef("");
 			const stateDefinitions = useState([]);
 			const definitions = stateDefinitions[0];
 			const setDefinitions = stateDefinitions[1];
@@ -1469,7 +1497,18 @@
 					setFeedBusy(false);
 				});
 			}
-			function selectNodeForInspector(node) {
+			function selectNodeForInspector(item) {
+				let node = item;
+				if (item && item.specKind && item.spec && typeof item.spec === "object") node = item.specKind === "trigger" ? Object.assign({}, item.spec, {
+					id: item.id,
+					specKind: "trigger",
+					type: "trigger",
+					trigger_type: item.triggerType
+				}) : Object.assign({}, item.spec, {
+					id: item.id,
+					specKind: "node",
+					type: item.rendererType
+				});
 				setSelectedNode(node);
 				setNodeJson(jsonBlock(node));
 				setNodeMessage("");
@@ -1677,6 +1716,17 @@
 				events,
 				selectedNode,
 				nodePositions
+			]);
+			useEffect(function() {
+				const key = graphItems(activeSpec() || {}).map(function(item) {
+					return item.specKind + ":" + item.id;
+				}).join("|");
+				if (key && key !== membershipKeyRef.current && flowInstanceRef.current && typeof flowInstanceRef.current.fitView === "function") flowInstanceRef.current.fitView();
+				membershipKeyRef.current = key;
+			}, [
+				draftSpec,
+				editorText,
+				flowNodes
 			]);
 			useEffect(function() {
 				if (!error && !status) return void 0;
@@ -2375,35 +2425,37 @@
 				}));
 			}
 			function renderCellList(spec) {
-				const nodes = graphNodeList(spec);
+				const nodes = graphItems(spec);
 				return h("section", {
 					className: "hermes-workflows-cell-list",
 					"aria-label": "Workflow cell list"
-				}, h("h3", null, "Workflow cell list"), nodes.length ? nodes.map(function(node) {
-					const id = node.id || node.name || "node";
+				}, h("h3", null, "Workflow cell list"), nodes.length ? nodes.map(function(item) {
+					const id = item.id || item.spec.name || "node";
+					const triggerType = item.specKind === "trigger" ? item.triggerType : item.rendererType;
 					return h("button", {
 						key: id,
 						type: "button",
 						className: "hermes-workflows-cell-list-item",
 						"aria-label": "Edit cell " + safeString(id),
 						onClick: function() {
-							selectNodeForInspector(node);
+							selectNodeForInspector(item);
 						}
-					}, h("span", null, safeString(id)), h("span", null, safeString(node.type || "unknown")), h("span", null, node.type === "agent_task" ? safeString(providerValue(node) || "profile provider") : "—"), h("span", null, "Edit cell"));
+					}, h("span", null, safeString(id)), h("span", null, safeString(triggerType || "unknown")), h("span", null, triggerType === "agent_task" ? safeString(providerValue(item.spec) || "profile provider") : "—"), h("span", null, "Edit cell"));
 				}) : h("p", { className: "hermes-workflows-muted" }, "No workflow cells available."));
 			}
 			function renderSimpleGraph(spec) {
-				const nodes = graphNodeList(spec);
+				const items = graphItems(spec);
 				const edges = edgeList(spec);
-				return h("div", { className: "hermes-workflows-graph-fallback" }, renderCellList(spec), nodes.length ? h("div", { className: "hermes-workflows-node-grid" }, nodes.map(function(node) {
-					const id = node.id || node.name || "node";
+				return h("div", { className: "hermes-workflows-graph-fallback" }, renderCellList(spec), items.length ? h("div", { className: "hermes-workflows-node-grid" }, items.map(function(item) {
+					const id = item.id || item.spec.name || "node";
+					const triggerType = item.specKind === "trigger" ? item.triggerType : item.rendererType;
 					return h("div", {
 						key: id,
 						className: "hermes-workflows-node-card",
 						onClick: function() {
-							selectNodeForInspector(node);
+							selectNodeForInspector(item);
 						}
-					}, h("h3", null, safeString(id)), h("div", { className: "hermes-workflows-node-type" }, safeString(node.type)), h("pre", { className: "hermes-workflows-pre" }, jsonBlock(node)));
+					}, h("h3", null, safeString(id)), h("div", { className: "hermes-workflows-node-type" }, safeString(triggerType)), h("pre", { className: "hermes-workflows-pre" }, jsonBlock(item.spec)));
 				})) : h("p", { className: "hermes-workflows-muted" }, "No nodes to render."), h("div", { className: "hermes-workflows-stack" }, h("h3", null, "Edges"), edges.length ? edges.map(function(edge) {
 					const text = safeString(edge.from) + " → " + safeString(edge.to) + (edge.label ? " · " + edge.label : "");
 					return h("div", {
@@ -2797,9 +2849,12 @@
 					nodes: flowNodes,
 					edges: flowEdges,
 					nodeTypes: NODE_TYPES,
-					fitView: true,
+					fitView: false,
 					nodesDraggable: true,
 					nodesConnectable: true,
+					onInit: function(instance) {
+						flowInstanceRef.current = instance;
+					},
 					onNodeClick: function(_, node) {
 						if (node && node.data && node.data.node) selectNodeForInspector(node.data.node);
 					},

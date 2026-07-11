@@ -326,10 +326,22 @@ def create_task(
                 max_runtime_seconds=payload.max_runtime_seconds,
                 skills=payload.skills,
             )
+        except sqlite3.IntegrityError as exc:
+            # Lost an idempotency race: a concurrent POST with the same key
+            # committed first and the UNIQUE index on idempotency_key rejected
+            # our insert. Return the winner with created=false, preserving the
+            # documented idempotency semantics instead of surfacing a 500.
+            winner = _existing_idempotent_task(conn, key)
+            if winner:
+                response.status_code = 200
+                return {**_task_response(conn, winner), "created": False}
+            log.warning("kanban_api task insert conflict without a winner: %s", exc)
+            raise HTTPException(
+                status_code=409, detail="task could not be created"
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        created = existing is None
-        return {**_task_response(conn, task_id), "created": created}
+            raise _client_error(exc, fallback="task could not be created") from exc
+        return {**_task_response(conn, task_id), "created": True}
 
 
 @router.get("/tasks/{task_id}")

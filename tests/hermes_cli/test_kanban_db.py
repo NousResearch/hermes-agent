@@ -900,14 +900,17 @@ class _FakeProc:
         return self._rc
 
 
-def test_classify_worker_exit_prefers_retained_handle(kanban_home, monkeypatch):
-    """A retained Popen handle recovers the exit status even when the manual
-    waitpid registry never saw it — the busy-board race where CPython's own
-    subprocess finalizer reaped the child first. Regression for the
-    false-crash misclassification (2026-07-09)."""
+def test_classify_worker_exit_falls_back_to_retained_handle(kanban_home, monkeypatch):
+    """When the manual waitpid registry has NO record for a pid, the retained
+    Popen handle recovers the exit status — the busy-board race where CPython's
+    own subprocess finalizer reaped the child first (recording the correct
+    returncode on the handle). Regression for the false-crash misclassification
+    (2026-07-09). The handle is the FALLBACK; the registry wins when present
+    (see test_classify_worker_exit_registry_wins_over_echild_poisoned_handle)."""
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    monkeypatch.setattr(_kb, "_recent_worker_exits", {}, raising=False)
 
     # Registry empty (finalizer ate the status) but handle present.
     _kb._worker_handles[41000] = _FakeProc(0)
@@ -923,6 +926,36 @@ def test_classify_worker_exit_prefers_retained_handle(kanban_home, monkeypatch):
 
     _kb._worker_handles[41003] = _FakeProc(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
     assert _kb._classify_worker_exit(41003)[0] == "rate_limited"
+
+
+def test_classify_worker_exit_registry_wins_over_echild_poisoned_handle(
+    kanban_home, monkeypatch
+):
+    """When the manual reaper already recorded a raw status, it is AUTHORITATIVE
+    over a retained handle whose poll() would return an ECHILD-poisoned 0.
+    Otherwise a nonzero / signaled / rate-limit exit silently becomes a false
+    clean_exit — the immediate-block-on-clean-exit path then mis-fires.
+    Review: NousResearch/hermes-agent#61836."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_worker_handles", {}, raising=False)
+    monkeypatch.setattr(_kb, "_recent_worker_exits", {}, raising=False)
+
+    # Reaper recorded a nonzero exit; the handle's poll() would (wrongly) say 0.
+    _kb._recent_worker_exits[42000] = (7 << 8, 0.0)  # WIFEXITED, WEXITSTATUS 7
+    _kb._worker_handles[42000] = _FakeProc(0)
+    assert _kb._classify_worker_exit(42000) == ("nonzero_exit", 7)
+    assert 42000 not in _kb._worker_handles  # stale ECHILD handle dropped
+
+    # Reaper recorded a signal death (SIGKILL); handle would say 0.
+    _kb._recent_worker_exits[42001] = (9, 0.0)  # WIFSIGNALED, WTERMSIG 9
+    _kb._worker_handles[42001] = _FakeProc(0)
+    assert _kb._classify_worker_exit(42001) == ("signaled", 9)
+
+    # Reaper recorded a rate-limit exit; handle would say 0.
+    _kb._recent_worker_exits[42002] = (_kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8, 0.0)
+    _kb._worker_handles[42002] = _FakeProc(0)
+    assert _kb._classify_worker_exit(42002)[0] == "rate_limited"
 
 
 def test_classify_worker_exit_handle_still_running_falls_through(

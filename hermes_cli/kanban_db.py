@@ -5838,10 +5838,39 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
     for ``unknown``.
     """
-    # Preferred path: read the returncode from the retained Popen handle.
-    # ``poll()`` is non-blocking and returns the status subprocess recorded
-    # even if its own finalizer reaped the child before our manual reaper
-    # could. Popen encodes a signal death as a negative returncode.
+    # Prefer the manual reaper's recorded raw status. ``reap_worker_zombies``
+    # does its own ``os.waitpid`` and records the TRUE wait status in
+    # ``_recent_worker_exits`` before this classifier runs. If it reaped this
+    # pid, a later ``Popen.poll()`` hits ``ECHILD`` and CPython reports
+    # returncode 0 (``subprocess.py`` handles ECHILD that way) — silently
+    # turning nonzero / signaled / rate-limit exits into a false ``clean_exit``.
+    # So the reaper registry, when present, is AUTHORITATIVE over the retained
+    # handle. (Review: NousResearch/hermes-agent#61836.)
+    entry = _recent_worker_exits.get(int(pid))
+    if entry is not None:
+        # Registry wins; the handle would only report an ECHILD-poisoned 0 now.
+        _worker_handles.pop(int(pid), None)
+        raw, _ = entry
+        try:
+            if os.WIFEXITED(raw):
+                code = os.WEXITSTATUS(raw)
+                if code == 0:
+                    return ("clean_exit", 0)
+                if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code)
+                return ("nonzero_exit", code)
+            if os.WIFSIGNALED(raw):
+                return ("signaled", os.WTERMSIG(raw))
+        except Exception:
+            pass
+        return ("unknown", None)
+
+    # Fallback: no reaper record for this pid. This is the case the retained
+    # handle exists for — ``subprocess._cleanup()`` (triggered by a later
+    # ``Popen()``) reaped the child in its own finalizer, recording the correct
+    # returncode ON the handle, so ``reap_worker_zombies`` got ECHILD and never
+    # populated the registry. ``poll()`` is non-blocking and returns that
+    # recorded status. Popen encodes a signal death as a negative returncode.
     proc = _worker_handles.get(int(pid))
     if proc is not None:
         rc = proc.poll()
@@ -5855,24 +5884,7 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("signaled", -rc)
             return ("nonzero_exit", rc)
         # Handle present but child still running — let the caller's
-        # ``_pid_alive`` gate decide; fall through to the waitpid registry.
-
-    entry = _recent_worker_exits.get(int(pid))
-    if entry is None:
-        return ("unknown", None)
-    raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
+        # ``_pid_alive`` gate decide.
     return ("unknown", None)
 
 

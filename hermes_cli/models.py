@@ -161,9 +161,41 @@ def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
     return out
 
 
-def _is_xai_main_model_candidate(model_id: str) -> bool:
+def _is_xai_main_model_candidate(
+    model_id: str,
+    models_dev_entry: Optional[dict[str, Any]] = None,
+) -> bool:
     """True when an xAI model belongs in the main-agent model picker."""
-    return not str(model_id or "").strip().lower().startswith("grok-imagine-")
+    key = str(model_id or "").strip().lower()
+    if not key or key.startswith("grok-imagine-"):
+        return False
+
+    context_window: Optional[int] = None
+    if isinstance(models_dev_entry, dict):
+        limit = models_dev_entry.get("limit")
+        if isinstance(limit, dict):
+            raw_context = limit.get("context")
+            if isinstance(raw_context, (int, float)) and raw_context > 0:
+                context_window = int(raw_context)
+
+    try:
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, MINIMUM_CONTEXT_LENGTH
+
+        if context_window is None:
+            for default_model, length in sorted(
+                DEFAULT_CONTEXT_LENGTHS.items(), key=lambda item: len(item[0]), reverse=True
+            ):
+                if default_model in key:
+                    context_window = length
+                    break
+        return not (
+            isinstance(context_window, int)
+            and 0 < context_window < MINIMUM_CONTEXT_LENGTH
+        )
+    except Exception:
+        # Picker construction must remain import-safe. Validation still
+        # applies the hard context-floor rejection before persistence.
+        return True
 
 
 def _xai_curated_models() -> list[str]:
@@ -184,8 +216,8 @@ def _xai_curated_models() -> list[str]:
         models = xai.get("models") if isinstance(xai, dict) else None
         if isinstance(models, dict) and models:
             ids = [
-                mid for mid in models.keys()
-                if isinstance(mid, str) and _is_xai_main_model_candidate(mid)
+                mid for mid, entry in models.items()
+                if isinstance(mid, str) and _is_xai_main_model_candidate(mid, entry)
             ]
             if ids:
                 return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))

@@ -214,11 +214,14 @@ def test_xai_media_context_defaults_stay_below_main_floor_without_models_dev():
             )
 
 
-def test_xai_curated_catalog_hides_grok_imagine_media_models():
+def test_xai_curated_catalog_hides_all_below_floor_models():
     data = {
         "xai": {
             "models": {
                 "grok-4.3": {},
+                "grok-2-vision": {},
+                "grok-future-chat": {"limit": {"context": 131_072}},
+                "grok-future-tiny": {"limit": {"context": 32_000}},
                 "grok-imagine-image": {},
                 "grok-imagine-video": {},
                 "grok-imagine-video-1.5-preview": {},
@@ -230,4 +233,7 @@ def test_xai_curated_catalog_hides_grok_imagine_media_models():
         result = models_mod._xai_curated_models()
 
     assert "grok-4.3" in result
+    assert "grok-future-chat" in result
+    assert "grok-2-vision" not in result
+    assert "grok-future-tiny" not in result
     assert not any(model.startswith("grok-imagine-") for model in result)

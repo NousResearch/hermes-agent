@@ -5622,6 +5622,48 @@ def run_conversation(
                             _real_tokens,
                             int(getattr(_compressor, "threshold_tokens", 0) or 0),
                         )
+                    # Proactive tool-result prune: reclaim re-sent history on
+                    # large-window models long before should_compress() (≈50% of
+                    # the window) would ever fire. Deterministic, no LLM call;
+                    # protects the recent tail. No-op unless proactive_prune_tokens
+                    # is configured and _real_tokens is above it — and even then
+                    # the prune only commits when it reclaims at least
+                    # proactive_prune_min_reclaim_tokens, so prompt-cache breaks
+                    # stay episodic like compression's (the one sanctioned cache
+                    # break) instead of firing every tool iteration. See
+                    # ContextCompressor.prune_tool_results_only.
+                    # getattr guard: plugin context engines predating the hook and
+                    # minimal test doubles (SimpleNamespace compressors) lack the
+                    # method — treat absence as a no-op.
+                    _prune = getattr(_compressor, "prune_tool_results_only", None)
+                    if callable(_prune):
+                        try:
+                            _pruned_msgs, _pruned_n = _prune(
+                                messages, current_tokens=_real_tokens
+                            )
+                        except Exception:
+                            logger.debug(
+                                "proactive tool-result prune failed; skipping",
+                                exc_info=True,
+                            )
+                            _pruned_msgs, _pruned_n = messages, 0
+                        # Standard no-op caller contract: only commit when the
+                        # engine returned a NEW list object with a non-zero count.
+                        if _pruned_n and _pruned_msgs is not messages:
+                            # Do NOT rebuild conversation_history here. Unlike the
+                            # compression branch, the prune neither rotates the session
+                            # nor calls archive_and_compact(), so there is no new
+                            # persistence baseline to establish. _prune_old_tool_results
+                            # returns per-message copies that preserve the
+                            # _DB_PERSISTED_MARKER, so the marker-based flush dedup (see
+                            # _flush_messages_to_session_db) already prevents both
+                            # duplicate writes and dropped rows. Calling
+                            # conversation_history_after_compression (a compaction-only
+                            # helper keyed on the _last_compaction_in_place flag) would be
+                            # a no-op at best, and on a stale in-place flag could seed
+                            # this turn's fresh, not-yet-persisted rows into history_ids
+                            # and skip writing them.
+                            messages = _pruned_msgs
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

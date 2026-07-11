@@ -1838,6 +1838,39 @@ def init_agent(
     if compression_max_attempts < 1:
         compression_max_attempts = 3
     compression_max_attempts = min(compression_max_attempts, 10)
+
+    def _parse_prune_int(raw, default):
+        # Same parser semantics as compression.max_attempts above: reject
+        # booleans (bool subclasses int — YAML `true` would coerce to 1),
+        # reject fractional floats rather than truncating them, accept
+        # integral floats and numeric strings, fall back to the default on
+        # anything else.
+        if isinstance(raw, bool):
+            return default
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return int(raw) if raw.is_integer() else default
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return default
+
+    # Opt-in proactive tool-result prune trigger (0 = disabled — the
+    # default, so an unset key is behavior-neutral).  Negative values are
+    # treated as disabled rather than erroring.
+    compression_proactive_prune_tokens = max(
+        0, _parse_prune_int(_compression_cfg.get("proactive_prune_tokens", 0), 0)
+    )
+    compression_proactive_prune_min_chars = _parse_prune_int(
+        _compression_cfg.get("proactive_prune_min_result_chars", 8000), 8000
+    )
+    compression_proactive_prune_min_reclaim = max(
+        0,
+        _parse_prune_int(
+            _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
+        ),
+    )
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -2312,6 +2345,9 @@ def init_agent(
             max_tokens=agent.max_tokens,
             model_thresholds=compression_model_thresholds,
             threshold_tokens_cap=compression_threshold_tokens,
+            proactive_prune_tokens=compression_proactive_prune_tokens,
+            proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
+            proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

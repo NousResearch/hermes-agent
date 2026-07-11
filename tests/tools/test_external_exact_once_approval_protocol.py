@@ -666,7 +666,8 @@ def test_cli_bootstrap_wires_inherited_fds_and_keeps_records_off_stdio(tmp_path,
         approval_module.reset_current_session_key(token)
 
 
-def test_cli_bootstrap_incomplete_fd_pair_fails_closed(monkeypatch):
+def test_cli_bootstrap_grant_without_record_fails_closed(monkeypatch):
+    """Grant FD alone is rejected — adapters cannot half-enable consume without records."""
     from argparse import Namespace
 
     from hermes_cli.main import bootstrap_external_approval_cli
@@ -678,6 +679,92 @@ def test_cli_bootstrap_incomplete_fd_pair_fails_closed(monkeypatch):
             external_approval_record_fd=None,
         ))
     assert exc.value.code == 2
+    assert approval_module._external_fd_protocol is None
+
+
+def test_cli_bootstrap_record_only_configures_and_emits_request(tmp_path, monkeypatch):
+    """NLS-191: first-turn smoke may pass only --external-approval-record-fd."""
+    from argparse import Namespace
+
+    from hermes_cli.main import bootstrap_external_approval_cli
+
+    harness = _PipeHarness.create()
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    profile_home = str(tmp_path / "profiles" / "record-only")
+    _write_external_mode_config(
+        profile_home, mode=MODE_VALUE, verification_key=public_key
+    )
+    monkeypatch.setenv("HERMES_HOME", profile_home)
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setattr(
+        approval_module,
+        "_run_tirith_command_check",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+    )
+    monkeypatch.setattr(
+        approval_module, "_command_matches_permanent_allowlist", lambda _command: False
+    )
+    monkeypatch.setattr(approval_module, "is_approved", lambda *_args, **_kwargs: False)
+
+    args = Namespace(
+        external_approval_grant_fd=None,
+        external_approval_record_fd=harness.records_write_fd,
+    )
+    token = approval_module.set_current_session_key(SESSION_ID)
+    try:
+        bootstrap_external_approval_cli(args)
+        protocol = approval_module._external_fd_protocol
+        assert protocol is not None
+        assert protocol.grant_input_fd is None
+        assert protocol.record_output_fd == harness.records_write_fd
+        assert approval_module._is_external_exact_once_active() is True
+        assert approval_module._try_read_grant_line() is None
+
+        executions: list[str] = []
+        result = _run_guarded(COMMAND, executions)
+        request = harness.take_record()
+        assert result["approved"] is False
+        assert result.get("external_approval") == "awaiting_grant"
+        assert request["kind"] == "request"
+        assert SECRET not in json.dumps(request, sort_keys=True)
+        assert executions == []
+        # Record-only must never fall back to stdin or other generic channels.
+        assert approval_module._try_read_grant_line() is None
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        harness.close()
+        approval_module.reset_current_session_key(token)
+
+
+def test_configure_record_only_try_read_grant_returns_none(tmp_path, monkeypatch):
+    """Record-only protocol is active for emit, but grant read is a hard no-op."""
+    harness = _PipeHarness.create()
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    profile_home = str(tmp_path / "profiles" / "record-only-configure")
+    _write_external_mode_config(
+        profile_home, mode=MODE_VALUE, verification_key=public_key
+    )
+    monkeypatch.setenv("HERMES_HOME", profile_home)
+    monkeypatch.delenv("HERMES_EXTERNAL_APPROVAL_MODE", raising=False)
+    token = approval_module.set_current_session_key(SESSION_ID)
+    try:
+        approval_module.configure_external_approval_fd_protocol(
+            grant_input_fd=None,
+            record_output_fd=harness.records_write_fd,
+        )
+        assert approval_module._is_external_exact_once_active() is True
+        assert approval_module._try_read_grant_line() is None
+    finally:
+        approval_module.clear_external_approval_fd_protocol()
+        harness.close()
+        approval_module.reset_current_session_key(token)
 
 
 def test_local_environment_subprocess_cannot_read_protocol_fds(external_protocol, tmp_path):

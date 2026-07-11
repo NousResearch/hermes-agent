@@ -16,7 +16,7 @@ protocol. Hermes configures the concrete FD transport only:
 
 ```python
 configure_external_approval_fd_protocol(
-    *, grant_input_fd: int, record_output_fd: int, verification_key: bytes
+    *, grant_input_fd: int | None = None, record_output_fd: int
 ) -> None
 clear_external_approval_fd_protocol() -> None
 build_external_approval_request(
@@ -26,11 +26,14 @@ build_external_approval_request(
 external_approval_tool_subprocess_kwargs() -> dict
 ```
 
-`grant_input_fd` is a read-only, newline-delimited JSON input from the trusted
-adapter. `record_output_fd` is a write-only, newline-delimited JSON output for
-both requests and receipts. The trusted adapter has the Ed25519 private key;
-Hermes receives only the 32-byte raw public verification key. Each configured
-FD is non-inheritable, and `external_approval_tool_subprocess_kwargs()` returns
+`grant_input_fd` is optional. When set, it is a read-only, newline-delimited
+JSON input from the trusted adapter. When omitted (record-only), Hermes emits
+requests on the record FD and `_try_read_grant_line()` returns no grant —
+never falling back to stdin or other generic channels. `record_output_fd` is a
+write-only, newline-delimited JSON output for both requests and receipts. The
+trusted adapter has the Ed25519 private key; Hermes receives only the 32-byte
+raw public verification key. Each configured FD is non-inheritable, and
+`external_approval_tool_subprocess_kwargs()` returns
 `{"close_fds": True, "pass_fds": ()}` for every normal tool subprocess. The
 transport owner must apply those kwargs at every terminal subprocess launch.
 

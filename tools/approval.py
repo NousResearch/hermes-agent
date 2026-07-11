@@ -2561,7 +2561,7 @@ _EXTERNAL_GRANT_MAX_FRAME_BYTES = 64 * 1024
 
 @dataclass(frozen=True)
 class _ExternalApprovalFdProtocol:
-    grant_input_fd: int
+    grant_input_fd: Optional[int]
     record_output_fd: int
     verification_key: Optional[bytes]
 
@@ -2646,18 +2646,37 @@ def _fd_identity(fd: int) -> tuple[int, int]:
     return stat_result.st_dev, stat_result.st_ino
 
 
-def _validate_external_approval_fds(grant_input_fd: int, record_output_fd: int) -> None:
-    """Reject stdio/duplicate/closed/wrong-direction FDs before enabling the protocol."""
-    if not isinstance(grant_input_fd, int) or not isinstance(record_output_fd, int):
-        raise OSError(errno.EINVAL, "external approval FDs must be integers")
-    if grant_input_fd < 0 or record_output_fd < 0:
+def _validate_external_approval_fds(
+    grant_input_fd: Optional[int],
+    record_output_fd: int,
+) -> None:
+    """Reject stdio/duplicate/closed/wrong-direction FDs before enabling the protocol.
+
+    ``grant_input_fd`` may be None for record-only first-turn emit. Never treat
+    stdin/stdout/stderr as a grant or record channel.
+    """
+    if not isinstance(record_output_fd, int):
+        raise OSError(errno.EINVAL, "external approval record FD must be an integer")
+    if record_output_fd < 0:
         raise OSError(errno.EBADF, "external approval FDs must be non-negative")
-    if grant_input_fd in (0, 1, 2) or record_output_fd in (0, 1, 2):
+    if record_output_fd in (0, 1, 2):
         raise OSError(errno.EINVAL, "external approval FDs cannot be stdio (0/1/2)")
-    if grant_input_fd == record_output_fd:
-        raise OSError(errno.EINVAL, "external approval grant and record FDs must be distinct")
+    if grant_input_fd is not None:
+        if not isinstance(grant_input_fd, int):
+            raise OSError(errno.EINVAL, "external approval grant FD must be an integer")
+        if grant_input_fd < 0:
+            raise OSError(errno.EBADF, "external approval FDs must be non-negative")
+        if grant_input_fd in (0, 1, 2):
+            raise OSError(errno.EINVAL, "external approval FDs cannot be stdio (0/1/2)")
+        if grant_input_fd == record_output_fd:
+            raise OSError(
+                errno.EINVAL, "external approval grant and record FDs must be distinct"
+            )
     identities: dict[int, tuple[int, int]] = {}
-    for fd, label in ((grant_input_fd, "grant"), (record_output_fd, "record")):
+    labeled_fds: list[tuple[int, str]] = [(record_output_fd, "record")]
+    if grant_input_fd is not None:
+        labeled_fds.insert(0, (grant_input_fd, "grant"))
+    for fd, label in labeled_fds:
         try:
             identities[fd] = _fd_identity(fd)
         except OSError as exc:
@@ -2669,26 +2688,34 @@ def _validate_external_approval_fds(grant_input_fd: int, record_output_fd: int) 
             continue
         if any(identity == stdio_identity for identity in identities.values()):
             raise OSError(errno.EINVAL, "external approval FDs cannot alias stdio")
-    if identities[grant_input_fd] == identities[record_output_fd]:
-        raise OSError(errno.EINVAL, "external approval grant and record FDs cannot alias")
-    grant_mode = _fd_access_mode(grant_input_fd)
+    if grant_input_fd is not None:
+        if identities[grant_input_fd] == identities[record_output_fd]:
+            raise OSError(errno.EINVAL, "external approval grant and record FDs cannot alias")
+        grant_mode = _fd_access_mode(grant_input_fd)
+        if grant_mode == os.O_WRONLY:
+            raise OSError(errno.EINVAL, "external approval grant FD must be readable")
     record_mode = _fd_access_mode(record_output_fd)
-    if grant_mode == os.O_WRONLY:
-        raise OSError(errno.EINVAL, "external approval grant FD must be readable")
     if record_mode == os.O_RDONLY:
         raise OSError(errno.EINVAL, "external approval record FD must be writable")
 
 
 def configure_external_approval_fd_protocol(
     *,
-    grant_input_fd: int,
+    grant_input_fd: Optional[int] = None,
     record_output_fd: int,
 ) -> None:
-    """Wire the headless external approval transport for this process."""
+    """Wire the headless external approval transport for this process.
+
+    ``grant_input_fd`` is optional so adapters can emit requests on a record FD
+    before a grant channel is available. Grant reads never fall back to stdin.
+    """
     global _external_fd_protocol, _grant_read_buffer, _external_fd_protocol_failed
     _validate_external_approval_fds(grant_input_fd, record_output_fd)
     # Fail closed: set_inheritable errors must not be swallowed.
-    for fd in (grant_input_fd, record_output_fd):
+    fds = [record_output_fd]
+    if grant_input_fd is not None:
+        fds.insert(0, grant_input_fd)
+    for fd in fds:
         os.set_inheritable(fd, False)
     _grant_read_buffer = bytearray()
     _external_fd_protocol_failed = False
@@ -2911,6 +2938,9 @@ def _try_read_grant_line() -> Optional[dict]:
     global _grant_read_buffer, _external_fd_protocol_failed
     protocol = _external_fd_protocol
     if protocol is None or _external_fd_protocol_failed:
+        return None
+    # Record-only: no grant channel. Never fall back to stdin/other FDs.
+    if protocol.grant_input_fd is None:
         return None
 
     while b"\n" not in _grant_read_buffer:

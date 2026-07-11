@@ -2252,27 +2252,24 @@ def bootstrap_external_approval_cli(args) -> None:
 
     Ephemeral transport only — activation still requires
     ``approvals.external.mode: exact-once`` plus its config-pinned public key
-    in config.yaml. Incomplete FD pairs fail closed so adapters cannot
-    half-enable the protocol.
+    in config.yaml. Record-only (``--external-approval-record-fd`` without a
+    grant FD) is allowed so adapters can emit first-turn requests before a
+    grant channel exists. Grant-without-record fails closed.
     """
     grant_fd = getattr(args, "external_approval_grant_fd", None)
     record_fd = getattr(args, "external_approval_record_fd", None)
-    provided = [
-        grant_fd is not None,
-        record_fd is not None,
-    ]
-    if not any(provided):
+    if grant_fd is None and record_fd is None:
         return
-    if not all(provided):
+    if record_fd is None:
         print(
-            "Error: --external-approval-grant-fd, "
-            "--external-approval-record-fd must be provided together",
+            "Error: --external-approval-grant-fd requires "
+            "--external-approval-record-fd",
             file=sys.stderr,
         )
         raise SystemExit(2)
     try:
-        grant_input_fd = int(grant_fd)
         record_output_fd = int(record_fd)
+        grant_input_fd = int(grant_fd) if grant_fd is not None else None
     except (TypeError, ValueError):
         print(
             "Error: --external-approval-grant-fd and "

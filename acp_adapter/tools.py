@@ -110,12 +110,19 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            first = urls[0]
+            # ``urls`` is normally a list, but models sometimes forward a single
+            # web_search result — a bare dict or a URL string — instead of a
+            # list. Index only when it really is a list (mirrors the guard in
+            # agent/display.py); otherwise treat the value as the sole item.
+            # Without this, a bare-dict ``urls`` raised ``KeyError: 0`` on
+            # ``urls[0]`` and a bare-string ``urls`` produced a garbage label.
+            first = urls[0] if isinstance(urls, list) else urls
             if isinstance(first, dict):
                 first = first.get("url") or first.get("href") or "?"
             elif not isinstance(first, str):
                 first = "?"
-            return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            count = len(urls) if isinstance(urls, list) else 1
+            return f"extract: {first}" + (f" (+{count - 1})" if count > 1 else "")
         return "web extract"
     if tool_name == "process":
         action = str(args.get("action") or "").strip() or "manage"

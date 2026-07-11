@@ -2981,6 +2981,34 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._post_connect_task is asyncio.current_task():
                 self._post_connect_task = None
 
+    def _wire_plugin_handlers(self) -> None:
+        """Wire plugin-registered PTB handlers into the Application at connect.
+
+        Consumes ``PluginManager.get_telegram_handlers()`` (populated by
+        ``ctx.register_telegram_handler``) and registers each on the PTB
+        Application with its requested group. The plugin-manager load and each
+        per-handler ``add_handler`` are isolated so one bad plugin cannot block
+        Telegram connect — mirrors how the Slack adapter consumes
+        ``get_slack_action_handlers``.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            tg_handlers = get_plugin_manager().get_telegram_handlers()
+        except Exception as tg_load_exc:
+            logger.warning(
+                "[%s] could not load plugin Telegram handlers: %s",
+                self.name, tg_load_exc,
+            )
+            tg_handlers = []
+        for tg_h, tg_g, tg_pname in tg_handlers:
+            try:
+                self._app.add_handler(tg_h, group=tg_g)
+            except Exception as tg_reject_exc:
+                logger.warning(
+                    "[%s] plugin Telegram handler from %s rejected: %s",
+                    self.name, tg_pname, tg_reject_exc,
+                )
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
@@ -3189,25 +3217,8 @@ class TelegramAdapter(BasePlatformAdapter):
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             # Wire plugin-registered python-telegram-bot handlers (plugins call
-            # ctx.register_telegram_handler). Mirrors how the Slack adapter
-            # consumes ctx.register_slack_action_handler at connect time.
-            try:
-                from hermes_cli.plugins import get_plugin_manager
-                tg_handlers = get_plugin_manager().get_telegram_handlers()
-            except Exception as tg_load_exc:
-                logger.warning(
-                    "[%s] could not load plugin Telegram handlers: %s",
-                    self.name, tg_load_exc,
-                )
-                tg_handlers = []
-            for tg_h, tg_g, tg_pname in tg_handlers:
-                try:
-                    self._app.add_handler(tg_h, group=tg_g)
-                except Exception as tg_reject_exc:
-                    logger.warning(
-                        "[%s] plugin Telegram handler from %s rejected: %s",
-                        self.name, tg_pname, tg_reject_exc,
-                    )
+            # ctx.register_telegram_handler) into the Application.
+            self._wire_plugin_handlers()
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable

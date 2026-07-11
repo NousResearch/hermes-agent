@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -167,3 +169,108 @@ class TestTelegramHandlerContract:
         assert handler is h
         assert group == 2
         assert isinstance(plugin_name, str)
+
+
+# ---------------------------------------------------------------------------
+# TelegramAdapter connect-path wiring
+# ---------------------------------------------------------------------------
+# Exercises TelegramAdapter._wire_plugin_handlers() — the connect-time code
+# path that consumes get_telegram_handlers() and calls Application.add_handler.
+# python-telegram-bot is an optional dep, so mock the telegram package the same
+# way tests/gateway/test_telegram_network_reconnect.py does.
+
+def _ensure_telegram_mock() -> None:
+    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+        return
+    telegram_mod = MagicMock()
+    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
+    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    telegram_mod.constants.ChatType.GROUP = "group"
+    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
+    telegram_mod.constants.ChatType.CHANNEL = "channel"
+    telegram_mod.constants.ChatType.PRIVATE = "private"
+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
+        sys.modules.setdefault(name, telegram_mod)
+
+
+_ensure_telegram_mock()
+
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+
+
+class _RecordingApp:
+    """Stand-in PTB Application that records add_handler(handler, group=...)."""
+
+    def __init__(self, raise_on: tuple = ()):
+        self.added: list = []  # list of (handler, group)
+        self._raise_on = set(raise_on)
+
+    def add_handler(self, handler, group=None):
+        if getattr(handler, "name", None) in self._raise_on:
+            raise RuntimeError("PTB rejected handler")
+        self.added.append((handler, group))
+
+
+class TestTelegramAdapterPluginHandlerWiring:
+    """_wire_plugin_handlers() (the connect path) registers handlers on the app."""
+
+    def _adapter(self, app) -> TelegramAdapter:
+        # object.__new__ skips the heavy __init__. _wire_plugin_handlers only
+        # needs self._app and self.name; `name` is a read-only property over
+        # self.platform (Platform.TELEGRAM.value.title() -> "Telegram"), so set
+        # a stand-in platform rather than the property itself.
+        a = object.__new__(TelegramAdapter)
+        a.platform = SimpleNamespace(value="telegram")
+        a._app = app
+        return a
+
+    def _mgr(self, handlers):
+        mgr = MagicMock()
+        mgr.get_telegram_handlers.return_value = handlers
+        return mgr
+
+    def test_handlers_wired_with_their_groups(self):
+        """Each queued handler is add_handler()'d with its requested group."""
+        app = _RecordingApp()
+        adapter = self._adapter(app)
+        h0, h1 = _FakeHandler("a"), _FakeHandler("b")
+
+        with patch("hermes_cli.plugins.get_plugin_manager",
+                   return_value=self._mgr([(h0, 0, "plug_a"), (h1, 1, "plug_b")])):
+            adapter._wire_plugin_handlers()
+
+        assert app.added == [(h0, 0), (h1, 1)]
+
+    def test_no_handlers_is_a_noop(self):
+        """Empty queue (the common case) wires nothing."""
+        app = _RecordingApp()
+        adapter = self._adapter(app)
+
+        with patch("hermes_cli.plugins.get_plugin_manager",
+                   return_value=self._mgr([])):
+            adapter._wire_plugin_handlers()
+
+        assert app.added == []
+
+    def test_plugin_manager_load_failure_is_isolated(self):
+        """If get_plugin_manager() raises, wiring is skipped — connect still safe."""
+        app = _RecordingApp()
+        adapter = self._adapter(app)
+
+        with patch("hermes_cli.plugins.get_plugin_manager",
+                   side_effect=RuntimeError("plugin layer down")):
+            adapter._wire_plugin_handlers()  # must not raise
+
+        assert app.added == []
+
+    def test_one_rejected_handler_does_not_block_others(self):
+        """A handler PTB rejects must not stop later handlers from wiring."""
+        app = _RecordingApp(raise_on=("bad",))
+        adapter = self._adapter(app)
+        good, bad, other = _FakeHandler("good"), _FakeHandler("bad"), _FakeHandler("other")
+
+        with patch("hermes_cli.plugins.get_plugin_manager",
+                   return_value=self._mgr([(bad, 0, "buggy"), (good, 1, "g"), (other, 2, "o")])):
+            adapter._wire_plugin_handlers()
+
+        assert app.added == [(good, 1), (other, 2)]

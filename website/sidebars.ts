@@ -764,6 +764,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/browser-supervisor',
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',
+            'developer-guide/run-trace',
             'developer-guide/trajectory-format',
           ],
         },

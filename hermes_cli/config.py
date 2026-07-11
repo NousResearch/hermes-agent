@@ -1159,7 +1159,15 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
-    
+
+    "observability": {
+        # Metadata-only run trace persistence. Disabled by default and
+        # observe-only: it writes turn/tool metadata under HERMES_HOME without
+        # raw prompts, raw tool arguments, raw tool output, or assistant text.
+        "run_trace_enabled": False,
+        "run_trace_path": "run_traces/run_traces.jsonl",
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

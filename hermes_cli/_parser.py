@@ -395,7 +395,7 @@ def build_top_level_parser():
         chat_parser,
         "--no-streaming",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Disable streaming output; wait for the full response before displaying (CLI only)",
     )
     _inherited_flag(

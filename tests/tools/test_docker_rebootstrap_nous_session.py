@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
+
+import pytest
 
 # Import the stdlib-only boot helper by path (it lives under scripts/, not an
 # installed package) — mirrors the repo's other scripts/-helper tests.
@@ -325,3 +329,56 @@ def test_terminal_entry_missing_marker_is_not_terminal(tmp_path):
     entry) → not terminal, no re-seed."""
     auth = _write_auth(tmp_path, {"nous": {"client_id": "hermes-cli-vps"}})
     assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "not_terminal"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+def test_reseeded_file_is_0600_even_when_chmod_fails(tmp_path, monkeypatch):
+    """The re-seeded auth.json must be 0o600 even if the post-write chmod
+    raises. Before the fix the file was created with a plain open() at the
+    process umask (0o666 under umask 0) and only tightened by a chmod whose
+    OSError was silently swallowed — so a chmod failure left the fresh Nous
+    refresh_token permanently world-readable."""
+    old_umask = os.umask(0)
+    try:
+        auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+
+        def _no_chmod(*_a, **_k):
+            raise OSError("chmod unsupported on this volume")
+
+        monkeypatch.setattr(mod.os, "chmod", _no_chmod)
+
+        assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+        mode = stat.S_IMODE(os.stat(auth).st_mode)
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+    finally:
+        os.umask(old_umask)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+def test_reseeded_temp_is_never_created_group_or_world_readable(tmp_path, monkeypatch):
+    """The tokens must never touch disk at a loose mode, even transiently.
+
+    Spy on os.replace to capture the temp file's mode at rename time (i.e.
+    the mode the secrets were written at). Before the fix the temp file was
+    created via plain open() at the process umask, so this window was 0o666
+    under umask 0."""
+    old_umask = os.umask(0)
+    try:
+        auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+
+        real_replace = mod.os.replace
+        captured = {}
+
+        def _spy_replace(src, dst, *a, **k):
+            captured["mode"] = stat.S_IMODE(os.stat(src).st_mode)
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(mod.os, "replace", _spy_replace)
+
+        assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+        assert captured["mode"] == 0o600, (
+            f"tokens written to a temp file at {oct(captured['mode'])} — "
+            "must be 0o600 with no group/world bits"
+        )
+    finally:
+        os.umask(old_umask)

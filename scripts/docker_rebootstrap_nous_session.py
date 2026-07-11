@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -187,10 +188,32 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     # Surgical replacement: swap ONLY providers.nous, preserve everything else.
     providers["nous"] = seed_nous
 
-    tmp_path = f"{auth_path}.rebootstrap.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(store, fh)
-    os.replace(tmp_path, auth_path)
+    # Create the temp file with 0o600 atomically via os.open(O_EXCL) so the
+    # freshly-seeded Nous refresh_token (plus every preserved provider token in
+    # ``store``) is never written to a world-/group-readable file, even
+    # transiently. A plain open() created it at the process umask — this runs
+    # as an early Docker boot-hook subprocess, typically root with umask 0 or
+    # 022, so the tokens hit disk at 0o666/0o644 — and the post-replace chmod
+    # both left a disclosure window before it ran and, on any volume/overlay
+    # where chmod is unsupported or denied, left the file permanently loose
+    # (the except below silently swallows that). Mirrors the O_EXCL/0o600
+    # hardening in hermes_cli/auth.py (#19673, #21148). A per-process random
+    # suffix avoids a fixed-name collision making O_EXCL raise on a stale temp.
+    tmp_path = f"{auth_path}.rebootstrap.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(store, fh)
+        os.replace(tmp_path, auth_path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+    # Defense in depth: the O_EXCL create above already guarantees 0o600 and
+    # os.replace preserves that mode, so this cannot widen the window — kept
+    # only to re-tighten if some future caller reuses an existing auth.json.
     try:
         os.chmod(auth_path, 0o600)
     except OSError:

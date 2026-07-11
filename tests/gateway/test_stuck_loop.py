@@ -164,3 +164,100 @@ class TestResetStuckLoopCounts:
         runner._reset_stuck_loop_counts({"nonexistent"})
         counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
         assert counts["session:a"] == 1
+
+
+class TestSuccessfulTurnResetsStuckLoopCount:
+    """2026-07-10 live incident: a healthy long-running session was busy at
+    3 consecutive gateway restarts (other sessions deploying), each drain
+    timed out, the counter marched 1→2→3 despite the session completing
+    real turns between restarts, and _suspend_stuck_loop_sessions falsely
+    suspended it — surfacing as "Session automatically reset ... history
+    cleared".
+
+    Contract: a successful turn is affirmative proof the session is NOT
+    stuck; the post-turn gate (_apply_post_turn_resume_gate, non-initiator
+    branch) must drop the session's stuck-loop entry, restoring the
+    original _clear_restart_failure_count contract whose call site was
+    lost in the F2-breaker refactor.
+    """
+
+    def _gate_runner(self, runner):
+        """Wire the minimal collaborators the post-turn gate touches."""
+        runner.session_store = MagicMock()
+        runner._consume_restart_initiated_breadcrumb = lambda _sk: False
+        return runner
+
+    def test_incident_sequence_no_false_suspend(self, runner_with_home):
+        """Interrupt, interrupt, SUCCESSFUL TURN, interrupt — must NOT
+        suspend (pre-fix: count reached 3 because success didn't reset)."""
+        runner, home = runner_with_home
+        self._gate_runner(runner)
+        sk = "agent:main:discord:thread:kanban:kanban"
+
+        runner._increment_restart_failure_counts({sk})   # restart 1
+        runner._increment_restart_failure_counts({sk})   # restart 2
+
+        # A real turn completes between restarts (the kanban session did
+        # this repeatedly — 653s turns finishing fine).
+        runner._apply_post_turn_resume_gate(sk)
+
+        runner._increment_restart_failure_counts({sk})   # restart 3
+
+        mock_entry = MagicMock()
+        mock_entry.suspended = False
+        runner.session_store._entries = {sk: mock_entry}
+        runner.session_store._save = MagicMock()
+
+        suspended = runner._suspend_stuck_loop_sessions()
+        assert suspended == 0, (
+            "healthy session falsely suspended: successful turn did not "
+            "reset the stuck-loop count"
+        )
+        assert mock_entry.suspended is False
+
+    def test_gate_clears_count_for_non_initiator(self, runner_with_home):
+        runner, home = runner_with_home
+        self._gate_runner(runner)
+        sk = "session:worked"
+        runner._increment_restart_failure_counts({sk})
+        runner._increment_restart_failure_counts({sk})
+
+        runner._apply_post_turn_resume_gate(sk)
+
+        path = home / runner._STUCK_LOOP_FILE
+        if path.exists():
+            counts = json.loads(path.read_text())
+            assert sk not in counts
+        # else: file pruned entirely — also correct
+
+    def test_gate_keeps_count_for_restart_initiator(self, runner_with_home):
+        """A turn whose only outcome was ANOTHER restart is loop progress,
+        not work progress — the count must survive (F2 contract)."""
+        runner, home = runner_with_home
+        self._gate_runner(runner)
+        sk = "session:restarter"
+        runner._increment_restart_failure_counts({sk})
+        runner._session_initiated_restart[sk] = True
+
+        runner._apply_post_turn_resume_gate(sk)
+
+        counts = json.loads((home / runner._STUCK_LOOP_FILE).read_text())
+        assert sk in counts
+        assert counts[sk]["count"] == 1
+
+    def test_genuinely_stuck_session_still_suspended(self, runner_with_home):
+        """The detector's purpose survives: 3 interruptions with NO
+        successful turn between them still suspends."""
+        runner, home = runner_with_home
+        self._gate_runner(runner)
+        sk = "session:stuck"
+        for _ in range(3):
+            runner._increment_restart_failure_counts({sk})
+
+        mock_entry = MagicMock()
+        mock_entry.suspended = False
+        runner.session_store._entries = {sk: mock_entry}
+        runner.session_store._save = MagicMock()
+
+        assert runner._suspend_stuck_loop_sessions() == 1
+        assert mock_entry.suspended is True

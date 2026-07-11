@@ -6,6 +6,7 @@ import {
   getGlobalModelOptions,
   getHermesConfig,
   getHermesConfigDefaults,
+  getHostDisplay,
   getProfiles,
   getSessionMessages,
   getStatus,
@@ -122,6 +123,14 @@ describe('Hermes REST session helpers', () => {
     const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
     expect(call.path).toBe('/api/status')
     expect(call.timeoutMs).toBeUndefined()
+  })
+
+  it('loads Host VNC discovery through the authenticated profile-scoped API', async () => {
+    api.mockResolvedValue({ available: false, reason: 'not configured', url: null })
+
+    await getHostDisplay()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/host-display' }))
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

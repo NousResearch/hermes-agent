@@ -110,7 +110,6 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const showFiles = () => {
     setFileBrowserOpen(true)
-    setTerminalTakeover(false)
   }
 
   handlersRef.current = {

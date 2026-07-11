@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { desktopFsCacheKey } from '@/lib/desktop-fs'
 import { persistentAtom } from '@/lib/persisted'
 import { normalize } from '@/lib/text'
 
@@ -17,6 +18,7 @@ import {
   type PreviewSnapSlot,
   type PreviewViewport
 } from './preview-surface-layout'
+import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
@@ -71,6 +73,13 @@ export interface WebPreviewTab {
   target: PreviewTarget
 }
 
+export type UtilityPreviewKind = 'host-vnc' | 'terminal'
+
+export interface UtilityPreviewTab {
+  id: `utility:${UtilityPreviewKind}`
+  kind: UtilityPreviewKind
+}
+
 export type PreviewSurfacePlacement = 'docked' | 'floating' | 'maximized' | 'minimized' | PreviewSnapSlot
 
 export interface PreviewSurfaceRestore {
@@ -88,10 +97,45 @@ const REGISTRY_STORAGE_KEY = 'hermes.desktop.sessionPreviews.v1'
 const TABS_STORAGE_KEY = 'hermes.desktop.filePreviewTabs.v1'
 const WEB_TABS_STORAGE_KEY = 'hermes.desktop.webPreviewTabs.v1'
 const SURFACE_LAYOUTS_STORAGE_KEY = 'hermes.desktop.previewSurfaceLayouts.v1'
+const WORKSPACE_SCOPE_STORAGE_KEY = 'hermes.desktop.previewWorkspaceScope.v1'
 const MAX_RECORDS_PER_SESSION = 1
 const MAX_SESSIONS = 120
 
+function opaqueScopeId(value: string): string {
+  let first = 0x811c9dc5
+  let second = 0x9e3779b9
+
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    first = Math.imul(first ^ code, 0x01000193)
+    second = Math.imul(second ^ code, 0x85ebca6b)
+  }
+
+  return `scope:${(first >>> 0).toString(16).padStart(8, '0')}${(second >>> 0).toString(16).padStart(8, '0')}`
+}
+
+export function previewWorkspaceScopeId(
+  sessionId: string,
+  connectionKey = desktopFsCacheKey(),
+  profileKey = $activeGatewayProfile.get()
+): string {
+  return opaqueScopeId(`${connectionKey}\u0000${normalizeProfileKey(profileKey)}\u0000${sessionId.trim()}`)
+}
+
+function storedPreviewWorkspaceScope(): string {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+
+  const value = window.localStorage.getItem(WORKSPACE_SCOPE_STORAGE_KEY) || ''
+
+  return /^scope:[a-f0-9]{16}$/.test(value) ? value : ''
+}
+
+let activePreviewWorkspaceScope = storedPreviewWorkspaceScope()
+
 export const $previewTarget = atom<PreviewTarget | null>(null)
+export const $utilityPreviewTabs = atom<UtilityPreviewTab[]>([])
 export const $webPreviewTabs = persistentAtom<WebPreviewTab[]>(WEB_TABS_STORAGE_KEY, [], {
   decode: raw => {
     const parsed = JSON.parse(raw) as unknown
@@ -147,9 +191,61 @@ const restoredActiveTabId = $rightRailActiveTabId.get()
 
 if (
   (restoredActiveTabId.startsWith('file:') && !$filePreviewTabs.get().some(tab => tab.id === restoredActiveTabId)) ||
-  (restoredActiveTabId.startsWith('preview:') && !$webPreviewTabs.get().some(tab => tab.id === restoredActiveTabId))
+  (restoredActiveTabId.startsWith('preview:') && !$webPreviewTabs.get().some(tab => tab.id === restoredActiveTabId)) ||
+  (restoredActiveTabId.startsWith('utility:') && !$utilityPreviewTabs.get().some(tab => tab.id === restoredActiveTabId))
 ) {
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+}
+
+export function setPreviewWorkspaceScope(
+  sessionId: string,
+  connectionKey = desktopFsCacheKey(),
+  profileKey = $activeGatewayProfile.get()
+): string {
+  const id = sessionId.trim()
+  const nextScope = id ? previewWorkspaceScopeId(id, connectionKey, profileKey) : ''
+
+  if (nextScope === activePreviewWorkspaceScope) {
+    return nextScope
+  }
+
+  activePreviewWorkspaceScope = nextScope
+
+  // Clear session-scoped preview/file/web surfaces while preserving global
+  // utility tabs. Terminal shells and the host display belong to the backend
+  // connection, not to one chat, so switching sessions must not close them.
+  const utilityTabs = $utilityPreviewTabs.get()
+  const utilityIds = new Set<RightRailTabId>(utilityTabs.map(tab => tab.id))
+
+  const utilityLayouts = Object.fromEntries(
+    Object.entries($previewSurfaceLayouts.get()).filter(([tabId]) => utilityIds.has(tabId as RightRailTabId))
+  ) as Partial<Record<RightRailTabId, PreviewSurfaceLayout>>
+
+  const currentActiveTabId = $rightRailActiveTabId.get()
+
+  const nextActiveUtilityId = utilityIds.has(currentActiveTabId)
+    ? currentActiveTabId
+    : (utilityTabs.at(-1)?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+
+  // Clear the old scope's persisted surfaces before committing the new marker.
+  // If the renderer is interrupted between these synchronous writes, a later
+  // startup can restore an empty workspace, never old tabs under a new scope.
+  $previewTarget.set(null)
+  $webPreviewTabs.set([])
+  $filePreviewTabs.set([])
+  $previewSurfaceLayouts.set(utilityLayouts)
+  setPaneOpen(PREVIEW_PANE_ID, utilityTabs.length > 0)
+  selectRightRailTab(nextActiveUtilityId)
+
+  if (typeof window !== 'undefined') {
+    if (nextScope) {
+      window.localStorage.setItem(WORKSPACE_SCOPE_STORAGE_KEY, nextScope)
+    } else {
+      window.localStorage.removeItem(WORKSPACE_SCOPE_STORAGE_KEY)
+    }
+  }
+
+  return nextScope
 }
 
 export const $filePreviewTarget = computed([$filePreviewTabs, $rightRailActiveTabId], (tabs, activeTabId) => {
@@ -187,6 +283,22 @@ function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): 
 function showLivePreviewTab() {
   setPaneOpen(PREVIEW_PANE_ID, true)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+}
+
+export function utilityPreviewTabId(kind: UtilityPreviewKind): UtilityPreviewTab['id'] {
+  return `utility:${kind}`
+}
+
+export function openUtilityPreviewTab(kind: UtilityPreviewKind) {
+  const id = utilityPreviewTabId(kind)
+  const current = $utilityPreviewTabs.get()
+
+  if (!current.some(tab => tab.id === id)) {
+    $utilityPreviewTabs.set([...current, { id, kind }])
+  }
+
+  setPaneOpen(PREVIEW_PANE_ID, true)
+  selectRightRailTab(id)
 }
 
 export function setPreviewTarget(target: PreviewTarget | null) {
@@ -441,18 +553,23 @@ function loadSessionPreviewRegistry(): SessionPreviewRegistry {
 
     const out: SessionPreviewRegistry = {}
 
-    for (const [sessionId, records] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!Array.isArray(records)) {
+    for (const [scopeId, records] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!/^scope:[a-f0-9]{16}$/.test(scopeId) || !Array.isArray(records)) {
         continue
       }
 
       const valid = records
         .filter(isPreviewRecord)
         .filter(record => record.normalized.kind !== 'url' || isPersistableWebPreviewTarget(record.normalized))
+        .map(record =>
+          /^session-preview:tab-[a-z0-9-]+$/i.test(record.id)
+            ? record
+            : { ...record, id: createOpaqueSessionPreviewRecordId() }
+        )
         .slice(0, MAX_RECORDS_PER_SESSION)
 
       if (valid.length > 0) {
-        out[sessionId] = valid
+        out[scopeId] = valid
       }
     }
 
@@ -503,8 +620,14 @@ function currentPreviewSessionId(): string {
   return $selectedStoredSessionId.get() || $activeSessionId.get() || ''
 }
 
-function recordId(sessionId: string, target: PreviewTarget): string {
-  return `${sessionId}:${target.url}`
+function createOpaqueSessionPreviewRecordId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
+  return `session-preview:tab-${uuid}`
+}
+
+function sessionRegistryKey(sessionId: string): string {
+  return previewWorkspaceScopeId(sessionId)
 }
 
 export function registerSessionPreview(
@@ -520,15 +643,16 @@ export function registerSessionPreview(
   }
 
   const current = $sessionPreviewRegistry.get()
+  const scopeId = sessionRegistryKey(id)
   const now = Date.now()
-  const records = current[id] ?? []
+  const records = current[scopeId] ?? []
   const existing = records.find(record => record.normalized.url === target.url)
   const normalized = previewTargetForSource(target, source)
 
   const nextRecord: SessionPreviewRecord = {
     autoOpen: true,
     createdAt: now,
-    id: existing?.id || recordId(id, target),
+    id: existing?.id || createOpaqueSessionPreviewRecordId(),
     normalized,
     sessionId: id,
     source,
@@ -538,7 +662,7 @@ export function registerSessionPreview(
   $sessionPreviewRegistry.set(
     pruneRegistry({
       ...current,
-      [id]: [nextRecord]
+      [scopeId]: [nextRecord]
     })
   )
 
@@ -582,7 +706,9 @@ export function getSessionPreviewRecord(sessionId: string | null | undefined): S
     return null
   }
 
-  return $sessionPreviewRegistry.get()[id]?.find(record => !record.dismissedAt && record.autoOpen !== false) ?? null
+  const records = $sessionPreviewRegistry.get()[sessionRegistryKey(id)]
+
+  return records?.find(record => !record.dismissedAt && record.autoOpen !== false) ?? null
 }
 
 export function previewSurfacePlacementForTab(tabId: RightRailTabId): PreviewSurfacePlacement {
@@ -604,6 +730,7 @@ function previewTabIds(): RightRailTabId[] {
 
   ids.push(...$webPreviewTabs.get().map(tab => tab.id))
   ids.push(...$filePreviewTabs.get().map(tab => tab.id))
+  ids.push(...$utilityPreviewTabs.get().map(tab => tab.id))
 
   return ids
 }
@@ -738,7 +865,8 @@ export function dismissSessionPreview(sessionId: string | null | undefined, url?
   }
 
   const current = $sessionPreviewRegistry.get()
-  const records = current[id]
+  const scopeId = sessionRegistryKey(id)
+  const records = current[scopeId]
 
   if (!records?.length) {
     return
@@ -762,7 +890,7 @@ export function dismissSessionPreview(sessionId: string | null | undefined, url?
 
   $sessionPreviewRegistry.set({
     ...current,
-    [id]: dismissedRecords
+    [scopeId]: dismissedRecords
   })
 }
 
@@ -851,6 +979,27 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
   setPaneOpen(PREVIEW_PANE_ID, previewTabIds().length > 0)
 }
 
+function closeUtilityPreviewTab(tabId: RightRailTabId) {
+  if (!tabId.startsWith('utility:')) {
+    return
+  }
+
+  const current = $utilityPreviewTabs.get()
+
+  if (!current.some(tab => tab.id === tabId)) {
+    return
+  }
+
+  $utilityPreviewTabs.set(current.filter(tab => tab.id !== tabId))
+  removeRightRailTabLayout(tabId)
+
+  if ($rightRailActiveTabId.get() === tabId) {
+    activateAvailableTab(tabId)
+  }
+
+  setPaneOpen(PREVIEW_PANE_ID, previewTabIds().length > 0)
+}
+
 export function closeRightRailTab(tabId: RightRailTabId) {
   if (tabId === RIGHT_RAIL_PREVIEW_TAB_ID) {
     if ($previewTarget.get()) {
@@ -862,6 +1011,8 @@ export function closeRightRailTab(tabId: RightRailTabId) {
 
   if (tabId.startsWith('preview:')) {
     closeWebPreviewTab(tabId)
+  } else if (tabId.startsWith('utility:')) {
+    closeUtilityPreviewTab(tabId)
   } else {
     closeFilePreviewTab(tabId)
   }
@@ -906,16 +1057,24 @@ export function closeRightRail() {
 
   $webPreviewTabs.set([])
   $filePreviewTabs.set([])
+  $utilityPreviewTabs.set([])
   $previewSurfaceLayouts.set({})
   setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 
 export function clearSessionPreviewRegistry() {
+  activePreviewWorkspaceScope = ''
+
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(WORKSPACE_SCOPE_STORAGE_KEY)
+  }
+
   $sessionPreviewRegistry.set({})
   $previewTarget.set(null)
   $webPreviewTabs.set([])
   $filePreviewTabs.set([])
+  $utilityPreviewTabs.set([])
   $previewSurfaceLayouts.set({})
   setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)

@@ -10,6 +10,7 @@ import {
   $previewSurfaceLayouts,
   $previewTarget,
   $sessionPreviewRegistry,
+  $utilityPreviewTabs,
   $webPreviewTabs,
   beginPreviewServerRestart,
   clearSessionPreviewRegistry,
@@ -21,14 +22,17 @@ import {
   getSessionPreviewRecord,
   maximizeRightRailTab,
   minimizeRightRailTab,
+  openUtilityPreviewTab,
   type PreviewTarget,
   progressPreviewServerRestart,
   registerSessionPreview,
   restoreRightRailTab,
   setCurrentSessionPreviewTarget,
+  setPreviewWorkspaceScope,
   setRightRailTabFloatingGeometry
 } from './preview'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { $activeGatewayProfile } from './profile'
+import { $activeSessionId, $connection, $selectedStoredSessionId } from './session'
 
 function previewTarget(source: string): PreviewTarget {
   const isUrl = /^https?:\/\//i.test(source)
@@ -49,6 +53,8 @@ function withRenderMode(target: PreviewTarget, renderMode: PreviewTarget['render
 
 describe('preview store', () => {
   beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $previewServerRestart.set(null)
     $activeSessionId.set('session-1')
     $selectedStoredSessionId.set(null)
@@ -57,6 +63,8 @@ describe('preview store', () => {
   })
 
   afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $previewServerRestart.set(null)
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
@@ -91,11 +99,75 @@ describe('preview store', () => {
     expect($previewTarget.get()).toBeNull()
     expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(false)
     expect(getSessionPreviewRecord('session-1')).toBeNull()
-    expect($sessionPreviewRegistry.get()['session-1']?.[0]?.dismissedAt).toEqual(expect.any(Number))
+    expect(Object.values($sessionPreviewRegistry.get())[0]?.[0]?.dismissedAt).toEqual(expect.any(Number))
 
     setCurrentSessionPreviewTarget(target, 'tool-result')
 
     expect(getSessionPreviewRecord('session-1')?.dismissedAt).toBeUndefined()
+  })
+
+  it('uses opaque record ids and isolates records by connection identity', () => {
+    const target = previewTarget('https://example.com/app')
+
+    $connection.set({ baseUrl: 'https://one.example', mode: 'remote', profile: 'one' } as never)
+    const record = registerSessionPreview('shared-session', target, 'manual')
+
+    expect(record?.id).toMatch(/^session-preview:/)
+    expect(record?.id).not.toContain('shared-session')
+    expect(record?.id).not.toContain(target.url)
+    expect(getSessionPreviewRecord('shared-session')?.normalized.url).toBe(target.url)
+
+    $connection.set({ baseUrl: 'https://two.example', mode: 'remote', profile: 'two' } as never)
+    expect(getSessionPreviewRecord('shared-session')).toBeNull()
+
+    $connection.set(null)
+    $activeGatewayProfile.set('profile-one')
+    registerSessionPreview('local-shared-session', target, 'manual')
+    expect(getSessionPreviewRecord('local-shared-session')).not.toBeNull()
+
+    $activeGatewayProfile.set('profile-two')
+    expect(getSessionPreviewRecord('local-shared-session')).toBeNull()
+  })
+
+  it('clears tabs and layouts when the session or connection scope changes', () => {
+    setPreviewWorkspaceScope('session-1', 'remote:profile-a:https://one.example')
+    setCurrentSessionPreviewTarget(previewTarget('/work/private.txt'), 'manual')
+    const tabId = $filePreviewTabs.get()[0]!.id
+
+    detachRightRailTab(tabId)
+    expect($filePreviewTabs.get()).toHaveLength(1)
+    expect($previewSurfaceLayouts.get()[tabId]?.placement).toBe('floating')
+
+    setPreviewWorkspaceScope('session-1', 'remote:profile-a:https://one.example')
+    expect($filePreviewTabs.get()).toHaveLength(1)
+
+    setPreviewWorkspaceScope('session-2', 'remote:profile-a:https://one.example')
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($webPreviewTabs.get()).toEqual([])
+    expect($previewSurfaceLayouts.get()).toEqual({})
+
+    const storedScope = window.localStorage.getItem('hermes.desktop.previewWorkspaceScope.v1') ?? ''
+    expect(storedScope).toMatch(/^scope:/)
+    expect(storedScope).not.toContain('session-2')
+    expect(storedScope).not.toContain('one.example')
+  })
+
+  it('preserves global utility tabs when the chat preview scope changes', () => {
+    setPreviewWorkspaceScope('session-1', 'remote:profile-a:https://one.example')
+    setCurrentSessionPreviewTarget(previewTarget('/work/private.txt'), 'manual')
+    openUtilityPreviewTab('terminal')
+    openUtilityPreviewTab('host-vnc')
+
+    setPreviewWorkspaceScope('session-2', 'remote:profile-a:https://one.example')
+
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($webPreviewTabs.get()).toEqual([])
+    expect($utilityPreviewTabs.get()).toEqual([
+      { id: 'utility:terminal', kind: 'terminal' },
+      { id: 'utility:host-vnc', kind: 'host-vnc' }
+    ])
+    expect($rightRailActiveTabId.get()).toBe('utility:host-vnc')
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
   })
 
   it('replaces the session preview instead of keeping a back stack', () => {
@@ -105,14 +177,14 @@ describe('preview store', () => {
     setCurrentSessionPreviewTarget(first, 'tool-result')
     setCurrentSessionPreviewTarget(second, 'tool-result')
 
-    expect($sessionPreviewRegistry.get()['session-1']).toHaveLength(1)
+    expect(Object.values($sessionPreviewRegistry.get())[0]).toHaveLength(1)
     expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(second, 'preview'))
 
     dismissPreviewTarget()
 
     expect($previewTarget.get()).toBeNull()
     expect(getSessionPreviewRecord('session-1')).toBeNull()
-    expect($sessionPreviewRegistry.get()['session-1']?.map(record => record.normalized.url)).toEqual([
+    expect(Object.values($sessionPreviewRegistry.get())[0]?.map(record => record.normalized.url)).toEqual([
       'file:///work/second.html'
     ])
   })
@@ -162,6 +234,36 @@ describe('preview store', () => {
     const activeId = $rightRailActiveTabId.get()
     expect(activeId).toMatch(/^preview:tab-/)
     expect(activeId).not.toContain('https://example.com/two')
+  })
+
+  it('opens terminal and host VNC as peer workspace tabs', () => {
+    setCurrentSessionPreviewTarget(previewTarget('/work/file.txt'), 'manual')
+    const fileTabId = $filePreviewTabs.get()[0]!.id
+
+    openUtilityPreviewTab('terminal')
+    openUtilityPreviewTab('host-vnc')
+
+    expect($utilityPreviewTabs.get()).toEqual([
+      { id: 'utility:terminal', kind: 'terminal' },
+      { id: 'utility:host-vnc', kind: 'host-vnc' }
+    ])
+    expect($filePreviewTabs.get()[0]?.id).toBe(fileTabId)
+    expect($rightRailActiveTabId.get()).toBe('utility:host-vnc')
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+  })
+
+  it('closes one utility tab without closing files or another utility tab', () => {
+    setCurrentSessionPreviewTarget(previewTarget('/work/file.txt'), 'manual')
+    const fileTabId = $filePreviewTabs.get()[0]!.id
+    openUtilityPreviewTab('terminal')
+    openUtilityPreviewTab('host-vnc')
+
+    closeRightRailTab('utility:terminal')
+
+    expect($utilityPreviewTabs.get()).toEqual([{ id: 'utility:host-vnc', kind: 'host-vnc' }])
+    expect($filePreviewTabs.get()[0]?.id).toBe(fileTabId)
+    expect($rightRailActiveTabId.get()).toBe('utility:host-vnc')
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
   })
 
   it('dismisses a browser session record when its tab is closed', () => {

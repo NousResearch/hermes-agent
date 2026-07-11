@@ -11,7 +11,6 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { isFocusWithin } from '@/lib/keybinds/combo'
-import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
@@ -22,7 +21,6 @@ import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
 import {
-  $fileBrowserOpen,
   $panesFlipped,
   $pinnedSessionIds,
   FILE_BROWSER_DEFAULT_WIDTH,
@@ -37,7 +35,6 @@ import {
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
-import { $paneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
 import { setPetScale } from '../store/pet-gallery'
 import {
@@ -45,7 +42,13 @@ import {
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
-import { $filePreviewTabs, $previewTarget, $webPreviewTabs, closeActiveRightRailTab } from '../store/preview'
+import {
+  $filePreviewTabs,
+  $previewTarget,
+  $utilityPreviewTabs,
+  $webPreviewTabs,
+  closeActiveRightRailTab
+} from '../store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
@@ -100,8 +103,6 @@ import { RightSidebarPane } from './right-sidebar'
 import { FileActionDialogs } from './right-sidebar/file-actions'
 import { RemoteFolderPicker } from './right-sidebar/files/remote-picker'
 import { ReviewPane } from './right-sidebar/review'
-import { $terminalTakeover } from './right-sidebar/store'
-import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
 import { PersistentTerminal } from './right-sidebar/terminal/persistent'
 import { closeActiveTerminal } from './right-sidebar/terminal/terminals'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
@@ -195,13 +196,11 @@ export function DesktopController() {
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const utilityPreviewTabs = useStore($utilityPreviewTabs)
   const webPreviewTabs = useStore($webPreviewTabs)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
-  const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
-  const fileBrowserOpen = useStore($fileBrowserOpen)
-  const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
   const panesFlipped = useStore($panesFlipped)
   const profileScope = useStore($profileScope)
   // Below SIDEBAR_COLLAPSE_BREAKPOINT_PX there's no room for a docked rail —
@@ -232,8 +231,9 @@ export function DesktopController() {
     toggleCommandCenter
   } = useOverlayRouting()
 
-  const terminalSidebarOpen = chatOpen && terminalTakeover
-  const hasPreviewSurfaces = Boolean(previewTarget || filePreviewTabs.length || webPreviewTabs.length)
+  const hasPreviewSurfaces = Boolean(
+    previewTarget || filePreviewTabs.length || webPreviewTabs.length || utilityPreviewTabs.length
+  )
 
   const previewWorkspaceVisible = shouldShowPreviewWorkspace({
     chatOpen,
@@ -1182,17 +1182,6 @@ export function DesktopController() {
   const sidebarSide = panesFlipped ? 'right' : 'left'
   const railSide = panesFlipped ? 'left' : 'right'
 
-  // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
-  // hover-reveal overlays (narrow window) don't take a column, so they don't count.
-  const railColumnOpen =
-    (previewWorkspaceVisible && previewPaneOpen) ||
-    (chatOpen && !narrowViewport && fileBrowserOpen) ||
-    (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
-
-  // Once the terminal would share its rail with another sidebar, drop it to a
-  // full-width row beneath them rather than cramming in one more skinny column.
-  const terminalAsRow = terminalSidebarOpen && railColumnOpen
-
   const previewPane = (
     <Pane
       disabled={!previewWorkspaceVisible}
@@ -1261,38 +1250,6 @@ export function DesktopController() {
     </Pane>
   )
 
-  const terminalPane = (
-    <Pane
-      bottomRow={terminalAsRow}
-      defaultOpen
-      disabled={!terminalSidebarOpen}
-      divider
-      height="38vh"
-      id="terminal-sidebar"
-      key="terminal-sidebar"
-      maxHeight="80vh"
-      maxWidth="80vw"
-      minHeight="8rem"
-      minWidth="22vw"
-      resizable
-      side={railSide}
-      width="42vw"
-    >
-      {/* As a column the terminal clears the titlebar; as a bottom row it sits
-          below the rail's panes (so it fills its row edge-to-edge) and gets a
-          left border separating it from the chat — the column-mode separator
-          lives on the resize sash, which moves to the top edge as a row. */}
-      <div
-        className={cn(
-          'relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-(--ui-editor-surface-background)',
-          terminalAsRow ? 'border-l border-(--ui-stroke-secondary) pt-0' : 'pt-(--titlebar-height)'
-        )}
-      >
-        <TerminalPaneChrome />
-      </div>
-    </Pane>
-  )
-
   return (
     <AppShell
       leftStatusbarItems={leftStatusbarItems}
@@ -1302,7 +1259,6 @@ export function DesktopController() {
       overlays={overlays}
       previewPaneOpen={previewWorkspaceVisible}
       statusbarItems={statusbarItems}
-      terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}
     >
       {!isSecondaryWindow() && (
@@ -1358,16 +1314,11 @@ export function DesktopController() {
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />
         </Routes>
       </PaneMain>
-      {/*
-        Order within a side maps to column order. Default (rail on the right):
-        main | terminal | preview | file-browser. Flipped (rail on the left):
-        mirror to file-browser | preview | terminal | main so terminal stays
-        adjacent to the chat.
-      */}
-      {panesFlipped ? fileBrowserPane : terminalPane}
+      {/* Mirror the two rail columns when panes are flipped. */}
+      {panesFlipped ? fileBrowserPane : null}
       {previewPane}
       {reviewPane}
-      {panesFlipped ? terminalPane : fileBrowserPane}
+      {panesFlipped ? null : fileBrowserPane}
     </AppShell>
   )
 }

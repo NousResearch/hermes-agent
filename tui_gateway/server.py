@@ -28,7 +28,7 @@ from utils import is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
-from tui_gateway.tool_events import should_emit_tool_complete
+from tui_gateway.tool_events import prepare_tool_complete_payload, should_emit_tool_complete
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -3648,13 +3648,15 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
-    if should_emit_tool_complete(
+    tool_progress_enabled = _tool_progress_enabled(sid)
+    prepared_payload = prepare_tool_complete_payload(payload, tool_progress_enabled=tool_progress_enabled)
+    if prepared_payload is not None and should_emit_tool_complete(
         name,
         args,
-        tool_progress_enabled=_tool_progress_enabled(sid),
+        tool_progress_enabled=tool_progress_enabled,
         has_inline_diff=bool(payload.get("inline_diff")),
     ):
-        _emit("tool.complete", sid, payload)
+        _emit("tool.complete", sid, prepared_payload)
 
 
 def _on_tool_progress(

@@ -24,8 +24,8 @@ function connectionCacheKey(connection: HermesConnection | null) {
   return `${connection.mode || 'local'}:${connection.profile || ''}:${connection.baseUrl || ''}`
 }
 
-export function desktopFsCacheKey() {
-  return connectionCacheKey($connection.get())
+export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
+  return connectionCacheKey(connection)
 }
 
 export function isDesktopFsRemoteMode() {

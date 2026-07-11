@@ -8,6 +8,7 @@ import {
   clearSessionPreviewRegistry,
   detachRightRailTab,
   minimizeRightRailTab,
+  openUtilityPreviewTab,
   type PreviewTarget,
   setCurrentSessionPreviewTarget,
   snapRightRailTab
@@ -18,6 +19,14 @@ import { ChatPreviewRail } from './preview'
 
 vi.mock('./preview-pane', () => ({
   PreviewPane: ({ target }: { target: PreviewTarget }) => <div data-testid="preview-pane">{target.label}</div>
+}))
+
+vi.mock('@/app/right-sidebar/terminal/chrome', () => ({
+  TerminalPaneChrome: () => <div data-testid="terminal-pane">Terminal workspace</div>
+}))
+
+vi.mock('./host-vnc-surface', () => ({
+  HostVncSurface: () => <div data-testid="host-vnc-surface">Host VNC workspace</div>
 }))
 
 const ORIGINAL_INNER_HEIGHT = window.innerHeight
@@ -59,6 +68,22 @@ describe('ChatPreviewRail workspace surfaces', () => {
     expect(screen.getByTestId('preview-pane').textContent).toBe('two.txt')
     fireEvent.click(screen.getByRole('tab', { name: 'one.txt' }))
     expect(screen.getByTestId('preview-pane').textContent).toBe('one.txt')
+  })
+
+  it('mounts Terminal and Host VNC as peer rail tabs', () => {
+    setCurrentSessionPreviewTarget(fileTarget('/work/one.txt'), 'manual')
+    openUtilityPreviewTab('terminal')
+    openUtilityPreviewTab('host-vnc')
+    render(<ChatPreviewRail />)
+
+    expect(screen.getByRole('tab', { name: 'Terminal' })).toBeDefined()
+    expect(screen.getByRole('tab', { name: 'Host VNC' })).toBeDefined()
+    expect(screen.getByTestId('host-vnc-surface')).toBeDefined()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Terminal' }))
+
+    expect(screen.getByTestId('terminal-pane')).toBeDefined()
+    expect(screen.queryByTestId('preview-pane')).toBeNull()
   })
 
   it('does not mount a minimized pane and restores it from the taskbar', () => {

@@ -3268,6 +3268,11 @@ DEFAULT_CONFIG = {
     # Hermes Desktop (Electron app) launch options. These only affect
     # `hermes desktop`; they do not touch the CLI/gateway.
     "desktop": {
+        # URL of a noVNC-compatible page for the OS hosting this Hermes backend.
+        # Empty by default: Hermes never guesses a port or exposes a desktop.
+        # Keep authentication out of this URL; configure it at the VNC/noVNC
+        # service or reverse proxy instead.
+        "host_vnc_url": "",
         # Extra Electron command-line flags appended to every desktop launch,
         # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
         # explicit ozone backend, or GPU workaround flags. A list of strings;

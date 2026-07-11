@@ -12,7 +12,8 @@ import {
   registerSessionPreview,
   setSessionPreviewTarget
 } from '@/store/preview'
-import { $currentCwd, $messages } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection, $currentCwd, $messages } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { usePreviewRouting } from './use-preview-routing'
@@ -39,6 +40,7 @@ function previewTarget(source: string): PreviewTarget {
 }
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
+let baseHandleGatewayEvent = vi.fn()
 
 interface PreviewRoutingHarnessProps {
   activeSessionId?: string | null
@@ -59,7 +61,7 @@ function PreviewRoutingHarness({
 
   const routing = usePreviewRouting({
     activeSessionIdRef,
-    baseHandleGatewayEvent: vi.fn(),
+    baseHandleGatewayEvent,
     currentCwd: '/work',
     currentView,
     requestGateway: vi.fn(),
@@ -76,22 +78,28 @@ function PreviewRoutingHarness({
 
 describe('usePreviewRouting', () => {
   beforeEach(() => {
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
+    baseHandleGatewayEvent = vi.fn()
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: {
+        api: vi.fn(async () => ({ binary: false, byteSize: 12, content: 'remote text', language: 'text' })),
         normalizePreviewTarget: vi.fn(async (target: string) => previewTarget(target))
       }
     })
   })
 
   afterEach(() => {
+    $activeGatewayProfile.set('default')
+    $connection.set(null)
     cleanup()
     $messages.set([])
     $previewTarget.set(null)
@@ -211,6 +219,7 @@ describe('usePreviewRouting', () => {
         payload: {
           args: { path: './notes.txt', preview: true },
           name: 'read_file',
+          preview_success: true,
           tool_id: 'tool-preview-1'
         },
         session_id: 'session-1',
@@ -219,15 +228,69 @@ describe('usePreviewRouting', () => {
     )
 
     await waitFor(() => expect($filePreviewTabs.get()).toHaveLength(1))
+    expect(baseHandleGatewayEvent).not.toHaveBeenCalled()
     expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledWith('./notes.txt', '/work')
     expect($filePreviewTabs.get()[0]?.target).toMatchObject({ renderMode: 'source', source: './notes.txt' })
+  })
+
+  it('does not open a failed or denied explicit preview read', async () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          args: { path: '~/.hermes/auth.json', preview: true },
+          name: 'read_file',
+          preview_success: false,
+          result: { error: 'Access denied' },
+          tool_id: 'denied-preview'
+        },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+    expect($filePreviewTabs.get()).toEqual([])
+  })
+
+  it('normalizes explicit preview paths against the active remote connection', async () => {
+    $connection.set({ baseUrl: 'https://remote.example', mode: 'remote', profile: 'remote-dev' } as never)
+    $currentCwd.set('/srv/project')
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          args: { path: './remote.txt', preview: true },
+          name: 'read_file',
+          preview_success: true,
+          tool_id: 'remote-preview'
+        },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+
+    await waitFor(() => expect($filePreviewTabs.get()).toHaveLength(1))
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+    expect($filePreviewTabs.get()[0]?.target).toMatchObject({
+      path: '/srv/project/remote.txt',
+      renderMode: 'source',
+      source: './remote.txt'
+    })
   })
 
   it('deduplicates explicit preview requests by tool id', async () => {
     render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
 
     const event: RpcEvent = {
-      payload: { args: { path: 'notes.txt', preview: true }, name: 'read_file', tool_id: 'same-tool' },
+      payload: {
+        args: { path: 'notes.txt', preview: true },
+        name: 'read_file',
+        preview_success: true,
+        tool_id: 'same-tool'
+      },
       session_id: 'session-1',
       type: 'tool.complete'
     }
@@ -252,7 +315,12 @@ describe('usePreviewRouting', () => {
 
     act(() =>
       handleEvent({
-        payload: { args: { path: 'late.txt', preview: true }, name: 'read_file', tool_id: 'late-tool' },
+        payload: {
+          args: { path: 'late.txt', preview: true },
+          name: 'read_file',
+          preview_success: true,
+          tool_id: 'late-tool'
+        },
         session_id: 'session-1',
         type: 'tool.complete'
       })
@@ -260,6 +328,35 @@ describe('usePreviewRouting', () => {
     view.rerender(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} routedSessionId={null} />)
 
     await act(async () => resolveNormalize?.(previewTarget('/work/late.txt')))
+
+    expect($filePreviewTabs.get()).toEqual([])
+  })
+
+  it('does not open a preview when normalization finishes after a profile switch', async () => {
+    let resolveNormalize: ((target: PreviewTarget) => void) | undefined
+
+    vi.mocked(window.hermesDesktop.normalizePreviewTarget).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveNormalize = resolve
+      })
+    )
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          args: { path: 'late-profile.txt', preview: true },
+          name: 'read_file',
+          preview_success: true,
+          tool_id: 'late-profile-tool'
+        },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+    act(() => $activeGatewayProfile.set('other-profile'))
+
+    await act(async () => resolveNormalize?.(previewTarget('/work/late-profile.txt')))
 
     expect($filePreviewTabs.get()).toEqual([])
   })
@@ -273,6 +370,7 @@ describe('usePreviewRouting', () => {
           payload: {
             args: { path: `notes-${index}.txt`, preview: true },
             name: 'read_file',
+            preview_success: true,
             tool_id: `bounded-${index}`
           },
           session_id: 'session-1',
@@ -284,7 +382,12 @@ describe('usePreviewRouting', () => {
     await waitFor(() => expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(513))
     act(() =>
       handleEvent({
-        payload: { args: { path: 'notes-0.txt', preview: true }, name: 'read_file', tool_id: 'bounded-0' },
+        payload: {
+          args: { path: 'notes-0.txt', preview: true },
+          name: 'read_file',
+          preview_success: true,
+          tool_id: 'bounded-0'
+        },
         session_id: 'session-1',
         type: 'tool.complete'
       })
@@ -328,7 +431,12 @@ describe('usePreviewRouting', () => {
 
     act(() =>
       handleEvent({
-        payload: { args: { path: 'notes.txt', preview: true }, name: 'read_file', tool_id: 'failed-normalize' },
+        payload: {
+          args: { path: 'notes.txt', preview: true },
+          name: 'read_file',
+          preview_success: true,
+          tool_id: 'failed-normalize'
+        },
         session_id: 'session-1',
         type: 'tool.complete'
       })

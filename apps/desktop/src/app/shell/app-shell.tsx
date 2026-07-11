@@ -43,7 +43,6 @@ interface AppShellProps {
   // lights (and zero the titlebar inset) even below the collapse breakpoint.
   previewPaneOpen?: boolean
   statusbarItems?: readonly StatusbarItem[]
-  terminalPaneOpen?: boolean
   titlebarTools?: readonly TitlebarTool[]
 }
 
@@ -71,7 +70,6 @@ export function AppShell({
   overlays,
   previewPaneOpen = false,
   statusbarItems,
-  terminalPaneOpen = false,
   titlebarTools
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
@@ -114,9 +112,9 @@ export function AppShell({
   // is uncovered there regardless of their stored open state. A standalone
   // session window renders no sidebar at all, so its edge is always uncovered.
   const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
-  // The terminal + preview rails never force-collapse, so when they're the
-  // leftmost open pane (flipped layout) they cover the edge even when narrow.
-  const persistentLeftPaneOpen = panesFlipped && (terminalPaneOpen || previewPaneOpen)
+  // The Preview Workspace rail never force-collapses. Its tabs can host web,
+  // file, Terminal, or Host VNC surfaces, so it covers the flipped left edge.
+  const persistentLeftPaneOpen = panesFlipped && previewPaneOpen
 
   const leftEdgePaneOpen =
     !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)

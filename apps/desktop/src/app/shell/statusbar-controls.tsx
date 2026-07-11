@@ -108,7 +108,12 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     // way profile-switcher.tsx stacks Popover/ContextMenu/Tooltip triggers.
     const trigger = (
       <DropdownMenuTrigger asChild>
-        <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+        <button
+          aria-label={item.title}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          disabled={item.disabled}
+          type="button"
+        >
           {content}
         </button>
       </DropdownMenuTrigger>
@@ -192,7 +197,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={item.title}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          aria-label={item.title}
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          rel="noreferrer"
+          target="_blank"
+        >
           {content}
         </a>
       </Tip>
@@ -202,6 +213,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   return (
     <Tip label={item.title}>
       <button
+        aria-label={item.title}
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
         disabled={item.disabled}
         onClick={event => {

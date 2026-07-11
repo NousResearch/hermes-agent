@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
@@ -13,6 +13,8 @@ import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
+import { $rightRailActiveTabId } from '@/store/layout'
+import { closeRightRailTab, openUtilityPreviewTab } from '@/store/preview'
 import {
   $activeSessionId,
   $busy,
@@ -72,7 +74,9 @@ export function useStatusbarItems({
   const { t } = useI18n()
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
-  const terminalTakeover = useStore($terminalTakeover)
+  const rightRailActiveTabId = useStore($rightRailActiveTabId)
+  const terminalActive = rightRailActiveTabId === 'utility:terminal'
+  const hostVncActive = rightRailActiveTabId === 'utility:host-vnc'
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentUsage = useStore($currentUsage)
@@ -395,17 +399,26 @@ export function useStatusbarItems({
         title: yoloActive ? copy.yoloOn : copy.yoloOff,
         variant: 'action'
       },
+      clientVersionItem,
+      ...(backendVersionItem ? [backendVersionItem] : []),
       {
-        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        className: `w-7 justify-center px-0${terminalActive ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
         id: 'terminal',
-        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
-        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        onSelect: () => setTerminalTakeover(!terminalActive),
+        title: terminalActive ? copy.hideTerminal : copy.showTerminal,
         variant: 'action'
       },
-      clientVersionItem,
-      ...(backendVersionItem ? [backendVersionItem] : [])
+      {
+        className: `w-7 justify-center px-0${hostVncActive ? ' bg-accent/55 text-foreground' : ''}`,
+        hidden: !chatOpen,
+        icon: <Codicon name="remote-explorer" size="0.875rem" />,
+        id: 'host-vnc',
+        onSelect: () => (hostVncActive ? closeRightRailTab('utility:host-vnc') : openUtilityPreviewTab('host-vnc')),
+        title: hostVncActive ? t.rightSidebar.hostVncHide : t.rightSidebar.hostVncShow,
+        variant: 'action'
+      }
     ],
     [
       activeSessionId,
@@ -417,10 +430,13 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage,
+      hostVncActive,
       requestGateway,
       sessionStartedAt,
       showYoloToggle,
-      terminalTakeover,
+      t.rightSidebar.hostVncHide,
+      t.rightSidebar.hostVncShow,
+      terminalActive,
       toggleYolo,
       turnStartedAt,
       yoloActive

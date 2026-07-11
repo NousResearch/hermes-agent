@@ -49,10 +49,20 @@ interface Rect {
   left: number
   width: number
   height: number
+  zIndex: number
 }
 
 const sameRect = (a: Rect | null, b: Rect) =>
-  !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
+  !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height && a.zIndex === b.zIndex
+
+/** Docked terminals sit below floating surfaces. A floating terminal canvas
+ * rides one layer above its own window, but below a different active window. */
+export function terminalOverlayZIndex(slot: HTMLElement): number {
+  const surface = slot.closest<HTMLElement>('[data-surface-z-index]')
+  const surfaceZIndex = Number(surface?.dataset.surfaceZIndex)
+
+  return Number.isFinite(surfaceZIndex) ? surfaceZIndex + 1 : 4
+}
 
 export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalProps) {
   const slot = useStore($slot)
@@ -90,7 +100,14 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
       // full pixel footprint, so half-pixel rects can't leak page bg through.
       const top = Math.floor(r.top)
       const left = Math.floor(r.left)
-      const next: Rect = { top, left, width: Math.ceil(r.right) - left, height: Math.ceil(r.bottom) - top }
+
+      const next: Rect = {
+        top,
+        left,
+        width: Math.ceil(r.right) - left,
+        height: Math.ceil(r.bottom) - top,
+        zIndex: terminalOverlayZIndex(slot)
+      }
 
       if (!sameRect(prev, next)) {
         prev = next
@@ -121,7 +138,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     flexDirection: 'column',
     visibility: visible ? 'visible' : 'hidden',
     pointerEvents: visible ? 'auto' : 'none',
-    zIndex: 4,
+    zIndex: rect?.zIndex ?? 4,
     // Match the live skin surface so the header strip (transparent) and body
     // read as one cohesive pane instead of revealing a near-black slab behind.
     backgroundColor: 'var(--ui-editor-surface-background)',

@@ -2529,6 +2529,73 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     return {"profiles": profile_names, "gateway_mode": mode, "gateways": gateways}
 
 
+_HOST_VNC_UNCONFIGURED = "Set desktop.host_vnc_url to the host noVNC page"
+_HOST_VNC_INVALID = "Host VNC URL is invalid"
+
+
+def _host_display_payload(config: dict) -> dict:
+    desktop = config.get("desktop")
+    raw_url = desktop.get("host_vnc_url") if isinstance(desktop, dict) else ""
+    url = str(raw_url or "").strip()
+
+    if not url:
+        return {"available": False, "reason": _HOST_VNC_UNCONFIGURED, "url": None}
+
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (
+            parsed.scheme.lower() in {"http", "https"}
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.fragment
+        )
+        secret_query_keys = {
+            "api_key",
+            "auth",
+            "credential",
+            "jwt",
+            "key",
+            "password",
+            "secret",
+            "token",
+        }
+        for key, _value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            normalized_key = key.strip().lower().replace("-", "_")
+            if normalized_key in secret_query_keys or normalized_key.endswith(
+                (
+                    "_api_key",
+                    "_credential",
+                    "_jwt",
+                    "_key",
+                    "_password",
+                    "_secret",
+                    "_token",
+                )
+            ):
+                valid = False
+                break
+    except (TypeError, ValueError):
+        valid = False
+
+    if not valid:
+        return {"available": False, "reason": _HOST_VNC_INVALID, "url": None}
+
+    return {"available": True, "reason": None, "url": url}
+
+
+@app.get("/api/host-display")
+async def get_host_display(profile: Optional[str] = None):
+    """Return an explicitly configured noVNC page for this backend's host OS.
+
+    This endpoint is intentionally absent from the public-path allowlist. Hermes
+    never guesses a host/port, starts a VNC service, or returns URLs containing
+    embedded credentials.
+    """
+    with _profile_scope(profile):
+        return _host_display_payload(load_config())
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None

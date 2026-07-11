@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { desktopFsCacheKey } from '@/lib/desktop-fs'
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
@@ -9,12 +11,15 @@ import {
   beginPreviewServerRestart,
   completePreviewServerRestart,
   getSessionPreviewRecord,
+  previewWorkspaceScopeId,
   progressPreviewServerRestart,
   requestPreviewReload,
   setPreviewTarget,
+  setPreviewWorkspaceScope,
   setSessionPreviewTarget
 } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection, $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 type EventHandler = (event: RpcEvent) => void
@@ -63,11 +68,20 @@ export function usePreviewRouting({
   selectedStoredSessionId
 }: PreviewRoutingOptions) {
   const routedPreviewToolIdsRef = useRef(new Set<string>())
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const connection = useStore($connection)
   const previewRegistry = useStore($sessionPreviewRegistry)
   const webPreviewTabs = useStore($webPreviewTabs)
   const previewSessionId = activePreviewSessionId(routedSessionId, selectedStoredSessionId)
-  const previewRouteRef = useRef({ currentView, sessionId: previewSessionId })
-  previewRouteRef.current = { currentView, sessionId: previewSessionId }
+  const previewConnectionKey = desktopFsCacheKey(connection)
+  const previewScopeId = previewWorkspaceScopeId(previewSessionId, previewConnectionKey, activeGatewayProfile)
+  const previewRouteRef = useRef({ currentView, scopeId: previewScopeId, sessionId: previewSessionId })
+  previewRouteRef.current = { currentView, scopeId: previewScopeId, sessionId: previewSessionId }
+
+  useEffect(() => {
+    setPreviewWorkspaceScope(previewSessionId, previewConnectionKey, activeGatewayProfile)
+    routedPreviewToolIdsRef.current.clear()
+  }, [activeGatewayProfile, previewConnectionKey, previewSessionId])
 
   // Restore a *user-opened* preview when its session becomes active. Tool
   // results no longer auto-register/open a preview — the inline preview card in
@@ -119,7 +133,19 @@ export function usePreviewRouting({
 
   const handleDesktopGatewayEvent = useCallback<EventHandler>(
     event => {
-      baseHandleGatewayEvent(event)
+      const payload = asRecord(event.payload)
+      const args = asRecord(payload.args)
+
+      const routingOnlyPreviewCompletion =
+        event.type === 'tool.complete' &&
+        payload.name === 'read_file' &&
+        args.preview === true &&
+        payload.preview_success === true &&
+        !Object.prototype.hasOwnProperty.call(payload, 'result')
+
+      if (!routingOnlyPreviewCompletion) {
+        baseHandleGatewayEvent(event)
+      }
 
       if (event.type === 'preview.restart.complete') {
         const { task_id, text } = asRecord(event.payload)
@@ -141,8 +167,6 @@ export function usePreviewRouting({
         return
       }
 
-      const payload = asRecord(event.payload)
-      const args = asRecord(payload.args)
       const toolId = typeof payload.tool_id === 'string' ? payload.tool_id : ''
       const path = typeof args.path === 'string' ? args.path.trim() : ''
 
@@ -153,21 +177,17 @@ export function usePreviewRouting({
         event.session_id === route.sessionId &&
         payload.name === 'read_file' &&
         args.preview === true &&
+        payload.preview_success === true &&
         path &&
         toolId &&
         !routedPreviewToolIdsRef.current.has(toolId)
       ) {
-        const normalizePreviewTarget = window.hermesDesktop?.normalizePreviewTarget
-
-        if (typeof normalizePreviewTarget !== 'function') {
-          return
-        }
-
         rememberRoutedPreviewToolId(routedPreviewToolIdsRef.current, toolId)
         const cwd = $currentCwd.get() || currentCwd || undefined
         const requestedSessionId = route.sessionId
+        const requestedScopeId = route.scopeId
 
-        void normalizePreviewTarget(path, cwd)
+        void normalizeOrLocalPreviewTarget(path, cwd)
           .then(target => {
             const currentRoute = previewRouteRef.current
 
@@ -175,7 +195,8 @@ export function usePreviewRouting({
               !target ||
               target.kind !== 'file' ||
               currentRoute.currentView !== 'chat' ||
-              currentRoute.sessionId !== requestedSessionId
+              currentRoute.sessionId !== requestedSessionId ||
+              currentRoute.scopeId !== requestedScopeId
             ) {
               return
             }

@@ -1760,6 +1760,10 @@ export interface Translations {
     panelsAria: string
     files: string
     terminal: string
+    hostVnc: string
+    hostVncShow: string
+    hostVncHide: string
+    hostVncSameOrigin: string
     noFolderSelected: string
     changeCwdTitle: string
     remotePickerTitle: string

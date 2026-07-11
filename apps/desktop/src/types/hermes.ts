@@ -804,6 +804,12 @@ export interface StatusResponse {
   version: string
 }
 
+export interface HostDisplayResponse {
+  available: boolean
+  reason: string | null
+  url: string | null
+}
+
 export interface ActionResponse {
   name: string
   ok: boolean

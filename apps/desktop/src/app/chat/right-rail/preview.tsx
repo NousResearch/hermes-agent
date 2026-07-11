@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { TerminalPaneChrome } from '@/app/right-sidebar/terminal/chrome'
 import type { SetTitlebarToolGroup } from '@/app/shell/titlebar-controls'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -27,6 +28,7 @@ import {
   $previewReloadRequest,
   $previewSurfaceLayouts,
   $previewTarget,
+  $utilityPreviewTabs,
   $webPreviewTabs,
   closeOtherRightRailTabs,
   closeRightRail,
@@ -54,6 +56,7 @@ import {
   WIN11_SNAP_LAYOUTS
 } from '@/store/preview-surface-layout'
 
+import { HostVncSurface } from './host-vnc-surface'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
@@ -72,8 +75,9 @@ interface ChatPreviewRailProps {
 
 interface RailTab {
   id: RightRailTabId
+  kind: 'host-vnc' | 'preview' | 'terminal'
   label: string
-  target: PreviewTarget
+  target?: PreviewTarget
 }
 
 function tabLabelFor(target: PreviewTarget): string {
@@ -81,6 +85,56 @@ function tabLabelFor(target: PreviewTarget): string {
   const tail = value.split(/[\\/]/).filter(Boolean).at(-1)
 
   return tail || value || translateNow('preview.tab')
+}
+
+function tabIconName(tab: RailTab): string {
+  if (tab.kind === 'terminal') {
+    return 'terminal'
+  }
+
+  if (tab.kind === 'host-vnc') {
+    return 'remote-explorer'
+  }
+
+  return tab.target?.kind === 'file' ? 'file' : 'globe'
+}
+
+function RailSurfaceBody({
+  active,
+  onRestartServer,
+  reloadRequest,
+  setTitlebarToolGroup,
+  tab
+}: {
+  active: boolean
+  onRestartServer?: (url: string, context?: string) => Promise<string>
+  reloadRequest: number
+  setTitlebarToolGroup?: SetTitlebarToolGroup
+  tab: RailTab
+}) {
+  if (tab.kind === 'terminal') {
+    return <TerminalPaneChrome />
+  }
+
+  if (tab.kind === 'host-vnc') {
+    return <HostVncSurface />
+  }
+
+  const target = tab.target
+
+  if (!target) {
+    return null
+  }
+
+  return (
+    <PreviewPane
+      embedded
+      onRestartServer={target.kind === 'url' ? onRestartServer : undefined}
+      reloadRequest={reloadRequest}
+      setTitlebarToolGroup={active ? setTitlebarToolGroup : undefined}
+      target={target}
+    />
+  )
 }
 
 function viewportMetrics(): PreviewViewport {
@@ -381,6 +435,7 @@ function FloatingPreviewSurface({
         active && 'z-[90] ring-1 ring-(--theme-primary)/50'
       )}
       data-surface-placement={layout.placement}
+      data-surface-z-index={active ? 90 : 80}
       data-testid="floating-preview-surface"
       onPointerDown={() => selectRightRailTab(tab.id)}
       style={style}
@@ -395,7 +450,7 @@ function FloatingPreviewSurface({
           onClick={() => selectRightRailTab(tab.id)}
           type="button"
         >
-          <Codicon name={tab.target.kind === 'file' ? 'file' : 'globe'} size="0.75rem" />
+          <Codicon name={tabIconName(tab)} size="0.75rem" />
           <span className="min-w-0 truncate">{tab.label}</span>
         </button>
         <SurfaceActionButton label={t.preview.surface.dock(tab.label)} onClick={() => dockRightRailTab(tab.id)}>
@@ -416,12 +471,12 @@ function FloatingPreviewSurface({
         </SurfaceActionButton>
       </header>
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={tab.target.kind === 'url' ? onRestartServer : undefined}
+        <RailSurfaceBody
+          active={active}
+          onRestartServer={onRestartServer}
           reloadRequest={reloadRequest}
-          setTitlebarToolGroup={active ? setTitlebarToolGroup : undefined}
-          target={tab.target}
+          setTitlebarToolGroup={setTitlebarToolGroup}
+          tab={tab}
         />
       </div>
       {layout.placement === 'floating' && (
@@ -475,7 +530,7 @@ function MinimizedTaskbar({ tabs }: { tabs: readonly RailTab[] }) {
           onClick={() => restoreRightRailTab(tab.id)}
           type="button"
         >
-          <Codicon name={tab.target.kind === 'file' ? 'file' : 'globe'} size="0.75rem" />
+          <Codicon name={tabIconName(tab)} size="0.75rem" />
           <span className="truncate">{tab.label}</span>
         </button>
       ))}
@@ -489,6 +544,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const activeTabId = useStore($rightRailActiveTabId)
   const panesFlipped = useStore($panesFlipped)
   const filePreviewTabs = useStore($filePreviewTabs)
+  const utilityPreviewTabs = useStore($utilityPreviewTabs)
   const webPreviewTabs = useStore($webPreviewTabs)
   const previewTarget = useStore($previewTarget)
   const surfaceLayouts = useStore($previewSurfaceLayouts)
@@ -497,12 +553,30 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const tabs = useMemo<readonly RailTab[]>(
     () => [
       ...(previewTarget
-        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab]
+        ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, kind: 'preview', label: t.preview.tab, target: previewTarget } as RailTab]
         : []),
-      ...webPreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...webPreviewTabs.map(({ id, target }) => ({ id, kind: 'preview' as const, label: tabLabelFor(target), target })),
+      ...filePreviewTabs.map(({ id, target }) => ({
+        id,
+        kind: 'preview' as const,
+        label: tabLabelFor(target),
+        target
+      })),
+      ...utilityPreviewTabs.map(({ id, kind }) => ({
+        id,
+        kind,
+        label: kind === 'terminal' ? t.rightSidebar.terminal : t.rightSidebar.hostVnc
+      }))
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab, webPreviewTabs]
+    [
+      filePreviewTabs,
+      previewTarget,
+      t.preview.tab,
+      t.rightSidebar.hostVnc,
+      t.rightSidebar.terminal,
+      utilityPreviewTabs,
+      webPreviewTabs
+    ]
   )
 
   const placementFor = useCallback(
@@ -552,7 +626,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
               const placement = placementFor(tab.id)
               const hasOthers = tabs.length > 1
               const hasTabsToRight = index < tabs.length - 1
-              const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
+              const dirty = Boolean(tab.target && dirtyPreviewUrls[tab.target.url])
 
               return (
                 <ContextMenu key={tab.id}>
@@ -579,7 +653,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                       {active && (
                         <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
                       )}
-                      <Tip label={tab.target.path || tab.target.url || tab.label}>
+                      <Tip label={tab.target?.path || tab.target?.url || tab.label}>
                         <button
                           aria-selected={active}
                           className="flex h-full min-w-0 max-w-full items-center gap-1 overflow-hidden pl-3 pr-12 text-left outline-none"
@@ -653,12 +727,12 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {activePlacement === 'docked' ? (
-            <PreviewPane
-              embedded
-              onRestartServer={activeTab.target.kind === 'url' ? onRestartServer : undefined}
+            <RailSurfaceBody
+              active
+              onRestartServer={onRestartServer}
               reloadRequest={previewReloadRequest}
               setTitlebarToolGroup={setTitlebarToolGroup}
-              target={activeTab.target}
+              tab={activeTab}
             />
           ) : activePlacement === 'minimized' ? null : (
             <DetachedPlaceholder tab={activeTab} />

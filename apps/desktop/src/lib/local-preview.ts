@@ -133,16 +133,26 @@ export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
 ): Promise<PreviewTarget | null> {
-  try {
-    const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
+  if (!isDesktopFsRemoteMode()) {
+    const normalizePreviewTarget = window.hermesDesktop?.normalizePreviewTarget
 
-    if (normalized) {
-      return enrichPreviewTarget(normalized)
+    if (typeof normalizePreviewTarget === 'function') {
+      try {
+        const normalized = await normalizePreviewTarget(rawTarget, cwd || undefined)
+
+        return normalized ? enrichPreviewTarget(normalized) : null
+      } catch {
+        // A native normalization failure can be a hardening rejection. Never
+        // downgrade it to renderer-only classification of the same local path.
+        return null
+      }
     }
-  } catch {
-    // Running Electron may still have the old HTML-only preview IPC. Fall
-    // through to renderer-side local classification so text/images still open.
   }
 
+  // Remote paths belong to the selected gateway, never the Electron host. The
+  // pure classifier applies cwd semantics without touching the local filesystem;
+  // enrichment and the editor then use the connection-aware desktop-fs facade.
+  // Renderer classification is also the compatibility fallback when no native
+  // normalizer exists at all.
   return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
 }

@@ -19,6 +19,7 @@ import type {
   EnvVarInfo,
   HermesConfig,
   HermesConfigRecord,
+  HostDisplayResponse,
   LogsResponse,
   McpCatalogResponse,
   McpServerSummary,
@@ -111,6 +112,7 @@ export type {
   GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
+  HostDisplayResponse,
   LogsResponse,
   McpCatalogEntry,
   McpCatalogResponse,
@@ -334,6 +336,13 @@ export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
     ...profileScoped(),
     path: '/api/status'
+  })
+}
+
+export function getHostDisplay(): Promise<HostDisplayResponse> {
+  return window.hermesDesktop.api<HostDisplayResponse>({
+    ...profileScoped(),
+    path: '/api/host-display'
   })
 }
 

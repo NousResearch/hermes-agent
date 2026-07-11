@@ -36,7 +36,11 @@ export const FILE_BROWSER_PANE_ID = 'file-browser'
 export const PREVIEW_PANE_ID = 'preview'
 export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
 
-export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}` | `preview:${string}`
+export type RightRailTabId =
+  | typeof RIGHT_RAIL_PREVIEW_TAB_ID
+  | `file:${string}`
+  | `preview:${string}`
+  | `utility:${'host-vnc' | 'terminal'}`
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })

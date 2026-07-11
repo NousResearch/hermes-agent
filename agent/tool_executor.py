@@ -421,8 +421,17 @@ def _warn_on_tool_submit_session_mismatch(agent) -> None:
         return
     try:
         from gateway.session_context import get_session_env
+    except ImportError:
+        return
+    try:
         bound = get_session_env("HERMES_SESSION_KEY", "")
     except Exception:
+        # The net must not break tool dispatch, but it also must not vanish
+        # silently (Greptile #281): leave a debug trace when it stops working.
+        logger.debug(
+            "_warn_on_tool_submit_session_mismatch: get_session_env raised",
+            exc_info=True,
+        )
         return
     if bound != expected:
         logger.warning(

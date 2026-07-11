@@ -470,6 +470,10 @@ export function DesktopController() {
     navigate(`${SETTINGS_ROUTE}?tab=providers`)
   }, [navigate])
 
+  const openGatewaySettings = useCallback(() => {
+    navigate(`${SETTINGS_ROUTE}?tab=gateway`)
+  }, [navigate])
+
   const modelMenuContent = useMemo(
     () =>
       gatewayState === 'open' ? (
@@ -1064,7 +1068,7 @@ export function DesktopController() {
       <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
-      <BootFailureOverlay />
+      <BootFailureOverlay onOpenGatewaySettings={openGatewaySettings} />
       <CommandPalette />
       <PetGenerateOverlay />
       <SessionSwitcher />

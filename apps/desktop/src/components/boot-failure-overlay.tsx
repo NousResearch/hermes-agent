@@ -6,7 +6,7 @@ import { ErrorIcon } from '@/components/ui/error-state'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
+import { FileText, Loader2, LogIn, RefreshCw, Settings, Wrench, X } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -27,7 +27,11 @@ type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
-export function BootFailureOverlay() {
+interface BootFailureOverlayProps {
+  onOpenGatewaySettings?: () => void
+}
+
+export function BootFailureOverlay({ onOpenGatewaySettings }: BootFailureOverlayProps) {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
   const { t } = useI18n()
@@ -35,12 +39,19 @@ export function BootFailureOverlay() {
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
+  const [dismissedError, setDismissedError] = useState<string | null>(null)
 
-  const visible = Boolean(boot.error) && !boot.running
+  const visible = Boolean(boot.error) && boot.error !== dismissedError && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
   // progress; the recovery overlay is for hard failures, which it covers via a
   // higher z-index regardless of onboarding state.
   const suppressed = onboarding.flow.status !== 'idle' && onboarding.flow.status !== 'error'
+
+  useEffect(() => {
+    if (!boot.error || boot.running) {
+      setDismissedError(null)
+    }
+  }, [boot.error, boot.running])
 
   useEffect(() => {
     if (!visible) {
@@ -164,6 +175,11 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+  const dismiss = () => setDismissedError(boot.error)
+  const openSettings = () => {
+    dismiss()
+    onOpenGatewaySettings?.()
+  }
   const copy = t.boot.failure
 
   const label = signInLabel(remoteReauth, {
@@ -174,8 +190,17 @@ export function BootFailureOverlay() {
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
-        <div className="flex items-start gap-3 px-5 py-4">
+      <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <Button
+          aria-label={t.common.close}
+          className="absolute right-3 top-3"
+          onClick={dismiss}
+          size="icon-sm"
+          variant="ghost"
+        >
+          <X />
+        </Button>
+        <div className="flex items-start gap-3 px-5 py-4 pr-14">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
@@ -215,6 +240,12 @@ export function BootFailureOverlay() {
                 {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
                 {copy.useLocalGateway}
               </Button>
+              {onOpenGatewaySettings ? (
+                <Button disabled={Boolean(busy)} onClick={openSettings} variant="secondary">
+                  <Settings />
+                  {copy.openSettings}
+                </Button>
+              ) : null}
               <Button onClick={openLogs} variant="ghost">
                 <FileText />
                 {copy.openLogs}

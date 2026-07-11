@@ -88,6 +88,7 @@ export const zh: Translations = {
       retry: '重试',
       repairInstall: '修复安装',
       useLocalGateway: '使用本地网关',
+      openSettings: '打开设置',
       openLogs: '打开日志',
       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
       remoteSignInHint: '打开网关登录窗口。也可以使用本地网关切换到随应用提供的后端。',

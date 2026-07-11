@@ -5354,6 +5354,56 @@ def test_file_attach_chunk_rejects_when_disk_fills_after_begin(monkeypatch, tmp_
         server._sessions.pop("sid", None)
 
 
+def test_file_attach_chunk_rejects_temp_hardlink_identity_swap_before_write(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    victim = tmp_path / "outside-workspace-victim.bin"
+    victim.write_bytes(b"")
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    upload = None
+
+    try:
+        begin = server.handle_request(
+            {
+                "id": "begin",
+                "method": "file.attach.begin",
+                "params": {
+                    "request_id": str(uuid.uuid4()),
+                    "session_id": "sid",
+                    "name": "identity-swap.bin",
+                    "size": 4,
+                },
+            }
+        )
+        upload_id = begin["result"]["upload_id"]
+        upload = server._sessions["sid"]["_desktop_file_uploads"][upload_id]
+        temp_path = Path(upload["path"])
+        temp_path.unlink()
+        os.link(victim, temp_path)
+
+        chunk = server.handle_request(
+            {
+                "id": "chunk",
+                "method": "file.attach.chunk",
+                "params": {
+                    "session_id": "sid",
+                    "upload_id": upload_id,
+                    "offset": 0,
+                    "content_base64": base64.b64encode(b"evil").decode("ascii"),
+                },
+            }
+        )
+
+        assert chunk["error"]["code"] == 5028
+        assert "identity" in chunk["error"]["message"].lower()
+        assert victim.read_bytes() == b""
+    finally:
+        if isinstance(upload, dict):
+            server._release_upload_disk_reservation(upload)
+            Path(str(upload.get("path") or "")).unlink(missing_ok=True)
+        server._sessions.pop("sid", None)
+
+
 def test_file_attach_chunk_retry_is_idempotent_but_rejects_changed_bytes(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -5406,7 +5456,7 @@ def test_file_attach_chunk_partial_write_truncate_failure_retains_ownership(monk
     server._sessions["sid"] = _session(cwd=str(workspace))
     original_open = Path.open
 
-    class _AppendShortHandle:
+    class _ShortWriteFailTruncateHandle:
         def __init__(self, handle):
             self._handle = handle
 
@@ -5420,20 +5470,6 @@ def test_file_attach_chunk_partial_write_truncate_failure_retains_ownership(monk
         def write(self, payload):
             return self._handle.write(payload[:1])
 
-        def __getattr__(self, name):
-            return getattr(self._handle, name)
-
-    class _FailTruncateHandle:
-        def __init__(self, handle):
-            self._handle = handle
-
-        def __enter__(self):
-            self._handle.__enter__()
-            return self
-
-        def __exit__(self, *args):
-            return self._handle.__exit__(*args)
-
         def truncate(self, _size):
             raise PermissionError("locked chunk rollback")
 
@@ -5442,10 +5478,8 @@ def test_file_attach_chunk_partial_write_truncate_failure_retains_ownership(monk
 
     def fail_chunk_rollback_open(path, mode="r", *args, **kwargs):
         handle = original_open(path, mode, *args, **kwargs)
-        if path.suffix == ".part" and mode == "ab":
-            return _AppendShortHandle(handle)
         if path.suffix == ".part" and mode == "r+b":
-            return _FailTruncateHandle(handle)
+            return _ShortWriteFailTruncateHandle(handle)
         return handle
 
     try:

@@ -10102,29 +10102,36 @@ def _run_file_attach_reserved_write(token: str, path: Path, amount: int, writer)
         return result
 
 
-def _append_file_attach_reserved_chunk(token: str, path: Path, payload: bytes) -> None:
-    path_identity = _file_attach_object_identity(os.lstat(path))
-    initial_size = path.stat().st_size
-
+def _append_file_attach_reserved_chunk(
+    token: str,
+    path: Path,
+    expected_identity: tuple[int, int],
+    payload: bytes,
+) -> None:
     def _append() -> None:
-        try:
-            with path.open("ab") as handle:
-                written = handle.write(payload)
-            if written != len(payload):
-                raise OSError("attachment chunk write was incomplete")
-            _assert_safe_attachment_file(path)
-        except BaseException as write_error:
+        with path.open("r+b", buffering=0) as handle:
+            opened_stat = os.fstat(handle.fileno())
+            if _file_attach_object_identity(opened_stat) != expected_identity:
+                raise OSError("attachment destination identity changed after begin")
+            initial_size = int(opened_stat.st_size)
+            handle.seek(0, os.SEEK_END)
             try:
-                _assert_safe_attachment_file(path)
-                with path.open("r+b") as handle:
+                written = handle.write(payload)
+                if written != len(payload):
+                    raise OSError("attachment chunk write was incomplete")
+                if os.fstat(handle.fileno()).st_size != initial_size + len(payload):
+                    raise OSError("attachment chunk write size mismatch")
+                _assert_attachment_path_identity(path, expected_identity)
+            except BaseException as write_error:
+                try:
                     handle.truncate(initial_size)
-                if path.stat().st_size != initial_size:
-                    raise OSError("attachment rollback did not restore the original size")
-            except (OSError, ValueError) as cleanup_error:
-                raise _FileAttachCleanupError(
-                    path, path_identity, write_error, cleanup_error
-                ) from write_error
-            raise
+                    if os.fstat(handle.fileno()).st_size != initial_size:
+                        raise OSError("attachment rollback did not restore the original size")
+                except (OSError, ValueError) as cleanup_error:
+                    raise _FileAttachCleanupError(
+                        path, expected_identity, write_error, cleanup_error
+                    ) from write_error
+                raise
 
     _run_file_attach_reserved_write(token, path.parent, len(payload), _append)
 
@@ -10846,7 +10853,10 @@ def _(rid, params: dict) -> dict:
             raise ValueError("offset required")
         expected = int(upload.get("received") or 0)
         temp_path = Path(str(upload.get("path") or ""))
-        _assert_safe_attachment_file(temp_path)
+        temp_identity = _file_attach_expected_identity(
+            upload.get("path_identity"), label=str(temp_path)
+        )
+        _assert_attachment_path_identity(temp_path, temp_identity)
         try:
             actual_size = temp_path.stat().st_size
         except FileNotFoundError as exc:
@@ -10894,7 +10904,10 @@ def _(rid, params: dict) -> dict:
                 f"file exceeds maximum file size ({max_total_bytes} bytes)"
             )
         _append_file_attach_reserved_chunk(
-            str(upload.get("disk_reservation_token") or ""), temp_path, payload
+            str(upload.get("disk_reservation_token") or ""),
+            temp_path,
+            temp_identity,
+            payload,
         )
         received = expected + len(payload)
         upload["received"] = received

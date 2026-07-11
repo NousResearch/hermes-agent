@@ -718,12 +718,22 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     "coerce_tool_args: wrapped bare string in list for %s.%s",
                     tool_name, key,
                 )
+                try:
+                    from agent.tool_repair_stats import record_repair, RepairPattern, get_current_model
+                    record_repair(RepairPattern.BARE_STRING_WRAP, tool_name, get_current_model())
+                except ImportError:
+                    pass
                 continue
             args[key] = [value]
             logger.info(
                 "coerce_tool_args: wrapped bare %s in list for %s.%s",
                 type(value).__name__, tool_name, key,
             )
+            try:
+                from agent.tool_repair_stats import record_repair, RepairPattern, get_current_model
+                record_repair(RepairPattern.BARE_OBJECT_WRAP, tool_name, get_current_model())
+            except ImportError:
+                pass
             continue
 
         if not isinstance(value, str):

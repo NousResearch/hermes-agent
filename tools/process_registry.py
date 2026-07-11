@@ -93,6 +93,7 @@ class ProcessSession:
     id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
     command: str                                 # Original command string
     task_id: str = ""                           # Task/sandbox isolation key
+    owner_task_id: str = ""                     # Raw task identity authorized to control it
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -687,6 +688,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -702,6 +704,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
@@ -837,6 +840,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -853,6 +857,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
@@ -1590,7 +1595,12 @@ class ProcessRegistry:
         except Exception:
             return 0
 
-    def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
+    def list_sessions(
+        self,
+        task_id: str = None,
+        session_key: str = None,
+        owner_task_id: str = None,
+    ) -> list:
         """List all running and recently-finished processes.
 
         When ``task_id`` is given, processes for that task are included. When
@@ -1606,7 +1616,9 @@ class ProcessRegistry:
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
 
-        if task_id or session_key:
+        if owner_task_id:
+            all_sessions = [s for s in all_sessions if s.owner_task_id == owner_task_id]
+        elif task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
                 if (task_id and s.task_id == task_id)
@@ -1783,6 +1795,7 @@ class ProcessRegistry:
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
+                            "owner_task_id": s.owner_task_id,
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
@@ -1855,6 +1868,7 @@ class ProcessRegistry:
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
+                owner_task_id=entry.get("owner_task_id", entry.get("task_id", "")),
                 session_key=entry.get("session_key", ""),
                 pid=pid,
                 host_start_time=recorded_start,

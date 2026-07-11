@@ -75,6 +75,32 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _external_tool_effect_state(
+    projected_messages: List[Dict[str, Any]],
+) -> tuple[bool, bool]:
+    """Return ``(has_completed_effect, has_unresolved_call)`` for a projection."""
+
+    call_ids: set[str] = set()
+    missing_id_call = False
+    result_ids: set[str] = set()
+    for message in projected_messages:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = str(call.get("id") or "") if isinstance(call, dict) else ""
+            if call_id:
+                call_ids.add(call_id)
+            else:
+                missing_id_call = True
+        if message.get("role") == "tool":
+            result_id = str(message.get("tool_call_id") or "")
+            if result_id:
+                result_ids.add(result_id)
+    unresolved = missing_id_call or bool(call_ids - result_ids)
+    completed = bool(call_ids & result_ids)
+    return completed, unresolved
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -526,6 +552,7 @@ def run_conversation(
     persist_user_message: Optional[str] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    _prepared_context: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -569,37 +596,50 @@ def run_conversation(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
-    _ctx = build_turn_context(
-        agent,
-        user_message,
-        system_message,
-        conversation_history,
-        task_id,
-        stream_callback,
-        persist_user_message,
-        persist_user_timestamp,
-        restore_or_build_system_prompt=_restore_or_build_system_prompt,
-        install_safe_stdio=_install_safe_stdio,
-        sanitize_surrogates=_sanitize_surrogates,
-        summarize_user_message_for_log=_summarize_user_message_for_log,
-        set_session_context=set_session_context,
-        set_current_write_origin=set_current_write_origin,
-        ra=_ra,
-    )
-    user_message = _ctx.user_message
-    original_user_message = _ctx.original_user_message
-    messages = _ctx.messages
-    conversation_history = _ctx.conversation_history
-    active_system_prompt = _ctx.active_system_prompt
-    effective_task_id = _ctx.effective_task_id
-    turn_id = _ctx.turn_id
-    current_turn_user_idx = _ctx.current_turn_user_idx
-    _should_review_memory = _ctx.should_review_memory
-    _plugin_user_context = _ctx.plugin_user_context
-    _ext_prefetch_cache = _ctx.ext_prefetch_cache
+    if _prepared_context is None:
+        _ctx = build_turn_context(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+            restore_or_build_system_prompt=_restore_or_build_system_prompt,
+            install_safe_stdio=_install_safe_stdio,
+            sanitize_surrogates=_sanitize_surrogates,
+            summarize_user_message_for_log=_summarize_user_message_for_log,
+            set_session_context=set_session_context,
+            set_current_write_origin=set_current_write_origin,
+            ra=_ra,
+        )
+        user_message = _ctx.user_message
+        original_user_message = _ctx.original_user_message
+        messages = _ctx.messages
+        conversation_history = _ctx.conversation_history
+        active_system_prompt = _ctx.active_system_prompt
+        effective_task_id = _ctx.effective_task_id
+        turn_id = _ctx.turn_id
+        current_turn_user_idx = _ctx.current_turn_user_idx
+        _should_review_memory = _ctx.should_review_memory
+        _plugin_user_context = _ctx.plugin_user_context
+        _ext_prefetch_cache = _ctx.ext_prefetch_cache
+    else:
+        user_message = _prepared_context["user_message"]
+        original_user_message = _prepared_context["original_user_message"]
+        messages = _prepared_context["messages"]
+        conversation_history = _prepared_context["conversation_history"]
+        active_system_prompt = _prepared_context["active_system_prompt"]
+        effective_task_id = _prepared_context["effective_task_id"]
+        turn_id = _prepared_context["turn_id"]
+        current_turn_user_idx = _prepared_context["current_turn_user_idx"]
+        _should_review_memory = _prepared_context["should_review_memory"]
+        _plugin_user_context = _prepared_context["plugin_user_context"]
+        _ext_prefetch_cache = _prepared_context["ext_prefetch_cache"]
 
     # Main conversation loop counters (pure locals consumed by the loop below).
-    api_call_count = 0
+    api_call_count = int((_prepared_context or {}).get("api_call_count") or 0)
     final_response = None
     interrupted = False
     failed = False
@@ -617,21 +657,367 @@ def run_conversation(
     # over instead of spinning. Reset here so each turn starts fresh. See #26080.
     agent._auth_pool_refresh_counts = {}
 
-    # Optional opt-in runtime: if api_mode == codex_app_server, hand the
-    # turn to the codex app-server subprocess (terminal/file ops/patching
-    # all run inside Codex). Default Hermes path is bypassed entirely.
-    # See agent/transports/codex_app_server_session.py for the adapter
-    # and references/codex-app-server-runtime.md for the rationale.
-    if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+    # Whole-agent runtimes own one attempt, then rejoin this same worker's
+    # fallback state machine. The user turn was already appended/persisted by
+    # build_turn_context; no external adapter may append it again.
+    from agent.runtime_target import (
+        CLAUDE_AGENT_SDK_RUNTIME,
+        CODEX_APP_SERVER_RUNTIME,
+        HERMES_RUNTIME,
+    )
+
+    # MoA output may cross one runtime-fallback boundary, but it is not a
+    # turn-wide cache. Native tool iterations must reassess the updated
+    # conversation after each tool result.
+    fallback_moa_guidance = (_prepared_context or {}).get("moa_guidance")
+    current_moa_guidance = None
+    external_user_message = user_message
+
+    def finalize_external_turn(final_response, *, failed, exit_reason, **extras):
+        from agent.turn_finalizer import finalize_turn
+
+        result = finalize_turn(
+            agent,
+            final_response=final_response,
+            api_call_count=api_call_count,
+            interrupted=False,
+            failed=failed,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
             user_message=user_message,
             original_user_message=original_user_message,
-            messages=messages,
-            effective_task_id=effective_task_id,
-            should_review_memory=_should_review_memory,
+            _should_review_memory=_should_review_memory,
+            _turn_exit_reason=exit_reason,
+        )
+        result.update(extras)
+        return result
+
+    if (
+        moa_config
+        and getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME
+    ):
+        try:
+            from agent.moa_loop import aggregate_moa_context
+
+            moa_messages = list(messages)
+            if active_system_prompt:
+                moa_messages.insert(
+                    0, {"role": "system", "content": active_system_prompt}
+                )
+            if fallback_moa_guidance is None:
+                fallback_moa_guidance = aggregate_moa_context(
+                    user_prompt=(
+                        original_user_message
+                        if isinstance(original_user_message, str)
+                        else str(original_user_message)
+                    ),
+                    api_messages=moa_messages,
+                    reference_models=moa_config.get("reference_models") or [],
+                    aggregator=moa_config.get("aggregator") or {},
+                    temperature=float(
+                        moa_config.get("reference_temperature", 0.6) or 0.6
+                    ),
+                    aggregator_temperature=float(
+                        moa_config.get("aggregator_temperature", 0.4) or 0.4
+                    ),
+                )
+            if fallback_moa_guidance:
+                external_user_message = f"{user_message}\n\n{fallback_moa_guidance}"
+        except Exception as moa_exc:
+            logger.warning("MoA context aggregation failed: %s", moa_exc)
+
+    while getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
+        active_runtime = getattr(agent, "runtime", HERMES_RUNTIME)
+        from agent.external_runtime import _emit_runtime_event
+
+        if active_runtime == CODEX_APP_SERVER_RUNTIME:
+            message_count_before = len(messages)
+            result = agent._run_codex_app_server_turn(
+                user_message=external_user_message,
+                original_user_message=original_user_message,
+                messages=messages,
+                effective_task_id=effective_task_id,
+                should_review_memory=_should_review_memory,
+            )
+            attempt_calls = max(int(result.get("api_calls") or 0), 1)
+            if result.get("completed"):
+                result["api_calls"] = attempt_calls + api_call_count
+                return result
+            api_call_count += attempt_calls
+            new_messages = messages[message_count_before:]
+            completed_effect, unresolved_call = _external_tool_effect_state(new_messages)
+            if unresolved_call:
+                result["api_calls"] = api_call_count
+                result["failed"] = True
+                result["error"] = (
+                    "Codex failed with an unresolved tool call; automatic fallback "
+                    "was blocked to avoid replaying an uncertain action. "
+                    + str(result.get("error") or "")
+                )
+                return result
+            classified = classify_api_error(
+                RuntimeError(str(result.get("error") or "Codex runtime failed")),
+                provider=str(getattr(agent, "provider", "") or ""),
+                model=str(getattr(agent, "model", "") or ""),
+            )
+            from_provider, from_model, from_runtime = (
+                agent.provider,
+                agent.model,
+                active_runtime,
+            )
+            if agent._try_activate_fallback(reason=classified.reason):
+                _emit_runtime_event(
+                    agent,
+                    "runtime_fallback_activated",
+                    reason=classified.reason.value,
+                    from_provider=from_provider,
+                    from_model=from_model,
+                    from_runtime=from_runtime,
+                    to_provider=agent.provider,
+                    to_model=agent.model,
+                    to_runtime=getattr(agent, "runtime", HERMES_RUNTIME),
+                )
+                if completed_effect and getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
+                    external_user_message = (
+                        "Continue the existing task from its current durable state. "
+                        "Do not repeat any completed tool action from the prior runtime. "
+                        "Inspect the workspace, Kanban card, and owned processes before "
+                        "deciding the next action. The prior runtime failed after its "
+                        "completed actions were recorded.\n\nOriginal objective:\n"
+                        + str(original_user_message)
+                    )
+                continue
+            result["api_calls"] = api_call_count
+            result["failed"] = True
+            return result
+
+        if active_runtime != CLAUDE_AGENT_SDK_RUNTIME:
+            error = f"Unsupported agent runtime: {active_runtime}"
+            messages.append({"role": "assistant", "content": error})
+            return finalize_external_turn(
+                error,
+                failed=True,
+                exit_reason="unsupported_runtime",
+                error=error,
+                agent_persisted=True,
+            )
+
+        from agent.claude_agent_runtime import ClaudeProjection, RuntimeFailure
+        from agent.external_runtime import (
+            prepare_claude_agent_sdk_runtime,
+            record_claude_subscription_usage,
+            run_claude_agent_sdk_attempt,
+        )
+        from agent.runtime_circuit import (
+            open_runtime_circuit,
+            runtime_circuit_open_until,
+        )
+
+        _emit_runtime_event(agent, "runtime_attempt_start")
+        preflight_failure = prepare_claude_agent_sdk_runtime(agent)
+        circuit_until = (
+            None if preflight_failure is not None else runtime_circuit_open_until(agent)
+        )
+        if preflight_failure is not None:
+            projection = ClaudeProjection(failure=preflight_failure)
+        elif circuit_until is not None:
+            projection = ClaudeProjection(
+                failure=RuntimeFailure(
+                    FailoverReason.rate_limit,
+                    f"Claude subscription circuit open until {int(circuit_until)}",
+                    reset_at=int(circuit_until),
+                )
+            )
+        else:
+            projection = run_claude_agent_sdk_attempt(
+                agent,
+                user_message=external_user_message,
+                effective_task_id=effective_task_id,
+            )
+            api_call_count += 1
+
+        failure = projection.failure
+        for warning in projection.warnings:
+            try:
+                agent._emit_warning(warning)
+            except Exception:
+                logger.warning("%s", warning)
+        usage_result = (
+            record_claude_subscription_usage(agent, projection.usage)
+            if failure is None or projection.usage is not None
+            else {}
+        )
+        if failure is not None:
+            _emit_runtime_event(
+                agent,
+                "runtime_attempt_failure",
+                reason=failure.reason.value,
+                replay_safe=failure.replay_safe,
+            )
+        if failure is None:
+            if projection.messages:
+                messages.extend(projection.messages)
+            if (
+                agent._skill_nudge_interval > 0
+                and "skill_manage" in agent.valid_tool_names
+            ):
+                agent._iters_since_skill += 1
+            return finalize_external_turn(
+                projection.final_text,
+                failed=False,
+                exit_reason="claude_success",
+                claude_session_id=projection.session_id,
+                error=None,
+                agent_persisted=True,
+                **usage_result,
+            )
+
+        if not failure.replay_safe:
+            error = (
+                "Claude runtime stopped after an unresolved tool side effect; "
+                "automatic fallback was blocked to avoid replaying it. "
+                f"{failure.message}"
+            )
+            if projection.messages:
+                messages.extend(projection.messages)
+                # Close any dangling tool_calls with synthetic results so the
+                # persisted transcript stays provider-valid for the next turn
+                # (assistant(tool_calls) must be followed by its tool rows).
+                _completed, _unresolved = _external_tool_effect_state(
+                    projection.messages
+                )
+                if _unresolved:
+                    answered = {
+                        str(m.get("tool_call_id") or "")
+                        for m in projection.messages
+                        if isinstance(m, dict) and m.get("role") == "tool"
+                    }
+                    for _msg in projection.messages:
+                        if not isinstance(_msg, dict):
+                            continue
+                        for _call in _msg.get("tool_calls") or []:
+                            _call_id = (
+                                str(_call.get("id") or "")
+                                if isinstance(_call, dict)
+                                else ""
+                            )
+                            if _call_id and _call_id not in answered:
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": _call_id,
+                                        "content": json.dumps(
+                                            {
+                                                "error": "Tool outcome unknown: the external runtime stopped before this call resolved. Inspect durable state before retrying.",
+                                                "status": "unresolved",
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    }
+                                )
+            messages.append({"role": "assistant", "content": error})
+            return finalize_external_turn(
+                error,
+                failed=True,
+                exit_reason="claude_replay_unsafe",
+                error=failure.message,
+                failure_reason=failure.reason.value,
+                agent_persisted=True,
+            )
+
+        # Completed assistant/tool pairs are safe to continue through Hermes'
+        # native loop. They are not safe to replay into a fresh external
+        # session, so that case is checked after selecting the next target.
+        if projection.messages:
+            messages.extend(projection.messages)
+        if failure.reason in {
+            FailoverReason.rate_limit,
+            FailoverReason.billing,
+            FailoverReason.auth,
+            FailoverReason.auth_permanent,
+            FailoverReason.overloaded,
+            FailoverReason.server_error,
+        }:
+            reset_at = open_runtime_circuit(agent, reset_at=failure.reset_at)
+            _emit_runtime_event(agent, "runtime_circuit_open", reset_at=reset_at)
+
+        from_provider, from_model, from_runtime = (
+            agent.provider,
+            agent.model,
+            active_runtime,
+        )
+        if agent._try_activate_fallback(reason=failure.reason):
+            _emit_runtime_event(
+                agent,
+                "runtime_fallback_activated",
+                reason=failure.reason.value,
+                from_provider=from_provider,
+                from_model=from_model,
+                from_runtime=from_runtime,
+                to_provider=agent.provider,
+                to_model=agent.model,
+                to_runtime=getattr(agent, "runtime", HERMES_RUNTIME),
+            )
+            has_tool_side_effect = any(
+                isinstance(message, dict) and message.get("tool_calls")
+                for message in projection.messages
+            )
+            if has_tool_side_effect and getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
+                external_user_message = (
+                    "Continue the existing task from its current durable state. "
+                    "Do not repeat any completed tool action from the prior runtime. "
+                    "Inspect the workspace, Kanban card, and owned processes before "
+                    "deciding the next action. The prior runtime failed after its "
+                    "completed actions were recorded.\n\nOriginal objective:\n"
+                    + str(original_user_message)
+                )
+            if getattr(agent, "runtime", HERMES_RUNTIME) == HERMES_RUNTIME:
+                # Fallback activation rewrites the cached Model/Provider lines.
+                # The native loop has not built api_messages yet, so advance
+                # its local prompt pointer before the first fallback request.
+                active_system_prompt = getattr(
+                    agent, "_cached_system_prompt", active_system_prompt
+                )
+            continue
+
+        error = f"Claude runtime failed and no fallback was available: {failure.message}"
+        messages.append({"role": "assistant", "content": error})
+        return finalize_external_turn(
+            error,
+            failed=True,
+            exit_reason="claude_fallback_exhausted",
+            error=failure.message,
+            failure_reason=failure.reason.value,
+            agent_persisted=True,
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        if getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
+            # A native-loop failure activated a whole-agent fallback. Re-enter
+            # the runtime dispatcher with the already-built/persisted turn so
+            # the user message is neither appended nor written a second time.
+            return run_conversation(
+                agent,
+                user_message,
+                moa_config=moa_config,
+                _prepared_context={
+                    "user_message": user_message,
+                    "original_user_message": original_user_message,
+                    "messages": messages,
+                    "conversation_history": conversation_history,
+                    "active_system_prompt": active_system_prompt,
+                    "effective_task_id": effective_task_id,
+                    "turn_id": turn_id,
+                    "current_turn_user_idx": current_turn_user_idx,
+                    "should_review_memory": _should_review_memory,
+                    "plugin_user_context": _plugin_user_context,
+                    "ext_prefetch_cache": _ext_prefetch_cache,
+                    "api_call_count": api_call_count,
+                    "moa_guidance": current_moa_guidance,
+                },
+            )
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -850,14 +1236,18 @@ def run_conversation(
             try:
                 from agent.moa_loop import aggregate_moa_context
 
-                _moa_context = aggregate_moa_context(
-                    user_prompt=original_user_message if isinstance(original_user_message, str) else str(original_user_message),
-                    api_messages=api_messages,
-                    reference_models=moa_config.get("reference_models") or [],
-                    aggregator=moa_config.get("aggregator") or {},
-                    temperature=float(moa_config.get("reference_temperature", 0.6) or 0.6),
-                    aggregator_temperature=float(moa_config.get("aggregator_temperature", 0.4) or 0.4),
-                )
+                _moa_context = fallback_moa_guidance
+                fallback_moa_guidance = None
+                if _moa_context is None:
+                    _moa_context = aggregate_moa_context(
+                        user_prompt=original_user_message if isinstance(original_user_message, str) else str(original_user_message),
+                        api_messages=api_messages,
+                        reference_models=moa_config.get("reference_models") or [],
+                        aggregator=moa_config.get("aggregator") or {},
+                        temperature=float(moa_config.get("reference_temperature", 0.6) or 0.6),
+                        aggregator_temperature=float(moa_config.get("aggregator_temperature", 0.4) or 0.4),
+                    )
+                current_moa_guidance = _moa_context
                 if _moa_context:
                     for _msg in reversed(api_messages):
                         if _msg.get("role") == "user":
@@ -1009,8 +1399,12 @@ def run_conversation(
         api_kwargs = None  # Guard against UnboundLocalError in except handler
         api_request_id = f"{turn_id}:api:{api_call_count}"
         agent._current_api_request_id = api_request_id
+        _external_runtime_switch = False
 
         while retry_count < max_retries:
+            if getattr(agent, "runtime", HERMES_RUNTIME) != HERMES_RUNTIME:
+                _external_runtime_switch = True
+                break
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -3089,6 +3483,7 @@ def run_conversation(
                             provider=agent.provider,
                             api_mode=agent.api_mode,
                         )
+                        compressor.runtime = agent.runtime
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
                         if hasattr(compressor, "_context_probed"):
@@ -3540,6 +3935,7 @@ def run_conversation(
                             provider=agent.provider,
                             api_mode=agent.api_mode,
                         )
+                        compressor.runtime = agent.runtime
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).  This
                         # value came from the provider, so it is safe to cache.
@@ -4128,6 +4524,9 @@ def run_conversation(
                             f"{int(sleep_end - time.time())}s remaining"
                         )
         
+        if _external_runtime_switch:
+            continue
+
         # If the API call was interrupted, skip response processing
         if interrupted:
             _turn_exit_reason = "interrupted_during_api_call"

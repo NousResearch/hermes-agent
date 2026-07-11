@@ -40,6 +40,14 @@ model:
   #
   # Can also be overridden for a single invocation with the --provider flag.
   provider: "auto"
+
+  # Whole-agent runtime selection (optional). `claude_agent_sdk` uses the
+  # official Claude Agent SDK with a first-party Claude Max login. The current
+  # implementation is limited to macOS Kanban workers and fails closed on
+  # direct chat/orchestrator use. Before enabling it, disable Anthropic Usage
+  # Credits / extra usage at the account level; `claude auth status` cannot
+  # attest that setting. Do not configure an Anthropic API key for this route.
+  # runtime: "claude_agent_sdk"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
@@ -118,6 +126,17 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+
+# Subscription-only Claude Max Kanban worker example:
+#
+# model:
+#   default: "claude-opus-4-6"
+#   provider: "anthropic"
+#   runtime: "claude_agent_sdk"
+# fallback_providers:
+#   - provider: "openai-codex"
+#     model: "gpt-5.4"
+#     runtime: "codex_app_server"
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

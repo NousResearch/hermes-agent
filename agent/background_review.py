@@ -57,6 +57,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
     if parent_api_mode == "codex_app_server":
         parent_api_mode = "codex_responses"
     parent = {
+        "runtime": parent_runtime.get("runtime") or None,
         "provider": agent.provider,
         "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None,
@@ -86,8 +87,10 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             target_model=task_model,
             explicit_api_key=task_api_key,
             explicit_base_url=task_base_url,
+            route_config=task,
         )
         return {
+            "runtime": rp.get("runtime"),
             "provider": rp.get("provider") or task_provider,
             "model": task_model,
             "api_key": rp.get("api_key"),
@@ -573,6 +576,8 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    review_memory: bool,
+    review_skills: bool,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -646,6 +651,7 @@ def _run_review_in_thread(
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
+                runtime=_rt.get("runtime"),
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,
                 quiet_mode=True,
@@ -662,6 +668,17 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            if _rt.get("runtime") == "claude_agent_sdk":
+                auxiliary_tools = set()
+                if review_memory:
+                    auxiliary_tools.add("memory")
+                if review_skills:
+                    auxiliary_tools.add("skill_manage")
+                review_agent._claude_capability_mode = "auxiliary"
+                review_agent._claude_auxiliary_tool_names = tuple(
+                    sorted(auxiliary_tools)
+                )
+                review_agent._fallback_chain = []
             # The review fork pins the parent's cached system prompt and keeps
             # ``tools[]`` byte-identical to the parent so its outbound request
             # hits the same provider cache prefix (see the toolset-parity note
@@ -892,7 +909,13 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(
+            agent,
+            messages_snapshot,
+            prompt,
+            review_memory,
+            review_skills,
+        )
 
     return _target, prompt
 

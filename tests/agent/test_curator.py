@@ -1273,3 +1273,56 @@ def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatc
         "'background_review' — the skill_manage background-review write "
         "guard would not fire (GH-47688 regression)"
     )
+
+
+def test_claude_curator_sets_skill_only_capability_before_run(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+
+    importlib.reload(curator)
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            self._memory_nudge_interval = 10
+            self._skill_nudge_interval = 10
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            captured["mode"] = self._claude_capability_mode
+            captured["tools"] = self._claude_auxiliary_tool_names
+            captured["fallback_chain"] = self._fallback_chain
+            return {"final_response": "no change"}
+
+        def close(self):
+            pass
+
+    cfg = {
+        "model": {
+            "provider": "anthropic",
+            "default": "claude-sonnet-4-6",
+            "runtime": "claude_agent_sdk",
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "runtime": "claude_agent_sdk",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "api_mode": "anthropic_messages",
+            "api_key": "",
+            "base_url": "",
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured == {
+        "mode": "auxiliary",
+        "tools": ("skill_manage",),
+        "fallback_chain": [],
+    }

@@ -413,6 +413,11 @@ class AIAgent:
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
 
+    # Class-level default so agents constructed outside initialize_agent
+    # (tests, __new__-based fakes, legacy host code) always carry a runtime
+    # identity. initialize_agent overrides it via resolve_runtime_identity.
+    runtime = "hermes"
+
     @property
     def base_url(self) -> str:
         return self._base_url
@@ -429,6 +434,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        runtime: str = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
         command: str = None,
@@ -504,6 +510,7 @@ class AIAgent:
             api_key=api_key,
             provider=provider,
             api_mode=api_mode,
+            runtime=runtime,
             acp_command=acp_command,
             acp_args=acp_args,
             command=command,
@@ -792,6 +799,7 @@ class AIAgent:
                         provider=self.provider,
                         api_mode=self.api_mode,
                     )
+                    cc.runtime = self.runtime
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
@@ -1134,6 +1142,7 @@ class AIAgent:
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
+            "runtime": getattr(self, "runtime", "") or "",
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
@@ -3473,6 +3482,14 @@ class AIAgent:
                     child.close()
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+        # Close Claude SDK sessions and their workspace capability brokers.
+        try:
+            for claude_session in getattr(self, "_claude_sdk_sessions", {}).values():
+                claude_session.close()
+            self._claude_sdk_sessions = {}
         except Exception:
             pass
 

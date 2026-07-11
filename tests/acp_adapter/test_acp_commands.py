@@ -91,6 +91,16 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
+        "hermes_cli.auth",
+        mod("hermes_cli.auth", AuthError=type("AuthError", (Exception,), {})),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.fallback_config",
+        mod("hermes_cli.fallback_config", get_fallback_chain=lambda config: []),
+    )
+    monkeypatch.setitem(
+        sys.modules,
         "hermes_cli.runtime_provider",
         mod(
             "hermes_cli.runtime_provider",

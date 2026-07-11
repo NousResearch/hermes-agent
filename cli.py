@@ -12403,6 +12403,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             "base_url": self.base_url,
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
+                            "runtime": getattr(self.agent, "runtime", "") if self.agent else "",
                         },
                     )
                 except Exception:

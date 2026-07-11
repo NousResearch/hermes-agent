@@ -162,6 +162,7 @@ def test_feasibility_check_passes_live_main_runtime():
     mock_get_client.assert_called_once_with(
         "compression",
         main_runtime={
+            "runtime": "hermes",
             "model": "gpt-5.4",
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",

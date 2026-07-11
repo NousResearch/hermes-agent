@@ -468,6 +468,8 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path:
             parent,
             [{"role": "user", "content": "hi"}],
             "review this conversation",
+            True,
+            False,
         )
 
     assert captured, (

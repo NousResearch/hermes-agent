@@ -233,7 +233,8 @@ class TestResolveAutoMainFirst:
         assert client is main_fallback_client
         assert model == "inclusionai/ring-2.6-1t:free"
         mock_main_chain.assert_called_once_with(
-            "title_generation", "nvidia", reason="main provider unavailable")
+            "title_generation", "nvidia", reason="main provider unavailable",
+            main_runtime=None)
         mock_openrouter.assert_not_called()
 
     def test_no_main_config_uses_chain_directly(self):

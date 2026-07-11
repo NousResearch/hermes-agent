@@ -630,6 +630,10 @@ class ContextCompressor(ContextEngine):
       5. On subsequent compactions, iteratively update the previous summary
     """
 
+    # Class-level default so compressors constructed outside __init__
+    # (tests, __new__-based construction) always carry a runtime identity.
+    runtime = "hermes"
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -797,6 +801,7 @@ class ContextCompressor(ContextEngine):
         api_key: Any = "",
         provider: str = "",
         api_mode: str = "",
+        runtime: str | None = None,
         max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
@@ -805,6 +810,8 @@ class ContextCompressor(ContextEngine):
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        if runtime is not None:
+            self.runtime = runtime
         self.context_length = context_length
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
@@ -924,6 +931,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        runtime: str = "hermes",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
     ):
@@ -932,6 +940,7 @@ class ContextCompressor(ContextEngine):
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.runtime = runtime
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -1801,6 +1810,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "base_url": self.base_url,
                     "api_key": self.api_key,
                     "api_mode": self.api_mode,
+                    "runtime": self.runtime,
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),

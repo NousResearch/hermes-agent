@@ -169,6 +169,7 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
+    runtime: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
     command: str = None,
@@ -358,6 +359,14 @@ def init_agent(
         agent.api_mode = "bedrock_converse"
     else:
         agent.api_mode = "chat_completions"
+
+    from agent.runtime_target import resolve_runtime_identity
+
+    agent.runtime = resolve_runtime_identity(
+        provider=agent.provider,
+        api_mode=agent.api_mode,
+        route_config={"runtime": runtime} if runtime else None,
+    )
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
@@ -668,7 +677,16 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
-    if agent.api_mode == "anthropic_messages":
+    if agent.runtime != "hermes":
+        # Whole-agent runtimes own their provider transport and authenticate
+        # independently (Claude subscription / Codex login). Never construct
+        # a paid API client or consult inherited provider credentials here.
+        agent.api_key = ""
+        agent.client = None
+        agent._client_kwargs = {}
+        agent._anthropic_api_key = ""
+        agent._anthropic_base_url = ""
+    elif agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
@@ -1048,13 +1066,27 @@ def init_agent(
     # when the primary is exhausted (rate-limit, overload, connection
     # failure).  Supports both legacy single-dict ``fallback_model`` and
     # new list ``fallback_providers`` format.
+    def _runtime_fallback_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+        from agent.runtime_target import attach_runtime_identity
+
+        resolved = attach_runtime_identity(
+            entry,
+            route_config=entry,
+        )
+        # Preserve the exact legacy entry shape for ordinary Hermes targets;
+        # explicit/compatibility external runtimes carry the new field.
+        if resolved["runtime"] == "hermes" and not entry.get("runtime"):
+            resolved.pop("runtime", None)
+        return resolved
+
     if isinstance(fallback_model, list):
         agent._fallback_chain = [
-            f for f in fallback_model
+            _runtime_fallback_entry(f)
+            for f in fallback_model
             if isinstance(f, dict) and f.get("provider") and f.get("model")
         ]
     elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
+        agent._fallback_chain = [_runtime_fallback_entry(fallback_model)]
     else:
         agent._fallback_chain = []
     agent._fallback_index = 0
@@ -1694,6 +1726,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        agent.context_compressor.runtime = agent.runtime
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -1710,6 +1743,7 @@ def init_agent(
             config_context_length=_config_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
+            runtime=agent.runtime,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
         )
@@ -1910,6 +1944,7 @@ def init_agent(
         "provider": agent.provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
+        "runtime": agent.runtime,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
@@ -1921,10 +1956,11 @@ def init_agent(
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(_cc, "api_key", ""),
         "compressor_provider": getattr(_cc, "provider", agent.provider),
+        "compressor_runtime": getattr(_cc, "runtime", agent.runtime),
         "compressor_context_length": _cc.context_length,
         "compressor_threshold_tokens": _cc.threshold_tokens,
     }
-    if agent.api_mode == "anthropic_messages":
+    if agent.runtime == "hermes" and agent.api_mode == "anthropic_messages":
         agent._primary_runtime.update({
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,

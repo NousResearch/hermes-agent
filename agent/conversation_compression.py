@@ -673,6 +673,20 @@ def compress_context(
         finally:
             _release_lock()
 
+    # A compressor that returns the exact input object made no structural
+    # progress. Do not rotate/rewrite the session or arm post-compression
+    # deferral in that case; its own anti-thrash counter records the no-op.
+    if compressed is messages:
+        logger.info(
+            "Compression made no progress (session=%s) — skipping boundary rewrite.",
+            agent.session_id or "none",
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()
+        return messages, _existing_sp
+
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
@@ -961,11 +975,11 @@ def compress_context(
         agent.context_compressor.last_prompt_tokens = -1
         agent.context_compressor.last_completion_tokens = 0
         agent.context_compressor.awaiting_real_usage_after_compression = True
-        # Arm the effectiveness verdict only after the full compaction boundary
-        # succeeds. Exceptions and aborted/no-op attempts return before here, so
-        # unrelated later usage cannot be charged to an attempt that never took
-        # effect. External engines without the private flag stay untouched.
-        if hasattr(agent.context_compressor, "_verify_compaction_cleared_threshold"):
+        # Arm the effectiveness verdict only after a completed rewrite crosses
+        # the full compaction boundary. Exceptions, aborts, and no-op attempts
+        # leave this false, so unrelated later usage cannot be charged to an
+        # attempt that never changed the transcript.
+        if getattr(agent.context_compressor, "_last_compression_made_progress", False):
             agent.context_compressor._verify_compaction_cleared_threshold = True
 
         # Clear the file-read dedup cache.  After compression the original

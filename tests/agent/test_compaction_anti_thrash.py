@@ -162,6 +162,7 @@ class TestFutilityGuard:
 
         assert len(out) < before, "a long transcript must still compact"
         assert cc._last_compression_savings_pct > 10
+        assert cc._last_compression_made_progress is True
         assert cc._ineffective_compression_count == 0
 
     def test_no_false_positive_under_tokenizer_skew(self):
@@ -188,6 +189,26 @@ class TestFutilityGuard:
         assert cc._ineffective_compression_count == 0, (
             "tokenizer skew must not be mistaken for an incompressible floor"
         )
+
+    def test_latched_counter_resets_after_any_real_prompt_fits(self):
+        cc = _compressor(threshold_tokens=24_576)
+        cc._ineffective_compression_count = 2
+
+        cc.update_from_response({"prompt_tokens": 20_000})
+
+        assert cc._ineffective_compression_count == 0
+        assert cc.should_compress(33_564)
+
+    def test_usage_less_response_consumes_pending_verdict(self):
+        cc = _compressor(threshold_tokens=24_576)
+        cc._verify_compaction_cleared_threshold = True
+        cc.awaiting_real_usage_after_compression = True
+
+        cc.update_from_response({})
+
+        assert cc._verify_compaction_cleared_threshold is False
+        assert cc.awaiting_real_usage_after_compression is False
+        assert cc._ineffective_compression_count == 0
 
     def test_a_failed_pass_records_exactly_one_strike(self):
         """A compaction that leaves the real prompt over the threshold: one strike.
@@ -226,4 +247,5 @@ class TestMinimumMessagesBranch:
         out = cc.compress(msgs, current_tokens=100_000)
 
         assert len(out) == len(msgs), "nothing should have been compressed"
+        assert cc._last_compression_made_progress is False
         assert cc._ineffective_compression_count == before + 1

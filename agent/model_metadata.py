@@ -2559,7 +2559,10 @@ def estimate_request_tokens_rough(
     """
     total = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        # Add 15% safety margin for system prompt to account for tokenizer divergence.
+        # This prevents compression from firing too late when the rough estimate underestimates
+        # actual tokens (e.g., non-English text, special chars, structured content).
+        total += int((len(system_prompt) + 3) // 4 * 1.15)
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:

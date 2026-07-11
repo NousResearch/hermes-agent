@@ -878,11 +878,7 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
         "System topic for Hermes commands and status.",
         metadata={"thread_id": "4242"},
     )
-    bot.pin_chat_message.assert_awaited_once_with(
-        chat_id=208214988,
-        message_id=777,
-        disable_notification=True,
-    )
+    bot.pin_chat_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

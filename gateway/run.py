@@ -13504,7 +13504,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         }
 
     async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
-        """Create/pin the managed System topic after /topic activation when possible."""
+        """Create the managed System topic after /topic activation when possible."""
         adapter = self._adapter_for_source(source)
         if adapter is None or not source.chat_id:
             return
@@ -13519,30 +13519,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not thread_id:
             return
 
-        message_id = None
         try:
-            send_result = await adapter.send(
+            await adapter.send(
                 source.chat_id,
                 "System topic for Hermes commands and status.",
                 metadata={"thread_id": str(thread_id)},
             )
-            message_id = getattr(send_result, "message_id", None)
         except Exception:
             logger.debug("Failed to send Telegram System topic intro", exc_info=True)
-        if not message_id:
-            return
-
-        bot = getattr(adapter, "_bot", None)
-        if bot is None or not hasattr(bot, "pin_chat_message"):
-            return
-        try:
-            await bot.pin_chat_message(
-                chat_id=int(source.chat_id),
-                message_id=int(message_id),
-                disable_notification=True,
-            )
-        except Exception:
-            logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
 
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""

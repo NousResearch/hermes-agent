@@ -587,13 +587,16 @@ export async function moveProjectFolder(id: string, oldPath: string, newPath: st
 
   $projects.set(
     snap.projects.map(proj => {
-      if (proj.id !== id) return proj
+      if (proj.id !== id) {
+        return proj
+      }
 
       const folders = (proj.folders ?? []).map(f =>
         f.path === oldTrimmed ? { ...f, path: newTrimmed } : f
       )
 
       const primaryTouched = proj.primary_path === oldTrimmed
+
       return {
         ...proj,
         folders,
@@ -606,9 +609,19 @@ export async function moveProjectFolder(id: string, oldPath: string, newPath: st
     $projectTree.set(snap.tree.map(node => (node.id === id ? { ...node, path: newTrimmed } : node)))
   }
 
-  await persistOrRollback(snap, () =>
-    gatewayRequest('projects.move_folder', { id, path: oldTrimmed, new_path: newTrimmed })
-  )
+  try {
+    await persistOrRollback(snap, () =>
+      gatewayRequest('projects.move_folder', { id, path: oldTrimmed, new_path: newTrimmed })
+    )
+  } catch (err) {
+    if (isMissingRpcMethod(err)) {
+      $projectsRpcAvailable.set(false)
+      throw projectsStaleBackendError()
+    }
+
+    throw err
+  }
+
   reconcileProjects()
 }
 
@@ -630,7 +643,9 @@ export async function removeProjectFolder(id: string, path: string): Promise<voi
 
   $projects.set(
     snap.projects.map(proj => {
-      if (proj.id !== id) return proj
+      if (proj.id !== id) {
+        return proj
+      }
 
       const wasPrimary = proj.primary_path === trimmed
       const folders = (proj.folders ?? []).filter(f => f.path !== trimmed)

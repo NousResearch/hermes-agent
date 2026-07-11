@@ -4,6 +4,7 @@ import { $sidebarAgentsGrouped } from '@/store/layout'
 
 import {
   $activeProjectId,
+  $projects,
   $projectScope,
   $projectsRpcAvailable,
   $worktreeRefreshToken,
@@ -11,6 +12,7 @@ import {
   createProject,
   enterProject,
   exitProjectScope,
+  moveProjectFolder,
   openProjectCreate,
   pickProjectFolder,
   refreshProjects,
@@ -164,6 +166,44 @@ describe('createProject', () => {
       'sidebar.projects.staleBackend'
     )
     expect($projectsRpcAvailable.get()).toBe(false)
+  })
+})
+
+describe('moveProjectFolder', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $projectsRpcAvailable.set(true)
+    $projects.set([
+      {
+        archived: false,
+        board_slug: null,
+        color: null,
+        created_at: 0,
+        description: null,
+        folders: [{ added_at: 0, is_primary: true, label: null, path: '/srv/old' }],
+        icon: null,
+        id: 'p_demo',
+        name: 'Demo',
+        primary_path: '/srv/old',
+        slug: 'demo'
+      }
+    ])
+  })
+
+  it('marks the backend stale and rolls back when projects.move_folder is missing', async () => {
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn().mockRejectedValue(new Error('unknown method: projects.move_folder'))
+    } as never)
+
+    await expect(moveProjectFolder('p_demo', '/srv/old', '/srv/new')).rejects.toThrow(
+      'sidebar.projects.staleBackend'
+    )
+    expect($projectsRpcAvailable.get()).toBe(false)
+    expect($projects.get()[0]).toMatchObject({
+      folders: [{ path: '/srv/old' }],
+      primary_path: '/srv/old'
+    })
   })
 })
 

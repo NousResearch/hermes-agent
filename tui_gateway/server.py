@@ -5298,7 +5298,7 @@ def _(rid, params: dict) -> dict:
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                "profile_name": _current_profile_name(),
+                "profile_name": profile or _current_profile_name(),
             },
         },
     )
@@ -5306,7 +5306,17 @@ def _(rid, params: dict) -> dict:
 
 @method("session.list")
 def _(rid, params: dict) -> dict:
-    db = _get_db()
+    # ``profile`` (app-global remote mode): list sessions from another local
+    # profile's state.db instead of the launch profile's. None/own profile →
+    # the launch profile (unchanged).
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile_home is not None:
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=profile_home / "state.db")
+    else:
+        db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5006)
     try:
@@ -5365,7 +5375,17 @@ def _(rid, params: dict) -> dict:
     null-result shape (and logged) so callers don't have to special-
     case JSON-RPC error envelopes for what is a normal "no answer".
     """
-    db = _get_db()
+    # ``profile`` (app-global remote mode): query another local profile's
+    # state.db instead of the launch profile's. None/own profile →
+    # the launch profile (unchanged).
+    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile_home is not None:
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=profile_home / "state.db")
+    else:
+        db = _get_db()
     if db is None:
         return _ok(rid, {"session_id": None})
     try:

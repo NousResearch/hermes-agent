@@ -1225,17 +1225,10 @@ def _is_slack_ignored_channel(config: Any, chat_id: Any, adapter: Any = None) ->
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
-    """True when gateway.message_timestamps.enabled is opted in (default OFF: changes what the model sees)."""
-    if not isinstance(user_config, dict):
-        return False
-    gw = user_config.get("gateway")
-    if not isinstance(gw, dict):
-        return False
-    mt = gw.get("message_timestamps")
-    if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
-    # Allow a bare ``message_timestamps: true`` shorthand.
-    return bool(mt)
+    """Compatibility wrapper for the shared cross-surface config resolver."""
+    from agent.message_timestamps import message_timestamps_enabled
+
+    return message_timestamps_enabled(user_config)
 
 
 def _has_replayable_sidecar(role: Any, content: Any, msg: dict[str, Any]) -> bool:
@@ -1259,7 +1252,7 @@ def _build_gateway_agent_history(
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
     from hermes_time import get_timezone as _get_msg_tz
-    from gateway.message_timestamps import (
+    from agent.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
         strip_leading_message_timestamps as _strip_msg_ts,
     )

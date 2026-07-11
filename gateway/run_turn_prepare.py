@@ -572,7 +572,7 @@ class GatewayTurnPrepareMixin:
         persist_user_timestamp = None
         try:
             from hermes_time import get_timezone as _get_evt_tz
-            from gateway.message_timestamps import (
+            from agent.message_timestamps import (
                 coerce_message_timestamp as _coerce_msg_ts,
                 render_user_content_with_timestamp as _render_msg_ts,
                 strip_leading_message_timestamps as _strip_msg_ts,

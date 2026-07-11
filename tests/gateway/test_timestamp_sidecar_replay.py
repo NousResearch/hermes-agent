@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from gateway.message_timestamps import render_user_content_with_timestamp
+from agent.message_timestamps import render_user_content_with_timestamp
 from gateway.run import _build_gateway_agent_history, _select_cached_agent_history
 
 

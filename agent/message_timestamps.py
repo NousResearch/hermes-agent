@@ -1,8 +1,7 @@
-"""Helpers for rendering gateway message timestamps exactly once.
+"""Render user-message timestamps in model context exactly once.
 
-Gateway messages need timestamps in the LLM context for temporal awareness, but
-persisted message content should stay clean so replay does not accumulate
-``[timestamp] [timestamp] ...`` prefixes across turns.
+All Hermes surfaces can add temporal context while persisted message content stays
+clean, so replay never accumulates ``[timestamp] [timestamp] ...`` prefixes.
 """
 
 from __future__ import annotations
@@ -11,10 +10,90 @@ import errno
 import re
 import sys
 import time
-from datetime import datetime, timezone, UTC
-from typing import Any, Optional, Tuple
+from datetime import datetime, UTC
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_time import safe_strftime
+
+
+def message_timestamps_enabled(config: Optional[dict]) -> bool:
+    """Resolve the canonical global opt-in with gateway compatibility."""
+    if not isinstance(config, dict):
+        return False
+
+    configured = config.get("message_timestamps")
+    if configured is not None:
+        return (
+            bool(configured.get("enabled", False))
+            if isinstance(configured, dict)
+            else bool(configured)
+        )
+
+    gateway = config.get("gateway")
+    if not isinstance(gateway, dict):
+        return False
+    legacy = gateway.get("message_timestamps")
+    return (
+        bool(legacy.get("enabled", False))
+        if isinstance(legacy, dict)
+        else bool(legacy)
+    )
+
+
+def render_turn_with_message_timestamps(
+    history: Optional[List[Dict[str, Any]]],
+    user_message: Any,
+    *,
+    config: Optional[dict],
+    current_timestamp: Any = None,
+    tz=None,
+) -> Tuple[List[Dict[str, Any]], Any, Optional[float]]:
+    """Return model-only timestamp rendering without mutating caller data."""
+    rendered_history = [dict(message) for message in (history or [])]
+    if not message_timestamps_enabled(config):
+        return rendered_history, user_message, None
+
+    for message in rendered_history:
+        if message.get("role") == "user":
+            message["content"] = _render_user_message_content(
+                message.get("content"),
+                message.get("timestamp"),
+                tz=tz,
+            )
+
+    effective_timestamp = coerce_message_timestamp(
+        time.time() if current_timestamp is None else current_timestamp,
+        tz=tz,
+    )
+    user_message = _render_user_message_content(
+        user_message,
+        effective_timestamp,
+        tz=tz,
+    )
+    return rendered_history, user_message, effective_timestamp
+
+
+def _render_user_message_content(content: Any, ts_value: Any, tz=None) -> Any:
+    """Copy and timestamp plain text or OpenAI-style structured content."""
+    if isinstance(content, str):
+        return render_user_content_with_timestamp(content, ts_value, tz=tz)
+    if not isinstance(content, list):
+        return content
+
+    parts = [dict(part) if isinstance(part, dict) else part for part in content]
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text")
+            if isinstance(text, str):
+                part["text"] = render_user_content_with_timestamp(
+                    text, ts_value, tz=tz
+                )
+                return parts
+
+    prefix = format_message_timestamp(ts_value, tz=tz)
+    if prefix:
+        parts.insert(0, {"type": "text", "text": prefix})
+    return parts
 
 
 # Leading timestamp prefix, either the current human format

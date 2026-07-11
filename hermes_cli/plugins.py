@@ -44,12 +44,15 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, TYPE_CHECKING
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
+
+if TYPE_CHECKING:
+    from gateway.plugin_services import GatewayServiceCallable, GatewayServiceRegistration
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -322,6 +325,7 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     middleware_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
+    gateway_services_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
     # True for a bundled platform plugin recorded as a deferred (not-yet-
@@ -1238,6 +1242,58 @@ class PluginContext:
             self.manifest.name, qualified,
         )
 
+    def register_gateway_service(
+        self,
+        name: str,
+        service: "GatewayServiceCallable",
+    ) -> None:
+        """Register an async gateway service under a unique name.
+
+        The service is an ``async`` callable that receives a
+        ``GatewayServiceContext`` (a read-only snapshot of connected
+        adapters) and runs concurrently with the gateway. The host starts
+        it after adapters connect and stops it before adapter disconnect.
+
+        Later registrations with an already-claimed name are rejected
+        with a warning; the first registration wins.
+        """
+        from gateway.plugin_services import GatewayServiceRegistration
+
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Gateway service name must be a non-empty string")
+        if not callable(service):
+            raise TypeError("Gateway service must be callable")
+        if not (
+            inspect.iscoroutinefunction(service)
+            or inspect.iscoroutinefunction(getattr(service, "__call__", None))
+        ):
+            raise TypeError(
+                "Gateway service must be an async callable "
+                "(an async function or an instance with "
+                "async def __call__)."
+            )
+        key = self.manifest.key or self.manifest.name
+        for existing in self._manager._gateway_services:
+            if existing.name == name:
+                logger.warning(
+                    "Gateway service '%s' already registered by %s; "
+                    "rejecting duplicate from plugin '%s'",
+                    name, existing.provenance, self.manifest.name,
+                )
+                return
+        reg = GatewayServiceRegistration(
+            name=name,
+            service=service,
+            plugin_name=self.manifest.name,
+            plugin_key=key,
+            source=self.manifest.source,
+        )
+        self._manager._gateway_services.append(reg)
+        logger.debug(
+            "Plugin %s registered gateway service: %s",
+            self.manifest.name, name,
+        )
+
 
 # ---------------------------------------------------------------------------
 # PluginManager
@@ -1269,6 +1325,14 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Plugin-registered gateway services: list of GatewayServiceRegistration
+        # descriptors. Duplicate names are rejected (first wins). Cleared on
+        # forced rediscovery. See PluginContext.register_gateway_service.
+        self._gateway_services: List["GatewayServiceRegistration"] = []
+
+    def get_gateway_services(self) -> Tuple["GatewayServiceRegistration", ...]:
+        """Return an immutable ordered snapshot of gateway-service registrations."""
+        return tuple(self._gateway_services)
 
     # -----------------------------------------------------------------------
     # Public
@@ -1298,6 +1362,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._gateway_services.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1787,6 +1852,9 @@ class PluginManager:
                 _mw_counts_before = {
                     kind: len(cbs) for kind, cbs in self._middleware.items()
                 }
+                _gw_services_before = {
+                    s.name for s in self._gateway_services
+                }
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
@@ -1806,9 +1874,13 @@ class PluginManager:
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
+                loaded.gateway_services_registered = [
+                    s.name for s in self._gateway_services
+                    if s.name not in _gw_services_before
+                ]
                 loaded.enabled = True
                 logger.debug(
-                    "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
+                    "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s), %d gateway service(s)",
                     len(loaded.tools_registered),
                     len(loaded.hooks_registered),
                     len(loaded.middleware_registered),
@@ -1817,6 +1889,7 @@ class PluginManager:
                         1 for c in self._cli_commands
                         if self._cli_commands[c].get("plugin") == manifest.name
                     ),
+                    len(loaded.gateway_services_registered),
                 )
 
         except Exception as exc:
@@ -1992,6 +2065,7 @@ class PluginManager:
                     "hooks": len(loaded.hooks_registered),
                     "middleware": len(loaded.middleware_registered),
                     "commands": len(loaded.commands_registered),
+                    "gateway_services": len(loaded.gateway_services_registered),
                     "error": loaded.error,
                 }
             )

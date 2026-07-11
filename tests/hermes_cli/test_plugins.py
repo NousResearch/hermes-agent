@@ -2366,3 +2366,178 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+# ── Gateway Service Registration ──────────────────────────────────────────
+
+
+class TestGatewayServiceRegistration:
+    """Tests for plugin gateway-service registration via PluginContext."""
+
+    def test_register_gateway_service_provenance(self):
+        """Registration captures plugin name, key, and source provenance."""
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="my_plugin",
+            key="my_plugin_key",
+            source="user",
+        )
+        ctx = PluginContext(manifest, mgr)
+
+        async def my_service(svc_ctx):
+            pass
+
+        ctx.register_gateway_service("myservice", my_service)
+
+        services = mgr.get_gateway_services()
+        assert len(services) == 1
+        reg = services[0]
+        assert reg.name == "myservice"
+        assert reg.plugin_name == "my_plugin"
+        assert reg.plugin_key == "my_plugin_key"
+        assert reg.source == "user"
+        assert reg.service is my_service
+
+    def test_get_gateway_services_returns_immutable_tuple(self):
+        """Public retrieval returns a tuple (immutable snapshot)."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="p", key="p", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        async def svc(svc_ctx):
+            pass
+
+        ctx.register_gateway_service("s1", svc)
+        result = mgr.get_gateway_services()
+        assert isinstance(result, tuple)
+        assert len(result) == 1
+
+    def test_gateway_service_via_local_discovery(self, tmp_path, monkeypatch):
+        """A user-installed plugin registering a gateway service is discovered."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "gw_plugin",
+            register_body=(
+                "async def _svc(ctx):\n"
+                "        pass\n"
+                "    ctx.register_gateway_service('discovered_svc', _svc)"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "gw_plugin" in mgr._plugins
+        loaded = mgr._plugins["gw_plugin"]
+        assert loaded.enabled
+        assert "discovered_svc" in loaded.gateway_services_registered
+        services = mgr.get_gateway_services()
+        assert len(services) == 1
+        reg = services[0]
+        assert reg.name == "discovered_svc"
+        assert reg.plugin_name == "gw_plugin"
+        assert reg.source == "user"
+
+    def test_duplicate_gateway_service_name_rejected(self):
+        """Later registration with a duplicate name is rejected; first wins."""
+        mgr = PluginManager()
+
+        async def service_a(svc_ctx):
+            pass
+
+        async def service_b(svc_ctx):
+            pass
+
+        ctx_a = PluginContext(
+            PluginManifest(name="plugin_a", key="plugin_a", source="user"), mgr,
+        )
+        ctx_a.register_gateway_service("shared_name", service_a)
+
+        ctx_b = PluginContext(
+            PluginManifest(name="plugin_b", key="plugin_b", source="user"), mgr,
+        )
+        ctx_b.register_gateway_service("shared_name", service_b)
+
+        services = mgr.get_gateway_services()
+        assert len(services) == 1
+        reg = services[0]
+        assert reg.service is service_a
+        assert reg.plugin_name == "plugin_a"
+
+    def test_gateway_services_cleared_on_force_rediscovery(
+        self, tmp_path, monkeypatch,
+    ):
+        """Force rediscovery clears the gateway services registry."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "temp_plugin",
+            register_body=(
+                "async def _svc(ctx):\n"
+                "        pass\n"
+                "    ctx.register_gateway_service('temp_svc', _svc)"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert len(mgr.get_gateway_services()) == 1
+
+        import shutil
+        shutil.rmtree(plugins_dir / "temp_plugin")
+
+        mgr.discover_and_load(force=True)
+        assert len(mgr.get_gateway_services()) == 0
+
+    def test_entrypoint_provenance(self):
+        """Entrypoint-sourced plugins carry source='entrypoint' provenance."""
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="pip_plugin",
+            key="pip_plugin",
+            source="entrypoint",
+        )
+        ctx = PluginContext(manifest, mgr)
+
+        async def svc(svc_ctx):
+            pass
+
+        ctx.register_gateway_service("pip_svc", svc)
+        assert mgr.get_gateway_services()[0].source == "entrypoint"
+
+    def test_sync_callback_rejected_at_registration(self):
+        """Synchronous callables are rejected before any side effect."""
+        mgr = PluginManager()
+        ctx = PluginContext(
+            PluginManifest(name="p", key="p", source="user"), mgr,
+        )
+
+        def sync_svc(svc_ctx):
+            return "not async"
+
+        register_service = getattr(ctx, "register_gateway_service")
+        with pytest.raises(TypeError, match="async"):
+            register_service("bad", sync_svc)
+        assert len(mgr.get_gateway_services()) == 0
+
+    def test_async_callable_instance_accepted(self):
+        """An instance with ``async def __call__`` is a valid service."""
+        mgr = PluginManager()
+        ctx = PluginContext(
+            PluginManifest(name="p", key="p", source="user"), mgr,
+        )
+
+        class CallableService:
+            async def __call__(self, svc_ctx):
+                return None
+
+        instance = CallableService()
+        ctx.register_gateway_service("instance-svc", instance)
+
+        services = mgr.get_gateway_services()
+        assert len(services) == 1
+        assert services[0].name == "instance-svc"
+        assert services[0].service is instance

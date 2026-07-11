@@ -274,6 +274,7 @@ def register(ctx):
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+- `ctx.register_gateway_service(name, async_service)` registers an async service that runs alongside the gateway, with a read-only view of connected adapters — see [Register a gateway service](#register-a-gateway-service) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
@@ -908,6 +909,50 @@ def register(ctx):
 - For multi-workspace deployments the handler fires for clicks from any connected workspace; use `body["team"]["id"]` if you need to scope behaviour.
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
+
+### Register a gateway service
+
+Plugins can register an async service that runs alongside the gateway. The service receives a read-only snapshot of successfully connected platform adapters and can interact with them directly.
+
+```python
+"""Plugin that logs the gateway's connected adapters at startup."""
+
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+async def log_connected_adapters(context):
+    """Log platform adapters connected at startup, then wait until cancelled."""
+    names = ", ".join(context.adapters.keys())
+    logger.info("Gateway service started; connected adapters: %s", names)
+    # Adapters is a static snapshot — see lifecycle below.
+    # Wait until shutdown cancels this task.
+    await asyncio.Event().wait()
+
+
+def register(ctx):
+    ctx.register_gateway_service(
+        "adapter-logger",
+        log_connected_adapters,
+    )
+```
+
+**Signature:** `ctx.register_gateway_service(name: str, service: Callable[..., Awaitable[None]]) -> None`
+
+**Lifecycle guarantees:**
+
+| Guarantee | Detail |
+|-----------|--------|
+| **Start timing** | The service is launched after all platform adapters have connected and the gateway runner has set its internal running flag. |
+| **Context** | The service receives a `GatewayServiceContext` whose `.adapters` property is a read-only mapping of connected platform adapters keyed by name. The context never exposes the gateway runner or any mutable runner state. |
+| **Run once** | Each service is started at most once per runner lifecycle. Reconnect events (disconnect + reconnect) do NOT restart the service. |
+| **Failure isolation** | Startup and runtime exceptions are logged with plugin provenance and do not prevent other services from starting or the gateway from continuing. |
+| **Shutdown** | On gateway stop, every running service task is cancelled and awaited before adapters disconnect. |
+| **Duplicate rejection** | If two plugins register a service with the same `name`, the second registration is rejected with a log warning and the original keeps running. |
+
+A plugin **cannot** use a gateway service to manipulate the runner, agent tools, system prompt, config, sessions, or the plugin registry. The service has access only to the adapter snapshot provided by the gateway.
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

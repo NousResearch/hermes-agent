@@ -6,6 +6,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.plugin_services import GatewayServiceManager
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -82,6 +83,7 @@ def make_startup_runner(tmp_path):
     runner._background_tasks = set()
     runner._failed_platforms = {}
     runner._voice_mode = {}
+    runner._plugin_service_manager = GatewayServiceManager()
 
     runner.hooks = MagicMock()
     runner.hooks.loaded_hooks = []

@@ -1767,6 +1767,7 @@ from gateway.platforms.base import (
     merge_pending_message_event,
     utf16_len,
 )
+from gateway.plugin_services import GatewayServiceManager
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -2800,6 +2801,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
+    # Class-level default so borrowed/fake runners created via object.__new__
+    # in existing test harnesses don't AttributeError on stop(). Real runners
+    # overwrite this in __init__.
+    _plugin_service_manager: Optional["GatewayServiceManager"] = None
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -2983,6 +2988,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
+
+        self._plugin_service_manager = GatewayServiceManager()
 
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
@@ -6711,6 +6718,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         return True
 
+    async def _start_plugin_gateway_services(self) -> None:
+        """Start plugin-registered gateway services after adapters connect.
+
+        Builds a string-keyed snapshot of all connected adapters (primary
+        and secondary-profile) and hands it to the service manager. No-op
+        when no plugins registered services or when no adapters connected.
+        The manager's started guard ensures exactly-once even across
+        reconnect-triggered calls.
+        """
+        from hermes_cli.plugins import get_plugin_manager
+
+        registrations = get_plugin_manager().get_gateway_services()
+        if not registrations:
+            return
+        mgr = getattr(self, "_plugin_service_manager", None)
+        if mgr is None:
+            return
+        adapters_snapshot = {
+            platform.value: adapter for platform, adapter in self.adapters.items()
+        }
+        for profile_name, profile_map in self._profile_adapters.items():
+            for platform, adapter in profile_map.items():
+                adapters_snapshot[f"{profile_name}/{platform.value}"] = adapter
+        await mgr.start_services(
+            registrations, adapters_snapshot,
+        )
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -7249,7 +7283,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._update_runtime_status("running")
-        
+
+        await self._start_plugin_gateway_services()
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
@@ -7944,6 +7980,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 platform.value,
                                 exc_info=True,
                             )
+
+                        # Give services a chance if none were started yet
+                        # (no adapter connected during initial start).
+                        # Manager's started guard prevents duplicates.
+                        await self._start_plugin_gateway_services()
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
                         self._update_platform_runtime_status(
@@ -8272,6 +8313,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._cleanup_agent_resources_off_loop(
                         _agent, context="shutdown idle-cache"
                     )
+
+            _plugin_mgr = getattr(self, "_plugin_service_manager", None)
+            if _plugin_mgr is not None:
+                await _plugin_mgr.stop_services()
 
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)

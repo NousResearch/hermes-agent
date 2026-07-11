@@ -375,6 +375,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Wear OS Telegram (June 2026 app) does not render bot-sent sendVoice
+        # bubbles at all (captioned ones degrade to a bare text bubble). Routing
+        # the same .ogg through sendAudio makes Telegram's server coerce it to a
+        # voice message whose normalized metadata the watch client does render
+        # and play. Opt-in via platforms.telegram.extra.voice_via_send_audio.
+        self._voice_via_send_audio: bool = self._coerce_bool_extra("voice_via_send_audio", False)
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -5436,11 +5442,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
+                    _voice_send_method = self._bot.send_voice
+                    _voice_media_key = "voice"
+                    if self._voice_via_send_audio:
+                        # See __init__: Wear OS clients only render bot voice
+                        # notes when they arrive via sendAudio (server-coerced).
+                        _voice_send_method = self._bot.send_audio
+                        _voice_media_key = "audio"
                     msg = await self._send_with_dm_topic_reply_anchor_retry(
-                        self._bot.send_voice,
+                        _voice_send_method,
                         {
                             "chat_id": normalize_telegram_chat_id(chat_id),
-                            "voice": audio_file,
+                            _voice_media_key: audio_file,
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,

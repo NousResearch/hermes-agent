@@ -4965,8 +4965,11 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            _tts_platform = getattr(self.platform, "value", None) or str(self.platform)
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool,
+                                text=speech_text,
+                                platform=_tts_platform,
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")

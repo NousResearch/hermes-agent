@@ -2128,6 +2128,40 @@ class TestWebServerEndpoints:
         assert cfg["model"]["provider"] == "anthropic"
         assert cfg["model"]["default"] == "claude-opus-4-6"
 
+    def test_model_set_normalizes_native_provider_with_metadata_config(self, monkeypatch):
+        """providers.<name> metadata must not turn built-ins into custom endpoints."""
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "anthropic": {
+                "request_timeout_seconds": 60,
+                "models": {
+                    "claude-opus-4-6": {"context_length": 200000},
+                },
+            }
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "anthropic",
+                "model": "anthropic/claude-opus-4.6",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "anthropic"
+        assert data["model"] == "claude-opus-4-6"
+
     def test_model_set_maps_unknown_vendor_to_aggregator(self, monkeypatch):
         """A bare vendor name from analytics rows (no billing_provider) is not
         a Hermes provider — keep the user's aggregator instead of writing a
@@ -2154,6 +2188,51 @@ class TestWebServerEndpoints:
         assert data["ok"] is True
         assert data["provider"] == "openrouter"
         assert data["model"] == "moonshotai/kimi-k2.6"
+
+    def test_model_set_keeps_custom_provider_with_slash_model(self, monkeypatch):
+        """Saved custom providers can serve aggregator-style model ids.
+
+        Settings → Model posts the selected custom provider slug from
+        /api/model/options. That must not be mistaken for the analytics
+        vendor fallback path just because the model id contains a slash.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+        from hermes_cli.config import load_config, save_config
+
+        custom_slug = "custom:omni-(localhost:20128)"
+        cfg = load_config()
+        cfg["custom_providers"] = [
+            {
+                "name": "omni (localhost:20128)",
+                "base_url": "http://localhost:20128/v1",
+                "api_key": "sk-0",
+                "model": "oc/big-pickle",
+                "models": {"tllm/GPT_5_4": {"context_length": 120000}},
+            }
+        ]
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": custom_slug,
+                "model": "tllm/GPT_5_4",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == custom_slug
+        assert data["model"] == "tllm/GPT_5_4"
+
+        updated = load_config()
+        assert updated["model"]["provider"] == custom_slug
+        assert updated["model"]["default"] == "tllm/GPT_5_4"
 
     def test_model_set_keeps_aggregator_slug_unchanged(self, monkeypatch):
         """The happy path (picker → openrouter + vendor/model) is untouched."""

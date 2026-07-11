@@ -1030,7 +1030,54 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
 
-    if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+    def _is_user_configured_provider() -> bool:
+        """Return True for provider ids owned by config.yaml, not analytics."""
+        prov_norm = prov_in.lower()
+        if prov_norm in {"custom", "local"} or prov_norm.startswith("custom:"):
+            return True
+        try:
+            cfg = load_config()
+        except Exception:
+            return False
+        user_providers = cfg.get("providers")
+        if isinstance(user_providers, dict):
+            for name, entry in user_providers.items():
+                if str(name).strip().lower() != prov_norm:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if (
+                    str(entry.get("base_url") or "").strip()
+                    or str(entry.get("api") or "").strip()
+                    or str(entry.get("url") or "").strip()
+                ):
+                    return True
+        custom_providers = cfg.get("custom_providers")
+        if isinstance(custom_providers, list):
+            try:
+                from hermes_cli.providers import custom_provider_slug
+            except Exception:
+                custom_provider_slug = None
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                display_name = str(entry.get("name") or "").strip()
+                if not display_name:
+                    continue
+                names = {display_name.lower()}
+                if custom_provider_slug is not None:
+                    names.add(custom_provider_slug(display_name).lower())
+                if prov_norm in names:
+                    return True
+        return False
+
+    is_user_configured_provider = _is_user_configured_provider()
+
+    if (
+        not is_user_configured_provider
+        and canonical not in _KNOWN_PROVIDER_NAMES
+        and "/" in model_in
+    ):
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.
@@ -1052,7 +1099,11 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
 
     # Custom/user-config providers keep the model verbatim — the registry
     # normalizer doesn't know their namespaces.
-    if canonical in _KNOWN_PROVIDER_NAMES and not canonical.startswith("custom"):
+    if (
+        not is_user_configured_provider
+        and canonical in _KNOWN_PROVIDER_NAMES
+        and not canonical.startswith("custom")
+    ):
         try:
             normalized_model = normalize_model_for_provider(model_in, canonical)
             if normalized_model:

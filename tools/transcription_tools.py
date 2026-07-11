@@ -1100,7 +1100,11 @@ def _load_local_whisper_model(model_name: str):
     library load failure fall back to CPU + int8.
     """
     from faster_whisper import WhisperModel
+    stt_cfg = _load_stt_config().get("local", {})
+    _ct = int(stt_cfg.get("cpu_threads", 0))
     try:
+        if _ct > 0:
+            return WhisperModel(model_name, device="auto", compute_type="auto", cpu_threads=_ct)
         return WhisperModel(model_name, device="auto", compute_type="auto")
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
@@ -1110,6 +1114,8 @@ def _load_local_whisper_model(model_name: str):
             "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
             exc,
         )
+        if _ct > 0:
+            return WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=_ct)
         return WhisperModel(model_name, device="cpu", compute_type="int8")
 
 
@@ -1134,9 +1140,21 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
-        transcribe_kwargs = {"beam_size": 5}
+        _local_stt_cfg = _load_stt_config().get("local", {})
+        transcribe_kwargs = {
+            "beam_size": int(_local_stt_cfg.get("beam_size", 1)),
+            "vad_filter": bool(_local_stt_cfg.get("vad_filter", True)),
+        }
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+
+        # Initial prompt: biases Whisper toward expected vocabulary,
+        # dramatically reducing phonetic confusion (e.g. "restored" vs
+        # "restarted", "certainty" vs "thirty"). Configured via
+        # stt.local.initial_prompt in config.yaml.
+        _initial_prompt = _local_stt_cfg.get("initial_prompt")
+        if _initial_prompt:
+            transcribe_kwargs["initial_prompt"] = _initial_prompt
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1157,7 +1175,11 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = None
             _local_model_name = None
             from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            _retry_ct = int(_local_stt_cfg.get("cpu_threads", 0))
+            if _retry_ct > 0:
+                _local_model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=_retry_ct)
+            else:
+                _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
             _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
             transcript = " ".join(segment.text.strip() for segment in segments)

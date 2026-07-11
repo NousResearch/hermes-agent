@@ -3264,6 +3264,93 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
+    def _wire_voice_auto_join(self, adapter) -> None:
+        """Wire the auto-join callback so the adapter can signal the gateway
+        to set up voice input/TTS callbacks when it auto-joins a voice channel.
+
+        Only applies to adapters that support voice channels (Discord).
+        """
+        if not hasattr(adapter, "_voice_auto_join_callback"):
+            return
+
+        logger.info("Wiring voice auto-join callback for %s", getattr(adapter, "name", "adapter"))
+
+        # Read voice config once — avoids repeated config reads on every auto-join.
+        voice_cfg = {}
+        try:
+            from hermes_cli.config import read_raw_config
+            _cfg = read_raw_config() or {}
+            voice_cfg = (_cfg.get("discord") or {}).get("voice", {}) or {}
+        except Exception as e:
+            logger.debug("Could not read discord.voice config: %s", e)
+
+        configured_text_ch_id = voice_cfg.get("text_channel_id")
+        voice_mode_default = voice_cfg.get("mode", "all")
+
+        async def _on_auto_join(guild_id, voice_channel, member):
+            """Called by the adapter when it auto-joins a voice channel.
+
+            Wires the same callbacks that ``/voice join`` would set up:
+            voice input handler, disconnect handler, and voice mode getter.
+            """
+            logger.info(
+                "Voice auto-join callback fired: guild=%d, channel=%s, user=%s",
+                guild_id, voice_channel.name, member.display_name,
+            )
+            if hasattr(adapter, "_voice_input_callback"):
+                adapter._voice_input_callback = self._handle_voice_channel_input
+            if hasattr(adapter, "_on_voice_disconnect"):
+                adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+            if hasattr(adapter, "_voice_mode_getter"):
+                adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+                    self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+                )
+            # Find a text channel to associate with this voice session.
+            # Voice input handler needs a text channel to post transcripts
+            # and route replies.
+            #
+            # Priority:
+            #   1. discord.voice.text_channel_id from config.yaml (explicit,
+            #      deterministic — user picks the channel)
+            #   2. First writable text channel in the guild (fallback)
+            text_ch_id = None
+            guild = voice_channel.guild
+            if configured_text_ch_id:
+                try:
+                    text_ch_id = int(configured_text_ch_id)
+                    logger.debug(
+                        "Voice auto-join: using configured text_channel_id=%s",
+                        text_ch_id,
+                    )
+                except (ValueError, TypeError):
+                    logger.warning("Invalid discord.voice.text_channel_id: %s", configured_text_ch_id)
+            if text_ch_id is None:
+                for ch in guild.text_channels:
+                    if ch.permissions_for(guild.me).send_messages:
+                        text_ch_id = ch.id
+                        break
+            if text_ch_id is not None:
+                adapter._voice_text_channels[guild_id] = text_ch_id
+            # Store voice source metadata so voice input shares the
+            # same session as the text conversation.
+            if hasattr(adapter, "_voice_sources") and text_ch_id is not None:
+                source = SessionSource(
+                    platform=Platform.DISCORD,
+                    chat_id=str(text_ch_id),
+                    user_id=str(member.id),
+                    user_name=member.display_name,
+                    chat_type="channel",
+                )
+                adapter._voice_sources[guild_id] = source.to_dict()
+            # Enable voice mode for the text channel
+            if text_ch_id is not None:
+                chat_key = self._voice_key(Platform.DISCORD, str(text_ch_id))
+                self._voice_mode[chat_key] = voice_mode_default
+                self._save_voice_modes()
+                self._set_adapter_auto_tts_enabled(adapter, str(text_ch_id), enabled=True)
+
+        adapter._voice_auto_join_callback = _on_auto_join
+
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
 
@@ -6895,6 +6982,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    self._wire_voice_auto_join(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -7721,6 +7809,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        self._wire_voice_auto_join(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(

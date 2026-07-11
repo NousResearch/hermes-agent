@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import struct
@@ -351,20 +352,36 @@ class VoiceReceiver:
     completed utterances via a callback.
     """
 
-    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
-    MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
+    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance (default; overridden by config)
+    MIN_SPEECH_DURATION = 0.3  # minimum seconds to process (skip noise) (default; overridden by config)
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
+    # RMS energy threshold for voice activity detection (VAD).
+    # Below this, a frame is considered silence/comfort noise.
+    # 16-bit PCM: full-scale = 32767. 300 is ~-40dBFS — well below speech
+    # but above Opus comfort-noise / digital silence.
+    VAD_ENERGY_THRESHOLD = 300
+    # How many recent frames to check for energy (each frame = 20ms).
+    VAD_FRAME_COUNT = 3
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(self, voice_client, allowed_user_ids: set = None, *,
+                 silence_threshold: float = SILENCE_THRESHOLD,
+                 min_speech_duration: float = MIN_SPEECH_DURATION,
+                 vad_energy_threshold: int = VAD_ENERGY_THRESHOLD,
+                 vad_frame_count: int = VAD_FRAME_COUNT):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
+        self.silence_threshold = silence_threshold
+        self.min_speech_duration = min_speech_duration
+        self.vad_energy_threshold = vad_energy_threshold
+        self.vad_frame_count = vad_frame_count
 
         # Decryption
         self._secret_key: Optional[bytes] = None
         self._dave_session = None
         self._bot_ssrc: int = 0
+        self._mode: str = 'unknown'  # encryption mode selected by Discord
 
         # SSRC -> user_id mapping (populated from SPEAKING events)
         self._ssrc_to_user: Dict[int, int] = {}
@@ -373,6 +390,11 @@ class VoiceReceiver:
         # Per-user audio buffers
         self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
         self._last_packet_time: Dict[int, float] = {}
+        # VAD: time of last frame with energy above threshold (speech).
+        # Updated only on loud frames, NOT on comfort-noise/silence frames.
+        self._last_speech_time: Dict[int, float] = {}
+        # Whether we're currently collecting an utterance for this SSRC.
+        self._speaking: Dict[int, bool] = defaultdict(bool)
 
         # Opus decoder per SSRC (each user needs own decoder state)
         self._decoders: Dict[int, object] = {}
@@ -393,11 +415,16 @@ class VoiceReceiver:
         self._secret_key = bytes(conn.secret_key)
         self._dave_session = conn.dave_session
         self._bot_ssrc = conn.ssrc
+        self._mode = getattr(conn, 'mode', 'unknown')
 
         self._install_speaking_hook(conn)
         conn.add_socket_listener(self._on_packet)
         self._running = True
-        logger.info("VoiceReceiver started (bot_ssrc=%d)", self._bot_ssrc)
+        key_hash = hashlib.sha256(self._secret_key).hexdigest()[:16] if self._secret_key else 'None'
+        logger.info(
+            "VoiceReceiver started (bot_ssrc=%d, mode=%s, dave=%s, key=%s)",
+            self._bot_ssrc, self._mode, self._dave_session is not None, key_hash,
+        )
 
     def stop(self):
         """Stop listening and clean up."""
@@ -468,6 +495,26 @@ class VoiceReceiver:
         if not self._running or self._paused:
             return
 
+        # Refresh key/ssrc/dave from the live connection state on every
+        # packet.  Discord can send VOICE_SERVER_UPDATE mid-session which
+        # triggers a reconnect with a NEW secret key.  If we keep using
+        # the stale key captured at start(), every packet fails decryption.
+        # Reading these attributes is cheap (just attribute access).
+        conn = self._vc._connection
+        if conn is not None:
+            new_key = bytes(conn.secret_key) if conn.secret_key is not None else None
+            if new_key is not None and new_key != self._secret_key:
+                old_h = hashlib.sha256(self._secret_key).hexdigest()[:8] if self._secret_key else 'None'
+                new_h = hashlib.sha256(new_key).hexdigest()[:8]
+                logger.info(
+                    "VoiceReceiver: secret key rotated %s -> %s, refreshing",
+                    old_h, new_h,
+                )
+                self._secret_key = new_key
+                self._bot_ssrc = conn.ssrc
+                self._mode = getattr(conn, 'mode', self._mode)
+                self._dave_session = conn.dave_session
+
         # Log first few raw packets for debugging
         self._packet_debug_count += 1
         if self._packet_debug_count <= 5:
@@ -521,20 +568,58 @@ class VoiceReceiver:
         header = bytes(data[:header_size])
         payload_with_nonce = data[header_size:]
 
-        # --- NaCl transport decrypt (aead_xchacha20_poly1305_rtpsize) ---
+        # --- NaCl transport decrypt (mode-aware) ---
+        # discord.py 2.7 supports 4 encryption modes. The nonce format
+        # and cipher differ per mode:
+        #   aead_xchacha20_poly1305_rtpsize: Aead, 4-byte nonce suffix
+        #   xsalsa20_poly1305_lite:          SecretBox, 4-byte nonce suffix
+        #   xsalsa20_poly1305_suffix:        SecretBox, 24-byte nonce suffix
+        #   xsalsa20_poly1305:               SecretBox, header as nonce (12 bytes)
+        #
+        # Using the wrong cipher/nonce format silently fails decryption.
         if len(payload_with_nonce) < 4:
             return
-        nonce = bytearray(24)
-        nonce[:4] = payload_with_nonce[-4:]
-        encrypted = bytes(payload_with_nonce[:-4])
 
+        mode = self._mode
         try:
             import nacl.secret  # noqa: E402 — delayed import, only in voice path
-            box = nacl.secret.Aead(self._secret_key)
-            decrypted = box.decrypt(encrypted, header, bytes(nonce))
+            if mode == 'aead_xchacha20_poly1305_rtpsize':
+                nonce = bytearray(24)
+                nonce[:4] = payload_with_nonce[-4:]
+                encrypted = bytes(payload_with_nonce[:-4])
+                box = nacl.secret.Aead(self._secret_key)
+                decrypted = box.decrypt(encrypted, header, bytes(nonce))
+            elif mode == 'xsalsa20_poly1305_lite':
+                nonce = bytearray(24)
+                nonce[:4] = payload_with_nonce[-4:]
+                encrypted = bytes(payload_with_nonce[:-4])
+                box = nacl.secret.SecretBox(self._secret_key)
+                decrypted = box.decrypt(encrypted, bytes(nonce))
+            elif mode == 'xsalsa20_poly1305_suffix':
+                nonce = payload_with_nonce[-24:]
+                encrypted = bytes(payload_with_nonce[:-24])
+                box = nacl.secret.SecretBox(self._secret_key)
+                decrypted = box.decrypt(encrypted, bytes(nonce))
+            elif mode == 'xsalsa20_poly1305':
+                nonce = bytearray(24)
+                nonce[:12] = header
+                encrypted = bytes(payload_with_nonce)
+                box = nacl.secret.SecretBox(self._secret_key)
+                decrypted = box.decrypt(encrypted, bytes(nonce))
+            else:
+                # Fallback: try aead_xchacha20 (most common in discord.py 2.7+)
+                nonce = bytearray(24)
+                nonce[:4] = payload_with_nonce[-4:]
+                encrypted = bytes(payload_with_nonce[:-4])
+                box = nacl.secret.Aead(self._secret_key)
+                decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
             if self._packet_debug_count <= 10:
-                logger.warning("NaCl decrypt failed: %s (hdr=%d, enc=%d)", e, header_size, len(encrypted))
+                logger.warning(
+                    "NaCl decrypt failed (mode=%s): %s (hdr=%d, payload=%d, ssrc=%d, bot_ssrc=%d, key_len=%d)",
+                    mode, e, header_size, len(payload_with_nonce), ssrc, self._bot_ssrc,
+                    len(self._secret_key) if self._secret_key else 0,
+                )
             return
 
         # Skip encrypted extension data to get the actual opus payload
@@ -570,30 +655,73 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
+            if not user_id:
+                # Try inline auto-mapping so we don't miss the first few seconds
+                # of speech while waiting for the listen loop's check_silence()
+                # to call _infer_user_for_ssrc.
+                user_id = self._infer_user_for_ssrc(ssrc)
+                if user_id:
+                    with self._lock:
+                        self._ssrc_to_user[ssrc] = user_id
+                    logger.info("Inline auto-mapped ssrc=%d -> user=%d (first packet)", ssrc, user_id)
             if user_id:
                 try:
                     import davey
                     decrypted = self._dave_session.decrypt(
                         user_id, davey.MediaType.audio, decrypted
                     )
+                    if self._packet_debug_count <= 10:
+                        logger.debug("DAVE decrypt OK: ssrc=%d, user=%d, payload=%d bytes", ssrc, user_id, len(decrypted))
                 except Exception as e:
                     # Unencrypted passthrough — use NaCl-decrypted data as-is
                     if "Unencrypted" not in str(e):
                         if self._packet_debug_count <= 10:
-                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                            logger.debug("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
-            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
-            # Opus decode directly — audio may be in passthrough mode.
-            # Buffer will get a user_id when SPEAKING event arrives later.
+            else:
+                # No user_id yet and inline inference failed — skip DAVE and
+                # discard this packet's PCM to avoid buffering DAVE-encrypted
+                # garbage that would corrupt the first utterance.
+                if self._packet_debug_count <= 10:
+                    logger.debug("DAVE skip: no user_id for ssrc=%d, discarding packet", ssrc)
+                return
 
         # --- Opus decode -> PCM ---
         try:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
+
+            # VAD: compute RMS energy to classify speech vs silence
+            # 16-bit PCM samples; RMS tells us if this frame has voice energy.
+            samples = struct.unpack('<%dh' % (len(pcm) // 2), pcm)
+            if samples:
+                rms = int(math.sqrt(sum(s * s for s in samples) / len(samples)))
+            else:
+                rms = 0
+            is_speech = rms >= self.vad_energy_threshold
+
             with self._lock:
-                self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
+                if is_speech:
+                    # Only buffer frames with voice energy — skip silence/
+                    # comfort-noise packets that inflate the recording.
+                    self._buffers[ssrc].extend(pcm)
+                    self._last_speech_time[ssrc] = time.monotonic()
+                    if not self._speaking[ssrc]:
+                        self._speaking[ssrc] = True
+                        logger.info("VAD: speech started for ssrc=%d (rms=%d)", ssrc, rms)
+                else:
+                    # Silence frame — buffer a small amount for natural
+                    # transitions, but don't let it dominate.  Only extend
+                    # if we're in an active utterance (avoids pre-speech
+                    # silence padding).
+                    if self._speaking[ssrc]:
+                        self._buffers[ssrc].extend(pcm)
+
+            if self._packet_debug_count <= 10:
+                buf_len = len(self._buffers.get(ssrc, b''))
+                logger.debug("Opus decode OK: ssrc=%d, pcm=%d bytes, rms=%d, speech=%s, buffer=%d bytes", ssrc, len(pcm), rms, is_speech, buf_len)
         except Exception as e:
             with self._lock:
                 self._decoders.pop(ssrc, None)
@@ -644,26 +772,39 @@ class VoiceReceiver:
             ssrc_list = list(self._buffers.keys())
 
             for ssrc in ssrc_list:
-                last_time = self._last_packet_time.get(ssrc, now)
-                silence_duration = now - last_time
+                # Use _last_speech_time (VAD-based) instead of
+                # _last_packet_time — comfort-noise/silence packets keep
+                # updating _last_packet_time, which prevents the silence
+                # threshold from ever triggering and inflates recordings
+                # with tens of seconds of silence.
+                last_speech = self._last_speech_time.get(ssrc, 0)
+                silence_duration = now - last_speech
                 buf = self._buffers[ssrc]
                 # 48kHz, 16-bit, stereo = 192000 bytes/sec
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
 
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+                if silence_duration >= self.silence_threshold and buf_duration >= self.min_speech_duration:
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         # SSRC not mapped (SPEAKING event missing after bot rejoin).
                         # Infer from allowed users in the voice channel.
                         user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
+                        logger.info(
+                            "Utterance completed: user=%d, %.2fs audio (buffer=%d bytes)",
+                            user_id, buf_duration, len(buf),
+                        )
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
                     self._last_packet_time.pop(ssrc, None)
-                elif silence_duration >= self.SILENCE_THRESHOLD * 2:
+                    self._last_speech_time.pop(ssrc, None)
+                    self._speaking[ssrc] = False
+                elif silence_duration >= self.silence_threshold * 2:
                     # Stale buffer with no valid user — discard
                     self._buffers.pop(ssrc, None)
                     self._last_packet_time.pop(ssrc, None)
+                    self._last_speech_time.pop(ssrc, None)
+                    self._speaking[ssrc] = False
 
         return completed
 
@@ -752,7 +893,9 @@ class DiscordAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
+    # Auto-disconnect from voice channel after this many seconds of inactivity.
+    # Set to 0 to disable auto-disconnect (bot stays in voice channel indefinitely).
+    # Override via discord.voice.idle_timeout in config.yaml.
     VOICE_TIMEOUT = 300
 
     def __init__(self, config: PlatformConfig):
@@ -775,9 +918,32 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
+        self._voice_auto_join_callback: Optional[Callable] = None  # set by gateway to wire voice callbacks on auto-join
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Read voice config from discord.voice.* in config.yaml.
+        # Uses read_raw_config() like _load_voice_fx_config() does, because
+        # voice settings are not bridged into config.extra by load_gateway_config().
+        voice_cfg: Dict[str, Any] = {}
+        try:
+            from hermes_cli.config import read_raw_config
+            _raw = read_raw_config() or {}
+            voice_cfg = ((_raw.get("discord") or {}).get("voice") or {}) or {}
+        except Exception as e:
+            logger.debug("Could not read discord.voice config: %s", e)
+        self._voice_cfg = voice_cfg
+        self.VOICE_TIMEOUT = int(voice_cfg.get("idle_timeout", self.VOICE_TIMEOUT))
+        self._voice_auto_join = bool(voice_cfg.get("auto_join", False))
+        self._voice_auto_disconnect = bool(voice_cfg.get("auto_disconnect", True))
+        self._voice_text_channel_id = voice_cfg.get("text_channel_id") or None
+        self._voice_channel_id = voice_cfg.get("channel_id") or None  # specific voice channel to auto-join
+        self._voice_mode_default = str(voice_cfg.get("mode", "all"))
+        self._voice_silence_threshold = float(voice_cfg.get("silence_threshold", VoiceReceiver.SILENCE_THRESHOLD))
+        self._voice_min_speech_duration = float(voice_cfg.get("min_speech_duration", VoiceReceiver.MIN_SPEECH_DURATION))
+        _vad_cfg = voice_cfg.get("vad", {}) or {}
+        self._voice_vad_energy_threshold = int(_vad_cfg.get("energy_threshold", VoiceReceiver.VAD_ENERGY_THRESHOLD))
+        self._voice_vad_frame_count = int(_vad_cfg.get("frame_count", VoiceReceiver.VAD_FRAME_COUNT))
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
         # the bot in the channel when the user deliberately picked text-only
@@ -1138,18 +1304,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
-                """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
+                """Track voice channel join/leave events, auto-join, and
+                auto-disconnect when the last human leaves."""
                 # Ignore the bot itself
                 if member == adapter_self._client.user:
                     return
 
+                guild_id = member.guild.id
                 joined = before.channel is None and after.channel is not None
                 left = before.channel is not None and after.channel is None
                 switched = (
@@ -1168,6 +1329,77 @@ class DiscordAdapter(BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+
+                # Auto-join: when an allowed user joins a voice channel and the
+                # bot is not yet connected to any voice channel in this guild,
+                # join them automatically. If discord.voice.channel_id is set,
+                # only auto-join that specific channel.
+                if joined and after.channel is not None and adapter_self._voice_auto_join:
+                    # Check if user is in the allowed list
+                    allowed = getattr(adapter_self, "_allowed_user_ids", set())
+                    if "*" in allowed or str(member.id) in allowed:
+                        # If a specific channel is configured, only join that one
+                        configured_ch_id = adapter_self._voice_channel_id
+                        if configured_ch_id and after.channel.id != int(configured_ch_id):
+                            logger.debug(
+                                "Auto-join skipped: user joined %s (id=%d) but configured channel is %s",
+                                after.channel.name, after.channel.id, configured_ch_id,
+                            )
+                        else:
+                            existing = adapter_self._voice_clients.get(guild_id)
+                            if not existing or not existing.is_connected():
+                                logger.info(
+                                    "Auto-joining voice channel %s (guild %d) for user %s",
+                                    after.channel.name, guild_id, member.display_name,
+                                )
+                                try:
+                                    success = await adapter_self.join_voice_channel(after.channel)
+                                    if success:
+                                        # Let the gateway wire voice callbacks
+                                        # (input handler, TTS mode, etc.)
+                                        cb = adapter_self._voice_auto_join_callback
+                                        if cb:
+                                            await cb(guild_id, after.channel, member)
+                                        logger.info(
+                                            "Auto-joined voice channel %s (guild %d)",
+                                            after.channel.name, guild_id,
+                                        )
+                                except Exception as e:
+                                    logger.warning("Auto-join failed: %s", e)
+
+                # Auto-disconnect: when a user leaves or switches away from the
+                # voice channel the bot is currently in, check if any non-bot
+                # humans remain. If the channel is empty, disconnect the bot.
+                if left or switched and adapter_self._voice_auto_disconnect:
+                    vc = adapter_self._voice_clients.get(guild_id)
+                    if vc and vc.is_connected():
+                        bot_channel = vc.channel
+                        # The user left from the bot's current channel
+                        if bot_channel and before.channel and bot_channel.id == before.channel.id:
+                            bot_user = adapter_self._client.user if adapter_self._client else None
+                            humans = [
+                                m for m in bot_channel.members
+                                if not (bot_user and m.id == bot_user.id) and not m.bot
+                            ]
+                            if not humans:
+                                logger.info(
+                                    "Last human left voice channel %s (guild %d) — auto-disconnecting",
+                                    bot_channel.name, guild_id,
+                                )
+                                try:
+                                    # Grab the text channel ID BEFORE calling
+                                    # leave_voice_channel, which pops it from
+                                    # _voice_text_channels during cleanup.
+                                    text_ch_id = adapter_self._voice_text_channels.get(guild_id)
+                                    await adapter_self.leave_voice_channel(guild_id)
+                                    if adapter_self._on_voice_disconnect and text_ch_id:
+                                        adapter_self._on_voice_disconnect(str(text_ch_id))
+                                    if text_ch_id and adapter_self._client:
+                                        ch = adapter_self._client.get_channel(text_ch_id)
+                                        if ch:
+                                            await ch.send("Left voice channel (everyone left).")
+                                except Exception as e:
+                                    logger.warning("Auto-disconnect on empty channel failed: %s", e)
 
             # Register slash commands
             if self._slash_commands:
@@ -2752,7 +2984,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Start voice receiver (Phase 2: listen to users)
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver = VoiceReceiver(
+                    vc, allowed_user_ids=self._allowed_user_ids,
+                    silence_threshold=self._voice_silence_threshold,
+                    min_speech_duration=self._voice_min_speech_duration,
+                    vad_energy_threshold=self._voice_vad_energy_threshold,
+                    vad_frame_count=self._voice_vad_frame_count,
+                )
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -2880,19 +3118,39 @@ class DiscordAdapter(BasePlatformAdapter):
                 receiver.resume()
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
-        """Return the voice channel the user is currently in, or None."""
+        """Return the voice channel the user is currently in, or None.
+
+        Works WITHOUT the privileged Server Members intent: Discord sends
+        VOICE_STATE_UPDATE events whenever a user joins/leaves/moves voice
+        channels, and discord.py populates ``guild.voice_states`` from those
+        events (only requires ``intents.voice_states = True``).  When the
+        Members intent is off, ``guild.get_member()`` returns ``None`` because
+        the member cache is empty — but ``guild.voice_states`` is still
+        populated.  We fall back to fetching the member only if voice_states
+        doesn't have it.
+        """
         if not self._client:
             return None
         guild = self._client.get_guild(guild_id)
         if not guild:
             return None
-        member = guild.get_member(int(user_id))
-        if not member or not member.voice:
-            return None
-        return member.voice.channel
+        uid = int(user_id)
+        # Fast path: voice_states cache (populated from VOICE_STATE_UPDATE
+        # events, does NOT need Members intent).  discord.py stores these in
+        # the private _voice_states dict; there's no public property.
+        vs = guild._voice_states.get(uid)
+        if vs and vs.channel:
+            return vs.channel
+        # Fallback: member cache (needs Members intent) or fetch.
+        member = guild.get_member(uid)
+        if member and member.voice and member.voice.channel:
+            return member.voice.channel
+        return None
 
     def _reset_voice_timeout(self, guild_id: int) -> None:
         """Reset the auto-disconnect inactivity timer."""
+        if self.VOICE_TIMEOUT <= 0:
+            return  # auto-disconnect disabled
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
@@ -3045,11 +3303,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 # guild-scoped and not cross-guild.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
                 for user_id, pcm_data in completed:
+                    logger.debug(
+                        "Voice utterance: user_id=%d, pcm=%d bytes",
+                        user_id, len(pcm_data),
+                    )
                     if not self._is_allowed_user(
                         str(user_id),
                         guild=_vc_guild,
                         is_dm=False,
                     ):
+                        logger.debug("Voice utterance filtered by _is_allowed_user: user_id=%d", user_id)
                         continue
                     # A user speaking to the bot is activity too — not just the
                     # bot's own playback. Reset the inactivity timer so an active
@@ -3064,6 +3327,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes):
         """Convert PCM -> WAV -> STT -> callback."""
+        logger.debug("Processing voice input: guild=%d, user=%d, pcm=%d bytes", guild_id, user_id, len(pcm_data))
         from tools.voice_mode import is_whisper_hallucination
 
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
@@ -3076,9 +3340,14 @@ class DiscordAdapter(BasePlatformAdapter):
             result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
+                logger.debug("Voice STT failed: %s", result.get('error', 'unknown'))
                 return
             transcript = result.get("transcript", "").strip()
-            if not transcript or is_whisper_hallucination(transcript):
+            if not transcript:
+                logger.debug("Voice STT: empty transcript")
+                return
+            if is_whisper_hallucination(transcript):
+                logger.debug("Voice STT: hallucination filtered: %s", transcript[:100])
                 return
 
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])

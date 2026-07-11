@@ -2557,6 +2557,7 @@ _EXTERNAL_MODE_VALUE = "exact-once"
 _EXTERNAL_GRANT_CHOICE = "approve_once"
 _EXTERNAL_GRANT_ALGORITHM = "Ed25519"
 _EXTERNAL_GRANT_MAX_FRAME_BYTES = 64 * 1024
+_EXTERNAL_GRANT_WAIT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -2943,13 +2944,17 @@ def _try_read_grant_line() -> Optional[dict]:
     if protocol.grant_input_fd is None:
         return None
 
+    deadline = time.monotonic() + _EXTERNAL_GRANT_WAIT_SECONDS
     while b"\n" not in _grant_read_buffer:
         if len(_grant_read_buffer) >= _EXTERNAL_GRANT_MAX_FRAME_BYTES:
             _grant_read_buffer = bytearray()
             _external_fd_protocol_failed = True
             return None
         try:
-            ready, _, _ = select.select([protocol.grant_input_fd], [], [], 0)
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining == 0:
+                return None
+            ready, _, _ = select.select([protocol.grant_input_fd], [], [], remaining)
         except OSError:
             return None
         if not ready:

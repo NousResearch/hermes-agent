@@ -26,7 +26,10 @@ to this adapter's localhost `/ingest` endpoint. A bridge can support:
 - Artifact/image/HTML annotation workspaces.
 - Notebook-consistent artifact controls: HTML/artifact surfaces should use the
   same compact, icon-first menu language as the writing surface, with matching
-  quick intents such as summarize, tasks, email draft, and workpaper note.
+  quick intents such as summarize, tasks, creative draft, email draft, and
+  workpaper note.
+- Creative notebook turns for drafting, remixing, worldbuilding, brainstorming,
+  and interpretation that should not be forced into a business/workpaper frame.
 - Passwordless trusted-LAN operation or explicit browser authentication.
 - Away-from-LAN access through Tailscale Funnel with a permanent, high-entropy
   `/remote/<key>` bookmark path that does not depend on Kindle cookies, query
@@ -66,7 +69,7 @@ The ingest body must include `text`, `user`, and `chat_id`. The companion bridge
 may also send optional metadata that this adapter converts into agent-visible
 context:
 
-- `intent`: one of `summarize`, `tasks`, `email`, or `workpaper`.
+- `intent`: one of `summarize`, `tasks`, `creative`, `email`, or `workpaper`.
 - `tags`: an array or comma-separated list such as `["client", "todo"]`.
 - `source` / `artifact_type`: use `source: "live-page"` or
   `artifact_type: "html"` when the Kindle user is annotating rendered HTML.
@@ -79,6 +82,11 @@ responses while the agent still performs tool work. When the bridge marks a note
 as live-page or HTML work, the adapter reminds the agent to update the configured
 live-page/artifact display so newly generated HTML replaces the old visible
 page.
+
+The `workpaper` intent is only one mode. For open-ended sketches, fiction,
+poetry, product concepts, personal notes, or "what does this make you think of?"
+turns, the bridge should send `creative` or omit `intent` entirely so the agent
+can interpret the note without narrowing it to Bearden or business workflows.
 
 ## Remote-access security boundary
 

@@ -244,3 +244,37 @@ async def test_ingest_adds_bridge_intent_tags_ocr_and_live_page_context(
     assert "cleaned transcription was 'pay J. Smith $1,000'" in text
     assert text.endswith("\n\nUse the markups.")
     assert dispatched[0].raw_message == payload
+
+
+@pytest.mark.asyncio
+async def test_ingest_supports_creative_notebook_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter(monkeypatch)
+    dispatched = []
+
+    async def accept(event) -> None:
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", accept)
+    payload = {
+        **_payload(text="Turn this sketch into a strange little opening scene."),
+        "intent": "creative",
+        "tags": ["draft", "story"],
+    }
+    async with _client(adapter) as client:
+        request = asyncio.create_task(
+            client.post("/ingest", json=payload, headers={"X-Kindle-Token": "test-token"})
+        )
+        await _wait_for_pending(adapter, "scribe-1")
+        await adapter.send("scribe-1", "ok", metadata={"notify": True})
+        response = await request
+
+    assert response.status == 200
+    assert len(dispatched) == 1
+    text = dispatched[0].text
+    assert "Intent: creative." in text
+    assert "Treat the Kindle as a creative notebook" in text
+    assert "Do not force it into workpaper, task, or business structure" in text
+    assert "Notebook tags: #draft, #story." in text
+    assert text.endswith("\n\nTurn this sketch into a strange little opening scene.")

@@ -70,6 +70,11 @@ KINDLE_INTENTS = {
         "Draft a concise email from the note or marked page. Do not send it. Put "
         "the draft first, then a short note about assumptions."
     ),
+    "creative": (
+        "Treat the Kindle as a creative notebook. Help explore, extend, rewrite, "
+        "or shape the idea in the user's voice. Do not force it into workpaper, "
+        "task, or business structure unless the user asks."
+    ),
     "workpaper": (
         "Create a workpaper-ready note: facts, evidence, open items, risks, and "
         "next action. Keep amounts, dates, and names exact."

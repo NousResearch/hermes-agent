@@ -38,7 +38,12 @@ function Harness({
 }: {
   activeSessionId: string | null
   onReady: (controls: Controls) => void
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<T>
 }) {
   const controls = useModelControls({
     activeSessionId,
@@ -128,7 +133,7 @@ describe('useModelControls', () => {
       session_id: 'session-1',
       key: 'model',
       value: 'claude-sonnet-4.6 --provider anthropic'
-    })
+    }, 45_000)
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 

@@ -15,7 +15,12 @@ interface ModelSelection {
 interface ModelControlsOptions {
   activeSessionId: string | null
   queryClient: QueryClient
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) => Promise<T>
 }
 
 export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
@@ -97,7 +102,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
           session_id: activeSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider}`
-        })
+        }, 45_000)
 
         void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
 

@@ -12823,8 +12823,13 @@ def _(rid, params: dict) -> dict:
             include_unconfigured=bool(params.get("include_unconfigured")),
             picker_hints=True,
             canonical_order=True,
-            pricing=True,
-            capabilities=True,
+            # Session model pickers sit on the hot desktop websocket path. Keep
+            # normal opens metadata-light and deterministic; explicit refreshes
+            # may ask for richer pricing/capability badges, but must degrade
+            # before the Electron 15s REST/IPC timeout becomes user-visible.
+            pricing=bool(params.get("refresh")),
+            capabilities=bool(params.get("refresh")),
+            enrichment_timeout=2.0 if params.get("refresh") else None,
             refresh=bool(params.get("refresh")),
             probe_custom_providers=bool(params.get("refresh")),
             probe_current_custom_provider=not bool(params.get("refresh")),

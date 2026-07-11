@@ -33,6 +33,8 @@ Substrate facts (verified May 2026):
 
 from __future__ import annotations
 
+import concurrent.futures
+import copy
 from dataclasses import dataclass, replace
 from typing import Optional
 
@@ -117,6 +119,7 @@ def build_models_payload(
     canonical_order: bool = False,
     pricing: bool = False,
     capabilities: bool = False,
+    enrichment_timeout: float | None = None,
     force_fresh_nous_tier: bool = False,
     refresh: bool = False,
     probe_custom_providers: bool = True,
@@ -148,6 +151,10 @@ def build_models_payload(
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
       controls (fast toggle / reasoning) to what each model actually
       supports, instead of offering knobs the backend would reject.
+    - ``enrichment_timeout``: optional wall-clock budget for the
+      pricing/capabilities post-pass. When the budget is exceeded or the
+      enrichment code raises, the base providers/models payload is returned
+      with ``degraded=True`` and a warning instead of blocking the picker.
     - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
       selecting Portal-recommended Nous models and applying tier gating. Keep
       this false for UI picker opens; explicit auth/model flows can opt in
@@ -239,16 +246,79 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
-    if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
-    if capabilities:
-        _apply_capabilities(rows)
+    degraded = False
+    warnings: list[str] = []
+    if pricing or capabilities:
+        degraded, warnings = _apply_optional_enrichment(
+            rows,
+            pricing=pricing,
+            capabilities=capabilities,
+            force_fresh_nous_tier=force_fresh_nous_tier,
+            timeout=enrichment_timeout,
+        )
 
-    return {
+    payload = {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+    if degraded:
+        payload["degraded"] = True
+        payload["warnings"] = warnings
+    return payload
+
+
+def _apply_optional_enrichment(
+    rows: list[dict],
+    *,
+    pricing: bool,
+    capabilities: bool,
+    force_fresh_nous_tier: bool,
+    timeout: float | None,
+) -> tuple[bool, list[str]]:
+    """Best-effort pricing/capability enrichment for model pickers.
+
+    The base provider/model list is the critical UI payload. Pricing and
+    capability badges are helpful, but they may touch models.dev, Portal tier
+    checks, or provider catalog caches. Keep those extras isolated so a slow
+    metadata source cannot make ``/api/model/options`` time out.
+    """
+
+    work_rows = copy.deepcopy(rows)
+
+    def _run() -> None:
+        if pricing:
+            _apply_pricing(work_rows, force_fresh_nous_tier=force_fresh_nous_tier)
+        if capabilities:
+            _apply_capabilities(work_rows)
+
+    def _commit() -> None:
+        rows[:] = work_rows
+
+    if timeout is None or timeout <= 0:
+        try:
+            _run()
+            _commit()
+            return False, []
+        except Exception as exc:
+            return True, [f"model metadata enrichment failed: {exc}"]
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = pool.submit(_run)
+    try:
+        fut.result(timeout=timeout)
+        _commit()
+        pool.shutdown(wait=True)
+        return False, []
+    except concurrent.futures.TimeoutError:
+        fut.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        return True, [
+            f"model metadata enrichment exceeded {timeout:.1f}s; returned base model list"
+        ]
+    except Exception as exc:
+        pool.shutdown(wait=False, cancel_futures=True)
+        return True, [f"model metadata enrichment failed: {exc}"]
 
 
 def _apply_capabilities(rows: list[dict]) -> None:

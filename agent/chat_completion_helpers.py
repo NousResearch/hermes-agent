@@ -1783,7 +1783,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
-            codex_kwargs.pop("tools", None)
+            for key in ("tools", "tool_choice", "parallel_tool_calls"):
+                codex_kwargs.pop(key, None)
             summary_response = agent._run_codex_stream(codex_kwargs)
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
@@ -1876,7 +1877,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
                 codex_kwargs = agent._build_api_kwargs(api_messages)
-                codex_kwargs.pop("tools", None)
+                for key in ("tools", "tool_choice", "parallel_tool_calls"):
+                    codex_kwargs.pop(key, None)
                 retry_response = agent._run_codex_stream(codex_kwargs)
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)

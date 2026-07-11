@@ -3860,6 +3860,9 @@ class TestHandleMaxIterations:
         agent._base_url_hostname = "chatgpt.com"
         agent.model = "gpt-5.5"
         agent._cached_system_prompt = "You are helpful."
+        agent._todo_store.write([
+            {"id": "canary", "content": "finish the plan", "status": "in_progress"}
+        ])
         captured = {}
 
         def fake_run_codex_stream(kwargs):
@@ -3888,6 +3891,9 @@ class TestHandleMaxIterations:
             result = agent._handle_max_iterations(messages, 90)
 
         assert result == "Summary"
+        assert "tools" not in captured
+        assert "tool_choice" not in captured
+        assert "parallel_tool_calls" not in captured
         input_items = captured["input"]
         assert not any(
             item.get("type") == "function_call_output"

@@ -174,7 +174,7 @@ function stripInitialPromptGap(data: string) {
 // prompt is the short block after the last blank line (starship's add_newline
 // gap); only a short tail is dropped, so real command output is never trimmed and
 // configs without that blank line simply keep the historical prompt (no loss).
-function cleanReviveSnapshot(serialized: string): string {
+export function cleanReviveSnapshot(serialized: string): string {
   const visible = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
   const lines = serialized.split(/\r?\n/)
 
@@ -198,6 +198,28 @@ function cleanReviveSnapshot(serialized: string): string {
   }
 
   return lines.join('\r\n')
+}
+
+// A legacy revive buffer saved before the persistence gate in `persistSnapshot`
+// below existed can contain nothing but the shell's boot prompt, duplicated once
+// per relaunch cycle (the original bug — see #61572): every visible line in that
+// buffer is the identical prompt text. Detect exactly that signature so an
+// upgrade migrates/clears it instead of replaying it forever. Any buffer that
+// also holds real command output always has at least one visible line that
+// differs from the rest (the command, or its result), so genuine history is
+// never mistaken for this and is always preserved.
+export function isLegacyDuplicatedIdleBuffer(serialized: string): boolean {
+  const visible = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
+  const lines = serialized
+    .split(/\r?\n/)
+    .map(visible)
+    .filter(line => line !== '')
+
+  if (lines.length === 0) {
+    return true
+  }
+
+  return lines.every(line => line === lines[0])
 }
 
 interface UseTerminalSessionOptions {
@@ -475,7 +497,12 @@ export function useTerminalSession({
     // so the fresh prompt lands flush under the restored block.
     const initialReviveBuffer = initialReviveBufferRef.current
 
-    if (initialReviveBuffer) {
+    if (initialReviveBuffer && isLegacyDuplicatedIdleBuffer(initialReviveBuffer)) {
+      // Buffer predates the persistence gate below and is nothing but the boot
+      // prompt duplicated by the original bug — drop it instead of replaying
+      // (and stacking) it again, and wipe it from storage so this only runs once.
+      updateTerminalReviveBuffer(id, '')
+    } else if (initialReviveBuffer) {
       term.write(initialReviveBuffer)
       term.write('\r\n')
     }
@@ -526,6 +553,14 @@ export function useTerminalSession({
       }
     })
 
+    // Single choke point for "this session had real input" — must be called from
+    // every renderer-to-PTY write path (keyboard via term.onData, dropped paths,
+    // injected commands), not just keystrokes, or that path's output silently
+    // gets excluded from persistence by the gate in persistSnapshot above.
+    const markSessionActive = () => {
+      hasSessionActivityRef.current = true
+    }
+
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
         return
@@ -551,6 +586,7 @@ export function useTerminalSession({
         return
       }
 
+      markSessionActive()
       void terminalApi.write(id, `${paths.map(p => quotePathForShell(p, shellNameRef.current)).join(' ')} `)
       term.focus()
       triggerHaptic('selection')
@@ -647,7 +683,7 @@ export function useTerminalSession({
     })
 
     const dataDisposable = term.onData(data => {
-      hasSessionActivityRef.current = true
+      markSessionActive()
       const id = sessionIdRef.current
 
       if (id) {
@@ -854,6 +890,7 @@ export function useTerminalSession({
         return
       }
 
+      hasSessionActivityRef.current = true
       void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
       $terminalInjection.set(null)
       termRef.current?.focus()

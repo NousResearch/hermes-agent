@@ -16305,7 +16305,19 @@ def main(
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
-                cli.chat(query, images=single_query_images or None)
+                # Issue #61508: catch KeyboardInterrupt so a SIGINT/SIGTERM
+                # in the human-facing single-query path produces a clean
+                # 130 exit instead of a raw Python traceback landing on
+                # the user's terminal. The signal handler can raise
+                # KeyboardInterrupt inside _interrupt_queue.get(timeout=...)
+                # frames deep in cli.chat() — quiet mode already wraps
+                # run_conversation() with this handler, mirror it here.
+                try:
+                    cli.chat(query, images=single_query_images or None)
+                except KeyboardInterrupt:
+                    _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                    sys.exit(130)
                 cli._print_exit_summary(clear_screen=False)
         finally:
             _finalize_single_query(cli)

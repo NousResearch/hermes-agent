@@ -160,6 +160,20 @@ def build_top_level_parser():
         default=None,
         help="Resume a previous session by ID or title",
     )
+    def _positive_int(val):
+        iv = int(val)
+        if iv < 1:
+            raise argparse.ArgumentTypeError(f"{val} is not a positive integer")
+        return iv
+
+    parser.add_argument(
+        "--recent",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="With --resume: load only the last N messages instead of full history. "
+        "Useful for quick check-ins on long sessions without paying full token cost.",
+    )
     parser.add_argument(
         "--continue",
         "-c",
@@ -315,6 +329,13 @@ def build_top_level_parser():
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)",
+    )
+    chat_parser.add_argument(
+        "--recent",
+        type=_positive_int,
+        default=argparse.SUPPRESS,
+        metavar="N",
+        help="With --resume: load only the last N messages instead of full history",
     )
     chat_parser.add_argument(
         "--continue",

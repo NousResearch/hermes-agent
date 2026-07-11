@@ -771,7 +771,10 @@ class CLICommandsMixin:
         _sync_process_session_id(target_id)
 
         # Load conversation history (strip transcript-only metadata entries)
-        restored = self._session_db.get_messages_as_conversation(target_id)
+        restored = self._session_db.get_messages_as_conversation(
+            target_id,
+            limit=getattr(self, "_recent_limit", None),
+        )
         restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
 

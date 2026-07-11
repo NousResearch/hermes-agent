@@ -232,6 +232,117 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert "..." in kwargs["text"]
         assert len(kwargs["text"]) < 5000
+
+    @pytest.mark.asyncio
+    async def test_hides_approval_buttons_when_truncated(self):
+        """Regression test for #62359: long commands must not allow blind approval."""
+        import telegram
+        telegram.InlineKeyboardMarkup.reset_mock()
+        telegram.InlineKeyboardButton.reset_mock()
+
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 99
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        long_cmd = "x" * 5000
+        await adapter.send_exec_approval(
+            chat_id="12345", command=long_cmd, session_key="s"
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        # Should show warning, not standard approval text
+        assert "Command Too Long for Telegram Approval" in kwargs["text"]
+        assert "Approval buttons are hidden" in kwargs["text"]
+        assert "5000 chars" in kwargs["text"]
+        # Should show only Deny button (check InlineKeyboardButton constructor calls)
+        assert telegram.InlineKeyboardButton.call_count == 1
+        button_call = telegram.InlineKeyboardButton.call_args
+        assert button_call[1]["callback_data"] == "ea:deny:1"
+        assert "Deny" in button_call[0][0]
+
+    @pytest.mark.asyncio
+    async def test_shows_all_buttons_for_short_commands(self):
+        """Verify short commands still show the full approval button set."""
+        import telegram
+        telegram.InlineKeyboardMarkup.reset_mock()
+        telegram.InlineKeyboardButton.reset_mock()
+
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 88
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        short_cmd = "echo hello"
+        await adapter.send_exec_approval(
+            chat_id="12345", command=short_cmd, session_key="s"
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        # Should show standard approval text
+        assert "Command Approval Required" in kwargs["text"]
+        assert "Command Too Long" not in kwargs["text"]
+        # Should show all four buttons (check InlineKeyboardButton constructor calls)
+        assert telegram.InlineKeyboardButton.call_count == 4
+        # Collect all callback_data from button calls
+        callbacks = [
+            call.kwargs.get("callback_data") or call[1].get("callback_data")
+            for call in telegram.InlineKeyboardButton.call_args_list
+        ]
+        assert "ea:once:1" in callbacks
+        assert "ea:session:1" in callbacks
+        assert "ea:always:1" in callbacks
+        assert "ea:deny:1" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_shows_all_buttons_for_exactly_3800_chars(self):
+        """Edge case: commands exactly at the limit should not be truncated."""
+        import telegram
+        telegram.InlineKeyboardMarkup.reset_mock()
+        telegram.InlineKeyboardButton.reset_mock()
+
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 77
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        exact_cmd = "x" * 3800
+        await adapter.send_exec_approval(
+            chat_id="12345", command=exact_cmd, session_key="s"
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        # Should show standard approval text (not truncated)
+        assert "Command Approval Required" in kwargs["text"]
+        assert "Command Too Long" not in kwargs["text"]
+        # Should show all four buttons
+        assert telegram.InlineKeyboardButton.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_hides_approval_buttons_for_3801_chars(self):
+        """Edge case: commands just over the limit trigger truncation."""
+        import telegram
+        telegram.InlineKeyboardMarkup.reset_mock()
+        telegram.InlineKeyboardButton.reset_mock()
+
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 66
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        over_cmd = "x" * 3801
+        await adapter.send_exec_approval(
+            chat_id="12345", command=over_cmd, session_key="s"
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        # Should show warning (truncated)
+        assert "Command Too Long for Telegram Approval" in kwargs["text"]
+        assert "3801 chars" in kwargs["text"]
+        # Should show only Deny button
+        assert telegram.InlineKeyboardButton.call_count == 1
+        button_call = telegram.InlineKeyboardButton.call_args
+        assert button_call[1]["callback_data"] == "ea:deny:1"
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 

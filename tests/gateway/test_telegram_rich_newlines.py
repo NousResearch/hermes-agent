@@ -191,9 +191,16 @@ class TestVisuallyEmptyGuard:
         send_adapter._bot.send_message.assert_called()
 
 
-def _is_visually_empty_ref(text):
-    """Mirror of the adapter helper for the pure-unit test below."""
-    import plugins.platforms.telegram.adapter as tam
+def test_is_visually_empty_helper():
+    """Direct unit assertions on the adapter's invisible-text helper (#60848)."""
+    from plugins.platforms.telegram.adapter import _is_visually_empty
 
-    return tam._is_visually_empty(text)
+    assert _is_visually_empty("") is True
+    assert _is_visually_empty("   \n\t  ") is True
+    # Zero-width / format-control only — delivers as an empty bubble.
+    assert _is_visually_empty("\u200b\u200c\u200d\u2060\ufeff\u00ad") is True
+    assert _is_visually_empty("\u200e\u200f\u180e") is True
+    # Real glyphs present — must NOT be rejected.
+    assert _is_visually_empty("hello") is False
+    assert _is_visually_empty("hello\u200bworld") is False
 

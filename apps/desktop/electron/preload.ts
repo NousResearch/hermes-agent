@@ -2,6 +2,20 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  // Render cache (startup-latency): fire-and-forget pushes + one boot read.
+  // All fail-open in main — a cache problem never errors into the renderer.
+  renderCache: {
+    read: (gatewayUrl, activeStoredSessionId) =>
+      ipcRenderer.invoke('hermes:render-cache:read', gatewayUrl, activeStoredSessionId),
+    putSessions: (gatewayUrl, data) => ipcRenderer.send('hermes:render-cache:put-sessions', gatewayUrl, data),
+    putStatus: (gatewayUrl, data) => ipcRenderer.send('hermes:render-cache:put-status', gatewayUrl, data),
+    putTranscript: (gatewayUrl, storedSessionId, rows) =>
+      ipcRenderer.send('hermes:render-cache:put-transcript', gatewayUrl, storedSessionId, rows),
+    cullSession: (gatewayUrl, storedSessionId) =>
+      ipcRenderer.send('hermes:render-cache:cull-session', gatewayUrl, storedSessionId),
+    sweep: (gatewayUrl, liveSessionIds) => ipcRenderer.send('hermes:render-cache:sweep', gatewayUrl, liveSessionIds),
+    reportDivergence: rows => ipcRenderer.send('hermes:render-cache:report-divergence', rows)
+  },
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),

@@ -36,6 +36,9 @@ import { canImportHermesCli, verifyHermesCli } from './backend-probes.ts'
 import { waitForDashboardPortAnnouncement } from './backend-ready.ts'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform.ts'
 import { runBootstrap } from './bootstrap-runner.ts'
+import { createBootClock, formatCacheDivergence, formatCacheHit } from './boot-clock.ts'
+import { RenderCache } from './render-cache.ts'
+import { readRenderCacheEnabled } from './render-cache-config.ts'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -145,6 +148,20 @@ const IS_WSL = isWslEnvironment()
 // build SDK, so gate Tahoe workarounds on Darwin instead.
 const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 const APP_ROOT = app.getAppPath()
+
+// Boot milestone clock (Phase 0, desktop startup-latency). Anchored T0 as early
+// as the main module evaluates — every boot milestone (window-created,
+// handshake-done, list-loaded, ready) is logged as `[boot:t+<ms>ms] <name>` to
+// desktop.log so cold-launch latency is measurable from the log, never again by
+// external screenshot polling.
+const bootClock = createBootClock()
+function logBootMilestone(milestone: Parameters<typeof bootClock.mark>[0], detail?: string) {
+  try {
+    rememberLog(bootClock.mark(milestone, detail))
+  } catch {
+    // Instrumentation must never break boot.
+  }
+}
 
 // Preload must be plain JS — Electron's sandbox can't run .ts, and tsx's
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
@@ -6763,6 +6780,7 @@ async function startHermes() {
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
+      logBootMilestone('handshake-done', '(remote)')
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -7362,6 +7380,7 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
+    logBootMilestone('cache-paint', '(renderer did-finish-load)')
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
     // windows); no need to reapply it here.
     broadcastBootProgress()
@@ -7371,6 +7390,134 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+
+// ---------------------------------------------------------------------------
+// Render cache (Phase 1, startup-latency spec). One writer per gateway URL,
+// lazily created on the first renderer push. All handlers are fail-open: a
+// cache problem must never surface as a renderer error (I3).
+// ---------------------------------------------------------------------------
+const RENDER_CACHE_ENABLED = readRenderCacheEnabled(HERMES_HOME)
+const renderCaches = new Map() // gatewayUrl -> RenderCache
+
+function getRenderCache(gatewayUrl) {
+  if (!RENDER_CACHE_ENABLED) {
+    return null
+  }
+  const url = String(gatewayUrl || '').trim()
+  if (!url) {
+    return null
+  }
+  let cache = renderCaches.get(url)
+  if (!cache) {
+    cache = new RenderCache({
+      dir: path.join(app.getPath('userData'), 'render-cache'),
+      appVersion: app.getVersion(),
+      gatewayUrl: url,
+      log: rememberLog
+    })
+    renderCaches.set(url, cache)
+  }
+  return cache
+}
+
+ipcMain.on('hermes:render-cache:put-sessions', (_event, gatewayUrl, data) => {
+  try {
+    getRenderCache(gatewayUrl)?.putSessions(data)
+  } catch {
+    /* never throw into the renderer */
+  }
+})
+
+ipcMain.on('hermes:render-cache:put-status', (_event, gatewayUrl, data) => {
+  try {
+    getRenderCache(gatewayUrl)?.putStatus(data)
+  } catch {
+    /* never throw */
+  }
+})
+
+ipcMain.on('hermes:render-cache:put-transcript', (_event, gatewayUrl, storedSessionId, rows) => {
+  try {
+    const cache = getRenderCache(gatewayUrl)
+    if (cache) {
+      cache.putTranscript(storedSessionId, rows)
+      cache.enforceTranscriptCap()
+    }
+  } catch {
+    /* never throw */
+  }
+})
+
+// The I4b delete wire: livesync lives in the RENDERER, so main only learns of
+// a session delete via this explicit forward (Opus pass-2 Blocker 1).
+ipcMain.on('hermes:render-cache:cull-session', (_event, gatewayUrl, storedSessionId) => {
+  try {
+    getRenderCache(gatewayUrl)?.cullSession(storedSessionId)
+  } catch {
+    /* never throw */
+  }
+})
+
+// Boot-time sweep (I4b belt-and-suspenders): the renderer calls this once
+// after the first live session-list load, passing every live session id.
+ipcMain.on('hermes:render-cache:sweep', (_event, gatewayUrl, liveSessionIds) => {
+  try {
+    const cache = getRenderCache(gatewayUrl)
+    if (cache && Array.isArray(liveSessionIds)) {
+      const culled = cache.sweepAgainstLiveSessions(liveSessionIds)
+      if (culled > 0) {
+        rememberLog(`[render-cache] boot sweep culled ${culled} orphaned transcript file(s)`)
+      }
+    }
+  } catch {
+    /* never throw */
+  }
+})
+
+// Boot read: everything the renderer needs to paint from cache, in one hop.
+// gatewayUrl may be null on a cold boot (the renderer doesn't know it before
+// the connection resolves) — resolve it from the stored connection config
+// (remote mode only; local mode has no stable pre-spawn URL, which matches the
+// spec's D4 remote-first scope). Logs the cache hit/miss counter (Phase 0 RC4).
+ipcMain.handle('hermes:render-cache:read', (_event, gatewayUrl, activeStoredSessionId) => {
+  try {
+    let url = String(gatewayUrl || '').trim()
+    if (!url) {
+      const config = readDesktopConnectionConfig()
+      if (config.mode === 'remote' && config.remote?.url) {
+        url = String(config.remote.url).trim()
+      }
+    }
+    const cache = getRenderCache(url)
+    if (!cache) {
+      return { enabled: RENDER_CACHE_ENABLED, gatewayUrl: url || null, sessions: null, status: null, transcript: null }
+    }
+    const sessions = cache.readSessions()
+    const rowCount = Array.isArray((sessions as any)?.sessions) ? (sessions as any).sessions.length : 0
+    rememberLog(formatCacheHit(sessions != null, rowCount))
+    return {
+      enabled: true,
+      gatewayUrl: url,
+      sessions,
+      status: cache.readStatus(),
+      transcript: activeStoredSessionId ? cache.readTranscript(activeStoredSessionId) : null
+    }
+  } catch {
+    return { enabled: false, gatewayUrl: null, sessions: null, status: null, transcript: null }
+  }
+})
+
+// Reconcile observability (Phase 0 RC4): the renderer reports how many rows
+// differed between the cached paint and the first live snapshot. rows=0 means
+// the cache matched live exactly — I1's "reconciles within one cycle" held.
+ipcMain.on('hermes:render-cache:report-divergence', (_event, rows) => {
+  try {
+    logBootMilestone('list-loaded', '(live reconcile)')
+    rememberLog(formatCacheDivergence(Number(rows) || 0))
+  } catch {
+    /* never throw */
+  }
+})
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connectionPromise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -9007,6 +9154,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  logBootMilestone('app-ready')
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())
   } else {
@@ -9021,6 +9169,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  logBootMilestone('window-created')
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -9094,6 +9243,16 @@ app.on('before-quit', () => {
 
   stopBackendChild(hermesProcess)
   stopAllPoolBackends()
+
+  // Flush any pending render-cache writes synchronously (D2/AC8): a clean exit
+  // must never systematically lose the last debounce window of cache state.
+  for (const cache of renderCaches.values()) {
+    try {
+      cache.flush()
+    } catch {
+      /* never block quit */
+    }
+  }
 })
 
 app.on('window-all-closed', () => {

@@ -10,7 +10,10 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
+
+import { cullRenderCacheSession } from '../../../render-cache-hydration'
 import {
+  $connection,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -814,6 +817,9 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+        // I4b delete wire: forward the delete to the render-cache culler so the
+        // deleted session's cached transcript doesn't outlive it on disk.
+        cullRenderCacheSession($connection.get()?.baseUrl ?? null, storedSessionId)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)

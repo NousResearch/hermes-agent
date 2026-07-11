@@ -159,6 +159,110 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _permission_auto_selected(message_id: Any, options: Any) -> dict[str, Any]:
+    """Auto-select an allow option so ACP agent tools can run without a UI.
+
+    Preference: allow_always → allow_once → first option. Falls back to
+    cancelled when no options are present.
+    """
+    opts = options if isinstance(options, list) else []
+    option_id = None
+    for preferred in ("allow_always", "allow_once"):
+        for opt in opts:
+            if not isinstance(opt, dict):
+                continue
+            kind = str(opt.get("kind") or "").strip().lower()
+            if kind == preferred:
+                option_id = opt.get("optionId") or opt.get("option_id")
+                if option_id:
+                    break
+        if option_id:
+            break
+    if not option_id:
+        for opt in opts:
+            if not isinstance(opt, dict):
+                continue
+            kind = str(opt.get("kind") or "").strip().lower()
+            if kind.startswith("allow"):
+                option_id = opt.get("optionId") or opt.get("option_id")
+                if option_id:
+                    break
+    if not option_id and opts and isinstance(opts[0], dict):
+        option_id = opts[0].get("optionId") or opts[0].get("option_id")
+    if not option_id:
+        return _permission_denied(message_id)
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "result": {
+            "outcome": {
+                "outcome": "selected",
+                "optionId": str(option_id),
+            }
+        },
+    }
+
+
+def _acp_auto_approve_enabled() -> bool:
+    """Whether ACP permission prompts should be auto-approved.
+
+    Default on: ACP backends (Devin/Copilot) own their tool loop and Hermes
+    has no interactive permission UI in the chat path. Set
+    ``HERMES_ACP_AUTO_APPROVE=0`` to restore deny-all.
+    """
+    raw = os.getenv("HERMES_ACP_AUTO_APPROVE", "1").strip().lower()
+    return raw not in _REUSE_DISABLE_VALUES
+
+
+def _tool_update_text_preview(update: dict[str, Any], *, limit: int = 240) -> str:
+    """Best-effort human preview from an ACP tool_call / tool_call_update."""
+    title = str(update.get("title") or "").strip()
+    chunks: list[str] = []
+    content = update.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            # type: content → nested content.text; or plain text fields
+            inner = block.get("content")
+            if isinstance(inner, dict):
+                text = str(inner.get("text") or "").strip()
+                if text:
+                    chunks.append(text)
+            text = str(block.get("text") or "").strip()
+            if text:
+                chunks.append(text)
+            if block.get("type") == "diff":
+                path = str(block.get("path") or "").strip()
+                if path:
+                    chunks.append(f"diff {path}")
+    elif isinstance(content, dict):
+        text = str(content.get("text") or "").strip()
+        if text:
+            chunks.append(text)
+    raw_in = update.get("rawInput")
+    if isinstance(raw_in, dict) and not chunks:
+        # compact path/command hints
+        for key in ("path", "file", "command", "query", "url", "pattern"):
+            if raw_in.get(key):
+                chunks.append(f"{key}={raw_in.get(key)}")
+                break
+    body = " · ".join(chunks).strip()
+    if title and body:
+        preview = f"{title}: {body}"
+    else:
+        preview = title or body or "ACP tool"
+    if len(preview) > limit:
+        return preview[: limit - 1] + "…"
+    return preview
+
+
+def _tool_kind_name(update: dict[str, Any]) -> str:
+    kind = str(update.get("kind") or "other").strip().lower() or "other"
+    # Prefer a stable synthetic name the Desktop tool strip can show.
+    return f"acp_{kind}"
+
+
 def _message_continuity_key(message: dict[str, Any]) -> tuple[Any, ...]:
     """Stable identity for prefix-matching conversation history."""
     role = str(message.get("role") or "").strip().lower()
@@ -540,6 +644,53 @@ class CopilotACPClient:
         self._session_history: list[dict[str, Any]] = []
         self._session_count = 0  # test/metrics: session/new calls
         self._session_continues = 0  # test/metrics: prompts reusing sessionId
+        # Optional AIAgent (or compatible) for tool_progress / status / activity.
+        # Bound after construction via bind_agent_activity() so create_openai_client
+        # can wire Desktop/TUI progress without coupling constructors.
+        self._activity_agent: Any = None
+        # toolCallId → last title (for completed events that omit title)
+        self._tool_titles: dict[str, str] = {}
+
+    def bind_agent_activity(self, agent: Any) -> None:
+        """Attach an AIAgent so ACP tool/session updates surface in the UI."""
+        self._activity_agent = agent
+
+    def _emit_acp_activity(
+        self,
+        event_type: str,
+        name: str,
+        preview: str,
+        args: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Push tool progress + status so the UI doesn't look frozen mid-turn."""
+        agent = self._activity_agent
+        if agent is None:
+            return
+        label = preview or name or "ACP activity"
+        try:
+            touch = getattr(agent, "_touch_activity", None)
+            if callable(touch):
+                touch(f"{self._acp_display_name}: {label}")
+        except Exception:
+            pass
+        try:
+            cb = getattr(agent, "tool_progress_callback", None)
+            if callable(cb):
+                cb(event_type, name, preview, args or {}, **kwargs)
+        except Exception:
+            pass
+        # Lifecycle line for gateway/desktop status strip (spinner text).
+        if event_type in {"tool.started", "tool.completed"}:
+            try:
+                emit = getattr(agent, "_emit_status", None)
+                if callable(emit):
+                    # ASCII-only markers — Windows CP* consoles choke on
+                    # ellipsis/check glyphs in status paths.
+                    verb = "... " if event_type == "tool.started" else "done "
+                    emit(f"{self._acp_display_name} {verb}{label}")
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Tear down the ACP subprocess and mark the client closed."""
@@ -773,18 +924,55 @@ class CopilotACPClient:
 
         worker.join(timeout=5)
 
+    def _subprocess_env(self) -> dict[str, str]:
+        """Environment for the ACP child process. Subclasses may extend."""
+        return _build_subprocess_env()
+
+    def _spawn_argv(self) -> list[str]:
+        """Argv for the ACP child process. Subclasses may extend."""
+        return [self._acp_command] + list(self._acp_args)
+
+    def _prepare_for_model(self, model: str | None) -> None:
+        """Hook before initialize/prompt so backends can rebind model state.
+
+        Copilot ACP ignores Hermes model ids (no process-level model switch).
+        DevinACPClient overrides this to set DEVIN_MODEL and respawn when needed.
+        """
+        del model
+
+    def _apply_session_model(
+        self,
+        session_id: str,
+        session: dict[str, Any],
+        model: str | None,
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        """Hook after ``session/new`` to bind the Hermes-selected model.
+
+        Default no-op. DevinACPClient uses ``session/set_config_option``.
+        """
+        del session_id, session, model, timeout_seconds
+
     def _spawn_process(self) -> subprocess.Popen[str]:
         label = self._acp_display_name
         try:
+            # Force UTF-8 on the child pipes. On Windows the default console
+            # encoding is often cp950/cp1252; Devin/Copilot ACP logs use UTF-8
+            # (and occasionally raw bytes), so text=True alone raises
+            # UnicodeDecodeError in the stderr reader and can leave the
+            # transport half-dead while the UI shows no tokens.
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                self._spawn_argv(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 cwd=self._acp_cwd,
-                env=_build_subprocess_env(),
+                env=self._subprocess_env(),
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -948,6 +1136,9 @@ class CopilotACPClient:
         label = self._acp_display_name
         with self._rpc_lock:
             try:
+                # Allow backends (Devin) to rebind process-level model before
+                # initialize — may tear down a warm process when the model changes.
+                self._prepare_for_model(model)
                 self._ensure_initialized(timeout_seconds=timeout_seconds)
 
                 prefix_len = 0
@@ -1008,6 +1199,14 @@ class CopilotACPClient:
                     raise RuntimeError(f"{label} did not return a sessionId.")
                 self._session_id = session_id
                 self._session_count += 1
+                # Subclasses (Devin) bind model via ACP session/set_config_option;
+                # CLI --model is ignored by some ACP agents.
+                self._apply_session_model(
+                    session_id,
+                    session,
+                    model,
+                    timeout_seconds=timeout_seconds,
+                )
 
                 text, reasoning = self._session_prompt(
                     session_id,
@@ -1038,6 +1237,21 @@ class CopilotACPClient:
     ) -> tuple[str, str]:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
+        # Immediate status so the UI shows activity before the first token/tool.
+        # Devin often spends 10-60s connecting user MCP servers after
+        # session/prompt with zero agent_message_chunk — without this the
+        # chat looks frozen / "no opening reply".
+        try:
+            agent = self._activity_agent
+            emit = getattr(agent, "_emit_status", None) if agent else None
+            touch = getattr(agent, "_touch_activity", None) if agent else None
+            msg = f"{self._acp_display_name} working (may connect MCP tools first)..."
+            if callable(touch):
+                touch(msg)
+            if callable(emit):
+                emit(msg)
+        except Exception:
+            pass
         self._rpc(
             "session/prompt",
             {
@@ -1085,6 +1299,8 @@ class CopilotACPClient:
         if method == "session/update":
             params = msg.get("params") or {}
             update = params.get("update") or {}
+            if not isinstance(update, dict):
+                update = {}
             kind = str(update.get("sessionUpdate") or "").strip()
             content = update.get("content") or {}
             chunk_text = ""
@@ -1106,6 +1322,22 @@ class CopilotACPClient:
                         on_reasoning_chunk(chunk_text)
                     except Exception:
                         pass
+            elif kind in {"tool_call", "tool_call_update"}:
+                self._handle_tool_session_update(kind, update)
+            elif kind in {
+                "available_commands_update",
+                "current_mode_update",
+                "config_option_update",
+                "plan",
+            }:
+                # Heartbeat so long turns still touch activity even without tools.
+                try:
+                    agent = self._activity_agent
+                    touch = getattr(agent, "_touch_activity", None) if agent else None
+                    if callable(touch):
+                        touch(f"{self._acp_display_name}: {kind.replace('_', ' ')}")
+                except Exception:
+                    pass
             return True
 
         if process.stdin is None:
@@ -1115,7 +1347,22 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = _permission_denied(message_id)
+            if _acp_auto_approve_enabled():
+                response = _permission_auto_selected(
+                    message_id, params.get("options")
+                )
+                # Surface the pending tool in the activity strip.
+                tool_call = params.get("toolCall") or params.get("tool_call") or {}
+                if isinstance(tool_call, dict):
+                    preview = _tool_update_text_preview(tool_call)
+                    self._emit_acp_activity(
+                        "tool.started",
+                        _tool_kind_name(tool_call),
+                        preview or "awaiting permission (auto-approved)",
+                        {"toolCallId": tool_call.get("toolCallId")},
+                    )
+            else:
+                response = _permission_denied(message_id)
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
@@ -1170,3 +1417,63 @@ class CopilotACPClient:
         process.stdin.write(json.dumps(response) + "\n")
         process.stdin.flush()
         return True
+
+    def _handle_tool_session_update(self, kind: str, update: dict[str, Any]) -> None:
+        """Map ACP tool_call / tool_call_update notifications onto Hermes progress."""
+        tool_id = str(update.get("toolCallId") or update.get("tool_call_id") or "").strip()
+        title = str(update.get("title") or "").strip()
+        if title and tool_id:
+            self._tool_titles[tool_id] = title
+        elif tool_id and not title:
+            title = self._tool_titles.get(tool_id, "")
+
+        status = str(update.get("status") or "").strip().lower()
+        preview = _tool_update_text_preview(
+            {**update, "title": title or update.get("title")}
+        )
+        name = _tool_kind_name(update)
+        args: dict[str, Any] = {
+            "toolCallId": tool_id or None,
+            "kind": update.get("kind"),
+            "status": status or None,
+        }
+        locations = update.get("locations")
+        if isinstance(locations, list) and locations:
+            paths = []
+            for loc in locations[:3]:
+                if isinstance(loc, dict) and loc.get("path"):
+                    paths.append(str(loc["path"]))
+            if paths:
+                args["paths"] = paths
+
+        if kind == "tool_call" or status in {"", "pending", "in_progress"}:
+            event = "tool.started"
+            if status == "in_progress" and kind == "tool_call_update":
+                # Keep as started so UIs that only listen for started still refresh
+                # the preview; duration is unknown mid-flight.
+                event = "tool.started"
+            if status in {"completed", "failed"}:
+                event = "tool.completed"
+            self._emit_acp_activity(
+                event,
+                name,
+                preview,
+                args,
+                is_error=(status == "failed"),
+            )
+            return
+
+        if status in {"completed", "failed"}:
+            self._emit_acp_activity(
+                "tool.completed",
+                name,
+                preview,
+                args,
+                is_error=(status == "failed"),
+            )
+            if tool_id:
+                self._tool_titles.pop(tool_id, None)
+            return
+
+        # Unknown status — still heartbeat so the UI doesn't freeze.
+        self._emit_acp_activity("tool.started", name, preview, args)

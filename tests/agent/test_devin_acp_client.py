@@ -79,6 +79,126 @@ class TestDevinAcpClientDefaults(unittest.TestCase):
         assert client._acp_command == "devin"
         assert client._acp_args == ["acp"]
 
+    def test_backend_model_id_maps_placeholders_to_none(self):
+        from agent.devin_acp_client import _backend_model_id
+
+        assert _backend_model_id(None) is None
+        assert _backend_model_id("") is None
+        assert _backend_model_id("devin-acp") is None
+        assert _backend_model_id("devin") is None
+        assert _backend_model_id("claude-opus-4.8") == "claude-opus-4.8"
+
+    def test_resolve_devin_acp_model_value_maps_cli_to_acp_ids(self):
+        from agent.devin_acp_client import resolve_devin_acp_model_value
+
+        config_options = [
+            {
+                "id": "model",
+                "currentValue": "swe-1-7",
+                "options": [
+                    {"value": "swe-1-7", "name": "SWE-1.7"},
+                    {"value": "swe-1-6-fast", "name": "SWE-1.6 Fast"},
+                    {"value": "claude-sonnet-5-medium", "name": "Claude Sonnet 5 Medium"},
+                    {"value": "MODEL_PRIVATE_11", "name": "Claude Haiku 4.5"},
+                    {"value": "adaptive", "name": "Adaptive"},
+                ],
+            }
+        ]
+        assert resolve_devin_acp_model_value("swe-1.6-fast", config_options) == "swe-1-6-fast"
+        assert resolve_devin_acp_model_value("swe-1-6-fast", config_options) == "swe-1-6-fast"
+        assert (
+            resolve_devin_acp_model_value("claude-haiku-4.5", config_options)
+            == "MODEL_PRIVATE_11"
+        )
+        assert resolve_devin_acp_model_value("adaptive", config_options) == "adaptive"
+        assert resolve_devin_acp_model_value("devin-acp", config_options) is None
+
+    def test_tool_session_updates_emit_progress(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        events: list[tuple] = []
+        statuses: list[str] = []
+
+        class _Agent:
+            def _touch_activity(self, desc):
+                pass
+
+            def _emit_status(self, msg):
+                statuses.append(msg)
+
+            def tool_progress_callback(self, event_type, name=None, preview=None, args=None, **kw):
+                events.append((event_type, name, preview, args, kw))
+
+        client = CopilotACPClient(acp_cwd="/tmp", command="copilot", args=["--acp", "--stdio"])
+        client.bind_agent_activity(_Agent())
+        client._handle_tool_session_update(
+            "tool_call",
+            {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "c1",
+                "title": "Reading config",
+                "kind": "read",
+                "status": "pending",
+            },
+        )
+        client._handle_tool_session_update(
+            "tool_call_update",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "c1",
+                "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}],
+            },
+        )
+        assert any(e[0] == "tool.started" for e in events)
+        assert any(e[0] == "tool.completed" for e in events)
+        assert any("Reading config" in (e[2] or "") for e in events)
+        assert any("Devin" in s or "ACP" in s or "Copilot" in s for s in statuses)
+
+    def test_permission_auto_selects_allow(self):
+        from agent.copilot_acp_client import _permission_auto_selected
+
+        resp = _permission_auto_selected(
+            7,
+            [
+                {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+                {"optionId": "allow-once", "name": "Allow", "kind": "allow_once"},
+            ],
+        )
+        assert resp["result"]["outcome"]["outcome"] == "selected"
+        assert resp["result"]["outcome"]["optionId"] == "allow-once"
+
+    def test_spawn_argv_and_env_bind_selected_model(self):
+        client = DevinACPClient(acp_cwd="/tmp", command="devin", args=["acp"])
+        client._prepare_for_model("claude-opus-4.8")
+        assert client._spawn_argv() == [
+            "devin",
+            "--model",
+            "claude-opus-4.8",
+            "acp",
+        ]
+        env = client._subprocess_env()
+        assert env.get("DEVIN_MODEL") == "claude-opus-4.8"
+
+        client._prepare_for_model("devin-acp")
+        assert client._spawn_argv() == ["devin", "acp"]
+        env2 = client._subprocess_env()
+        assert "DEVIN_MODEL" not in env2
+
+    def test_prepare_for_model_respawns_on_change(self):
+        client = DevinACPClient(acp_cwd="/tmp", command="devin", args=["acp"])
+        client._process_bound_model = "swe-1.7"
+        client._active_process = type("P", (), {"poll": lambda self: None})()
+        with patch.object(client, "_reset_transport") as reset:
+            client._prepare_for_model("claude-sonnet-5")
+            reset.assert_called_once_with(mark_closed=False)
+        assert client._desired_process_model == "claude-sonnet-5"
+
+        with patch.object(client, "_reset_transport") as reset2:
+            client._process_bound_model = "claude-sonnet-5"
+            client._prepare_for_model("claude-sonnet-5")
+            reset2.assert_not_called()
+
     def test_empty_args_does_not_fall_through_to_copilot_defaults(self):
         """Regression: args=[] used to become ['--acp', '--stdio'] via parent."""
         with patch.dict(
@@ -342,7 +462,12 @@ class TestDevinDesktopUiSupport(unittest.TestCase):
         slugs = {r.get("slug") for r in rows}
         assert "devin-acp" in slugs
         devin = next(r for r in rows if r.get("slug") == "devin-acp")
-        assert "devin-acp" in (devin.get("models") or [])
+        models = devin.get("models") or []
+        # Live CLI discovery returns real model ids (adaptive, swe-1.7, …);
+        # offline fallback still includes the curated snapshot (+ optional
+        # "devin-acp" placeholder). Either path must yield a non-empty picker list.
+        assert models
+        assert isinstance(models, list)
 
 
 class TestAcpErrorClassification(unittest.TestCase):

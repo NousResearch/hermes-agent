@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -272,7 +273,50 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    # Snapshot of `devin --model <invalid> -p .` "Available:" list (offline
+    # fallback). Live discovery via fetch_devin_cli_models() preferred when
+    # the Devin CLI is installed. Short family aliases (opus/sonnet/…) are
+    # documented by Cognition and resolve to the latest in-family model.
     "devin-acp": [
+        "adaptive",
+        "swe-1.7",
+        "swe-1.7-lightning",
+        "swe-1.6",
+        "swe-1.6-fast",
+        "swe-1.5",
+        "claude-opus-4.8",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-opus-4.5",
+        "claude-sonnet-5",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-fable-5",
+        "claude-haiku-4.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro",
+        "gemini-3-flash",
+        "grok-4.5",
+        "deepseek-v4-pro",
+        "kimi-k2.7",
+        "kimi-k2.6",
+        "glm-5.2",
+        "nemotron-3-ultra",
+        # Family aliases (docs: always resolve to latest in family)
+        "opus",
+        "sonnet",
+        "swe",
+        "codex",
+        "gemini",
+        # Hermes placeholder when no specific model is chosen
         "devin-acp",
     ],
     "copilot": [
@@ -2290,6 +2334,97 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
+# Devin CLI does not expose a REST /models endpoint or `devin models` subcommand.
+# Probing with an invalid --model prints: "Available: a, b, c" on stderr — that
+# is the supported auto-discovery signal (verified against Devin CLI docs + CLI).
+_DEVIN_PROBE_MODEL = "__hermes_devin_probe__"
+_DEVIN_AVAILABLE_RE = re.compile(
+    r"Available:\s*(.+?)(?:\n|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_devin_cli_available_models(text: str) -> list[str]:
+    """Parse model ids from a Devin CLI 'Unknown model' / Available line.
+
+    Returns a de-duplicated list preserving CLI order. Empty when the
+    Available line is missing or unparseable.
+    """
+    if not text:
+        return []
+    match = _DEVIN_AVAILABLE_RE.search(text)
+    if not match:
+        return []
+    raw = match.group(1).strip()
+    # Stop at a second sentence / trailing junk if the CLI wraps.
+    if "\n" in raw:
+        raw = raw.split("\n", 1)[0].strip()
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in raw.split(","):
+        mid = part.strip().strip("'\"")
+        if not mid:
+            continue
+        key = mid.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(mid)
+    return out
+
+
+def fetch_devin_cli_models(
+    *,
+    command: Optional[str] = None,
+    timeout: float = 12.0,
+) -> list[str]:
+    """Discover Devin CLI models by probing ``devin --model <invalid> -p .``.
+
+    Returns [] when the CLI is missing, times out, or does not emit an
+    Available line. Never raises for expected probe failures.
+    """
+    import shutil
+    import subprocess
+
+    cmd = (command or "").strip()
+    if not cmd:
+        try:
+            from hermes_cli.auth import _resolve_external_process_command_args
+
+            cmd, _args = _resolve_external_process_command_args("devin-acp")
+        except Exception:
+            cmd = (
+                os.getenv("HERMES_DEVIN_ACP_COMMAND", "").strip()
+                or os.getenv("DEVIN_CLI_PATH", "").strip()
+                or "devin"
+            )
+    # Resolve bare command names via PATH so Windows/msys work consistently.
+    resolved = shutil.which(cmd) if cmd and os.sep not in cmd and "/" not in cmd else cmd
+    if not resolved:
+        resolved = cmd
+    if not resolved:
+        return []
+
+    try:
+        proc = subprocess.run(
+            [resolved, "--model", _DEVIN_PROBE_MODEL, "-p", "."],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    except Exception:
+        return []
+
+    blob = "\n".join(
+        part for part in (proc.stderr or "", proc.stdout or "") if part
+    )
+    models = parse_devin_cli_available_models(blob)
+    return models
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2329,6 +2464,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "devin-acp":
+        try:
+            live = fetch_devin_cli_models()
+            if live:
+                return live
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("devin-acp", ["devin-acp"]))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:
@@ -2612,6 +2755,33 @@ def _credential_fingerprint(provider: str) -> str:
             parts.append(f"{path}@missing")
         except Exception:
             pass
+
+    # Devin CLI: credentials + installed model catalog blobs. CLI updates that
+    # refresh model_configs*.bin should bust the cached Available list.
+    if provider in {"devin-acp", "devin", "devin-cli"}:
+        appdata = _os.environ.get("APPDATA", "").strip()
+        localappdata = _os.environ.get("LOCALAPPDATA", "").strip()
+        xdg = _os.environ.get("XDG_CONFIG_HOME", "").strip()
+        home = _os.path.expanduser("~")
+        devin_paths = [
+            _os.path.join(appdata, "devin", "credentials.toml") if appdata else "",
+            _os.path.join(xdg, "devin", "credentials.toml") if xdg else "",
+            _os.path.join(home, ".config", "devin", "credentials.toml"),
+            _os.path.join(home, "Library", "Application Support", "devin", "credentials.toml"),
+            _os.path.join(localappdata, "devin", "cli", "model_configs_v4.bin") if localappdata else "",
+            _os.path.join(localappdata, "devin", "cli", "model_configs_v2.bin") if localappdata else "",
+            _os.path.join(localappdata, "devin", "cli", "model_configs.bin") if localappdata else "",
+        ]
+        for path in devin_paths:
+            if not path:
+                continue
+            try:
+                mt = _os.stat(path).st_mtime_ns
+                parts.append(f"{path}@{mt}")
+            except FileNotFoundError:
+                parts.append(f"{path}@missing")
+            except Exception:
+                pass
 
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b for cache-key fingerprinting only — not for credential storage.

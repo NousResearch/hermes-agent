@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import stat
 import tomllib
 from types import SimpleNamespace
 
@@ -9,6 +10,16 @@ from capabilities.moneyprinter import adapter
 
 def _response_body(response):
     return json.loads(response.body.decode("utf-8"))
+
+
+def test_sidecar_token_is_shared_per_hermes_home_and_private(tmp_path):
+    first = adapter._load_or_create_sidecar_token(tmp_path)
+    second = adapter._load_or_create_sidecar_token(tmp_path)
+
+    token_path = tmp_path / adapter.SIDECAR_TOKEN_FILENAME
+    assert first == second
+    assert token_path.read_text(encoding="utf-8").strip() == first
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
 
 
 def test_managed_sidecar_identity_requires_expected_marker():

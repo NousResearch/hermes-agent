@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
+from hermes_constants import get_hermes_home
+
 try:
     from aiohttp import ClientSession, ClientTimeout, web
 except Exception:  # pragma: no cover - import guard for optional server deps
@@ -53,7 +55,48 @@ MINIMAX_VOICES_DIR = MONEYPRINTER_ROOT / "storage" / "minimax" / "voices"
 MAX_MINIMAX_AUDIO_BYTES = 20 * 1024 * 1024
 MINIMAX_AUDIO_EXTS = {".m4a", ".mp3", ".wav"}
 SIDECAR_TOKEN_HEADER = "X-Hermes-MoneyPrinter-Token"
-_SIDECAR_TOKEN = secrets.token_urlsafe(32)
+SIDECAR_TOKEN_FILENAME = ".moneyprinter-sidecar-token"
+
+
+def _load_or_create_sidecar_token(hermes_home: Optional[Path] = None) -> str:
+    """Return the profile-scoped token shared by Desktop and Agent processes."""
+    home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    token_path = home / SIDECAR_TOKEN_FILENAME
+
+    if token_path.is_file():
+        token = token_path.read_text(encoding="utf-8").strip()
+        if not token:
+            raise RuntimeError(f"MoneyPrinter sidecar token is empty: {token_path}")
+        token_path.chmod(0o600)
+        return token
+
+    token = secrets.token_urlsafe(32)
+    temporary_path = home / f".{SIDECAR_TOKEN_FILENAME}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+    descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # A hard link publishes a fully written file without replacing a
+            # token another Hermes process may have won the race to create.
+            os.link(temporary_path, token_path)
+        except FileExistsError:
+            pass
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+    shared_token = token_path.read_text(encoding="utf-8").strip()
+    if not shared_token:
+        raise RuntimeError(f"MoneyPrinter sidecar token is empty: {token_path}")
+    token_path.chmod(0o600)
+    return shared_token
+
+
+_SIDECAR_TOKEN = _load_or_create_sidecar_token()
 SUPPORTED_LOCAL_MATERIAL_EXTS = {".avi", ".flv", ".jpeg", ".jpg", ".mkv", ".mov", ".mp4", ".png"}
 SUPPORTED_AUDIO_EXTS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 SUPPORTED_BGM_EXTS = {".mp3"}

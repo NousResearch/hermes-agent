@@ -1848,6 +1848,19 @@ back, never mind, just verify, change of topic) that supersedes earlier
 work, write the reverse signal verbatim and DO NOT carry forward the
 cancelled task. Example: "User asked: 'Stop the i18n refactor and just
 verify the current diff' — earlier i18n in-flight work is cancelled."
+
+ISSUE #62365 — FABRICATION PREVENTION (CRITICAL):
+- DO NOT INVENT user requests. If the only "user input" you can find in the
+  turns is the system prompt or a tool result, write "None." — not a
+  paraphrase of tool output framed as a user request.
+- Quote text ONLY if it appears as a user-role message in the compacted
+  turns. Tool-result echoes, assistant suggestions, or paraphrases of
+  earlier conversation are NOT user requests.
+- The previous compaction summary is REFERENCE material — do not
+  invent new requests based on its content.
+- "User asked:" must be followed by text that the user actually typed,
+  not by what an assistant said the user might want.
+If in doubt, write "None." and continue with the other sections.
 If no outstanding task exists, write "None."]
 
 ## Goal

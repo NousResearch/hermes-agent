@@ -1147,11 +1147,14 @@ def switch_model(
                 detected_provider = detected[0]
                 # detect_provider_for_model() matches Hermes' built-in static
                 # catalogs (CURATED_MODELS), so a bare name that also lives
-                # there — e.g. ``gpt-5.5`` under ``openai-api`` — would silently
-                # reroute the session onto that vendor even when the user never
-                # configured it.  The credential resolver then finds no key for
-                # it and leaves the *previous* provider's base_url in place, so
-                # the request is sent to the wrong endpoint and 401s (#62240).
+                # there — e.g. ``gpt-5.5`` under ``openai-api`` — would select
+                # that vendor as the switch target even when the user never
+                # configured it (#62240). The remaining concern this guard
+                # addresses is exactly that: don't pick an unconfigured provider
+                # off a static-catalog match. (The live-agent switch is now
+                # separately rejected and rolled back when the target can't be
+                # resolved — see agent/agent_runtime_helpers.py — so this is
+                # about not offering the wrong target in the first place.)
                 # Only accept a cross-provider static reroute when the detected
                 # provider actually has credentials; a configured custom/user
                 # provider that declares the model already wins earlier via

@@ -311,13 +311,13 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
 
 
 # ---------------------------------------------------------------------------
-# #62240: step-e static-catalog reroute must not switch onto an unconfigured
+# #62240: step-e static-catalog reroute must not select an unconfigured
 # provider.  ``detect_provider_for_model`` matches Hermes' built-in
 # CURATED_MODELS, so a bare name that also lives there (e.g. ``gpt-5.5`` under
-# ``openai-api``) would silently reroute the session to that vendor even when
-# the user only configured a different endpoint for it — leaving the previous
-# provider's base_url in place and 401ing.  The reroute is now gated on the
-# detected provider actually having credentials.
+# ``openai-api``) would pick that vendor as the switch target even when the
+# user never configured it.  The reroute is now gated on the detected provider
+# actually having credentials, so an unconfigured static-catalog match no
+# longer wins the target selection.
 # ---------------------------------------------------------------------------
 
 def _run_switch_detect(
@@ -366,8 +366,8 @@ def _run_switch_detect(
 def test_static_reroute_skipped_when_detected_provider_unauthenticated():
     """The core #62240 repro: ``/model gpt-5.5`` while on deepseek must NOT
     reroute to the built-in ``openai-api`` catalog when the user has no
-    openai-api credentials — stay on the current provider instead of inheriting
-    a stale base_url."""
+    openai-api credentials — stay on the current provider instead of selecting
+    an unconfigured provider off the static-catalog match."""
     result = _run_switch_detect(
         raw_input="gpt-5.5",
         current_provider="deepseek",

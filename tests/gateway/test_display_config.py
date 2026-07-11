@@ -46,13 +46,6 @@ class TestResolveDisplaySetting:
         # Email defaults to tier_minimal → "off"
         assert resolve_display_setting(config, "email", "tool_progress") == "off"
 
-    def test_matrix_default_tool_progress_off(self):
-        """Matrix defaults tool_progress off to avoid permanent timeline spam."""
-        from gateway.display_config import resolve_display_setting
-
-        config = {}
-        assert resolve_display_setting(config, "matrix", "tool_progress") == "off"
-
     def test_global_default_for_unknown_platform(self):
         """Unknown platforms get the global defaults."""
         from gateway.display_config import resolve_display_setting

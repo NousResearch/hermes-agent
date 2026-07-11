@@ -20,21 +20,21 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     result = collect_runtime_readiness(
-        model_name="test/model",
+        configured_model="test/model",
         runtime_status={
             "gateway_state": "running",
             "platforms": {"telegram": {"state": "connected"}},
             "updated_at": "2026-07-09T00:00:00Z",
         },
-        api_run_queue_depth=2,
+        active_api_runs=2,
     )
 
     assert result["status"] == "ok"
     assert result["checks"]["state_db"]["status"] == "ok"
     assert result["checks"]["config"]["status"] == "ok"
-    assert result["checks"]["provider"]["status"] == "ok"
+    assert result["checks"]["model"]["status"] == "ok"
     assert result["checks"]["gateway"]["status"] == "ok"
-    assert result["checks"]["background_queues"]["api_runs"] == 2
+    assert result["checks"]["background_queues"]["active_api_runs"] == 2
     assert result["checks"]["disk"]["status"] in {"ok", "degraded"}
 
 
@@ -47,13 +47,13 @@ def test_collect_runtime_readiness_degrades_on_invalid_config_and_stopped_gatewa
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     result = collect_runtime_readiness(
-        model_name="",
+        configured_model="",
         runtime_status={"gateway_state": "stopped", "platforms": {}},
     )
 
     assert result["status"] == "degraded"
     assert result["checks"]["config"]["status"] == "degraded"
-    assert result["checks"]["provider"]["status"] == "degraded"
+    assert result["checks"]["model"]["status"] == "degraded"
     assert result["checks"]["gateway"]["status"] == "degraded"
     # Readiness is diagnostic data, not an exception or a destructive repair.
     assert (home / "config.yaml").read_text(encoding="utf-8") == "model: [unterminated"
@@ -66,7 +66,7 @@ def test_collect_runtime_readiness_marks_corrupt_state_db_degraded(tmp_path, mon
     (home / "state.db").write_bytes(b"not sqlite")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    result = collect_runtime_readiness(model_name="configured-model", runtime_status={})
+    result = collect_runtime_readiness(configured_model="configured-model", runtime_status={})
 
     assert result["status"] == "degraded"
     assert result["checks"]["state_db"]["status"] == "degraded"
@@ -83,7 +83,7 @@ def test_collect_runtime_readiness_never_exposes_config_values(tmp_path, monkeyp
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    result = collect_runtime_readiness(model_name="model", runtime_status={})
+    result = collect_runtime_readiness(configured_model="model", runtime_status={})
 
     assert secret not in json.dumps(result)
     assert str(home) not in json.dumps(result)
@@ -96,7 +96,7 @@ def test_collect_runtime_readiness_uses_active_profile_home(tmp_path, monkeypatc
     (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
-    result = collect_runtime_readiness(model_name="model", runtime_status={})
+    result = collect_runtime_readiness(configured_model="model", runtime_status={})
 
     assert result["checks"]["config"]["status"] == "ok"
     assert not (tmp_path / ".hermes" / "state.db").exists()

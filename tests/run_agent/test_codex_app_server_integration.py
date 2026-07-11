@@ -157,8 +157,10 @@ class TestRunConversationCodexPath:
 
         assert result["completed"] is True
         assert agent.context_compressor.compression_count == 1
-        assert agent.context_compressor.last_prompt_tokens == -1
-        assert agent.context_compressor.awaiting_real_usage_after_compression is True
+        # The app-server omitted usage, so the runtime consumes the pending
+        # post-compaction verdict instead of deferring preflight indefinitely.
+        assert agent.context_compressor.last_prompt_tokens == 0
+        assert agent.context_compressor.awaiting_real_usage_after_compression is False
         assert events == [
             (
                 "session:compress",

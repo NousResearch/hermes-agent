@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -639,6 +640,8 @@ class CheckpointManager:
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
+        self._checkpointing_dirs: Set[str] = set()
+        self._checkpoint_state_lock = threading.Lock()
         self._git_available: Optional[bool] = None  # lazy probe
 
     # ------------------------------------------------------------------
@@ -647,7 +650,9 @@ class CheckpointManager:
 
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
-        self._checkpointed_dirs.clear()
+        with self._checkpoint_state_lock:
+            self._checkpointed_dirs.clear()
+            self._checkpointing_dirs.clear()
 
     # ------------------------------------------------------------------
     # Public API
@@ -676,16 +681,26 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
-        if abs_dir in self._checkpointed_dirs:
-            return False
+        with self._checkpoint_state_lock:
+            if (
+                abs_dir in self._checkpointed_dirs
+                or abs_dir in self._checkpointing_dirs
+            ):
+                return False
+            self._checkpointing_dirs.add(abs_dir)
 
-        self._checkpointed_dirs.add(abs_dir)
-
+        success = False
         try:
-            return self._take(abs_dir, reason)
+            success = self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
-            return False
+        finally:
+            with self._checkpoint_state_lock:
+                self._checkpointing_dirs.discard(abs_dir)
+                if success:
+                    self._checkpointed_dirs.add(abs_dir)
+
+        return success
 
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
         """List available checkpoints for a directory (most recent first)."""

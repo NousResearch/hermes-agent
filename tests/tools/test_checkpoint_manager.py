@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 import pytest
 from pathlib import Path
@@ -189,6 +190,68 @@ class TestTakeCheckpoint:
         r2 = mgr.ensure_checkpoint(str(work_dir), "second")
         assert r1 is True
         assert r2 is False  # dedup'd
+
+    def test_concurrent_same_turn_only_takes_once(self, mgr, work_dir, monkeypatch):
+        mgr._git_available = True
+        callers_ready = threading.Barrier(2)
+        take_started = threading.Event()
+        release_take = threading.Event()
+        calls = []
+        results = []
+
+        def fake_take(directory, reason):
+            calls.append((directory, reason))
+            take_started.set()
+            release_take.wait(timeout=5)
+            return True
+
+        monkeypatch.setattr(mgr, "_take", fake_take)
+
+        def ensure(reason):
+            callers_ready.wait(timeout=5)
+            results.append(mgr.ensure_checkpoint(str(work_dir), reason))
+
+        threads = [
+            threading.Thread(target=ensure, args=("first",)),
+            threading.Thread(target=ensure, args=("second",)),
+        ]
+        for thread in threads:
+            thread.start()
+        assert take_started.wait(timeout=5)
+        release_take.set()
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+        assert len(calls) == 1
+        assert sorted(results) == [False, True]
+
+    def test_failed_checkpoint_can_retry_same_turn(self, mgr, work_dir, monkeypatch):
+        mgr._git_available = True
+        calls = []
+
+        def fake_take(directory, reason):
+            calls.append((directory, reason))
+            return len(calls) == 2
+
+        monkeypatch.setattr(mgr, "_take", fake_take)
+
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is False
+        assert mgr.ensure_checkpoint(str(work_dir), "retry") is True
+        assert len(calls) == 2
+
+    def test_successful_checkpoint_deduplicates_same_turn(self, mgr, work_dir, monkeypatch):
+        mgr._git_available = True
+        calls = []
+        monkeypatch.setattr(
+            mgr,
+            "_take",
+            lambda directory, reason: calls.append((directory, reason)) or True,
+        )
+
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        assert mgr.ensure_checkpoint(str(work_dir), "duplicate") is False
+        assert len(calls) == 1
 
     def test_new_turn_resets_dedup(self, mgr, work_dir):
         assert mgr.ensure_checkpoint(str(work_dir), "turn 1") is True

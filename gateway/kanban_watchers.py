@@ -25,6 +25,27 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+# --- Voice-busy defer (optional; no-op when flag file absent) ---
+# When the voice stack writes JASPER_VOICE_BUSY_FLAG (default
+# /tmp/.jasper_voice_busy), the dispatcher delays NEW worker spawns so
+# speech is not competing with kanban worker prefill. Running workers,
+# claims, and completions are never blocked. Env override lets operators
+# point at a different flag path; default path is fine when unused.
+_JASPER_VOICE_BUSY_FLAG = os.environ.get(
+    "JASPER_VOICE_BUSY_FLAG", "/tmp/.jasper_voice_busy"
+)
+_DEFER_MAX_TICKS = 10  # force a spawn tick after this many consecutive busy ticks
+
+
+def _voice_is_busy() -> bool:
+    """Return True if the configured voice-busy flag file exists."""
+    try:
+        os.stat(_JASPER_VOICE_BUSY_FLAG)
+        return True
+    except OSError:
+        return False
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -780,8 +801,11 @@ class GatewayKanbanWatchersMixin:
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
         if not kanban_cfg.get("dispatch_in_gateway", True):
+            # auto_decompose only runs inside this watcher. When dispatch is
+            # off, triage freezes even if kanban.auto_decompose is still true.
             logger.info(
-                "kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false"
+                "kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false "
+                "(auto_decompose will NOT run while dispatch is off — triage stays put)"
             )
             return
 
@@ -939,6 +963,7 @@ class GatewayKanbanWatchersMixin:
         # usually means broken PATH, missing venv, or credential loss.
         HEALTH_WINDOW = 6
         bad_ticks = 0
+        defer_busy_ticks = 0  # consecutive voice-busy ticks -> defer spawn
         last_warn_at = 0
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
@@ -1131,6 +1156,9 @@ class GatewayKanbanWatchersMixin:
             """Re-resolve (enabled, per_tick) from current config each tick."""
             return _resolve_auto_decompose_settings(_load_config)
 
+        # Rate-limit auto-decompose failure WARN (task_id+reason → last log time).
+        _ad_fail_last_warn: dict[str, float] = {}
+
         def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:
             """Run the auto-decomposer for up to N triage tasks across all
             boards. Returns the number of triage tasks that were
@@ -1195,12 +1223,24 @@ class GatewayKanbanWatchersMixin:
                                     slug, tid,
                                 )
                         else:
-                            # Common no-op reasons (no aux client configured) shouldn't
-                            # spam logs every tick. Log at debug.
+                            # Rate-limited WARN so triage stalls are visible
+                            # (was DEBUG-only → looked like "nothing happening").
+                            # Still debug every skip for forensics.
+                            reason = outcome.reason or "unknown"
                             logger.debug(
                                 "kanban auto-decompose [%s]: %s skipped: %s",
-                                slug, tid, outcome.reason,
+                                slug, tid, reason,
                             )
+                            now = time.time()
+                            key = f"{slug}:{tid}:{reason}"
+                            last = _ad_fail_last_warn.get(key, 0.0)
+                            if now - last >= 300.0:
+                                _ad_fail_last_warn[key] = now
+                                logger.warning(
+                                    "kanban auto-decompose [%s]: %s still in triage "
+                                    "(%s) — will retry next ticks",
+                                    slug, tid, reason,
+                                )
                 finally:
                     if prev_env is None:
                         os.environ.pop("HERMES_KANBAN_BOARD", None)
@@ -1208,8 +1248,11 @@ class GatewayKanbanWatchersMixin:
                         os.environ["HERMES_KANBAN_BOARD"] = prev_env
             return successes
 
+        _ad_boot, _ad_boot_n = _resolve_auto_decompose_settings(_load_config)
         logger.info(
-            "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
+            "kanban dispatcher: embedded in gateway (interval=%.1fs, "
+            "auto_decompose=%s per_tick=%d — decompose needs this watcher live)",
+            interval, _ad_boot, _ad_boot_n,
         )
         while self._running:
             try:
@@ -1226,12 +1269,50 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
+                # Voice-busy defer: delay NEW worker SPAWNS if the voice stack is
+                # speaking. Never kills running workers or blocks claims/completions.
+                # Auto-decompose still runs (short aux work; don't freeze the board).
+                # Force-tick after _DEFER_MAX_TICKS so a stuck busy flag cannot
+                # starve spawns forever (naive resets every busy tick → force never fires).
+                voice_busy = _voice_is_busy()
+                skip_spawn = False
+                if voice_busy:
+                    defer_busy_ticks += 1
+                    if defer_busy_ticks >= _DEFER_MAX_TICKS:
+                        logger.info(
+                            "kanban dispatcher: voice-busy stale after %d ticks "
+                            "— forcing spawn tick",
+                            defer_busy_ticks,
+                        )
+                        defer_busy_ticks = 0
+                    else:
+                        try:
+                            has_pending = await asyncio.to_thread(_ready_nonempty)
+                        except Exception:
+                            has_pending = False
+                        if has_pending:
+                            skip_spawn = True
+                            logger.info(
+                                "kanban dispatcher: deferred spawn (voice-busy, "
+                                "%d/%d ticks; auto-decompose still runs)",
+                                defer_busy_ticks,
+                                _DEFER_MAX_TICKS,
+                            )
+                else:
+                    defer_busy_ticks = 0
+
                 # Re-read the auto-decompose toggle live each tick so a user
                 # flipping kanban.auto_decompose=false to STOP runaway fan-out
                 # takes effect on the next tick, not on gateway restart (#49638).
                 _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
                 if _ad_enabled:
                     await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
+                if skip_spawn:
+                    try:
+                        await asyncio.sleep(min(1.0, interval))
+                    except asyncio.CancelledError:
+                        raise
+                    continue
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):

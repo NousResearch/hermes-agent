@@ -4827,6 +4827,16 @@ class TestApplyWalProbe:
         # Despite probe failure, set-pragma must still run and succeed.
         assert result == "wal"
 
+    def test_cross_backend_cursor_type_error_returns_delete(self):
+        """A pysqlite3/stdlib cursor mismatch skips WAL without failing startup."""
+        from hermes_state import apply_wal_with_fallback
+
+        class _CrossBackendConn:
+            def execute(self, _sql):
+                raise TypeError("instance of cursor required")
+
+        assert apply_wal_with_fallback(_CrossBackendConn()) == "delete"
+
     def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
         """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
         import sqlite3

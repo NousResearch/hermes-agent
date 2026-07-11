@@ -1537,6 +1537,7 @@ dependencies = [
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pysqlite3-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
@@ -1816,6 +1817,7 @@ requires-dist = [
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
+    { name = "pysqlite3-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.5.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.2" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==1.3.0" },
     { name = "python-dotenv", specifier = "==1.2.2" },
@@ -3408,6 +3410,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/93/cd/112f092ec27cca83e0516de0a3368dbd9128c187fb6b52aaaa7cde39c96d/pypng-0.20220715.0.tar.gz", hash = "sha256:739c433ba96f078315de54c0db975aee537cbc3e1d0ae4ed9aab0ca1e427e2c1", size = 128992, upload-time = "2022-07-15T14:11:05.301Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3e/b9/3766cc361d93edb2ce81e2e1f87dd98f314d7d513877a342d31b30741680/pypng-0.20220715.0-py3-none-any.whl", hash = "sha256:4a43e969b8f5aaafb2a415536c1a8ec7e341cd6a3f957fd5b5f32a4cfeed902c", size = 58057, upload-time = "2022-07-15T14:11:03.713Z" },
+]
+
+[[package]]
+name = "pysqlite3-binary"
+version = "0.5.4"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/c9/970017bfb83c3f374b3f85d85b2241954ca94a7cfe8d8709b0da5507a439/pysqlite3_binary-0.5.4-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bf257ca54a0b94dce14324b29960fae5b1d57a669ce327b92fe245049abf2854", size = 5184545, upload-time = "2024-10-12T12:46:06.368Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/6a/fd500f0ab7d722671c6ec93093e93b7448b416cee2f35fc6c40131ddfa87/pysqlite3_binary-0.5.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cb551d736ac3a049b3a91332dbcb0df506eaed58add8a95acfd264dc45ce3fa8", size = 5195175, upload-time = "2024-10-12T12:46:13.976Z" },
+    { url = "https://files.pythonhosted.org/packages/87/ed/f6638728ea46bf90f0fba63d7f53a57cbab1ba7d34a1eb86419ca582a797/pysqlite3_binary-0.5.4-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bb3653a0eb0ef5db2d0ed49d43b11ab4be24fdf5b2e65a39650fc59348e30dc6", size = 5188499, upload-time = "2024-10-12T12:46:21.926Z" },
 ]
 
 [[package]]

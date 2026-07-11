@@ -102,6 +102,10 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # Some distro Python builds ship sqlite3 without FTS5/trigram enabled.
+  # Hermes' session search needs those extensions, so prefer pysqlite3 where a
+  # binary wheel exists while keeping stdlib sqlite3 as a fallback elsewhere.
+  "pysqlite3-binary==0.5.4; sys_platform == 'linux' and platform_machine == 'x86_64'",
   # Browser CDP supervisor + browser_dialog import this directly. Keep core
   # so browser tool discovery doesn't fail on lean installs.
   "websockets==15.0.1",

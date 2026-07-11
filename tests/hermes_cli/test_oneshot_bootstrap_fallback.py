@@ -228,6 +228,22 @@ class TestOneshotBootstrapFallback:
         assert calls == ["openai-codex"]  # fallback chain never consulted
         assert FakeAgent.instances == []
 
+    def test_env_provider_and_env_model_propagates_auth_error(
+        self, monkeypatch, oneshot_env
+    ):
+        # HERMES_INFERENCE_PROVIDER + HERMES_INFERENCE_MODEL pin the pair just
+        # as deliberately as --provider + --model. No fallback may be
+        # attempted; AuthError propagates.
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openai-codex")
+        monkeypatch.setenv("HERMES_INFERENCE_MODEL", "gpt-5.5-codex")
+        calls = _patch_resolver(monkeypatch, {"custom:nvidia": NVIDIA_RUNTIME})
+
+        with pytest.raises(AuthError, match="No Codex credentials stored"):
+            oneshot._run_agent("hello")
+
+        assert calls in ([None], ["openai-codex"])  # fallback never consulted
+        assert FakeAgent.instances == []
+
     def test_fallback_passes_entry_model_as_target_model(
         self, monkeypatch, oneshot_env
     ):

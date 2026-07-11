@@ -373,11 +373,11 @@ def _run_agent(
 
     # A caller that pinned BOTH --model and --provider asked for that exact
     # pair; silently running their prompt on a different provider/model would
-    # violate the contract, so auth failures propagate untouched.  The model
-    # half of the pair may come from HERMES_INFERENCE_MODEL — that is the only
-    # way --provider passes the early validation without --model, and it is
-    # just as deliberate a pin as the flag.
-    _explicit_pair = bool((provider or "").strip()) and bool(
+    # violate the contract, so auth failures propagate untouched.  Either half
+    # of the pair may come from its env var (HERMES_INFERENCE_PROVIDER /
+    # HERMES_INFERENCE_MODEL) — that is just as deliberate a pin as the flag.
+    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip()
+    _explicit_pair = bool((provider or "").strip() or env_provider) and bool(
         (model or "").strip() or env_model
     )
 

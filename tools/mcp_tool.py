@@ -1556,7 +1556,9 @@ class MCPServerTask:
         # handler calls list_tools while a normal tool call is in flight, the
         # stream can wedge and the user-visible tool call times out. Serialize
         # client-initiated RPCs per server. The lock is also applied to HTTP
-        # transports for conservative per-server ordering.
+        # transports for conservative per-server ordering. Keepalive also
+        # treats ownership as proof of liveness, so every future ClientSession
+        # request must acquire this lock to preserve that invariant.
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
         # contextvars snapshot of the agent task that's currently in
@@ -1834,9 +1836,16 @@ class MCPServerTask:
         transport connection so a server that gains ping support after a
         reconnect is re-probed with the cheap path.
 
+        When a user RPC owns ``_rpc_lock``, that RPC and its own timeout are the
+        liveness detector; the periodic probe is intentionally skipped.
+
         Raises on a genuine connection failure so the caller triggers a
         reconnect; returns normally when the session is alive.
         """
+        # Session replacement is owned by the lifecycle coroutine that calls
+        # this probe; shutdown waits for that task before clearing the session.
+        # Keep one reference throughout the probe so ping and fallback cannot
+        # accidentally target different sessions.
         session = self.session
         if session is None:
             raise RuntimeError("MCP keepalive requested without an active session")

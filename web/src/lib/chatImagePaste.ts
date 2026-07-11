@@ -69,6 +69,94 @@ export function firstImageFromClipboard(
   return imageFilesFromTransfer(data)[0] ?? null;
 }
 
+// Non-image chat uploads (PDFs, docs, archives) — server cap mirrored in
+// /api/chat/file-upload.
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
+/** Pull every non-image file out of a DataTransfer (clipboard or drop). */
+export function nonImageFilesFromTransfer(
+  data: DataTransfer | null,
+): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  const seen = new Set<string>();
+  const add = (file: File | null) => {
+    if (!file || file.type.startsWith("image/")) return;
+    const key = imageFileKey(file);
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      const item = data.items[i];
+      if (item.kind === "file" && !item.type.startsWith("image/")) {
+        add(item.getAsFile());
+      }
+    }
+  }
+
+  if (data.files?.length) {
+    for (let i = 0; i < data.files.length; i++) {
+      add(data.files[i]);
+    }
+  }
+
+  return files;
+}
+
+/** True when a drag payload may contain any file (for dragover preventDefault). */
+export function transferMayContainFile(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  if (data.items?.length) {
+    for (let i = 0; i < data.items.length; i++) {
+      if (data.items[i].kind === "file") return true;
+    }
+    return false;
+  }
+  return (data.files?.length ?? 0) > 0;
+}
+
+/**
+ * Upload a non-image chat file to ``HERMES_HOME/uploads`` via the generic
+ * chat upload endpoint and return the absolute gateway path. The caller
+ * types the path into the TUI input so the agent can read the file with
+ * its file tools.
+ */
+export async function uploadChatFile(
+  file: File,
+  profile = "",
+): Promise<ChatImageUploadResult> {
+  if (file.size === 0) throw new Error("file is empty");
+  if (file.size > MAX_FILE_BYTES) {
+    const mb = Math.round(MAX_FILE_BYTES / (1024 * 1024));
+    throw new Error(`file too large (max ${mb} MB)`);
+  }
+
+  const dataUrl = await fileToDataUrl(file);
+  const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+  const res = await authedFetch(`/api/chat/file-upload${qs}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      data_url: dataUrl,
+      filename: file.name,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+
+  const uploaded = (await res.json()) as ChatImageUploadResult;
+  if (!uploaded?.path) {
+    throw new Error("file upload did not return a path");
+  }
+  return uploaded;
+}
+
 /** True when a drag payload may contain an image (for dragover preventDefault). */
 export function transferMayContainImage(data: DataTransfer | null): boolean {
   if (!data) return false;

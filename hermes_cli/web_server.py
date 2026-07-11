@@ -1856,6 +1856,56 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     }
 
 
+_CHAT_FILE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+
+
+@app.post("/api/chat/file-upload")
+async def upload_chat_file(payload: ChatImageUpload, profile: Optional[str] = None):
+    """Persist a browser-provided chat file (PDF, docs, any type) for the TUI.
+
+    Same mechanism as ``/api/chat/image-upload`` but without the image-only
+    constraint. Non-image drops/pastes in the dashboard chat upload here, then
+    the page types the gateway-visible path into the TUI input so the agent
+    can read the file with its file tools. Files land under
+    ``HERMES_HOME/uploads/``.
+    """
+    data, mime_type = _decode_data_url(payload.data_url)
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(data) > _CHAT_FILE_UPLOAD_MAX_BYTES:
+        mb = _CHAT_FILE_UPLOAD_MAX_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"File is too large; cap is {mb} MB")
+
+    name = _sanitize_chat_image_filename(payload.filename)
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._-") or "upload"
+    with _profile_scope(profile) as scoped_home:
+        home = scoped_home or get_hermes_home()
+        up_dir = Path(home) / "uploads"
+        try:
+            up_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Upload directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not create upload directory: {exc}")
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = up_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{name}"
+        try:
+            target.write_bytes(data)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Upload directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    return {
+        "ok": True,
+        "path": str(target),
+        "name": target.name,
+        "bytes": len(data),
+        "mime_type": mime_type,
+    }
+
+
 @app.get("/api/files")
 async def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)

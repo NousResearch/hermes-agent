@@ -51,7 +51,9 @@ import {
 } from "@/lib/pty-mobile-input";
 import {
   imageFilesFromTransfer,
-  transferMayContainImage,
+  nonImageFilesFromTransfer,
+  transferMayContainFile,
+  uploadChatFile,
   uploadChatImage,
 } from "@/lib/chatImagePaste";
 import { PluginSlot } from "@/plugins";
@@ -587,24 +589,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         await driveImageAttach(paths);
       })().catch(reportImageUploadError);
     };
-    const handleBrowserPaste = (ev: ClipboardEvent) => {
-      const files = imageFilesFromTransfer(ev.clipboardData);
+    // Non-image files (PDFs, docs, …): upload to HERMES_HOME/uploads, then
+    // type the gateway-visible paths into the TUI input (no Return) so the
+    // user can add instructions before sending.
+    const uploadAndInsertFiles = (files: File[]) => {
       if (!files.length) return;
+      void (async () => {
+        const paths: string[] = [];
+        for (const file of files) {
+          const uploaded = await uploadChatFile(file, scopedProfile);
+          if (imageUploadDisposed) return;
+          paths.push(uploaded.path);
+        }
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          setBanner("File uploaded, but chat is not connected — try again.");
+          return;
+        }
+        ws.send(paths.join(" ") + " ");
+        term.focus();
+      })().catch(reportImageUploadError);
+    };
+    const handleBrowserPaste = (ev: ClipboardEvent) => {
+      const images = imageFilesFromTransfer(ev.clipboardData);
+      const others = nonImageFilesFromTransfer(ev.clipboardData);
+      if (!images.length && !others.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      uploadAndAttachImages(images);
+      uploadAndInsertFiles(others);
     };
     const handleBrowserDragOver = (ev: DragEvent) => {
-      if (!transferMayContainImage(ev.dataTransfer)) return;
+      if (!transferMayContainFile(ev.dataTransfer)) return;
       ev.preventDefault();
       if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
     };
     const handleBrowserDrop = (ev: DragEvent) => {
-      const files = imageFilesFromTransfer(ev.dataTransfer);
-      if (!files.length) return;
+      const images = imageFilesFromTransfer(ev.dataTransfer);
+      const others = nonImageFilesFromTransfer(ev.dataTransfer);
+      if (!images.length && !others.length) return;
       ev.preventDefault();
       ev.stopPropagation();
-      uploadAndAttachImages(files);
+      uploadAndAttachImages(images);
+      uploadAndInsertFiles(others);
     };
     host.addEventListener("paste", handleBrowserPaste, { capture: true });
     host.addEventListener("dragover", handleBrowserDragOver, { capture: true });

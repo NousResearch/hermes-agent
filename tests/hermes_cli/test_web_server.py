@@ -964,6 +964,95 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 401
 
+    # ── POST /api/chat/file-upload (browser drop/paste, any file type) ──
+
+    def test_chat_file_upload_writes_to_default_profile_uploads(self):
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={
+                "data_url": "data:application/pdf;base64,JVBERi0xLjQK",
+                "filename": "../../report.pdf",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        target = Path(data["path"])
+        assert data["ok"] is True
+        assert data["mime_type"] == "application/pdf"
+        assert target.parent == get_hermes_home() / "uploads"
+        assert target.name.startswith("dashboard_")
+        assert target.name.endswith("_report.pdf")
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"%PDF-1.4")
+
+    def test_chat_file_upload_writes_to_requested_profile_uploads(self):
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        resp = self.client.post(
+            "/api/chat/file-upload?profile=worker",
+            json={
+                "data_url": "data:text/csv;base64,YSxiLGMK",
+                "filename": "leads.csv",
+            },
+        )
+
+        assert resp.status_code == 200
+        target = Path(resp.json()["path"])
+        assert target.parent == worker_home / "uploads"
+        assert target.is_file()
+        assert target.read_bytes() == b"a,b,c\n"
+
+    def test_chat_file_upload_accepts_non_image_mime(self):
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={"data_url": "data:text/plain;base64,aGVsbG8=", "filename": "note.txt"},
+        )
+
+        assert resp.status_code == 200
+        assert Path(resp.json()["path"]).read_bytes() == b"hello"
+
+    def test_chat_file_upload_rejects_empty_payload(self):
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={"data_url": "data:application/pdf;base64,", "filename": "empty.pdf"},
+        )
+
+        assert resp.status_code == 400
+        assert "empty" in resp.json()["detail"].lower()
+
+    def test_chat_file_upload_enforces_size_cap(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_CHAT_FILE_UPLOAD_MAX_BYTES", 4)
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={
+                "data_url": "data:application/pdf;base64,JVBERi0xLjQK",
+                "filename": "large.pdf",
+            },
+        )
+
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"].lower()
+
+    def test_chat_file_upload_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.post(
+            "/api/chat/file-upload",
+            json={"data_url": "data:text/plain;base64,aGVsbG8="},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+
+        assert resp.status_code == 401
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):

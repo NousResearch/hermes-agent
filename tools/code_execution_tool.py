@@ -493,6 +493,7 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    browser_scope: Optional[str] = None,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -585,9 +586,10 @@ def _rpc_server_loop(
                     try:
                         sys.stdout = devnull
                         sys.stderr = devnull
-                        result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
-                        )
+                        dispatch_kw = {"task_id": task_id}
+                        if browser_scope:
+                            dispatch_kw["browser_scope"] = browser_scope
+                        result = handle_function_call(tool_name, tool_args, **dispatch_kw)
                     finally:
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
                         devnull.close()
@@ -770,6 +772,7 @@ def _rpc_poll_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    browser_scope: Optional[str] = None,
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -867,9 +870,10 @@ def _rpc_poll_loop(
                         try:
                             sys.stdout = devnull
                             sys.stderr = devnull
-                            tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
-                            )
+                            dispatch_kw = {"task_id": task_id}
+                            if browser_scope:
+                                dispatch_kw["browser_scope"] = browser_scope
+                            tool_result = handle_function_call(tool_name, tool_args, **dispatch_kw)
                         finally:
                             sys.stdout, sys.stderr = _real_stdout, _real_stderr
                             devnull.close()
@@ -914,6 +918,7 @@ def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    browser_scope: Optional[str] = None,
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -986,7 +991,7 @@ def _execute_remote(
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event, rpc_token,
+                sandbox_tools, stop_event, rpc_token, browser_scope,
             ),
             daemon=True,
         )
@@ -1115,6 +1120,7 @@ def _execute_remote(
 def execute_code(
     code: str,
     task_id: Optional[str] = None,
+    browser_scope: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
 ) -> str:
     """
@@ -1177,7 +1183,7 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(code, task_id, enabled_tools, browser_scope=browser_scope)
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1272,6 +1278,7 @@ def execute_code(
             args=(
                 server_sock, task_id, tool_call_log,
                 tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+                browser_scope,
             ),
             daemon=True,
         )
@@ -1903,6 +1910,7 @@ registry.register(
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
         task_id=kw.get("task_id"),
+        browser_scope=kw.get("browser_scope"),
         enabled_tools=kw.get("enabled_tools")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",

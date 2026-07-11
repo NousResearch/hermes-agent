@@ -2336,6 +2336,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(
                 function_name, next_args, effective_task_id,
+                browser_scope=getattr(agent, "browser_scope", None),
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",

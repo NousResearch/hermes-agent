@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -106,9 +107,14 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 
 
 def _build_server() -> Any:
-    """Create the FastMCP server with Hermes tools attached. Lazy imports
-    so the module can be imported without the mcp package installed
-    (we degrade to a clear error only when actually run)."""
+    """Build FastMCP with one stable browser scope per MCP process.
+
+    Imports stay lazy so importing this module does not require the MCP package.
+    """
+    mcp_browser_scope = (
+        os.getenv("HERMES_BROWSER_SCOPE", "").strip()
+        or f"hermes-tools-mcp-{uuid.uuid4().hex}"
+    )
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError as exc:  # pragma: no cover - install hint
@@ -162,7 +168,12 @@ def _build_server() -> Any:
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    return handle_function_call(
+                        tool_name,
+                        kwargs or {},
+                        task_id=mcp_browser_scope,
+                        browser_scope=mcp_browser_scope,
+                    )
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})

@@ -443,6 +443,7 @@ class AIAgent:
         provider_data_collection: str = None,
         openrouter_min_coding_score: Optional[float] = None,
         session_id: str = None,
+        browser_scope: str = None,
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
         tool_complete_callback: callable = None,
@@ -519,6 +520,7 @@ class AIAgent:
             provider_data_collection=provider_data_collection,
             openrouter_min_coding_score=openrouter_min_coding_score,
             session_id=session_id,
+            browser_scope=browser_scope,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -3486,6 +3488,7 @@ class AIAgent:
         independently guarded so a failure in one does not prevent the rest.
         """
         task_id = getattr(self, "session_id", None) or ""
+        browser_scope = getattr(self, "browser_scope", None) or task_id
 
         # 1. Kill background processes for this task
         try:
@@ -3502,7 +3505,7 @@ class AIAgent:
 
         # 3. Clean browser daemon sessions
         try:
-            cleanup_browser(task_id)
+            cleanup_browser(browser_scope)
         except Exception:
             pass
 

@@ -4370,6 +4370,14 @@ def cleanup_all_browsers() -> None:
     for task_id in task_ids:
         cleanup_browser(task_id)
 
+    # Camofox sessions are tracked by their REST backend rather than in
+    # _active_sessions, so a pure-Camofox process may have no task_ids above.
+    try:
+        from tools.browser_camofox import cleanup_all_camofox_sessions
+        cleanup_all_camofox_sessions()
+    except Exception:
+        pass
+
     # Tear down CDP supervisors for all tasks so background threads exit.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]

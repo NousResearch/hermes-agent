@@ -1474,6 +1474,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
+                    browser_scope=getattr(agent, "browser_scope", None),
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
@@ -1516,6 +1517,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 function_result = _ra().handle_function_call(
                     function_name, function_args, effective_task_id,
+                    browser_scope=getattr(agent, "browser_scope", None),
                     tool_call_id=tool_call.id,
                     session_id=agent.session_id or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",

@@ -2858,6 +2858,7 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
+                browser_scope=agent.browser_scope,
                 tool_call_id=None,
                 session_id=agent.session_id,
                 turn_id="",

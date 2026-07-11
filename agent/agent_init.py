@@ -257,6 +257,12 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def resolve_browser_scope(browser_scope: Optional[str], session_id: str) -> str:
+    """Return the immutable browser owner for a new or resumed conversation."""
+    explicit = str(browser_scope or "").strip()
+    return explicit or str(session_id or "").strip()
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -287,6 +293,7 @@ def init_agent(
     provider_data_collection: str = None,
     openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
+    browser_scope: str = None,
     tool_progress_callback: callable = None,
     tool_start_callback: callable = None,
     tool_complete_callback: callable = None,
@@ -1226,6 +1233,12 @@ def init_agent(
         timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         agent.session_id = f"{timestamp_str}_{short_uuid}"
+
+    # Browser ownership is a conversation invariant, unlike task_id (which may
+    # be per-turn) and session_id (which may rotate during compression).  Keep
+    # the initial durable session identity unless an embedding supplies an
+    # explicit scope.
+    agent.browser_scope = resolve_browser_scope(browser_scope, agent.session_id)
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session

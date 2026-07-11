@@ -1026,6 +1026,7 @@ def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
+    browser_scope: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
     turn_id: Optional[str] = None,
@@ -1044,7 +1045,8 @@ def handle_function_call(
     Args:
         function_name: Name of the function to call.
         function_args: Arguments for the function.
-        task_id: Unique identifier for terminal/browser session isolation.
+        task_id: Unique identifier for task-scoped tools such as terminal.
+        browser_scope: Stable conversation identifier for browser isolation.
         user_task: The user's original task (for browser_snapshot context).
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
@@ -1132,6 +1134,7 @@ def handle_function_call(
                 function_name=underlying_name,
                 function_args=underlying_args,
                 task_id=task_id,
+                browser_scope=browser_scope,
                 tool_call_id=tool_call_id,
                 session_id=session_id,
                 user_task=user_task,
@@ -1257,6 +1260,9 @@ def handle_function_call(
         except Exception:
             reset_current_observability_context = None
         try:
+            dispatch_task_id = browser_scope if function_name.startswith("browser_") else task_id
+            if function_name.startswith("browser_") and not dispatch_task_id:
+                return json.dumps({"error": "browser scope is required for browser tools"})
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
@@ -1264,15 +1270,16 @@ def handle_function_call(
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,
-                        task_id=task_id,
+                        task_id=dispatch_task_id,
                         session_id=session_id,
+                        browser_scope=browser_scope,
                         enabled_tools=sandbox_enabled,
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,
-                        task_id=task_id,
+                        task_id=dispatch_task_id,
                         session_id=session_id,
                         user_task=user_task,
                     )

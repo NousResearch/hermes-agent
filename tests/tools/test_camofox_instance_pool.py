@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +18,22 @@ def test_same_task_reuses_live_instance(tmp_path):
     ):
         first = pool.get_or_start("thread-a")
         second = pool.get_or_start("thread-a")
+
+    assert first is second
+    popen.assert_called_once()
+
+
+def test_concurrent_same_task_waits_for_one_ready_instance(tmp_path):
+    (tmp_path / "server.js").write_text("// test")
+    process = MagicMock()
+    process.poll.return_value = None
+    pool = CamofoxInstancePool(tmp_path)
+
+    with patch("tools.camofox_instance_pool.subprocess.Popen", return_value=process) as popen, patch.object(
+        pool, "_wait_until_ready"
+    ):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first, second = executor.map(pool.get_or_start, ["thread-a", "thread-a"])
 
     assert first is second
     popen.assert_called_once()
@@ -66,6 +83,33 @@ def test_start_failure_terminates_process(tmp_path):
             pool.get_or_start("thread-a")
 
     killpg.assert_called_once_with(4321, 15)
+
+
+def test_dead_server_reaps_viewer_and_closes_log_before_replacement(tmp_path):
+    (tmp_path / "server.js").write_text("// test")
+    dead = MagicMock(pid=100)
+    dead.poll.return_value = 1
+    viewer = MagicMock(pid=101)
+    viewer.poll.return_value = None
+    log_file = MagicMock()
+    pool = CamofoxInstancePool(tmp_path)
+    from tools.camofox_instance_pool import CamofoxInstance
+    pool._instances["thread-a"] = CamofoxInstance(
+        "thread-a", 19401, 19402, 19403, dead,
+        viewer_process=viewer, log_file=log_file,
+    )
+    replacement = MagicMock()
+    replacement.poll.return_value = None
+
+    with patch("tools.camofox_instance_pool.subprocess.Popen", return_value=replacement), patch.object(
+        pool, "_wait_until_ready"
+    ), patch("tools.camofox_instance_pool.os.getpgid", return_value=777), patch(
+        "tools.camofox_instance_pool.os.killpg"
+    ) as killpg:
+        pool.get_or_start("thread-a")
+
+    killpg.assert_called_once_with(777, 15)
+    log_file.close.assert_called_once()
 
 
 def test_popup_viewer_uses_dedicated_profile_and_instance_url(tmp_path):

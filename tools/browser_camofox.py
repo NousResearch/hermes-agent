@@ -105,6 +105,11 @@ def get_camofox_url() -> str:
     # that clear the session map must immediately fall back to configuration.
     if scoped and any(session.get("api_url") == scoped for session in _sessions.values()):
         return scoped
+    # A shared URL is a legacy global-server escape hatch.  Never fall back to
+    # it in per-thread mode: the owning browser call must first bind the URL of
+    # its scoped instance through _get_session().
+    if _per_thread_instances_mode(_get_camofox_config()):
+        return ""
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
@@ -170,12 +175,19 @@ def is_camofox_mode() -> bool:
         return False
     if _config_cdp_url():
         return False
+    if _per_thread_instances_mode(_get_camofox_config()):
+        return True
     return bool(get_camofox_url())
 
 
 def check_camofox_available() -> bool:
     """Verify the Camofox server is reachable."""
     global _vnc_url, _vnc_url_checked
+    camofox_cfg = _get_camofox_config()
+    if _per_thread_instances_mode(camofox_cfg):
+        import shutil
+        server_dir = Path(str(camofox_cfg.get("server_dir") or "~/src/camofox-browser")).expanduser()
+        return shutil.which("node") is not None and (server_dir / "server.js").is_file()
     url = get_camofox_url()
     if not url:
         return False
@@ -408,6 +420,9 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     derived from the Hermes profile so the Camofox server can map it
     to the same persistent browser profile across restarts.
     """
+    camofox_cfg = _get_camofox_config()
+    if _per_thread_instances_mode(camofox_cfg) and not str(task_id or "").strip():
+        raise ValueError("browser scope is required in Camofox per_thread_instances mode")
     task_id = task_id or "default"
     with _sessions_lock:
         if task_id in _sessions:
@@ -415,7 +430,6 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
             _request_base_url.set(session.get("api_url"))
             return session
 
-        camofox_cfg = _get_camofox_config()
         instance = None
         if _per_thread_instances_mode(camofox_cfg):
             instance = _get_instance_pool(camofox_cfg).get_or_start(task_id)
@@ -505,11 +519,27 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     :func:`camofox_close`.
     """
     camofox_cfg = _get_camofox_config()
+    # A per-thread server is itself the scoped resource; persistence may keep
+    # its profile on disk, but must not keep the process alive past the owning
+    # conversation boundary.
+    if _per_thread_instances_mode(camofox_cfg):
+        return False
     if _managed_persistence_enabled() or _camofox_identity_override(task_id, camofox_cfg):
         _drop_session(task_id)
         logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
         return True
     return False
+
+
+def cleanup_all_camofox_sessions() -> None:
+    """Close every process-local Camofox session at process shutdown."""
+    with _sessions_lock:
+        scopes = list(_sessions)
+    for scope in scopes:
+        camofox_close(scope)
+    pool = _instance_pool
+    if pool is not None:
+        pool.stop_all()
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1050,3 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
-
-

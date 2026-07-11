@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, IO, Optional
 
 import requests
 
@@ -29,6 +29,7 @@ class CamofoxInstance:
     novnc_port: int
     process: subprocess.Popen
     viewer_process: Optional[subprocess.Popen] = None
+    log_file: Optional[IO[bytes]] = None
 
     @property
     def api_url(self) -> str:
@@ -55,6 +56,7 @@ class CamofoxInstancePool:
         launch_viewer: bool = False,
         viewer_executable: Path = Path("~/.cache/camoufox/camoufox"),
         viewer_profile_root: Path = Path("~/.camoufox-hermes-thread-viewers"),
+        log_root: Path = Path("~/.hermes/logs/camofox-instances"),
     ) -> None:
         self.server_dir = Path(server_dir).expanduser().resolve()
         self.port_start = port_start
@@ -63,6 +65,7 @@ class CamofoxInstancePool:
         self.launch_viewer = launch_viewer
         self.viewer_executable = Path(viewer_executable).expanduser().resolve()
         self.viewer_profile_root = Path(viewer_profile_root).expanduser().resolve()
+        self.log_root = Path(log_root).expanduser().resolve()
         self._instances: Dict[str, CamofoxInstance] = {}
         self._lock = threading.RLock()
 
@@ -95,7 +98,7 @@ class CamofoxInstancePool:
             if current and current.process.poll() is None:
                 return current
             if current:
-                self._instances.pop(key, None)
+                self.stop(key)
 
             if not (self.server_dir / "server.js").is_file():
                 raise RuntimeError(f"Camofox server.js not found under {self.server_dir}")
@@ -109,24 +112,31 @@ class CamofoxInstancePool:
                 "VNC_BIND": "127.0.0.1",
                 "NODE_ENV": "production",
             })
+            self.log_root.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+            log_file = (self.log_root / f"{digest}.log").open("ab", buffering=0)
             process = subprocess.Popen(
                 ["node", "server.js"],
                 cwd=self.server_dir,
                 env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            instance = CamofoxInstance(key, api_port, vnc_port, novnc_port, process)
+            instance = CamofoxInstance(
+                key, api_port, vnc_port, novnc_port, process, log_file=log_file
+            )
             self._instances[key] = instance
-
-        try:
-            self._wait_until_ready(instance)
-        except Exception:
-            self.stop(key)
-            raise
-        return instance
+            try:
+                # Serialize same-process acquisition until the published
+                # instance is actually ready. A second caller must never
+                # receive a merely-spawned server that can still fail startup.
+                self._wait_until_ready(instance)
+            except Exception:
+                self.stop(key)
+                raise
+            return instance
 
     def ensure_viewer(self, instance: CamofoxInstance) -> None:
         """Launch the popup only after this instance's noVNC endpoint is live."""
@@ -191,7 +201,7 @@ class CamofoxInstancePool:
         key = task_id or "default"
         with self._lock:
             instance = self._instances.pop(key, None)
-        if not instance or instance.process.poll() is not None:
+        if not instance:
             return
         if instance.viewer_process and instance.viewer_process.poll() is None:
             os.killpg(os.getpgid(instance.viewer_process.pid), signal.SIGTERM)
@@ -202,11 +212,13 @@ class CamofoxInstancePool:
                 instance.viewer_process.wait(timeout=5)
         if instance.process.poll() is None:
             os.killpg(os.getpgid(instance.process.pid), signal.SIGTERM)
-        try:
-            instance.process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(instance.process.pid), signal.SIGKILL)
-            instance.process.wait(timeout=5)
+            try:
+                instance.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(instance.process.pid), signal.SIGKILL)
+                instance.process.wait(timeout=5)
+        if instance.log_file:
+            instance.log_file.close()
 
     def stop_all(self) -> None:
         with self._lock:

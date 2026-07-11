@@ -1460,6 +1460,17 @@ CREATE TABLE IF NOT EXISTS discovery_capabilities (
     used_at           INTEGER
 );
 
+-- A human-approved architecture gate may issue exactly one implementation
+-- graph. Store the immutable issued IDs so a retry with the same key is
+-- idempotent while a second graph fails before it writes tasks or links.
+CREATE TABLE IF NOT EXISTS architecture_graph_issuances (
+    gate_id          TEXT PRIMARY KEY,
+    idempotency_key  TEXT NOT NULL,
+    task_ids         TEXT NOT NULL,
+    issued_by        TEXT NOT NULL,
+    issued_at        INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -3232,6 +3243,139 @@ def reject_architecture_gate(
         return rejected
 
 
+def issue_architecture_graph(
+    conn: sqlite3.Connection,
+    gate_id: str,
+    context: MutationContext,
+    tasks: list[dict[str, Any]],
+    *,
+    idempotency_key: str,
+) -> list[str]:
+    """Issue the one canonical implementation graph for a human-approved gate.
+
+    The runtime-owned context is the authorization boundary. All graph rows are
+    inserted in one transaction so a rejected duplicate cannot leave partial
+    tasks or dependency edges behind.
+    """
+    if (
+        context.actor_type != "orchestrator_agent"
+        or context.profile != "orchestrator"
+        or context.phase != "graph_issuance"
+    ):
+        raise ArchitectureGateError("architecture_graph_issuance_requires_orchestrator")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise ValueError("architecture graph idempotency_key is required")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("architecture graph tasks must be a non-empty list")
+
+    normalized: list[tuple[str, Optional[str], Optional[str], list[int]]] = []
+    for index, raw in enumerate(tasks):
+        if not isinstance(raw, dict):
+            raise ValueError(f"architecture graph tasks[{index}] must be an object")
+        title = raw.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"architecture graph tasks[{index}].title is required")
+        assignee = _canonical_assignee(raw.get("assignee"))
+        body = raw.get("body")
+        if body is not None and not isinstance(body, str):
+            raise ValueError(f"architecture graph tasks[{index}].body must be a string")
+        parents = raw.get("parents") or []
+        if not isinstance(parents, list) or any(
+            not isinstance(parent, int) or parent < 0 or parent >= len(tasks) or parent == index
+            for parent in parents
+        ):
+            raise ValueError(f"architecture graph tasks[{index}].parents is invalid")
+        if len(set(parents)) != len(parents):
+            raise ValueError(f"architecture graph tasks[{index}].parents has duplicates")
+        normalized.append((title.strip(), assignee, body, parents))
+
+    in_degree = [0] * len(normalized)
+    descendants: list[list[int]] = [[] for _ in normalized]
+    for index, (_, _, _, parents) in enumerate(normalized):
+        for parent in parents:
+            in_degree[index] += 1
+            descendants[parent].append(index)
+    ready = [index for index, degree in enumerate(in_degree) if degree == 0]
+    visited = 0
+    while ready:
+        current = ready.pop()
+        visited += 1
+        for child in descendants[current]:
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                ready.append(child)
+    if visited != len(normalized):
+        raise ValueError("architecture graph contains a cycle")
+
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if (
+            gate is None
+            or gate.board_key != context.board_key
+            or gate.creator_principal != context.principal
+        ):
+            raise ArchitectureGateError("architecture_gate_scope_mismatch")
+        if gate.state != "human_approved":
+            raise ArchitectureGateError("architecture_graph_requires_human_approval")
+
+        existing = conn.execute(
+            "SELECT idempotency_key, task_ids FROM architecture_graph_issuances WHERE gate_id = ?",
+            (gate_id,),
+        ).fetchone()
+        if existing is not None:
+            if existing["idempotency_key"] == idempotency_key:
+                try:
+                    return list(json.loads(existing["task_ids"]))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ArchitectureGateError("architecture_graph_issuance_corrupt") from exc
+            raise ArchitectureGateError("architecture_graph_issued")
+
+        architect = get_task(conn, gate.architect_task_id)
+        if architect is None:
+            raise ArchitectureGateError("architecture_graph_architect_task_missing")
+        now = int(time.time())
+        task_ids = [_new_task_id() for _ in normalized]
+        for index, (title, assignee, body, parents) in enumerate(normalized):
+            task_status = "ready" if not parents else "todo"
+            conn.execute(
+                """INSERT INTO tasks (
+                    id, title, body, assignee, status, created_by, created_at,
+                    workspace_kind, workspace_path, tenant, session_id, workflow_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    task_ids[index], title, body, assignee, task_status,
+                    "architecture-graph", now, architect.workspace_kind,
+                    architect.workspace_path, architect.tenant, architect.session_id,
+                    gate.workflow_key,
+                ),
+            )
+            _append_event(
+                conn, task_ids[index], "created",
+                {"by": "architecture-graph", "gate_id": gate_id, "status": task_status},
+            )
+        for index, (_, _, _, parents) in enumerate(normalized):
+            parent_ids_for_task = [task_ids[parent] for parent in parents]
+            if not parent_ids_for_task:
+                parent_ids_for_task = [gate.architect_task_id]
+            for parent_id in parent_ids_for_task:
+                conn.execute(
+                    "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                    (parent_id, task_ids[index]),
+                )
+                _append_event(
+                    conn, task_ids[index], "linked",
+                    {"parent": parent_id, "child": task_ids[index], "gate_id": gate_id},
+                )
+        conn.execute(
+            """INSERT INTO architecture_graph_issuances
+               (gate_id, idempotency_key, task_ids, issued_by, issued_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (gate_id, idempotency_key, json.dumps(task_ids), context.principal, now),
+        )
+        _append_gate_audit(conn, gate, "architecture_graph_issued")
+        return task_ids
+
+
 def issue_discovery_capability(
     conn: sqlite3.Connection,
     gate_id: str,
@@ -3402,6 +3546,14 @@ def _authorize_mutation(
     if context.mode.strip().lower() == "shadow" and gate.state not in ARCHITECTURE_GATE_APPROVED_STATES:
         _append_gate_audit(conn, gate, "create_allowed", ARCHITECTURE_GATE_REASON_OPEN)
         return gate
+    if gate.enforcement_mode == "enforce" and gate.state == "human_approved":
+        issued = conn.execute(
+            "SELECT 1 FROM architecture_graph_issuances WHERE gate_id = ?", (gate.gate_id,)
+        ).fetchone()
+        if issued is not None:
+            raise ArchitectureGateError("architecture_graph_issued")
+        if context.phase != "graph_issuance":
+            raise ArchitectureGateError("architecture_graph_issuance_required")
     if _gate_requires_enforcement(gate):
         if context.phase == "discovery":
             _consume_discovery_capability(conn, gate, context, assignee)
@@ -6217,6 +6369,14 @@ def decompose_triage_task(
     """
     if not children:
         return None
+    gate = get_architecture_gate_for_task(conn, task_id)
+    if gate is not None and gate.enforcement_mode == "enforce" and gate.state == "human_approved":
+        issued = conn.execute(
+            "SELECT 1 FROM architecture_graph_issuances WHERE gate_id = ?", (gate.gate_id,)
+        ).fetchone()
+        if issued is not None:
+            raise ArchitectureGateError("architecture_graph_issued")
+        raise ArchitectureGateError("architecture_graph_issuance_required")
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
 

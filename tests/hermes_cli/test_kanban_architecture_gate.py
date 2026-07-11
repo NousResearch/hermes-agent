@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -303,6 +304,125 @@ def test_accepted_edit_invalidation_and_wrong_state_deny_human_approval(kanban_h
 
         with pytest.raises(kb.ArchitectureGateError, match="approval_invalidated"):
             kb.approve_architecture_gate(conn, gate.gate_id, _human_context(), gate.design_digest)
+
+
+def test_human_approved_gate_issues_one_atomic_five_card_graph(kanban_home):
+    """The Strava incident cannot create a second implementation graph."""
+    with kb.connect() as conn:
+        gate = _awaiting_human_approval(conn)
+        approved = kb.approve_architecture_gate(
+            conn, gate.gate_id, _human_context(), gate.design_digest,
+        )
+        issuer = kb.MutationContext(
+            board_key="default",
+            principal="orchestrator-session",
+            actor_type="orchestrator_agent",
+            session_id="session-1",
+            request_scope_id="turn-1",
+            gate_id=approved.gate_id,
+            profile="orchestrator",
+            mode="enforce",
+            phase="graph_issuance",
+        )
+        graph = [
+            {"title": "Strava ingestion", "assignee": "coder", "parents": []},
+            {"title": "Google Drive export", "assignee": "reviewer", "parents": [0]},
+            {"title": "verification", "assignee": "verifier", "parents": [1]},
+            {"title": "publisher", "assignee": "releaser", "parents": [2]},
+        ]
+
+        issued = kb.issue_architecture_graph(
+            conn, approved.gate_id, issuer, graph, idempotency_key="strava-incident-v1",
+        )
+        assert len(issued) == 4
+        assert len(kb.child_ids(conn, approved.architect_task_id)) == 1
+        task_count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        link_count = conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0]
+
+        with pytest.raises(kb.ArchitectureGateError, match="architecture_graph_issued"):
+            kb.create_task(
+                conn,
+                title="direct duplicate",
+                assignee="coder",
+                mutation_context=kb.MutationContext(
+                    **{**issuer.__dict__, "phase": "implementation"}
+                ),
+            )
+        with pytest.raises(kb.ArchitectureGateError, match="architecture_graph_issued"):
+            kb.issue_architecture_graph(
+                conn, approved.gate_id, issuer, graph, idempotency_key="retry-graph",
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == task_count
+        assert conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0] == link_count
+
+
+def test_worker_kanban_create_cannot_append_to_an_issued_graph(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        gate = _awaiting_human_approval(conn)
+        approved = kb.approve_architecture_gate(
+            conn, gate.gate_id, _human_context(), gate.design_digest,
+        )
+        issued = kb.issue_architecture_graph(
+            conn,
+            approved.gate_id,
+            kb.MutationContext(
+                board_key="default",
+                principal="orchestrator-session",
+                actor_type="orchestrator_agent",
+                session_id="session-1",
+                request_scope_id="turn-1",
+                gate_id=approved.gate_id,
+                profile="orchestrator",
+                mode="enforce",
+                phase="graph_issuance",
+            ),
+            [{"title": "implementation", "assignee": "coder", "parents": []}],
+            idempotency_key="issued-worker-graph",
+        )
+        task_count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", issued[0])
+    monkeypatch.setenv("HERMES_PROFILE", "coder")
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({"title": "duplicate", "assignee": "coder"}))
+    assert result["error"].endswith("architecture_graph_issued")
+    with kb.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == task_count
+
+
+def test_auto_decompose_cannot_append_to_an_issued_graph(kanban_home):
+    with kb.connect() as conn:
+        gate = _awaiting_human_approval(conn)
+        approved = kb.approve_architecture_gate(
+            conn, gate.gate_id, _human_context(), gate.design_digest,
+        )
+        issued = kb.issue_architecture_graph(
+            conn,
+            approved.gate_id,
+            kb.MutationContext(
+                board_key="default", principal="orchestrator-session",
+                actor_type="orchestrator_agent", session_id="session-1",
+                request_scope_id="turn-1", gate_id=approved.gate_id,
+                profile="orchestrator", mode="enforce", phase="graph_issuance",
+            ),
+            [{"title": "implementation", "assignee": "coder", "parents": []}],
+            idempotency_key="issued-auto-decompose-graph",
+        )
+        triage = kb.create_task(conn, title="late decomposition", triage=True)
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)", (issued[0], triage),
+        )
+        task_count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+
+        with pytest.raises(kb.ArchitectureGateError, match="architecture_graph_issued"):
+            kb.decompose_triage_task(
+                conn, triage, root_assignee="orchestrator",
+                children=[{"title": "duplicate", "assignee": "coder", "parents": []}],
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == task_count
 
 
 def test_discovery_capability_is_bound_single_use_and_never_allows_protected_work(kanban_home):

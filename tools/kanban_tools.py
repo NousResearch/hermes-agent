@@ -1726,6 +1726,32 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _worker_architecture_context(kb: Any, conn: Any) -> Any:
+    """Bind worker-created cards to their authoritative ancestor gate.
+
+    The model cannot provide this context. It is derived only from the
+    dispatcher-owned current task id and the authoritative parent graph.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return None
+    gate = kb.get_architecture_gate_for_task(conn, task_id)
+    if gate is None or gate.enforcement_mode != "enforce":
+        return None
+    return kb.MutationContext(
+        board_key=gate.board_key,
+        principal=gate.creator_principal,
+        actor_type="kanban_worker",
+        session_id=gate.session_id,
+        request_scope_id=gate.request_scope_id,
+        workflow_key=gate.workflow_key,
+        gate_id=gate.gate_id,
+        profile=os.environ.get("HERMES_PROFILE") or None,
+        mode="enforce",
+        phase="protected",
+    )
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -1843,6 +1869,7 @@ def _handle_create(args: dict, **kw) -> str:
                 model_override=model_override,
                 model_provider_override=(model_routing_decision or {}).get("provider"),
                 model_reasoning_effort=(model_routing_decision or {}).get("reasoning_effort"),
+                mutation_context=_worker_architecture_context(kb, conn),
             )
             new_task = kb.get_task(conn, new_tid)
             task_status = new_task.status if new_task else None

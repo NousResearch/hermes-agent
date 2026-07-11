@@ -4322,12 +4322,32 @@ def complete_task(
     else:
         verified_cards = []
 
+    # REQ-047 (decision 0007): risk-gated completion. A deploy / live-mutation
+    # card does NOT auto-close — it parks in `review` for human sign-off unless
+    # an attended-approval was recorded (a `deploy_approved` event, emitted when
+    # a human approves the apply per REQ-048). Docs/tests/repo-only/inspect cards
+    # auto-complete on gate-green exactly as before. One transition path: only
+    # the target status differs.
+    _rt_row = conn.execute(
+        "SELECT risk_tier FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    _risk_tier = _rt_row["risk_tier"] if _rt_row else None
+    _hold_for_review = False
+    if _risk_tier in ("deploy-A", "deploy-B", "deploy-C"):
+        _approved = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind = 'deploy_approved' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        _hold_for_review = not _approved
+    _target_status = "review" if _hold_for_review else "done"
+
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = ?,
                        result       = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
@@ -4338,13 +4358,13 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (_target_status, result, now, task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'done',
+                   SET status       = ?,
                        result       = ?,
                        completed_at = ?,
                        claim_lock   = NULL,
@@ -4356,10 +4376,23 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (_target_status, result, now, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
+        if _hold_for_review:
+            _append_event(
+                conn,
+                task_id,
+                "completion_held_for_review",
+                {
+                    "risk_tier": _risk_tier,
+                    "reason": (
+                        "deploy/live-mutation card requires human sign-off; "
+                        "no attended approval (deploy_approved) recorded"
+                    ),
+                },
+            )
         # REQ-027 (saga decision 0004: surface-don't-merge): a completing
         # worktree task surfaces integration facts — branch, HEAD, ahead
         # count vs the default branch, dirty flag (auto-WIP-committed,
@@ -4383,8 +4416,10 @@ def complete_task(
         except Exception as exc:
             worktree_facts = {"error": f"worktree surfacing failed: {exc}"}
         run_id = _end_run(
-            conn, task_id,
-            outcome="completed", status="done",
+            conn,
+            task_id,
+            outcome="completed",
+            status=_target_status,
             summary=summary if summary is not None else result,
             metadata=metadata,
         )

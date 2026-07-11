@@ -238,3 +238,61 @@ def test_invalid_ceiling_rejected(isolated_kanban_home):
             kb.create_task(conn, title="x", autonomy_ceiling="bogus")
         with pytest.raises(ValueError):
             kb.create_task(conn, title="x", risk_tier="bogus")
+
+
+# --------------------------------------------------------------------------
+# Risk-gated completion (REQ-047)
+# --------------------------------------------------------------------------
+
+
+def test_deploy_card_completion_held_for_review(isolated_kanban_home):
+    """A deploy card with no attended approval parks in `review`, not `done`."""
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(
+            conn, title="deploy", assignee="default", risk_tier="deploy-A"
+        )
+        ok = kb.complete_task(conn, tid, result="deployed")
+    assert ok is True
+    with kb.connect_closing() as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
+        ev = conn.execute(
+            "SELECT COUNT(*) c FROM task_events "
+            "WHERE task_id = ? AND kind = 'completion_held_for_review'",
+            (tid,),
+        ).fetchone()
+    assert row["status"] == "review"
+    assert ev["c"] == 1
+
+
+def test_deploy_card_completes_with_approval(isolated_kanban_home):
+    """A recorded `deploy_approved` event lets a deploy card auto-close."""
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(
+            conn, title="deploy", assignee="default", risk_tier="deploy-A"
+        )
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "deploy_approved", {"by": "operator"})
+        ok = kb.complete_task(conn, tid, result="deployed")
+    assert ok is True
+    with kb.connect_closing() as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
+    assert row["status"] == "done"
+
+
+def test_repo_card_auto_completes(isolated_kanban_home):
+    """Non-deploy cards (repo-only/docs/tests/inspect) auto-close as before."""
+    kb, _ = isolated_kanban_home
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        tid = kb.create_task(
+            conn, title="edit docs", assignee="default", risk_tier="repo-only"
+        )
+        ok = kb.complete_task(conn, tid, result="done")
+    assert ok is True
+    with kb.connect_closing() as conn:
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()
+    assert row["status"] == "done"

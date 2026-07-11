@@ -159,6 +159,7 @@ export const $newChatProfile = atom<string | null>(null)
 // currently-open session (store/projects). The chat controller subscribes and
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
+export const $profileSwitchTarget = atom<string | null>(null)
 
 export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
@@ -307,6 +308,7 @@ export function selectProfile(name: string): void {
   $newChatProfile.set(target)
 
   if (switching) {
+    $profileSwitchTarget.set(target)
     requestFreshSession()
   }
 

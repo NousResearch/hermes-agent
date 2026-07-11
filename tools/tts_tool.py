@@ -2133,6 +2133,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> str:
     """
     Convert text to speech audio.
@@ -2177,8 +2178,11 @@ def text_to_speech_tool(
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
+    # Adapter-level callers (gateway auto-TTS) pass platform explicitly:
+    # the session contextvar is only bound inside the agent-run task, so
+    # relying on it there silently yields "" -> mp3 -> no voice bubble.
     from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    platform = (platform or get_session_env("HERMES_SESSION_PLATFORM", "")).lower()
     want_opus = (platform == "telegram")
 
     # Determine output path

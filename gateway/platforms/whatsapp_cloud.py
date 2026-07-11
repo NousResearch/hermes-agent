@@ -1606,6 +1606,68 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             status.get("id"),
                         )
 
+    async def _try_resolve_auth_relay(
+        self, sender_wa_id: str, text: str, raw_message: Dict[str, Any]
+    ) -> bool:
+        """Intercept an operator's reply to a pending secret/sudo relay prompt.
+
+        Called from ``_build_message_event_from_cloud`` before a text message
+        is turned into a chat turn.  Only the configured operator WhatsApp ID
+        is honored; any other sender falls through to normal chat (returns
+        False).  The relay module owns the pending entries and their
+        ``threading.Event``; we just hand the value (or a skip signal) to it.
+
+        Returns True if the message was consumed by the relay (caller must
+        drop the webhook entry and NOT start a conversation turn).
+        """
+        try:
+            from gateway.auth_relay import (
+                is_enabled,
+                get_config,
+                resolve_secret_relay,
+                resolve_sudo_relay,
+                pending_secret_for,
+                pending_sudo_for,
+            )
+        except Exception:
+            return False
+        if not is_enabled():
+            return False
+        operator = get_config().operator_chat
+        if not operator:
+            return False
+        # Normalize the operator id the same way the relay compares it.
+        # The relay stores operator_chat as the raw WhatsApp ID (digits); the
+        # webhook ``from`` is also the raw digits — compare directly.
+        if sender_wa_id != operator:
+            return False
+        lowered = text.strip().lower()
+        # Secret relay: pending token is a "sec:"-prefixed id.
+        sec_token = pending_secret_for(operator)
+        if sec_token is not None:
+            if lowered in ("skip", "cancel", "abort"):
+                resolve_secret_relay(sec_token, None)
+            else:
+                resolve_secret_relay(sec_token, text.strip())
+            try:
+                await self.send(operator, "🔐 Secret captured — thank you.")
+            except Exception:
+                pass
+            return True
+        # Sudo relay: pending token is a "sudo:"-prefixed id.
+        sudo_token = pending_sudo_for(operator)
+        if sudo_token is not None:
+            if lowered in ("skip", "cancel", "abort"):
+                resolve_sudo_relay(sudo_token, None)
+            else:
+                resolve_sudo_relay(sudo_token, text.strip())
+            try:
+                await self.send(operator, "🔑 Sudo password captured — thank you.")
+            except Exception:
+                pass
+            return True
+        return False
+
     async def _dispatch_interactive_reply(
         self,
         raw_message: Dict[str, Any],
@@ -1842,6 +1904,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             if handled:
                 return None
+
+        # Auth-relay: a text reply from the operator to a pending secret/sudo
+        # prompt.  This must be intercepted BEFORE the message is turned into a
+        # normal chat turn — the value is sensitive and not a conversation
+        # input.  Operator-only; non-operator text falls through to chat.
+        if msg_type_str == "text":
+            sender_wa_id = str(
+                (raw_message.get("from") or contacts_by_waid.get("*") or "")
+            ).strip()
+            _text_body = str(
+                (raw_message.get("text") or {}).get("body") or ""
+            ).strip()
+            if _text_body:
+                consumed = await self._try_resolve_auth_relay(
+                    sender_wa_id, _text_body, raw_message
+                )
+                if consumed:
+                    return None
 
         body = ""
         if msg_type_str == "text":

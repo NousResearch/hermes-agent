@@ -1502,6 +1502,33 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def wait_for_approval_resolution(session_key: str, timeout: float = 120.0) -> Optional[str]:
+    """Block until the oldest pending approval for ``session_key`` resolves.
+
+    Used by the WhatsApp auth-relay path (gateway/run.py
+    ``_auth_relay_send_approval``): it sends the approval prompt to the
+    operator's WhatsApp and then blocks here until the operator's button tap
+    calls ``resolve_gateway_approval`` (which sets ``entry.result`` and fires
+    ``entry.event``).  Returns the resolved choice ("once" / "session" /
+    "always" / "deny") or None on timeout / no pending entry.
+
+    Polls in 0.5s slices so a cancelled session (clear_session sets result to
+    "deny" + fires the event) is observed promptly rather than spinning.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        entry = queue[0] if queue else None
+    if entry is None:
+        return None
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        if entry.event.wait(timeout=min(0.5, remaining)):
+            return entry.result
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

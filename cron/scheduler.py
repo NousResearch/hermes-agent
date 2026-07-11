@@ -2482,6 +2482,20 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+
+def _resolve_cron_skip_memory(cfg: dict) -> bool:
+    """Whether cron runs should skip the memory provider.
+
+    Defaults to True (cron system prompts would corrupt user representations),
+    but can be opted out via ``cron.skip_memory: false`` in config.yaml so
+    external memory providers (e.g. mem0) become usable in cron jobs. (#9763)
+    """
+    cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else None
+    if not isinstance(cron_cfg, dict):
+        return True
+    return bool(cron_cfg.get("skip_memory", True))
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -3070,7 +3084,10 @@ def run_job(
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Default True (cron system prompts would corrupt user
+            # representations), but allow opting in to memory providers (e.g.
+            # mem0) for cron jobs via ``cron.skip_memory: false`` in config.yaml.
+            skip_memory=_resolve_cron_skip_memory(_cfg),
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

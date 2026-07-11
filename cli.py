@@ -10820,6 +10820,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 change_parts.append(f"Reconnected servers: {', '.join(sorted(reconnected))}")
             tool_summary = f"{len(new_tools)} MCP tool(s) now available" if new_tools else "No MCP tools available"
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
+            # Snapshot the already-persisted history BEFORE appending the note so
+            # it can be passed to _persist_session() as ``conversation_history``:
+            # the marker-based flush skips those messages by identity and writes
+            # only the newly-appended note.
+            prior_history = list(self.conversation_history)
             self.conversation_history.append({
                 "role": "user",
                 "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
@@ -10827,11 +10832,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Persist session immediately so the session log reflects the
             # updated tools list (self.agent.tools was refreshed above).
+            # Pass the PRE-note snapshot as conversation_history. Passing the
+            # post-append list (as this call used to) made history_ids cover the
+            # note itself, so _flush_messages_to_session_db skipped every message
+            # and left the note falsely stamped _DB_PERSISTED_MARKER — the reload
+            # note never reached state.db and no later flush could recover it.
             if self.agent is not None:
                 try:
                     self.agent._persist_session(
                         self.conversation_history,
-                        self.conversation_history,
+                        prior_history,
                     )
                 except Exception:
                     pass  # Best-effort

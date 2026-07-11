@@ -543,6 +543,15 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
+    elif tts_provider == "supertonic":
+        try:
+            supertonic_ok = importlib.util.find_spec("supertonic") is not None
+        except Exception:
+            supertonic_ok = False
+        if supertonic_ok:
+            tool_status.append(("Text-to-Speech (Supertonic local)", True, None))
+        else:
+            tool_status.append(("Text-to-Speech (Supertonic - not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
 
@@ -878,27 +887,6 @@ def _install_kittentts_deps() -> bool:
     return False
 
 
-def _install_supertonic_deps() -> bool:
-    """Install Supertonic dependencies with user approval. Returns True on success."""
-    import subprocess
-    import sys
-
-    print()
-    print_info("Installing supertonic Python package (~400MB ONNX model downloaded on first use)...")
-    print()
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "supertonic>=1.3.1,<2", "--quiet"],
-            check=True, timeout=300,
-        )
-        print_success("supertonic installed successfully")
-        return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        print_error(f"Failed to install supertonic: {e}")
-        print_info('Try manually: python -m pip install -U "supertonic>=1.3.1,<2"')
-        return False
-
-
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
@@ -1198,7 +1186,14 @@ def _setup_tts_provider(config: dict):
             print_info("The ~400MB model is downloaded on first use to ~/.cache/supertonic3/.")
             print()
             if prompt_yes_no("Install Supertonic now?", True):
-                if not _install_supertonic_deps():
+                from hermes_cli.tools_config import _run_post_setup
+
+                _run_post_setup("supertonic")
+                try:
+                    already_installed = importlib.util.find_spec("supertonic") is not None
+                except Exception:
+                    already_installed = False
+                if not already_installed:
                     print_warning("Supertonic installation incomplete. Falling back to Edge TTS.")
                     selected = "edge"
             else:

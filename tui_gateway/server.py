@@ -3435,13 +3435,19 @@ def _session_info(agent, session: dict | None = None) -> dict:
     return info
 
 
-def _tool_ctx(name: str, args: dict) -> str:
+def _tool_display_fields(name: str, args: dict) -> dict[str, str]:
     try:
-        from agent.display import build_tool_label
+        from agent.display import build_tool_label, build_tool_preview
 
-        return build_tool_label(name, args, max_len=80) or ""
+        context = build_tool_preview(name, args, max_len=80) or ""
+        label = build_tool_label(name, args, max_len=80) or ""
+        # Keep context raw for clients that add the tool name themselves; label is final display text.
+        fields = {"context": context}
+        if label and label != context:
+            fields["label"] = label
+        return fields
     except Exception:
-        return ""
+        return {"context": ""}
 
 
 def _emit_session_info_for_session(sid: str, session: dict) -> None:
@@ -3593,7 +3599,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         payload = {
             "tool_id": tool_call_id,
             "name": name,
-            "context": _tool_ctx(name, args),
+            **_tool_display_fields(name, args),
         }
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
@@ -4289,7 +4295,8 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
     def tool_start(tool_call_id: str, name: str, args: dict) -> None:
         started_at[tool_call_id] = time.time()
-        ctx = _tool_ctx(name, args)
+        fields = _tool_display_fields(name, args)
+        ctx = fields.get("label") or fields["context"]
         progress(f"Running {name}{f': {ctx}' if ctx else ''}")
 
     def tool_complete(tool_call_id: str, name: str, _args: dict, result: str) -> None:
@@ -4940,7 +4947,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
             messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
+                {"role": "tool", "name": name, **_tool_display_fields(name, args)}
             )
             continue
         # An assistant turn may carry only reasoning/thinking content with no

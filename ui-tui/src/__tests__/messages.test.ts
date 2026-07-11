@@ -14,7 +14,13 @@ describe('toTranscriptMessages', () => {
   it('preserves assistant tool-call rows so resume does not drop prior turns', () => {
     const rows = [
       { role: 'user', text: 'first prompt' },
-      { role: 'tool', context: 'repo', name: 'search_files', text: 'ignored raw result' },
+      {
+        role: 'tool',
+        context: 'repo',
+        label: 'Searching files for repo',
+        name: 'search_files',
+        text: 'ignored raw result'
+      },
       { role: 'assistant', text: 'first answer' },
       { role: 'user', text: 'second prompt' }
     ]
@@ -24,7 +30,7 @@ describe('toTranscriptMessages', () => {
       ['assistant', 'first answer'],
       ['user', 'second prompt']
     ])
-    expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
+    expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toBe('Searching files for repo ✓')
   })
 })
 

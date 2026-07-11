@@ -424,6 +424,24 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tui_tool_display_fields_separate_raw_context_from_final_label():
+    from agent.display import get_friendly_tool_labels, set_friendly_tool_labels
+
+    previous = get_friendly_tool_labels()
+    try:
+        set_friendly_tool_labels(True)
+        assert server._tool_display_fields("read_file", {"path": "package.json", "offset": 1, "limit": 300}) == {
+            "context": "package.json L1-300",
+            "label": "Reading package.json L1-300",
+        }
+        assert server._tool_display_fields("custom_tool", {"query": "alpha"}) == {"context": "alpha"}
+
+        set_friendly_tool_labels(False)
+        assert server._tool_display_fields("read_file", {"path": "package.json"}) == {"context": "package.json"}
+    finally:
+        set_friendly_tool_labels(previous)
+
+
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
@@ -935,7 +953,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
 
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "first prompt"},
-        {"context": "Searching files for resume", "name": "search_files", "role": "tool"},
+        {"context": "resume", "label": "Searching files for resume", "name": "search_files", "role": "tool"},
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
     ]

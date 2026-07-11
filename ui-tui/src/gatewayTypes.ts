@@ -17,6 +17,7 @@ export interface GatewayCompletionItem {
 
 export interface GatewayTranscriptMessage {
   context?: string
+  label?: string
   name?: string
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: string
@@ -668,7 +669,7 @@ export type GatewayEvent =
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
-      payload: { args_text?: string; context?: string; name?: string; tool_id: string; todos?: unknown[] }
+      payload: { args_text?: string; context?: string; label?: string; name?: string; tool_id: string; todos?: unknown[] }
       session_id?: string
       type: 'tool.start'
     }

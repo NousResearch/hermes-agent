@@ -19,6 +19,7 @@
  */
 
 import { getSessionMessages } from '@/hermes'
+import { toChatMessages } from '@/lib/chat-messages'
 import type { SessionInfo } from '@/types/hermes'
 
 import { pushTranscriptToRenderCache } from './render-cache-hydration'
@@ -73,7 +74,11 @@ export async function preloadTranscripts(deps: PreloadDeps): Promise<number> {
     }
     try {
       const result = await fetchMessages(session.id, session.profile)
-      const rows = Array.isArray(result?.messages) ? result.messages : []
+      const raw = Array.isArray(result?.messages) ? result.messages : []
+      // Store in ChatMessage shape (what setMessages renders) so the paint
+      // path never converts on click. toChatMessages is the same conversion
+      // the live prefetch applies.
+      const rows = raw.length > 0 ? toChatMessages(raw) : []
       if (rows.length > 0) {
         push(gatewayUrl, session.id, rows)
         cached += 1

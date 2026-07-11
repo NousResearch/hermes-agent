@@ -23,6 +23,10 @@ declare global {
           status: unknown | null
           transcript: unknown | null
         }>
+        readTranscript: (
+          gatewayUrl?: string | null,
+          storedSessionId?: string | null
+        ) => Promise<unknown | null>
         putSessions: (gatewayUrl: string, data: unknown) => void
         putStatus: (gatewayUrl: string, data: unknown) => void
         putTranscript: (gatewayUrl: string, storedSessionId: string, rows: unknown[]) => void

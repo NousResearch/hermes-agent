@@ -56,7 +56,7 @@ describe('preloadTranscripts', () => {
       gatewayUrl: 'http://g',
       sessions: [s('cached'), s('empty'), s('real')],
       freshCached: new Set(['cached']),
-      fetchMessages: (async (id: string) => ({ messages: id === 'empty' ? [] : [{ x: 1 }] })) as never,
+      fetchMessages: (async (id: string) => ({ messages: id === 'empty' ? [] : [{ role: 'user', content: 'hi' }] })) as never,
       push: ((_u: string, id: string) => pushed.push(id)) as never,
       sleep: noSleep
     })
@@ -71,7 +71,7 @@ describe('preloadTranscripts', () => {
       sessions: [s('bad'), s('good')],
       fetchMessages: (async (id: string) => {
         if (id === 'bad') throw new Error('boom')
-        return { messages: [{ x: 1 }] }
+        return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: ((_u: string, id: string) => pushed.push(id)) as never,
       sleep: noSleep
@@ -87,7 +87,7 @@ describe('preloadTranscripts', () => {
       sessions: [s('a'), s('b'), s('c')],
       fetchMessages: (async () => {
         calls += 1
-        return { messages: [{ x: 1 }] }
+        return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: (() => undefined) as never,
       sleep: noSleep,
@@ -107,11 +107,31 @@ describe('preloadTranscripts', () => {
       sessions: [s('x', { profile: 'daedalus' } as never)],
       fetchMessages: (async (id: string, profile?: string | null) => {
         seen.push([id, profile])
-        return { messages: [{ x: 1 }] }
+        return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: (() => undefined) as never,
       sleep: noSleep
     })
     expect(seen).toEqual([['x', 'daedalus']])
+  })
+
+  it('stores ChatMessage-shaped rows (parts[]), not raw SessionMessage rows', async () => {
+    const pushedRows: unknown[][] = []
+    await preloadTranscripts({
+      gatewayUrl: 'http://g',
+      sessions: [s('a')],
+      fetchMessages: (async () => ({
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'yo' }
+        ]
+      })) as never,
+      push: ((_u: string, _id: string, rows: unknown[]) => pushedRows.push(rows)) as never,
+      sleep: noSleep
+    })
+    expect(pushedRows).toHaveLength(1)
+    for (const row of pushedRows[0] as Array<{ parts?: unknown }>) {
+      expect(Array.isArray(row.parts)).toBe(true)
+    }
   })
 })

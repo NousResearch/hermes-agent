@@ -16,6 +16,7 @@ import {
   computeListDivergence,
   cullRenderCacheSession,
   hydrateFromRenderCache,
+  normalizeCachedTranscriptRows,
   pushStatusToRenderCache,
   pushTranscriptToRenderCache,
   reconcileRenderCache
@@ -226,7 +227,7 @@ describe('transcript paint (chat pane)', () => {
         gatewayUrl: 'http://studio:9119',
         sessions: null,
         status: null,
-        transcript: { storedSessionId: 'sid', rows: [{ text: 'hello' }] }
+        transcript: { storedSessionId: 'sid', rows: [{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }] }
       })
     })
     const setMessages = vi.fn()
@@ -239,7 +240,7 @@ describe('transcript paint (chat pane)', () => {
       setMessages
     })
     expect(result.transcriptPainted).toBe(true)
-    expect(setMessages).toHaveBeenCalledWith([{ text: 'hello' }])
+    expect(setMessages).toHaveBeenCalledWith([{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }])
   })
 
   it('never paints into a NON-empty messages store, and never without a remembered session', async () => {
@@ -249,7 +250,7 @@ describe('transcript paint (chat pane)', () => {
         gatewayUrl: 'http://studio:9119',
         sessions: null,
         status: null,
-        transcript: { storedSessionId: 'sid', rows: [{ text: 'hello' }] }
+        transcript: { storedSessionId: 'sid', rows: [{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }] }
       })
     })
     const setMessages = vi.fn()

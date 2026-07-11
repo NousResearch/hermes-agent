@@ -630,6 +630,10 @@ class ContextCompressor(ContextEngine):
       5. On subsequent compactions, iteratively update the previous summary
     """
 
+    # Class-level default so compressors constructed outside __init__
+    # (tests, __new__-based construction) always carry a runtime identity.
+    runtime = "hermes"
+
     @property
     def name(self) -> str:
         return "compressor"

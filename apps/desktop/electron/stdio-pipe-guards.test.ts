@@ -10,7 +10,7 @@ test('identifies broken standard pipe errors', () => {
     isIgnorablePipeError(Object.assign(new Error('destroyed'), { code: 'ERR_STREAM_DESTROYED' })),
     true
   )
-  assert.equal(isIgnorablePipeError(new Error('broken pipe')), true)
+  assert.equal(isIgnorablePipeError(new Error('broken pipe')), false)
   assert.equal(isIgnorablePipeError(new Error('unrelated failure')), false)
 })
 

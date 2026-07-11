@@ -2446,9 +2446,9 @@ class TestStructuredElementsConsumption:
         assert cap.app == "Progman"
 
     def test_capture_app_screen_no_desktop_window_surfaces_limitation(self):
-        """When no desktop/shell window is present, capture(app='screen')
-        returns a clear message about cua-driver's per-window capture limit
-        instead of silently grabbing the frontmost app."""
+        """When no desktop/shell window is present, capture(app='desktop')
+        tries get_desktop_state as fallback, and if that also fails, returns
+        a clear error message instead of silently grabbing the frontmost app."""
         from tools.computer_use.cua_backend import CuaDriverBackend
 
         backend = CuaDriverBackend()
@@ -2465,6 +2465,10 @@ class TestStructuredElementsConsumption:
             if name == "list_windows":
                 return {"data": "", "images": [], "image_mime_types": [],
                         "structuredContent": windows_payload, "isError": False}
+            if name == "get_desktop_state":
+                # Simulate fallback failure (no screenshot returned)
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": None, "isError": False}
             raise AssertionError(f"unexpected tool {name} — should short-circuit")
 
         backend._session.call_tool.side_effect = fake_call_tool
@@ -2472,7 +2476,9 @@ class TestStructuredElementsConsumption:
 
         assert cap.width == 0 and cap.height == 0
         assert cap.png_b64 is None
-        assert "captures one window at a time" in cap.window_title
+        assert "no desktop/shell window found" in cap.window_title
+        assert "get_desktop_state fallback also failed" in cap.window_title
+        assert "capture(app=" in cap.window_title
 
 
 class TestCapabilityDiscovery:

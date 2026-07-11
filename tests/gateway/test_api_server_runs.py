@@ -599,3 +599,64 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/runs — per-run `model` override (#33072)
+# ---------------------------------------------------------------------------
+
+
+class TestRunsModelOverride:
+    @staticmethod
+    async def _drain(cli, run_id):
+        for _ in range(20):
+            status_resp = await cli.get(f"/v1/runs/{run_id}")
+            status = await status_resp.json()
+            if status["status"] == "completed":
+                return status
+            await asyncio.sleep(0.05)
+        return status
+
+    @pytest.mark.asyncio
+    async def test_model_override_forwarded_to_create_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "which model", "model": "claude-haiku-4-5-20251001"},
+                )
+                data = await resp.json()
+                await self._drain(cli, data["run_id"])
+
+                mock_create.assert_called_once()
+                assert (
+                    mock_create.call_args.kwargs["model_override"]
+                    == "claude-haiku-4-5-20251001"
+                )
+
+    @pytest.mark.asyncio
+    async def test_no_model_field_leaves_override_none(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                data = await resp.json()
+                await self._drain(cli, data["run_id"])
+
+                mock_create.assert_called_once()
+                assert mock_create.call_args.kwargs["model_override"] is None

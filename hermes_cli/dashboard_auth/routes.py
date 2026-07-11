@@ -15,6 +15,7 @@ The routes:
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -621,7 +622,9 @@ async def api_auth_ws_ticket(request: Request):
 
     The ticket has a 30-second TTL and is single-use. Calling this endpoint
     multiple times in quick succession (e.g. one ticket per WS) is the
-    expected pattern.
+    expected pattern. A bodyless request intentionally retains the dashboard's
+    full legacy authority. A mobile audience requests a narrower grant for one
+    WebSocket connection; it is not a persistent device credential.
     """
     sess = getattr(request.state, "session", None)
     if sess is None:
@@ -632,11 +635,58 @@ async def api_auth_ws_ticket(request: Request):
     # don't load the ticket store.
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
 
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    body = await request.body()
+    requested = {}
+    if body:
+        try:
+            requested = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+        if not isinstance(requested, dict):
+            raise HTTPException(status_code=400, detail="Expected a JSON object")
+
+    audience = str(requested.get("audience") or "").strip()
+    if "scopes" in requested and not audience:
+        raise HTTPException(
+            status_code=400,
+            detail="audience is required when scopes are requested",
+        )
+    if audience:
+        from tui_gateway.mobile_contract import (
+            MOBILE_AUDIENCE,
+            normalize_mobile_scopes,
+        )
+
+        if audience != MOBILE_AUDIENCE:
+            raise HTTPException(status_code=400, detail="Unsupported WebSocket audience")
+        raw_scopes = requested.get("scopes")
+        if not isinstance(raw_scopes, list):
+            raise HTTPException(status_code=400, detail="scopes must be an array")
+        try:
+            granted_scopes = normalize_mobile_scopes(raw_scopes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ticket = mint_ticket(
+            user_id=sess.user_id,
+            provider=sess.provider,
+            audience=audience,
+            scopes=granted_scopes,
+        )
+    else:
+        # Preserve the existing dashboard contract exactly for bodyless calls.
+        ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
     audit_log(
         AuditEvent.WS_TICKET_MINTED,
         provider=sess.provider,
         user_id=sess.user_id,
         ip=_client_ip(request),
     )
-    return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
+    response = {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
+    if audience:
+        response.update(
+            {
+                "audience": audience,
+                "granted_scopes": list(granted_scopes),
+            }
+        )
+    return response

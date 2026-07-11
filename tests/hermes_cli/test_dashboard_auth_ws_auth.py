@@ -13,6 +13,8 @@ pre-existing regression unrelated to dashboard-auth.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -20,14 +22,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
+from hermes_cli import mcp_startup
 from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.dashboard_auth.ws_tickets import (
     _reset_for_tests,
+    consume_ticket,
     consume_internal_credential,
     internal_ws_credential,
     mint_ticket,
 )
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from tui_gateway import server as tui_server
+from tui_gateway import ws as tui_ws
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +122,13 @@ class TestWsTicketEndpoint:
         r = gated_app.post("/api/auth/ws-ticket")
         assert r.status_code == 200
         body = r.json()
-        assert "ticket" in body
+        assert set(body) == {"ticket", "ttl_seconds"}
         assert isinstance(body["ticket"], str)
         assert len(body["ticket"]) >= 32
         assert body["ttl_seconds"] == 30
+        grant = consume_ticket(body["ticket"])
+        assert grant["audience"] == "dashboard"
+        assert grant["scopes"] == ("*",)
 
     def test_unauthenticated_returns_401_or_redirect(self, gated_app):
         r = gated_app.post("/api/auth/ws-ticket", follow_redirects=False)
@@ -132,6 +141,58 @@ class TestWsTicketEndpoint:
         tickets = {gated_app.post("/api/auth/ws-ticket").json()["ticket"]
                    for _ in range(5)}
         assert len(tickets) == 5
+
+    def test_mobile_ticket_returns_and_preserves_the_granted_scopes(self, gated_app):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={
+                "audience": "hermes.mobile",
+                "scopes": ["conversation.read", "conversation.write"],
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["audience"] == "hermes.mobile"
+        assert body["granted_scopes"] == [
+            "conversation.read",
+            "conversation.write",
+        ]
+        grant = consume_ticket(body["ticket"])
+        assert grant["audience"] == "hermes.mobile"
+        assert grant["scopes"] == ("conversation.read", "conversation.write")
+
+    @pytest.mark.parametrize("scope", ["approval.respond", "shell.exec"])
+    def test_mobile_ticket_rejects_scopes_not_enforced_by_this_contract(
+        self,
+        gated_app,
+        scope,
+    ):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={"audience": "hermes.mobile", "scopes": [scope]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == f"unsupported mobile scope: {scope}"
+
+    def test_scopes_without_a_mobile_audience_do_not_mint_legacy_authority(
+        self,
+        gated_app,
+    ):
+        _logged_in(gated_app)
+
+        response = gated_app.post(
+            "/api/auth/ws-ticket",
+            json={"scopes": ["conversation.read"]},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "audience is required when scopes are requested"
 
     def test_get_method_is_not_allowed(self, gated_app):
         _logged_in(gated_app)
@@ -150,6 +211,54 @@ class TestWsTicketEndpoint:
             f"GET /api/auth/ws-ticket leaked a ticket (status={r.status_code}, "
             f"body[:200]={body[:200]!r})"
         )
+
+
+def test_scoped_ticket_grant_reaches_gateway_ready(gated_app, monkeypatch):
+    sent = []
+    monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", lambda **_kw: None)
+    monkeypatch.setattr(tui_server, "resolve_skin", lambda: "test-skin")
+    ticket = mint_ticket(
+        user_id="mobile-user",
+        provider="stub",
+        audience="hermes.mobile",
+        scopes=("conversation.read",),
+    )
+
+    class QueryParams:
+        def get(self, key, default=""):
+            return {"ticket": ticket}.get(key, default)
+
+    class FakeWS:
+        query_params = QueryParams()
+        client = SimpleNamespace(host="203.0.113.10")
+        url = SimpleNamespace(path="/api/ws")
+        headers = {
+            "host": "fly-app.fly.dev",
+            "origin": "https://fly-app.fly.dev",
+        }
+
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            raise tui_ws._WebSocketDisconnect()
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(web_server.gateway_ws(FakeWS()))
+
+    authorization = sent[0]["params"]["payload"]["authorization"]
+    assert authorization == {
+        "subject": "mobile-user",
+        "provider": "stub",
+        "audience": "hermes.mobile",
+        "scopes": ["conversation.read"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +337,26 @@ class TestWsAuthOkGated:
         ticket = mint_ticket(user_id="u1", provider="stub")
         ws = _fake_ws(query={"ticket": ticket})
         assert web_server._ws_auth_ok(ws) is True
+
+    @pytest.mark.parametrize("path", ["/api/pty", "/api/console", "/api/pub", "/api/events"])
+    def test_mobile_ticket_cannot_authenticate_non_gateway_websockets(
+        self,
+        gated_app,
+        path,
+    ):
+        ticket = mint_ticket(
+            user_id="mobile-user",
+            provider="stub",
+            audience="hermes.mobile",
+            scopes=("conversation.read",),
+        )
+        ws = _fake_ws(query={"ticket": ticket}, path=path)
+
+        reason, credential, authorization = web_server._ws_auth_result(ws)
+
+        assert reason == "ticket_audience_mismatch"
+        assert credential == "ticket"
+        assert authorization is None
 
     def test_consumed_ticket_rejected(self, gated_app):
         ticket = mint_ticket(user_id="u1", provider="stub")

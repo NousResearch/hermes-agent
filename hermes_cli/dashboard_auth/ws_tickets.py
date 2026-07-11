@@ -5,10 +5,13 @@ mode the legacy ``?token=<_SESSION_TOKEN>`` query param works because the
 token is injected into the SPA bundle. In gated mode there is no injected
 token — so this module provides two credential shapes:
 
-1. **Single-use browser tickets** (``mint_ticket`` / ``consume_ticket``).
-   The SPA gets a fresh ticket via the authenticated REST endpoint
-   ``POST /api/auth/ws-ticket`` and passes it as ``?ticket=`` on the WS
-   upgrade. Single-use, TTL = 30 seconds — a leaked ticket is uninteresting.
+1. **Single-use client tickets** (``mint_ticket`` / ``consume_ticket``).
+   The SPA gets a full-authority legacy ticket from a bodyless authenticated
+   ``POST /api/auth/ws-ticket``. A native client can request a mobile audience
+   and explicit scopes instead. Both pass ``?ticket=`` on the WS upgrade and
+   are single-use with TTL = 30 seconds. The scoped ticket narrows one socket;
+   it is not a persistent device credential or a replacement for the legacy
+   compatibility path.
 
 2. **A process-lifetime internal credential** (``internal_ws_credential`` /
    ``consume_internal_credential``). This authenticates *server-spawned*
@@ -53,13 +56,21 @@ _internal_credential: Optional[str] = None
 #: credential, so audit logs distinguish them from browser-initiated tickets.
 INTERNAL_USER_ID = "server-internal"
 INTERNAL_PROVIDER = "server-internal"
+LEGACY_AUDIENCE = "dashboard"
+LEGACY_SCOPES = ("*",)
 
 
 class TicketInvalid(Exception):
     """Ticket missing, expired, or already consumed."""
 
 
-def mint_ticket(*, user_id: str, provider: str) -> str:
+def mint_ticket(
+    *,
+    user_id: str,
+    provider: str,
+    audience: str = LEGACY_AUDIENCE,
+    scopes: tuple[str, ...] = LEGACY_SCOPES,
+) -> str:
     """Generate a one-shot ticket bound to this user identity.
 
     The returned token is base64url, 43 bytes of entropy (32-byte random
@@ -70,6 +81,8 @@ def mint_ticket(*, user_id: str, provider: str) -> str:
     info = {
         "user_id": user_id,
         "provider": provider,
+        "audience": audience,
+        "scopes": tuple(scopes),
         "minted_at": int(time.time()),
     }
     with _lock:
@@ -132,10 +145,10 @@ def consume_internal_credential(value: str) -> Dict[str, Any]:
     Unlike :func:`consume_ticket` this is **not** single-use — the value is
     not removed on success, so a server-spawned child can present it on every
     (re)connect. Returns the fixed server-internal identity ``info`` dict
-    (``{user_id, provider}``), mirroring the ``info`` shape ``consume_ticket``
-    returns, so a caller that wants to record the connecting identity can; the
-    current ``_ws_auth_ok`` caller validates for the boolean outcome only and
-    discards the dict.
+    (identity plus legacy audience/scopes), mirroring the ``info`` shape
+    ``consume_ticket`` returns so the gateway can carry one effective grant
+    shape through its transport. Non-gateway callers may validate only the
+    boolean outcome and discard the dict.
 
     A constant-time compare against the (lazily-minted) credential avoids
     leaking length / prefix information on mismatch. If no internal
@@ -150,6 +163,8 @@ def consume_internal_credential(value: str) -> Dict[str, Any]:
     return {
         "user_id": INTERNAL_USER_ID,
         "provider": INTERNAL_PROVIDER,
+        "audience": LEGACY_AUDIENCE,
+        "scopes": LEGACY_SCOPES,
     }
 
 

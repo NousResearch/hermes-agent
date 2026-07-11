@@ -51,6 +51,19 @@ class TestMintAndConsume:
         seen = {mint_ticket(user_id="u1", provider="x") for _ in range(50)}
         assert len(seen) == 50
 
+    def test_scoped_ticket_preserves_its_authorization_grant(self):
+        ticket = mint_ticket(
+            user_id="u1",
+            provider="nous",
+            audience="hermes.mobile",
+            scopes=("conversation.read", "conversation.write"),
+        )
+
+        info = consume_ticket(ticket)
+
+        assert info["audience"] == "hermes.mobile"
+        assert info["scopes"] == ("conversation.read", "conversation.write")
+
 
 # ---------------------------------------------------------------------------
 # Single-use

@@ -1205,8 +1205,11 @@ def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def _err(rid, code: int, msg: str) -> dict:
-    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
+def _err(rid, code: int, msg: str, *, data: dict | None = None) -> dict:
+    error = {"code": code, "message": msg}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
 def method(name: str):
@@ -1268,6 +1271,16 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
+        from tui_gateway.mobile_contract import mobile_method_denial
+
+        denial = mobile_method_denial(method, getattr(t, "authorization", None))
+        if denial is not None:
+            return _err(
+                _rid,
+                4030,
+                "insufficient authorization scope",
+                data=denial,
+            )
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 

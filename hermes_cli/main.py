@@ -12782,6 +12782,17 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def _normalize_exit_status(result) -> int:
+    """Map a command handler's return value to a process exit status.
+
+    Only an exact ``int`` is treated as a status code. ``bool`` is a subclass
+    of ``int``, but plugin CLI handlers routinely return ``True``/``False`` to
+    signal success; those must not become exit status ``1``/``0``. Any
+    non-``int`` (or ``bool``) result preserves the historical exit ``0``.
+    """
+    return result if type(result) is int else 0
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
@@ -14685,7 +14696,7 @@ def main():
             if not hasattr(args, attr):
                 setattr(args, attr, default)
         result = cmd_chat(args)
-        return int(result) if isinstance(result, int) else 0
+        return _normalize_exit_status(result)
 
     # Default to chat if no command specified
     if args.command is None:
@@ -14702,12 +14713,12 @@ def main():
             if not hasattr(args, attr):
                 setattr(args, attr, default)
         result = cmd_chat(args)
-        return int(result) if isinstance(result, int) else 0
+        return _normalize_exit_status(result)
 
     # Execute the command
     if hasattr(args, "func"):
         result = args.func(args)
-        return int(result) if isinstance(result, int) else 0
+        return _normalize_exit_status(result)
     else:
         parser.print_help()
         return 0

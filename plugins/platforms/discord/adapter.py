@@ -133,6 +133,21 @@ def _truncate_discord_component_text(text: str, limit: int) -> str:
     return _prefix_within_utf16_limit(str(text or ""), max(0, limit))
 
 
+def _truncate_discord_text(
+    text: str,
+    limit: int,
+    *,
+    suffix: str = "... [truncated]",
+) -> str:
+    """Return text within a Discord UTF-16 field budget, preserving a marker."""
+    value = str(text or "")
+    if utf16_len(value) <= limit:
+        return value
+    suffix = _prefix_within_utf16_limit(suffix, max(0, limit))
+    prefix_budget = max(0, limit - utf16_len(suffix))
+    return _prefix_within_utf16_limit(value, prefix_budget) + suffix
+
+
 async def _wait_for_ready_or_bot_exit(
     ready_event: asyncio.Event,
     bot_task: asyncio.Task,
@@ -5596,10 +5611,11 @@ class DiscordAdapter(BasePlatformAdapter):
             # component row on some clients (notably web/mobile), so the actual
             # command and reason must be visible in the same content block as
             # the approval buttons.
-            reason_budget = 300
-            reason_display = str(description or "dangerous command")
-            if len(reason_display) > reason_budget:
-                reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
+            reason_display = _truncate_discord_text(
+                str(description or "dangerous command"),
+                1024,
+                suffix="... [truncated]",
+            )
 
             prompt_prefix = (
                 "⚠️ **Command Approval Required**\n\n"

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import utf16_len
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -66,3 +67,23 @@ async def test_exec_approval_prompt_truncates_long_command_in_content():
     assert "... [truncated]" in sent["content"]
     assert "long generated shell command" in sent["content"]
     assert len(sent["embed"].description) > len(sent["content"])
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_prompt_bounds_long_reason_to_discord_field_limit():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    long_reason = "security finding 🚨 " * 200
+    result = await adapter.send_exec_approval(
+        chat_id="555",
+        command="curl http://sparky.local:8000/metrics",
+        session_key="discord:555",
+        description=long_reason,
+    )
+
+    assert result.success is True
+    reason = sent["embed"].fields[0]["value"]
+    assert utf16_len(reason) <= 1024
+    assert reason.endswith("... [truncated]")
+    assert reason in sent["content"]

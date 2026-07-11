@@ -3415,6 +3415,19 @@ class AIAgent:
         except Exception:
             pass
 
+    def _shutdown_owned_context_engine(self) -> None:
+        """Close this agent's cloned context-engine runtime once, if any."""
+        if not getattr(self, "_owns_context_engine", False):
+            return
+        self._owns_context_engine = False
+        try:
+            compressor = getattr(self, "context_compressor", None)
+            shutdown = getattr(compressor, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        except Exception:
+            pass
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -3431,6 +3444,7 @@ class AIAgent:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
           - Active child subagents (per-turn artefacts; safe to drop)
+          - Owned context-engine clone (the rebuilt agent gets a fresh clone)
 
         Safe to call multiple times.  Distinct from close() — which is the
         hard teardown for actual session boundaries (/new, /reset, session
@@ -3452,6 +3466,8 @@ class AIAgent:
                         pass
         except Exception:
             pass
+
+        self._shutdown_owned_context_engine()
 
         # Close the OpenAI/httpx client to release sockets immediately.
         try:
@@ -3518,7 +3534,12 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # 6. Close context-engine resources only when this agent owns a cloned
+        # runtime. Registered plugin templates are process-wide and may still
+        # be serving other cached agents.
+        self._shutdown_owned_context_engine()
+
+        # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
         # be reused.  Drops the reference proactively rather than waiting for

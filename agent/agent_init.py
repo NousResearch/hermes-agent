@@ -1258,6 +1258,9 @@ def init_agent(
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
+    # General plugins register process-wide context-engine templates. Agents
+    # only own and tear down runtimes cloned from those templates.
+    agent._owns_context_engine = False
     # Responses encrypted reasoning replay state.  Some OpenAI-compatible
     # routes accept GPT-5 Responses requests but later reject replayed
     # encrypted reasoning blobs (HTTP 400 ``invalid_encrypted_content``).
@@ -1755,23 +1758,26 @@ def init_agent(
             except Exception:
                 _candidate = None
             if _candidate is not None and _candidate.name == _engine_name:
-                # Deep-copy the shared plugin singleton so a child agent's
-                # update_model() can't mutate the parent's compressor (#42449).
-                # Copy can fail for engines holding uncopyable state (locks, DB
-                # connections, clients); in that case fall back to the built-in
-                # compressor with an ACCURATE message rather than silently
-                # mislabelling it "not found".
-                import copy
+                # Clone the process-wide registered template before model or
+                # session binding so child agents cannot mutate parent state
+                # (#42449). The default hook preserves deepcopy isolation.
                 try:
-                    _selected_engine = copy.deepcopy(_candidate)
+                    _selected_engine = _candidate.clone_for_agent()
+                    if _selected_engine is None:
+                        raise ValueError("clone_for_agent() returned None")
+                    if _selected_engine is _candidate:
+                        raise ValueError(
+                            "clone_for_agent() returned the registered template"
+                        )
+                    agent._owns_context_engine = True
                 except Exception as _copy_err:
                     _copy_failed = True
                     _ra().logger.warning(
-                        "Context engine '%s' could not be safely copied for this "
+                        "Context engine '%s' could not be safely cloned for this "
                         "agent (%s) — falling back to built-in compressor. Plugin "
                         "engines that hold uncopyable state (locks, DB connections) "
-                        "should implement __deepcopy__ to copy only mutable budget "
-                        "state.",
+                        "should implement clone_for_agent() to create isolated "
+                        "runtime state.",
                         _engine_name, _copy_err,
                     )
                     _selected_engine = None

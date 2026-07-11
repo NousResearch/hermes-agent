@@ -4075,7 +4075,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, wait,
                 )
                 if wait > 5.0:
-                    return SendResult(success=False, error=f"flood_control:{wait}")
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait}",
+                        retry_after=float(wait),
+                    )
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(

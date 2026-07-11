@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _adapter() -> MagicMock:
@@ -145,7 +147,7 @@ async def test_empty_tail_commit_honors_retry_after(monkeypatch):
         SendResult(
             success=False,
             error="Flood control exceeded",
-            retry_after=7.0,
+            retry_after=3.0,
         ),
         SendResult(success=True, message_id="final-1"),
     ]
@@ -160,8 +162,69 @@ async def test_empty_tail_commit_honors_retry_after(monkeypatch):
     await consumer._send_fallback_final("Final answer")
 
     assert adapter.send.await_count == 2
-    sleep.assert_awaited_once_with(7.0)
+    sleep.assert_awaited_once_with(3.0)
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_empty_tail_recovery_keeps_prior_segment_messages():
+    """Recovery replaces only its current preview, not earlier preambles."""
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(success=True, message_id="final-1")
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+
+    consumer._track_preview_id("preamble-1")
+    consumer._reset_segment_state()
+    consumer._track_preview_id("preview-1")
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
+    assert "preamble-1" in consumer._preview_message_ids
+
+
+@pytest.mark.asyncio
+async def test_empty_tail_commit_skips_long_flood_retry(monkeypatch):
+    adapter = _adapter()
+    adapter.send.return_value = SendResult(
+        success=False,
+        error="flood_control:30.0",
+        retry_after=30.0,
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1")
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "Final answer"
+    consumer._fallback_final_send = True
+
+    await consumer._send_fallback_final("Final answer")
+
+    adapter.send.assert_awaited_once()
+    sleep.assert_not_awaited()
+    assert consumer.final_response_sent is False
+    assert consumer.final_content_delivered is False
+
+
+@pytest.mark.asyncio
+async def test_telegram_long_flood_result_keeps_retry_after():
+    """The real adapter contract preserves the server delay for consumers."""
+    class FloodError(Exception):
+        retry_after = 30.0
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._bot = MagicMock()
+    adapter._bot.edit_message_text = AsyncMock(side_effect=FloodError("Retry after 30"))
+
+    result = await adapter.edit_message("123", "456", "Final answer", finalize=False)
+
+    assert result.success is False
+    assert result.error == "flood_control:30.0"
+    assert result.retry_after == 30.0
 
 
 @pytest.mark.asyncio

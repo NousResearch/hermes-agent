@@ -3205,31 +3205,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            if (
-                TypeHandler is not None
-                and hasattr(Update, "GUEST_MESSAGE")
-                and InlineQueryResultArticle is not None
-                and InputTextMessageContent is not None
-            ):
-                self._app.add_handler(TypeHandler(Update, self._handle_guest_message), group=-1)
+            self._register_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -7539,6 +7515,52 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
+
+    def _register_handlers(self, app) -> None:
+        """Register all Telegram update handlers on ``app``.
+
+        Extracted so the registration wiring — in particular the group
+        assignment that controls dispatch order — is unit-testable without
+        standing up a live Application. See the group-ordering note on the
+        Guest Mode handler below.
+        """
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            self._handle_media_message
+        ))
+        # Handle inline keyboard button callbacks (update prompts)
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        if (
+            TypeHandler is not None
+            and hasattr(Update, "GUEST_MESSAGE")
+            and InlineQueryResultArticle is not None
+            and InputTextMessageContent is not None
+        ):
+            # Register the Guest Mode catch-all in a LATER group (1), after
+            # the normal text/command/media handlers in the default group
+            # (0). PTB evaluates each group independently and runs at most
+            # one matching handler per group, so a TypeHandler(Update) —
+            # which matches every update — must not sit in a group that is
+            # evaluated before normal intake. Group 1 makes it a strict
+            # fallback: ordinary updates are handled by group 0 first, and
+            # this handler only does real work for guest updates (guarded
+            # below). The generic text/command handlers keep their own
+            # guest_message guards so a guest update that also matches a
+            # group-0 filter is not double-processed. Mirrors the placement
+            # in the sibling Guest Mode implementation (#32802).
+            app.add_handler(TypeHandler(Update, self._handle_guest_message), group=1)
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.

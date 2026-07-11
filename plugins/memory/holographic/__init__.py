@@ -255,12 +255,12 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
-        # Close the SQLite connection deterministically instead of leaking it
-        # to GC. MemoryStore opens its connection with check_same_thread=False
-        # (store.py), so without an explicit close() the sqlite3.Connection's
-        # fd is released by refcount/GC at a non-deterministic time on a
-        # non-deterministic thread, churning a DB fd through the kernel's free
-        # pool on every session teardown. close() already exists and is cheap.
+        # Release the shared SQLite connection deterministically on the
+        # caller's thread. Dropping the reference alone leaves fd finalization
+        # to GC, which keeps the connection (and its write lock) alive on a
+        # long-running gateway and prolongs the "database is locked" contention
+        # this store's shared-connection refcounting is meant to eliminate.
+        # close() is idempotent and refcount-guarded, so siblings stay safe.
         if self._store is not None:
             try:
                 self._store.close()

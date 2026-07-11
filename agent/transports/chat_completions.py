@@ -9,7 +9,6 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
-import copy
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -172,6 +171,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
             ):
                 needs_sanitize = True
@@ -195,27 +195,65 @@ class ChatCompletionsTransport(ProviderTransport):
         if not needs_sanitize:
             return messages
 
-        sanitized = copy.deepcopy(messages)
-        for msg in sanitized:
+        sanitized = list(messages)
+        for msg_idx, msg in enumerate(messages):
             if not isinstance(msg, dict):
                 continue
-            msg.pop("codex_reasoning_items", None)
-            msg.pop("codex_message_items", None)
-            msg.pop("tool_name", None)
-            msg.pop("timestamp", None)  # #47868 — leak into strict providers
+
+            copied_msg: dict[str, Any] | None = None
+
+            def mutable_msg() -> dict[str, Any]:
+                nonlocal copied_msg
+                if copied_msg is None:
+                    copied_msg = dict(msg)
+                    sanitized[msg_idx] = copied_msg
+                return copied_msg
+
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+                or "effect_disposition" in msg
+                or "timestamp" in msg  # #47868 — leak into strict providers
+            ):
+                out_msg = mutable_msg()
+                out_msg.pop("codex_reasoning_items", None)
+                out_msg.pop("codex_message_items", None)
+                out_msg.pop("tool_name", None)
+                out_msg.pop("effect_disposition", None)
+                out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
+
+
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this
             # is safe and future-proofs against new markers being added.
-            for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
-                msg.pop(key, None)
+            internal_keys = [k for k in msg if isinstance(k, str) and k.startswith("_")]
+            if internal_keys:
+                out_msg = mutable_msg()
+                for key in internal_keys:
+                    out_msg.pop(key, None)
+
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
-                for tc in tool_calls:
+                copied_tool_calls: list[Any] | None = None
+                for tc_idx, tc in enumerate(tool_calls):
                     if isinstance(tc, dict):
-                        tc.pop("call_id", None)
-                        tc.pop("response_item_id", None)
-                        if strip_extra_content:
-                            tc.pop("extra_content", None)
+                        should_copy_tc = (
+                            "call_id" in tc
+                            or "response_item_id" in tc
+                            or (strip_extra_content and "extra_content" in tc)
+                        )
+                        if should_copy_tc:
+                            if copied_tool_calls is None:
+                                copied_tool_calls = list(tool_calls)
+                            copied_tc = dict(tc)
+                            copied_tc.pop("call_id", None)
+                            copied_tc.pop("response_item_id", None)
+                            if strip_extra_content:
+                                copied_tc.pop("extra_content", None)
+                            copied_tool_calls[tc_idx] = copied_tc
+                if copied_tool_calls is not None:
+                    mutable_msg()["tool_calls"] = copied_tool_calls
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

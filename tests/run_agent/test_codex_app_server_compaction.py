@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from agent.codex_runtime import _record_codex_app_server_compaction
 from agent.conversation_compression import COMPACTION_STATUS, compress_context
+from agent.conversation_loop import _should_run_pre_api_pressure_compression
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -58,6 +59,32 @@ class DummyAgent:
         self.events.append((name, payload))
 
 
+class PressureCompressor:
+    threshold_tokens = 10_000
+    context_length = 12_000
+
+    def __init__(self):
+        self.checked_tokens = []
+
+    def should_defer_preflight_to_real_usage(self, _tokens):
+        return False
+
+    def get_active_compression_failure_cooldown(self):
+        return None
+
+    def should_compress(self, tokens):
+        self.checked_tokens.append(tokens)
+        return True
+
+
+class PressureAgent:
+    def __init__(self, *, api_mode="codex_app_server", auto_compaction="native"):
+        self.api_mode = api_mode
+        self.codex_app_server_auto_compaction = auto_compaction
+        self.compression_enabled = True
+        self.context_compressor = PressureCompressor()
+
+
 def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     agent = DummyAgent(
         TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
@@ -77,6 +104,42 @@ def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     assert agent._codex_session.calls == 0
     assert agent.context_compressor.compression_count == 0
     assert agent.events == []
+
+
+def test_codex_app_server_native_auto_skips_tool_loop_pre_api_compression():
+    agent = PressureAgent(auto_compaction="native")
+    messages = [
+        {"role": "user", "content": "make a large artifact"},
+        {"role": "tool", "content": "x" * 100},
+    ]
+
+    should_compress = _should_run_pre_api_pressure_compression(
+        agent,
+        messages,
+        compression_attempts=0,
+        request_pressure_tokens=100_000,
+    )
+
+    assert should_compress is False
+    assert agent.context_compressor.checked_tokens == []
+
+
+def test_codex_app_server_hermes_auto_keeps_tool_loop_pre_api_compression():
+    agent = PressureAgent(auto_compaction="hermes")
+    messages = [
+        {"role": "user", "content": "make a large artifact"},
+        {"role": "tool", "content": "x" * 100},
+    ]
+
+    should_compress = _should_run_pre_api_pressure_compression(
+        agent,
+        messages,
+        compression_attempts=0,
+        request_pressure_tokens=100_000,
+    )
+
+    assert should_compress is True
+    assert agent.context_compressor.checked_tokens == [100_000]
 
 
 def test_codex_app_server_manual_compression_routes_to_codex_thread():

@@ -79,6 +79,51 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _codex_app_server_owns_auto_compaction(agent) -> bool:
+    """Return true when Codex app-server should handle automatic compaction."""
+    return (
+        getattr(agent, "api_mode", None) == "codex_app_server"
+        and str(
+            getattr(agent, "codex_app_server_auto_compaction", "native")
+            or "native"
+        ).lower()
+        in {"native", "off"}
+    )
+
+
+def _should_run_pre_api_pressure_compression(
+    agent,
+    messages: List[Dict[str, Any]],
+    compression_attempts: int,
+    request_pressure_tokens: int,
+) -> bool:
+    """Mirror turn-prologue compression guards for tool-loop pressure checks."""
+    if (
+        not getattr(agent, "compression_enabled", False)
+        or len(messages) <= 1
+        or compression_attempts >= 3
+    ):
+        return False
+
+    if _codex_app_server_owns_auto_compaction(agent):
+        return False
+
+    compressor = agent.context_compressor
+    defer_preflight = getattr(
+        compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+    )
+    if defer_preflight(request_pressure_tokens):
+        return False
+
+    compression_cooldown = getattr(
+        compressor, "get_active_compression_failure_cooldown", lambda: None
+    )()
+    if compression_cooldown:
+        return False
+
+    return bool(compressor.should_compress(request_pressure_tokens))
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -1003,19 +1048,11 @@ def run_conversation(
         # LLM cooldown + anti-thrash guards (#11529). compression_attempts is a
         # hard per-turn backstop shared with the overflow error handlers.
         _compressor = agent.context_compressor
-        _defer_preflight = getattr(
-            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
-        )
-        _compression_cooldown = getattr(
-            _compressor, "get_active_compression_failure_cooldown", lambda: None
-        )()
-        if (
-            agent.compression_enabled
-            and len(messages) > 1
-            and compression_attempts < 3
-            and not _defer_preflight(request_pressure_tokens)
-            and not _compression_cooldown
-            and _compressor.should_compress(request_pressure_tokens)
+        if _should_run_pre_api_pressure_compression(
+            agent,
+            messages,
+            compression_attempts,
+            request_pressure_tokens,
         ):
             compression_attempts += 1
             logger.info(

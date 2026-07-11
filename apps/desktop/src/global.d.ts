@@ -10,6 +10,26 @@ export {}
 declare global {
   interface Window {
     hermesDesktop: {
+      // Render cache (startup-latency): boot read + fire-and-forget pushes.
+      // All fail-open in main — a cache problem never errors into the renderer.
+      renderCache?: {
+        read: (
+          gatewayUrl?: string | null,
+          activeStoredSessionId?: string | null
+        ) => Promise<{
+          enabled: boolean
+          gatewayUrl: string | null
+          sessions: unknown | null
+          status: unknown | null
+          transcript: unknown | null
+        }>
+        putSessions: (gatewayUrl: string, data: unknown) => void
+        putStatus: (gatewayUrl: string, data: unknown) => void
+        putTranscript: (gatewayUrl: string, storedSessionId: string, rows: unknown[]) => void
+        cullSession: (gatewayUrl: string, storedSessionId: string) => void
+        sweep: (gatewayUrl: string, liveSessionIds: string[]) => void
+        reportDivergence: (rows: number) => void
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.

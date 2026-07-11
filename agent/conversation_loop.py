@@ -1090,6 +1090,13 @@ def run_conversation(
             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
         
+        # Pair this exact rough estimate with the provider usage that the
+        # upcoming API call will return, so calibration can learn from normal
+        # successful requests (not only post-compaction samples) (#62605).
+        try:
+            agent.context_compressor.record_request_rough_estimate(request_pressure_tokens)
+        except Exception:
+            pass
         api_start_time = time.time()
         retry_count = 0
         max_retries = agent._api_max_retries

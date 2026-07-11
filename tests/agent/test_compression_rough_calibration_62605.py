@@ -7,9 +7,11 @@ non-English payloads. ``should_compress(rough_tokens)`` fires late, so after
 3 compression passes the request still exceeds context_length and the
 provider returns HTTP 400 with "total of at least N tokens".
 
-Fix: track the calibration ratio ``real_prompt_tokens / rough_estimate`` from
-each API response and apply it to the rough estimate BEFORE the threshold
-check. The threshold itself isn't wrong; our estimate of how full we are is.
+Fix: capture the exact outgoing-request rough estimate via
+``record_request_rough_estimate``, learn ``real / rough`` from the matching
+provider usage sample, and scale the next preflight estimate BEFORE the
+threshold check. The threshold itself isn't wrong; our estimate of how full
+we are is.
 
 Tests cover:
 - EMA ratio computation: stored, decayed, and applied
@@ -89,7 +91,7 @@ class TestRoughToRealRatioTracking:
         # Simulate: rough estimate was 150K, real provider prompt was 200K.
         # raw ratio = 200/150 = 1.333. With 0.5/0.5 EMA from seed 1.0 →
         # 0.5*1.0 + 0.5*1.333 = 1.167.
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         assert 1.15 < c.rough_to_real_ratio < 1.20
 
@@ -98,13 +100,13 @@ class TestRoughToRealRatioTracking:
         c = _make_compressor()
         # First sample: real=200K, rough=150K → ratio target 1.333
         # EMA(1.0, 1.333, 0.5/0.5) = 1.167
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         first_ratio = c.rough_to_real_ratio
 
         # Second sample: real=220K, rough=150K → ratio target 1.467
         # EMA(1.167, 1.467, 0.5/0.5) = 1.317
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 220_000, "completion_tokens": 0})
         # Equal-weight EMA: result must be between first_ratio and 1.467
         assert first_ratio < c.rough_to_real_ratio < 1.47
@@ -115,7 +117,7 @@ class TestRoughToRealRatioTracking:
         """If we never saw a rough estimate, don't fabricate a ratio."""
         c = _make_compressor()
         c.update_from_response({"prompt_tokens": 100_000, "completion_tokens": 0})
-        # No prior _last_compression_rough_tokens → no learning signal
+        # No prior last_request_rough_tokens → no learning signal
         assert c.rough_to_real_ratio == 1.0
 
 
@@ -133,7 +135,7 @@ class TestCalibrateRoughMethod:
         seed 1.0 the first observation yields ratio 1.167 → calibrated
         150K * 1.167 = 175K. The next response would converge further."""
         c = _make_compressor()
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         calibrated = c._calibrate_rough(150_000)
         # Allow EMA drift but must be clearly above 150K
@@ -146,7 +148,7 @@ class TestCalibrateRoughMethod:
         c = _make_compressor()
         # Plant a fake pathological ratio by directly manipulating state
         c.rough_to_real_ratio = 10.0  # pretend rough underestimates by 10x
-        c._last_compression_rough_tokens = 1000
+        c.last_request_rough_tokens = 1000
         # 1K * 10 = 10K — fine, but should also not exceed context_length
         calibrated = c._calibrate_rough(30_000)
         assert calibrated <= c.context_length
@@ -180,7 +182,7 @@ class TestShouldCompressUsesCalibration:
             context_length=262_144, max_tokens=65_536, threshold_percent=0.66
         )
         # Plant history: previous turn reported rough=150K, real=200K
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
 
         # Sanity: the calibrated value crosses the threshold
@@ -201,7 +203,7 @@ class TestShouldCompressUsesCalibration:
         # threshold = (262144 - 65536) * 0.80 = 157,286
         assert c.threshold_tokens == 157_286
         # Plant: rough=120K, real=200K → EMA → 1.333; calibrated(120K) = 160K
-        c.last_compression_rough_tokens = 120_000
+        c.record_request_rough_estimate(120_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         # Without calibration: 120K < 157K threshold → would NOT fire
         assert c._calibrate_rough(120_000) > c.threshold_tokens
@@ -213,7 +215,7 @@ class TestShouldCompressUsesCalibration:
         positives below threshold."""
         c = _make_compressor(context_length=262_144, max_tokens=65_536, threshold_percent=0.75)
         # History: rough=140K, real=140K → ratio = 1.0
-        c._last_compression_rough_tokens = 140_000
+        c.last_request_rough_tokens = 140_000
         c.update_from_response({"prompt_tokens": 140_000, "completion_tokens": 0})
         # A new rough estimate that's well below threshold shouldn't fire
         assert c.should_compress(100_000) is False
@@ -247,7 +249,7 @@ class TestThreePassRetryCanNowSucceed:
         # threshold = (262144 - 65536) * 0.66 ≈ 129,741
         assert c.threshold_tokens < 150_000
         # Pretend compressor saw rough=150K → real=200K
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         # First pass: calibrated check fires
         assert c.should_compress(150_000) is True
@@ -264,7 +266,7 @@ class TestAntiThrashingStillWorks:
     def test_ineffective_compression_still_skipped(self, monkeypatch):
         c = _make_compressor()
         # Set up underestimating history so calibration would normally fire
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         # But mark that the last 2 compressions were ineffective
         c._ineffective_compression_count = 2
@@ -279,9 +281,46 @@ class TestCooldownStillWorks:
         import time
 
         c = _make_compressor()
-        c.last_compression_rough_tokens = 150_000
+        c.record_request_rough_estimate(150_000)
         c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
         # Plant an active cooldown
         c._summary_failure_cooldown_until = time.monotonic() + 60
         # Even with rough estimate above threshold, defer to cooldown
         assert c.should_compress(150_000) is False
+
+
+class TestRecordRequestRoughEstimate:
+    """Production path: pair the exact outgoing rough estimate with usage."""
+
+    def test_record_then_update_learns_ratio(self):
+        c = _make_compressor()
+        c.record_request_rough_estimate(150_000)
+        assert c.last_request_rough_tokens == 150_000
+        c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
+        assert 1.15 < c.rough_to_real_ratio < 1.20
+        # Consumed after learning so it cannot double-count the next response.
+        assert c.last_request_rough_tokens == 0
+
+    def test_compression_fallback_still_learns(self):
+        """If only last_compression_rough_tokens is set (post-compress path),
+        update_from_response still learns."""
+        c = _make_compressor()
+        c.last_compression_rough_tokens = 150_000
+        c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
+        assert 1.15 < c.rough_to_real_ratio < 1.20
+
+    def test_update_model_resets_ratio(self):
+        c = _make_compressor()
+        c.record_request_rough_estimate(100_000)
+        c.update_from_response({"prompt_tokens": 200_000, "completion_tokens": 0})
+        assert c.rough_to_real_ratio > 1.0
+        c.update_model(
+            model="other-model",
+            context_length=131_072,
+            base_url="",
+            api_key="",
+            provider="",
+            api_mode="",
+        )
+        assert c.rough_to_real_ratio == 1.0
+        assert c.last_request_rough_tokens == 0

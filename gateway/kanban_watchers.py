@@ -394,7 +394,8 @@ class GatewayKanbanWatchersMixin:
                         metadata: dict[str, Any] = {
                             "client_msg_id": str(uuid.uuid5(
                                 uuid.NAMESPACE_URL,
-                                f"hermes-kanban:{board_slug}:{sub['task_id']}:{ev.id}:{sub['platform']}:{sub['chat_id']}",
+                                f"hermes-kanban:{board_slug}:{sub['task_id']}:{ev.id}:"
+                                f"{sub['platform']}:{sub['chat_id']}:{sub.get('thread_id') or ''}",
                             )),
                         }
                         if sub.get("thread_id"):

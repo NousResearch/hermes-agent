@@ -121,6 +121,27 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     assert adapter2.sent == []
 
 
+def test_notification_idempotency_key_is_thread_scoped(tmp_path, monkeypatch):
+    db_path = tmp_path / "thread-scoped.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="threaded", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="A")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="B")
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 2
+    assert {item["metadata"]["thread_id"] for item in adapter.sent} == {"A", "B"}
+    assert len({item["metadata"]["client_msg_id"] for item in adapter.sent}) == 2
+
+
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):
     db_path = tmp_path / "adapter-disconnect.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

@@ -218,6 +218,54 @@ class TestExplicitProviderRespected:
             result = _get_provider({})
             assert result == "groq"
 
+    def test_explicit_local_server_uses_configured_bridge(self):
+        from tools.transcription_tools import _get_provider
+        result = _get_provider({
+            "provider": "local_server",
+            "local_server": {"url": "http://127.0.0.1:8765/transcribe"},
+        })
+        assert result == "local_server"
+
+    def test_explicit_local_server_without_url_returns_none(self):
+        from tools.transcription_tools import _get_provider
+        result = _get_provider({"provider": "local_server", "local_server": {}})
+        assert result == "none"
+
+
+class TestTranscribeLocalServer:
+    def test_successful_transcription(self, sample_ogg):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "text": "hello bridge"}
+        mock_response.text = '{"ok":true,"text":"hello bridge"}'
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={
+            "local_server": {"url": "http://127.0.0.1:8765/transcribe", "timeout": 12}
+        }), patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_local_server
+            result = _transcribe_local_server(sample_ogg, "base")
+
+        assert result == {"success": True, "transcript": "hello bridge", "provider": "local_server"}
+        assert mock_post.call_args.kwargs["timeout"] == 12.0
+        assert "file" in mock_post.call_args.kwargs["files"]
+
+    def test_dispatch_uses_local_server_provider(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={
+            "enabled": True,
+            "provider": "local_server",
+            "local_server": {"url": "http://127.0.0.1:8765/transcribe", "model": "base"},
+        }), patch("tools.transcription_tools._transcribe_local_server", return_value={
+            "success": True,
+            "transcript": "via dispatcher",
+            "provider": "local_server",
+        }) as mock_transcribe:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["transcript"] == "via dispatcher"
+        mock_transcribe.assert_called_once_with(sample_ogg, "base")
+
 
 # ============================================================================
 # _transcribe_groq

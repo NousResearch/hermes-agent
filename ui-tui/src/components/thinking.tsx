@@ -837,7 +837,7 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
-    const label = formatToolCall(tool.name, tool.context || '')
+    const label = formatToolCall(tool.name, tool.context || '', tool.label)
 
     groups.push({
       color: t.color.text,
@@ -886,7 +886,11 @@ export const ToolTrail = memo(function ToolTrail({
   const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
 
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
-  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
+  // A delegate_task group renders either wrapped ("Delegate Task(…)") or with
+  // its friendly verb ("Delegating …") depending on display.friendly_tool_labels
+  // (#55166/#62796); match both so the inline subagent tree still attaches.
+  const isDelegateTaskLabel = (label: string) => label.startsWith('Delegate Task') || label.startsWith('Delegating')
+  const delegateGroups = groups.filter(g => isDelegateTaskLabel(g.label))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
@@ -1063,7 +1067,7 @@ export const ToolTrail = memo(function ToolTrail({
             // Surface the /agents hint the moment a delegate group appears —
             // while it's still in-flight and before any subagent has
             // registered — so users can open the live monitor immediately.
-            const isDelegateGroup = group.label.startsWith('Delegate Task')
+            const isDelegateGroup = isDelegateTaskLabel(group.label)
 
             return (
               <Box flexDirection="column" key={group.key}>

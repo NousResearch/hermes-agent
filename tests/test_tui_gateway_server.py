@@ -424,6 +424,64 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tool_start_ships_raw_context_and_friendly_label(monkeypatch):
+    """#62796: ``tool.start`` keeps ``context`` a bare argument preview and ships
+    the complete friendly phrase in an additive ``label`` field, so a client
+    renders one or the other without wrapping the label a second time (the
+    regression rendered ``Read File("Reading package.json …")``)."""
+    from agent import display
+
+    monkeypatch.setattr(display, "_friendly_tool_labels", True)
+
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "label-test",
+        {"tool_progress_mode": "all", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("label-test", "tool-1", "read_file", {"path": "package.json"})
+
+    event_type, _sid, payload = events[0]
+    assert event_type == "tool.start"
+    context = payload["context"]
+    label = payload["label"]
+    # context is the bare preview the client wraps itself ("Read File(...)")…
+    assert "package.json" in context
+    assert not context.startswith("Reading")
+    # …and label is the complete phrase the client renders verbatim.
+    assert label.startswith("Reading")
+    assert label != context
+    # Simulate the Ink contract (label wins, else wrap context): no double-format.
+    rendered = label or f'Read File("{context}")'
+    assert rendered == label
+    assert 'Read File("Reading' not in rendered
+
+
+def test_tool_start_omits_label_when_it_is_just_the_preview(monkeypatch):
+    """Custom/plugin tools (and disabled friendly labels) have no curated verb,
+    so ``build_tool_label`` returns the raw preview. The ``label`` field is then
+    omitted so pre-``label`` clients keep wrapping ``context`` unchanged."""
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "plain-test",
+        {"tool_progress_mode": "all", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("plain-test", "tool-1", "some_custom_mcp_tool", {"foo": "bar"})
+
+    payload = events[0][2]
+    assert payload["name"] == "some_custom_mcp_tool"
+    assert "label" not in payload
+
+
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
@@ -933,9 +991,16 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
         {"role": "user", "content": "second prompt"},
     ]
 
+    # context stays the raw preview; the friendly phrase ships in ``label`` so
+    # the client renders it verbatim instead of wrapping it again (#62796).
     assert server._history_to_messages(history) == [
         {"role": "user", "text": "first prompt"},
-        {"context": "Searching files for resume", "name": "search_files", "role": "tool"},
+        {
+            "context": "resume",
+            "label": "Searching files for resume",
+            "name": "search_files",
+            "role": "tool",
+        },
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
     ]

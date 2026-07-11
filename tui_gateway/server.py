@@ -3436,12 +3436,30 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
 
 def _tool_ctx(name: str, args: dict) -> str:
+    """Raw argument preview (e.g. ``package.json L1-300``) for the ``context``
+    field. Clients wrap this themselves as ``Read File("…")``, so it must stay a
+    bare preview — never a complete friendly label (see :func:`_tool_label`)."""
+    try:
+        from agent.display import build_tool_preview
+
+        return build_tool_preview(name, args, max_len=80) or ""
+    except Exception:
+        return ""
+
+
+def _tool_label(name: str, args: dict, context: str) -> str:
+    """Complete human-phrased label (e.g. ``Reading package.json L1-300``) for
+    the additive ``label`` field. Clients render it verbatim instead of wrapping
+    ``context``. Returns "" when the label is just the raw preview (custom/MCP
+    tools, or friendly labels disabled) so those keep the old wrapped rendering
+    and pre-``label`` clients are unaffected."""
     try:
         from agent.display import build_tool_label
 
-        return build_tool_label(name, args, max_len=80) or ""
+        label = build_tool_label(name, args, max_len=80) or ""
     except Exception:
         return ""
+    return label if label and label != context else ""
 
 
 def _emit_session_info_for_session(sid: str, session: dict) -> None:
@@ -3590,11 +3608,14 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        context = _tool_ctx(name, args)
         payload = {
             "tool_id": tool_call_id,
             "name": name,
-            "context": _tool_ctx(name, args),
+            "context": context,
         }
+        if label := _tool_label(name, args, context):
+            payload["label"] = label
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:
@@ -4939,9 +4960,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            context = _tool_ctx(name, args)
+            tool_msg = {"role": "tool", "name": name, "context": context}
+            if label := _tool_label(name, args, context):
+                tool_msg["label"] = label
+            messages.append(tool_msg)
             continue
         # An assistant turn may carry only reasoning/thinking content with no
         # visible text (extended-thinking turns, thinking-only recovery

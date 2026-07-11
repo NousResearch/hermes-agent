@@ -803,14 +803,16 @@ class TurnController {
             Boolean(error),
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            error || resultText || summary || ''
+            error || resultText || summary || '',
+            done?.label
           )
         : buildToolTrailLine(
             name,
             done?.context || '',
             Boolean(error),
             error || summary || '',
-            duration ?? fallbackDuration
+            duration ?? fallbackDuration,
+            done?.label
           )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
@@ -857,7 +859,7 @@ class TurnController {
     }, STREAM_BATCH_MS)
   }
 
-  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+  recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string, label?: string) {
     if (this.interrupted) {
       return
     }
@@ -870,7 +872,7 @@ class TurnController {
     const sample = `${name} ${context}`.trim()
 
     this.toolTokenAcc += sample ? estimateTokensRough(sample) : 0
-    this.activeTools = [...this.activeTools, { context, id: toolId, name, startedAt: Date.now(), verboseArgs }]
+    this.activeTools = [...this.activeTools, { context, id: toolId, label, name, startedAt: Date.now(), verboseArgs }]
 
     patchTurnState({ toolTokens: this.toolTokenAcc, tools: this.activeTools })
   }

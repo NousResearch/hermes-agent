@@ -26,6 +26,18 @@ describe('toTranscriptMessages', () => {
     ])
     expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
   })
+
+  it('renders a resumed tool row from its friendly label verbatim, not double-formatted (#62796)', () => {
+    const rows = [
+      { role: 'user', text: 'prompt' },
+      { context: 'package.json L1-300', label: 'Reading package.json L1-300', name: 'read_file', role: 'tool', text: '' },
+      { role: 'assistant', text: 'answer' }
+    ]
+
+    const trail = toTranscriptMessages(rows)[1]?.tools?.[0]
+    expect(trail).toContain('Reading package.json L1-300')
+    expect(trail).not.toContain('Read File("Reading')
+  })
 })
 
 describe('MessageLine', () => {

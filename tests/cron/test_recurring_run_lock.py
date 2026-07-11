@@ -192,6 +192,152 @@ def test_two_scheduler_processes_cannot_overlap_one_recurring_run(tmp_path):
     jobs.fcntl is None and jobs.msvcrt is None,
     reason="platform has no supported advisory file-lock backend",
 )
+def test_losing_immediate_runner_does_not_advance_or_execute(tmp_path):
+    """cronjob(action='run') must own a recurrence before its store claim."""
+    hermes_home = tmp_path / "hermes-home"
+    cron_dir = hermes_home / "cron"
+    scripts_dir = hermes_home / "scripts"
+    cron_dir.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    side_effects = tmp_path / "immediate-side-effects.txt"
+    owner_ready = tmp_path / "immediate-owner-ready"
+    release_owner = tmp_path / "immediate-owner-release"
+    owner_result = tmp_path / "immediate-owner-result.json"
+    script = scripts_dir / "blocking-immediate.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+            import os
+            import time
+
+            effects = Path({str(side_effects)!r})
+            with effects.open("a", encoding="utf-8") as stream:
+                stream.write(str(os.getpid()) + "\\n")
+                stream.flush()
+            Path({str(owner_ready)!r}).write_text("ready", encoding="utf-8")
+            deadline = time.monotonic() + 20
+            while not Path({str(release_owner)!r}).exists():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("test did not release immediate owner")
+                time.sleep(0.02)
+            print("completed")
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    job_id = "immediate-run-lock-regression"
+    job = {
+        "id": job_id,
+        "name": "immediate run lock regression",
+        "prompt": "",
+        "script": script.name,
+        "no_agent": True,
+        "schedule": {"kind": "interval", "minutes": 1},
+        "schedule_display": "every 1m",
+        "repeat": {"times": None, "completed": 0},
+        "enabled": True,
+        "state": "scheduled",
+        "next_run_at": datetime.now(timezone.utc).isoformat(),
+        "last_run_at": None,
+        "last_status": None,
+        "last_error": None,
+        "deliver": "local",
+    }
+    with jobs.use_cron_store(hermes_home):
+        jobs.save_jobs([job])
+
+    owner_program = tmp_path / "immediate-owner.py"
+    owner_program.write_text(
+        textwrap.dedent(
+            f"""
+            import json
+            from pathlib import Path
+            from tools.cronjob_tools import cronjob
+
+            result = json.loads(cronjob(action="run", job_id={job_id!r}))
+            Path({str(owner_result)!r}).write_text(json.dumps(result), encoding="utf-8")
+            job_result = result["job"]
+            raise SystemExit(
+                0 if job_result["executed"] and job_result["execution_success"] else 3
+            )
+            """
+        ),
+        encoding="utf-8",
+    )
+    contender_program = tmp_path / "immediate-contender.py"
+    contender_program.write_text(
+        textwrap.dedent(
+            f"""
+            from tools.cronjob_tools import cronjob
+
+            print(cronjob(action="run", job_id={job_id!r}))
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    owner = subprocess.Popen(
+        [sys.executable, str(owner_program)], env=_child_env(hermes_home)
+    )
+    try:
+        _wait_for(owner_ready.exists, message="immediate owner never entered its script")
+        assert _side_effect_count(side_effects) == 1
+
+        # Let a second immediate invocation reclaim the bounded fire claim while
+        # the first invocation still owns the full-run lock. The loser must be
+        # rejected before claim_job_for_fire can advance this forced-due slot.
+        forced_due = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        with jobs.use_cron_store(hermes_home):
+            stored = jobs.load_jobs()
+            stored[0]["fire_claim"]["at"] = (
+                datetime.now(timezone.utc) - timedelta(seconds=301)
+            ).isoformat()
+            stored[0]["next_run_at"] = forced_due
+            jobs.save_jobs(stored)
+            before = jobs.get_job(job_id)
+        assert before is not None
+
+        contender = subprocess.run(
+            [sys.executable, str(contender_program)],
+            env=_child_env(hermes_home),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert contender.returncode == 0, contender.stderr
+        contender_result = json.loads(contender.stdout.strip())
+        assert contender_result["success"] is True
+        assert contender_result["job"]["executed"] is False
+        assert contender_result["job"]["execution_success"] is False
+        assert _side_effect_count(side_effects) == 1
+
+        with jobs.use_cron_store(hermes_home):
+            after = jobs.get_job(job_id)
+        assert after is not None
+        assert after["next_run_at"] == forced_due
+        assert after["fire_claim"] == before["fire_claim"]
+
+        release_owner.touch()
+        owner.wait(timeout=15)
+        assert owner.returncode == 0
+        completed_result = json.loads(owner_result.read_text(encoding="utf-8"))
+        assert completed_result["job"]["execution_success"] is True
+        assert _side_effect_count(side_effects) == 1
+    finally:
+        release_owner.touch()
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(timeout=10)
+
+
+@pytest.mark.skipif(
+    jobs.fcntl is None and jobs.msvcrt is None,
+    reason="platform has no supported advisory file-lock backend",
+)
 def test_job_run_lock_is_released_when_owner_process_dies(tmp_path, monkeypatch):
     """The OS, not a stale timestamp, must recover ownership after a crash."""
     from cron import scheduler

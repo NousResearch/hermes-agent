@@ -6298,10 +6298,6 @@ def detect_stale_running(
                 "orchestrator-escalation: worker stalled again after automatic recovery; "
                 "Hermes must recover or choose an alternative before asking Mika"
             )
-            block_task(
-                conn, tid, reason=reason, kind="capability",
-                expected_run_id=(int(row["current_run_id"]) if row["current_run_id"] else None),
-            )
             recovery_task_id = None
             if (row["assignee"] or "") != "default":
                 recovery_task_id = create_task(
@@ -6318,11 +6314,23 @@ def detect_stale_running(
                     idempotency_key=f"stall-recovery:{tid}",
                 )
             with write_txn(conn):
-                _append_event(
-                    conn, tid, "escalated",
-                    {"reason": reason, "recovery_task_id": recovery_task_id, "stall_count": prior_stalls + 1},
-                    run_id=(int(row["current_run_id"]) if row["current_run_id"] else None),
-                )
+                already_escalated = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'escalated' LIMIT 1",
+                    (tid,),
+                ).fetchone()
+                if already_escalated is None:
+                    _append_event(
+                        conn, tid, "escalated",
+                        {"reason": reason, "recovery_task_id": recovery_task_id, "stall_count": prior_stalls + 1},
+                        run_id=(int(row["current_run_id"]) if row["current_run_id"] else None),
+                    )
+            # Block only after the idempotent recovery task and durable escalation
+            # marker exist. A crash at any earlier point leaves the source running,
+            # so the next stale scan safely resumes the sequence.
+            block_task(
+                conn, tid, reason=reason, kind="capability",
+                expected_run_id=(int(row["current_run_id"]) if row["current_run_id"] else None),
+            )
             reclaimed.append(tid)
             continue
 

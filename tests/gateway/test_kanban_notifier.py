@@ -22,7 +22,7 @@ def test_completed_message_is_concise_and_omits_technical_ids():
         "PR #158 ist gemerged. Vercel Production läuft auf ff04ae4 und wurde geprüft.",
     )
 
-    assert message == "Agent Board bereinigen fertig.\nPR #158 gemerged, Production geprüft."
+    assert message == "Agent Board bereinigen fertig. PR #158 gemerged, Production geprüft."
     assert "t_" not in message and "ff04ae4" not in message
 
 

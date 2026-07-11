@@ -41,7 +41,7 @@ def _format_completed_message(title: str, summary: str = "") -> str:
         details.append(f"PR #{pr.group(1)} gemerged")
     if production and checked:
         details.append("Production geprüft")
-    return first + ("\n" + ", ".join(details) + "." if details else "")
+    return first + (" " + ", ".join(details) + "." if details else "")
 
 
 def _resolve_auto_decompose_settings(

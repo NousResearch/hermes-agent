@@ -3916,6 +3916,17 @@ def test_repeated_stall_escalates_to_hermes_once(kanban_home, monkeypatch):
                     "UPDATE task_runs SET started_at = ? WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                     (five_hours_ago, task_id),
                 )
+            if attempt == 1:
+                original_block_task = _kb.block_task
+                monkeypatch.setattr(
+                    _kb, "block_task",
+                    lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("crash-before-block")),
+                )
+                with pytest.raises(RuntimeError, match="crash-before-block"):
+                    kb.detect_stale_running(
+                        conn, stale_timeout_seconds=14400, signal_fn=lambda _p, _s: None,
+                    )
+                monkeypatch.setattr(_kb, "block_task", original_block_task)
             assert task_id in kb.detect_stale_running(
                 conn, stale_timeout_seconds=14400, signal_fn=lambda _p, _s: None,
             )

@@ -223,11 +223,14 @@ def register(ctx) -> None:
 # would also make POST /api/sessions/bulk-delete, POST /api/sessions/prune,
 # and the broad-read GET /api/sessions/search, /stats, /empty/count
 # token-authable — none of which this plugin intends to expose. Session ids
-# are registered with `match="regex"` instead, anchored to the two shapes
-# actually emitted by session_id generation (gateway/session.py's 8-hex new
-# sessions, gateway/slash_commands.py + hermes_cli/cli_commands_mixin.py's
-# 6-hex branch/thread sessions — both `YYYYMMDD_HHMMSS_<hex>`), so a literal
-# sibling path can never satisfy the pattern by construction.
+# are registered with `match="regex"` instead. This used to be anchored to
+# an enumerated set of known id shapes so a literal sibling path could never
+# satisfy the pattern "by construction" -- abandoned once api_server-sourced
+# sessions (gateway/platforms/api_server.py) turned out to accept a
+# caller-supplied id verbatim, an open set no enumeration can ever close
+# (see _SESSION_ID_SHAPE's own comment below). The regex now matches any
+# single path segment and explicitly excludes the known sibling literals
+# instead -- exclusion, not construction, is what keeps them out.
 #
 # READ-ONLY (methods=("GET","HEAD")): this is the spec §1 read-only guarantee,
 # and it is load-bearing for safety, not cosmetic. Path matching is method-
@@ -261,16 +264,39 @@ def register(ctx) -> None:
 # docstrings for the full design.
 # ---------------------------------------------------------------------------
 
-# Two id shapes: an ordinary interactive session (started_at timestamp +
-# short uuid4 hex, see gateway/session.py and slash_commands.py's /branch) or
-# a cron run (cron/scheduler.py's run_job: "cron_{job_id}_{timestamp}", where
-# job_id is cron/jobs.py create_job's uuid4().hex[:12]). Opening a cron-run
-# session used to fall through this seam entirely (fullmatch failed, so the
-# request reached the downstream cookie/session gate instead, which has no
-# cookie to check for a Mini App caller and returned a 401) -- surfaced in
-# the Mini App as an instant, incorrect "session expired" screen, since
-# api.ts treats any post-establishment 401 as auth expiry.
-_SESSION_ID_SHAPE = r"(?:\d{8}_\d{6}_[0-9a-f]{6,8}|cron_[0-9a-f]{12}_\d{8}_\d{6})"
+# Session ids are NOT a closed set of shapes. Started out as an enumerated
+# allowlist (interactive "YYYYMMDD_HHMMSS_hex" ids, then cron's
+# "cron_{job_id}_{timestamp}" added after cron-sourced sessions 401'd the
+# same way -- see git history), but gateway/platforms/api_server.py's
+# create_session accepts a CALLER-SUPPLIED id verbatim (only checked for
+# length and unsafe characters, `_is_path_unsafe` -- no shape constraint at
+# all) alongside its own two fallback shapes ("api_{ts}_{hex8}" and a bare
+# uuid4()). An api_server-sourced session with a real uuid4 id 401'd the
+# same way cron ids used to, misread by the Mini App as "session expired"
+# (api.ts treats any post-establishment 401 as auth expiry) -- and no finite
+# enumeration can ever close this for api_server, since an external caller
+# can pass literally any safe string as its id.
+#
+# So this matches ANY single path segment except the known literal sibling
+# routes under /api/sessions/ (search, stats, empty, bulk-delete, prune --
+# see the module comment above on why a blanket prefix isn't used instead).
+# Multi-segment siblings (empty/count) can never fullmatch a single-segment
+# pattern regardless, so they don't need excluding. This regex is DISPATCH
+# eligibility only, same as everywhere else in this module -- the excluded
+# names don't need to be exhaustive for *security* (each of those routes
+# enforces its own auth in its handler, e.g. search's own
+# _require_dashboard_admin), only to avoid this seam authenticating verbs on
+# them it wasn't deliberately extended to cover.
+_SESSION_ID_SIBLINGS = ("search", "stats", "empty", "bulk-delete", "prune")
+# The lookahead excludes a sibling only when it's the WHOLE segment --
+# `(?:/|$)` after the alternation, not a bare `$`. A bare `$` anchors to the
+# end of the whole subject string, not the end of this segment, so against
+# _SESSION_MESSAGES_RE/_SESSION_RESUME_RE (which append "/messages" or
+# "/resume" after this shape) "search" followed by "/messages" would NOT
+# equal "search$" and the lookahead would silently pass, letting
+# /api/sessions/search/messages dispatch through this seam. `(?:/|$)`
+# matches the sibling as a complete segment regardless of what follows.
+_SESSION_ID_SHAPE = r"(?!(?:" + "|".join(_SESSION_ID_SIBLINGS) + r")(?:/|$))[^/]+"
 _SESSION_ID_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}"
 _SESSION_MESSAGES_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}/messages"
 _SESSION_RESUME_RE = rf"/api/sessions/{_SESSION_ID_SHAPE}/resume"

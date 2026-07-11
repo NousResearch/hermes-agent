@@ -40,6 +40,45 @@ logger = logging.getLogger(__name__)
 # transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
 
+# Env var checked before the token file so deployments can inject the bridge
+# secret without writing it to disk.
+_BRIDGE_TOKEN_ENV = "HERMES_WA_BRIDGE_TOKEN"
+_BRIDGE_TOKEN_FILE = ("secrets", "whatsapp_bridge_token")
+
+
+def _load_bridge_token() -> Optional[str]:
+    """Resolve the shared-secret token for the local WhatsApp bridge.
+
+    Resolution order:
+    1. ``HERMES_WA_BRIDGE_TOKEN`` environment variable
+    2. ``<HERMES_HOME>/secrets/whatsapp_bridge_token`` file
+
+    Returns ``None`` when no token is configured — mutating bridge calls are
+    then sent without an ``Authorization`` header so bridges that predate
+    auth keep working.
+    """
+    token = (os.getenv(_BRIDGE_TOKEN_ENV) or "").strip()
+    if token:
+        return token
+    try:
+        from hermes_constants import get_hermes_home
+
+        token_file = get_hermes_home().joinpath(*_BRIDGE_TOKEN_FILE)
+        if token_file.is_file():
+            token = token_file.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    except OSError as e:
+        logger.warning("Could not read WhatsApp bridge token file: %s", e)
+    return None
+
+
+def _bridge_auth_headers(token: Optional[str]) -> Dict[str, str]:
+    """Authorization headers for bridge HTTP calls (empty when no token)."""
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
@@ -416,6 +455,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._bridge_token: Optional[str] = _load_bridge_token()
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -460,6 +500,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _auth_headers(self) -> Dict[str, str]:
+        """Authorization headers for mutating bridge HTTP calls.
+
+        ``getattr`` guard: test helpers construct adapters via ``__new__``
+        without running ``__init__``, so ``_bridge_token`` may be unset.
+        """
+        return _bridge_auth_headers(getattr(self, "_bridge_token", None))
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -875,6 +923,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
                     json=payload,
+                    headers=self._auth_headers(),
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
@@ -922,6 +971,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "messageId": message_id,
                     "message": content,
                 },
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status == 200:
@@ -965,6 +1015,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-media",
                 json=payload,
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 if resp.status == 200:
@@ -1012,6 +1063,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-poll",
                 json=payload,
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -1099,6 +1151,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-location",
                 json=payload,
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -1198,6 +1251,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
                 json={"chatId": to_whatsapp_jid(chat_id)},
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
                 pass
@@ -1589,6 +1643,7 @@ async def _standalone_send(
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        auth_headers = _bridge_auth_headers(_load_bridge_token())
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
         text = message or ""
@@ -1603,6 +1658,7 @@ async def _standalone_send(
                 async with session.post(
                     f"http://localhost:{bridge_port}/send",
                     json={"chatId": normalized_chat_id, "message": text},
+                    headers=auth_headers,
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
@@ -1626,6 +1682,7 @@ async def _standalone_send(
                             async with session.post(
                                 f"http://localhost:{bridge_port}/send",
                                 json={"chatId": normalized_chat_id, "message": media_caption},
+                                headers=auth_headers,
                                 timeout=aiohttp.ClientTimeout(total=30),
                             ) as resp:
                                 if resp.status == 200:
@@ -1646,6 +1703,7 @@ async def _standalone_send(
                 async with session.post(
                     f"http://localhost:{bridge_port}/send-media",
                     json=payload,
+                    headers=auth_headers,
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status != 200:

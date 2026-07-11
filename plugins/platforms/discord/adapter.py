@@ -1053,7 +1053,21 @@ class DiscordAdapter(BasePlatformAdapter):
                         pass
 
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
-                if adapter_self._dedup.is_duplicate(str(message.id)):
+                # Also pre-seed for forum/channel threads where thread_id == message_id.
+                # Discord fires duplicate MESSAGE_CREATE events for these; the
+                # auto-thread path pre-seeds in _handle_message, but manual
+                # thread creation (forum posts, "Create Thread") has no such
+                # protection.  Pre-seeding HERE (before the check) ensures the
+                # first event wins and the duplicate is dropped, even when both
+                # events arrive concurrently.
+                _msg_id = str(message.id)
+                _channel = getattr(message, "channel", None)
+                if (
+                    isinstance(_channel, discord.Thread)
+                    and str(_channel.id) == _msg_id
+                ):
+                    adapter_self._dedup.is_duplicate(_msg_id)
+                if adapter_self._dedup.is_duplicate(_msg_id):
                     return
 
                 # Always ignore our own messages
@@ -5795,16 +5809,6 @@ class DiscordAdapter(BasePlatformAdapter):
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
-            # Pre-seed dedup for forum posts (thread_id == message_id).
-            # Discord fires a duplicate MESSAGE_CREATE event for the thread
-            # starter message when a forum post is created.  The auto-thread
-            # path already pre-seeds at line ~5830, but manual thread creation
-            # (forum posts, "Create Thread" from context menu) was missing it,
-            # causing the duplicate to slip through and — in some cases —
-            # wedge the WebSocket connection.  Fixes silent disconnect on
-            # forum post + @mention.
-            if thread_id == str(message.id):
-                self._dedup.is_duplicate(thread_id)
 
         is_voice_linked_channel = False
 

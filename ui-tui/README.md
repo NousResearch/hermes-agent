@@ -280,7 +280,7 @@ Primary event types the client handles today:
 | `status.update`            | `{ kind, text }`                                                            |
 | `notification.show`        | `{ id, key, kind, level, text, ttl_ms? }`                                   |
 | `notification.clear`       | `{ key }`                                                                   |
-| `tool.start`               | `{ tool_id, name, context?, args_text? }`                                   |
+| `tool.start`               | `{ tool_id, name, context?, label?, args_text? }` — `label?` is the complete friendly label rendered verbatim; `context?` remains the raw preview |
 | `tool.generating`          | `{ name }`                                                                  |
 | `tool.progress`            | `{ name, preview }`                                                         |
 | `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |

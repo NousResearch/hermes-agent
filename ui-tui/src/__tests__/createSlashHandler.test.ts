@@ -183,6 +183,15 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('opens the model picker with refresh for /model --refresh', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --refresh')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ refresh: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('honors TUI picker session scope without adding --global', async () => {
     patchUiState({ sid: 'sid-abc' })
 
@@ -200,7 +209,7 @@ describe('createSlashHandler', () => {
       confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
-      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter --session'
     })
   })
 

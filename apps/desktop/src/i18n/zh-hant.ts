@@ -116,6 +116,7 @@ export const zhHant = defineLocale({
     copyDetailFailed: '無法複製通知詳情',
     backendOutOfDateTitle: '後端版本過舊',
     backendOutOfDateMessage: '您的 Hermes 後端早於目前的桌面版本，可能無法正常運作。請更新以保持一致。',
+    installMethodUnsupportedTitle: '不受支援的安裝方式',
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 項新變更可用。`,
@@ -279,6 +280,9 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      uiScaleTitle: '介面縮放',
+      uiScaleDesc: (percent: number) =>
+        `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       embedsTitle: '內嵌預覽',
@@ -1815,6 +1819,7 @@ export const zhHant = defineLocale({
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',
     apiKeyOptions: {
+      fireworks: { short: '直接模型 API', description: '直接存取 Fireworks AI 託管的模型。' },
       openrouter: { short: '一個金鑰，多個模型', description: '用一個金鑰存取數百個模型。適合新安裝的預設選擇。' },
       openai: { short: 'GPT 等級模型', description: '直接存取 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接存取 Google Gemini 模型。' },

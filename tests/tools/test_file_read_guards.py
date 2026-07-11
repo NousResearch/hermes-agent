@@ -510,6 +510,70 @@ class TestFileDedup(unittest.TestCase):
         self.assertNotEqual(r2.get("dedup"), True)
 
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_symlink_read_hits_dedup(self, mock_ops):
+        """Reading through a symlink after reading the target directly
+        should return a dedup stub — same resolved_path → same cache key."""
+        # Create symlink pointing to the test file
+        link_path = os.path.join(self._tmpdir, "link_to_dedup.txt")
+        try:
+            os.symlink(self._tmpfile, link_path)
+        except OSError as exc:
+            self.skipTest(f"symlink unavailable: {exc}")
+
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+
+        # 1. Read the target file directly — populates dedup with realpath
+        r1 = json.loads(read_file_tool(self._tmpfile, task_id="sym"))
+        self.assertNotIn("dedup", r1)
+
+        # 2. Read through symlink — same resolved_path → should dedup
+        r2 = json.loads(read_file_tool(link_path, task_id="sym"))
+        self.assertTrue(r2.get("dedup"),
+                        "Symlink read should hit dedup (same resolved_path)")
+        self.assertEqual(r2.get("status"), "unchanged")
+        self.assertFalse(r2.get("content_returned"))
+
+        # Cleanup
+        try:
+            os.unlink(link_path)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_symlink_read_reverse_hits_dedup(self, mock_ops):
+        """Reading the target directly after reading through a symlink
+        should also return a dedup stub — symmetric behavior."""
+        link_path = os.path.join(self._tmpdir, "link_reverse.txt")
+        try:
+            os.symlink(self._tmpfile, link_path)
+        except OSError as exc:
+            self.skipTest(f"symlink unavailable: {exc}")
+
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+
+        # 1. Read through symlink — dedup cache key = realpath
+        r1 = json.loads(read_file_tool(link_path, task_id="sym2"))
+        self.assertNotIn("dedup", r1)
+
+        # 2. Read the target directly — same resolved_path → should dedup
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="sym2"))
+        self.assertTrue(r2.get("dedup"),
+                        "Direct read after symlink should hit dedup")
+        self.assertEqual(r2.get("status"), "unchanged")
+        self.assertFalse(r2.get("content_returned"))
+
+        # Cleanup
+        try:
+            os.unlink(link_path)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Dedup stub-loop guard (issue #15759)
 # ---------------------------------------------------------------------------
@@ -970,6 +1034,47 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         # Note: on real FS, task B's dedup might or might not hit depending
         # on mtime.  The point is that _invalidate_dedup_for_path is
         # correctly scoped to task_id.
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_symlink_write_invalidates_dedup(self, mock_ops):
+        """Writing through a symlink should invalidate dedup for the
+        resolved path, just like writing directly."""
+        link_path = os.path.join(self._tmpdir, "link_write_dedup.txt")
+        try:
+            os.symlink(self._tmpfile, link_path)
+        except OSError as exc:
+            self.skipTest(f"symlink unavailable: {exc}")
+
+        fake = MagicMock()
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="original content\n", total_lines=1, file_size=18,
+        )
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # 1. Read the file directly — populates dedup via realpath
+        r1 = json.loads(read_file_tool(self._tmpfile, task_id="symwr"))
+        self.assertNotEqual(r1.get("dedup"), True)
+
+        # 2. Write through symlink — must invalidate dedup for realpath
+        write_file_tool(link_path, "new content\n", task_id="symwr")
+
+        # 3. Read directly again — should get fresh content, NOT dedup stub
+        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="new content\n", total_lines=1, file_size=13,
+        )
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="symwr"))
+        self.assertNotEqual(r2.get("dedup"), True,
+                            "read after symlink write must not return dedup stub")
+        self.assertIn("content", r2)
+
+        # Cleanup
+        try:
+            os.unlink(link_path)
+        except OSError:
+            pass
 
     def test_invalidate_dedup_for_path_noop_on_missing_task(self):
         """_invalidate_dedup_for_path is safe when task_id doesn't exist."""

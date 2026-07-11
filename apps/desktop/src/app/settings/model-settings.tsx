@@ -671,7 +671,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           <p className="mt-2 text-xs text-muted-foreground">
             {selectedProviderRow?.auth_type === 'api_key'
               ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
-              : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
+              : `${selectedProviderRow?.name} signs in through your browser — HT AI Agent runs the flow for you.`}
           </p>
         )}
         {config && mainModel && (reasoningSupported || fastSupported) && (

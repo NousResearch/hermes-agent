@@ -422,7 +422,7 @@ export function PetOverlayApp() {
               stopPropagation keeps a click from starting a window drag. */}
           {unread && (
             <button
-              aria-label="Open in Hermes"
+              aria-label="Open in HT AI Agent"
               onClick={openApp}
               onPointerDown={e => e.stopPropagation()}
               onPointerUp={e => e.stopPropagation()}
@@ -443,7 +443,7 @@ export function PetOverlayApp() {
                 top: 0,
                 width: 24
               }}
-              title="Open in Hermes"
+              title="Open in HT AI Agent"
               type="button"
             >
               <Mail style={{ height: 13, width: 13 }} />

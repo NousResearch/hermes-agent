@@ -6470,7 +6470,7 @@ async function startHermes() {
 
     updateBootProgress({
       phase: 'backend.ready',
-      message: 'Hermes backend is ready. Finalizing desktop startup',
+      message: 'HT AI Agent backend is ready. Finalizing desktop startup',
       progress: 94,
       running: true,
       error: null
@@ -8277,7 +8277,7 @@ async function runDesktopUninstall(mode) {
     return {
       ok: false,
       error: 'agent-missing',
-      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
+      message: `Can't run the uninstaller: no HT AI Agent venv at ${VENV_ROOT}.`
     }
   }
 

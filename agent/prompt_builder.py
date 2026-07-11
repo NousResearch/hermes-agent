@@ -746,7 +746,7 @@ PLATFORM_HINTS = {
         "default-deliver cron job will message them in this session."
     ),
     "desktop": (
-        "You are chatting inside the Hermes desktop app — a graphical chat "
+        "You are chatting inside the HT AI Agent desktop app — a graphical chat "
         "surface, not a terminal. Use markdown freely: it renders with full "
         "GitHub flavor (tables, code blocks with syntax highlighting, math "
         "via $...$, task lists, blockquote callouts). "

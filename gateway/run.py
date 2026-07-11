@@ -13511,7 +13511,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Telegram's topic UI) and ``/topic`` is an opt-in setup command, not an
         authorization to permanently rewrite the chat's pin state. Operators
         who DO want the intro pinned can opt in via
-        ``gateway.telegram.pin_system_topic_intro: true`` in config.yaml.
+        ``gateway.platforms.telegram.extra.pin_system_topic_intro: true``
+        (or top-level ``platforms.telegram.extra.pin_system_topic_intro``)
+        in config.yaml.
         """
         adapter = self._adapter_for_source(source)
         if adapter is None or not source.chat_id:
@@ -13556,19 +13558,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
 
     def _telegram_pin_system_topic_intro_enabled(self) -> bool:
-        """Read the opt-in flag from config.yaml.
+        """Read the opt-in flag from Telegram platform extra config.
 
-        Path: ``gateway.telegram.pin_system_topic_intro`` (bool, default false).
-        Uses the same ``_load_gateway_config`` helper as other gateway-only
-        reads so behavior stays consistent across config edits (#62466)."""
+        Canonical path:
+        ``gateway.platforms.telegram.extra.pin_system_topic_intro``
+        (also accepts top-level ``platforms.telegram.extra``). Default false.
+
+        Prefer the live ``self.config.platforms`` object (same path as
+        ``disable_topic_auto_rename``), then fall back to raw YAML so the
+        helper still works when only ``_load_gateway_config()`` is available
+        (#62466).
+        """
+        def _coerce(value) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(value)
+
+        try:
+            platform_cfg = (
+                self.config.platforms.get(Platform.TELEGRAM)
+                if getattr(self, "config", None) and getattr(self.config, "platforms", None)
+                else None
+            )
+            if platform_cfg is not None:
+                extra = getattr(platform_cfg, "extra", None) or {}
+                if isinstance(extra, dict) and "pin_system_topic_intro" in extra:
+                    return _coerce(extra.get("pin_system_topic_intro"))
+        except Exception:
+            pass
+
         try:
             cfg = _load_gateway_config()
         except Exception:
             return False
-        tg = cfg.get("telegram") if isinstance(cfg, dict) else None
-        if not isinstance(tg, dict):
+        if not isinstance(cfg, dict):
             return False
-        return bool(tg.get("pin_system_topic_intro", False))
+
+        for platforms_root in (
+            (cfg.get("gateway") or {}).get("platforms") if isinstance(cfg.get("gateway"), dict) else None,
+            cfg.get("platforms"),
+        ):
+            if not isinstance(platforms_root, dict):
+                continue
+            tg = platforms_root.get("telegram")
+            if not isinstance(tg, dict):
+                continue
+            extra = tg.get("extra") if isinstance(tg.get("extra"), dict) else {}
+            if "pin_system_topic_intro" in extra:
+                return _coerce(extra.get("pin_system_topic_intro"))
+        return False
 
     async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
         """Send the bundled BotFather Threads Settings screenshot when available."""

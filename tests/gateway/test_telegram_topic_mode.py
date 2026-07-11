@@ -853,7 +853,7 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
     """The /topic command creates the System topic and sends its intro. The
     intro is NOT pinned by default — pinning is a separate, opt-in choice
-    (gateway.telegram.pin_system_topic_intro in config.yaml) so /topic
+    (gateway.platforms.telegram.extra.pin_system_topic_intro in config.yaml) so /topic
     never silently rewrites user-owned chat pin state (#62466)."""
     import gateway.run as gateway_run
 
@@ -893,7 +893,7 @@ async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_topic_root_command_pins_when_opted_in(tmp_path, monkeypatch):
-    """Opt-in via config (gateway.telegram.pin_system_topic_intro: true)
+    """Opt-in via config (gateway.platforms.telegram.extra.pin_system_topic_intro: true)
     re-enables the pin so operators who DO want the persistent banner
     can get it explicitly (#62466)."""
     import gateway.run as gateway_run
@@ -942,20 +942,45 @@ async def test_telegram_pin_opt_in_reads_config_default_false(tmp_path, monkeypa
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     assert runner._telegram_pin_system_topic_intro_enabled() is False
     monkeypatch.setattr(
-        gateway_run, "_load_gateway_config", lambda: {"telegram": {}}
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"gateway": {"platforms": {"telegram": {"extra": {}}}}},
     )
     assert runner._telegram_pin_system_topic_intro_enabled() is False
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
-        lambda: {"telegram": {"pin_system_topic_intro": False}},
+        lambda: {
+            "gateway": {
+                "platforms": {
+                    "telegram": {"extra": {"pin_system_topic_intro": False}}
+                }
+            }
+        },
     )
     assert runner._telegram_pin_system_topic_intro_enabled() is False
-    # Only an explicit True flips it on.
+    # Only an explicit True under platforms.telegram.extra flips it on.
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
-        lambda: {"telegram": {"pin_system_topic_intro": True}},
+        lambda: {
+            "gateway": {
+                "platforms": {
+                    "telegram": {"extra": {"pin_system_topic_intro": True}}
+                }
+            }
+        },
+    )
+    assert runner._telegram_pin_system_topic_intro_enabled() is True
+    # Top-level platforms.telegram.extra also works.
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {
+            "platforms": {
+                "telegram": {"extra": {"pin_system_topic_intro": True}}
+            }
+        },
     )
     assert runner._telegram_pin_system_topic_intro_enabled() is True
 

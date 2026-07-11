@@ -7,6 +7,7 @@ it does not schedule turns itself.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -370,6 +371,29 @@ class AutoResumeAttemptStore:
                 os.fsync(handle.fileno())
             os.chmod(temp_path, 0o600)
             os.replace(temp_path, self.path)
+            if os.name == "posix":
+                # The file fsync above protects contents; the directory fsync
+                # makes the renamed entry itself survive a kernel/power crash.
+                directory_fd = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    try:
+                        os.fsync(directory_fd)
+                    except OSError as exc:
+                        unsupported = {
+                            errno.EINVAL,
+                            errno.ENOTSUP,
+                            getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+                        }
+                        if exc.errno not in unsupported:
+                            raise
+                        logger.warning(
+                            "Directory fsync is unsupported for %s; atomic rename "
+                            "completed without a directory durability barrier: %s",
+                            self.path.parent,
+                            exc,
+                        )
+                finally:
+                    os.close(directory_fd)
         finally:
             if temp_path is not None and temp_path.exists():
                 try:

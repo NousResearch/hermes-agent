@@ -861,10 +861,38 @@ def _resume_interrupted_turns_mode() -> str:
     return mode if mode in {"prompt", "auto"} else "prompt"
 
 
+_AUTO_RESUME_MESSAGING_PLATFORM_VALUES = frozenset(
+    {
+        "telegram",
+        "discord",
+        "whatsapp",
+        "whatsapp_cloud",
+        "slack",
+        "signal",
+        "mattermost",
+        "matrix",
+        "homeassistant",
+        "email",
+        "sms",
+        "dingtalk",
+        "feishu",
+        "wecom",
+        "wecom_callback",
+        "weixin",
+        "bluebubbles",
+        "qqbot",
+        "yuanbao",
+    }
+)
+
+
 def _is_messaging_resume_source(source: Any) -> bool:
-    """True only for a classified messaging-gateway source."""
+    """True only for an explicitly classified interactive messaging source."""
     platform = getattr(source, "platform", None)
-    return isinstance(platform, Platform) and platform is not Platform.LOCAL
+    return (
+        isinstance(platform, Platform)
+        and platform.value in _AUTO_RESUME_MESSAGING_PLATFORM_VALUES
+    )
 
 
 def _restart_loop_threshold() -> int:

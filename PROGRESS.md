@@ -96,6 +96,7 @@ Observed test evidence:
   attempt store keyed by `(session_key, assistant_rowid)`.
 - Added T1–T8 behavior-contract coverage and parameterized the existing F2
   cross-cycle breaker test over `prompt` and `auto`.
-- Focused resume, breaker, async DB, and state regression matrix is green.
+- PR #289 merged with CI green; Greptile's durability and surface-scope findings
+  are addressed in the review-hardening follow-up.
 
-NEXT: Open the fork PR, resolve Greptile/CI, arm auto-merge, then hand off live deployment verification to Apollo.
+NEXT: After the review-hardening PR merges, Apollo updates the safe-restart skill and performs live deployment/restart verification.

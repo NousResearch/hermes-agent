@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -180,8 +182,23 @@ def test_t2_auto_read_only_tail_continues_forward_without_reexecution():
 
 
 def test_t5_auto_is_limited_to_known_messaging_gateway_surfaces():
-    assert _is_messaging_resume_source(_source(Platform.TELEGRAM)) is True
-    assert _is_messaging_resume_source(_source(Platform.LOCAL)) is False
+    for platform in (
+        Platform.TELEGRAM,
+        Platform.DISCORD,
+        Platform.WHATSAPP,
+        Platform.SLACK,
+        Platform.EMAIL,
+        Platform.SMS,
+    ):
+        assert _is_messaging_resume_source(_source(platform)) is True
+    for platform in (
+        Platform.LOCAL,
+        Platform.API_SERVER,
+        Platform.WEBHOOK,
+        Platform.MSGRAPH_WEBHOOK,
+        Platform.RELAY,
+    ):
+        assert _is_messaging_resume_source(_source(platform)) is False
     assert _is_messaging_resume_source(SimpleNamespace(platform="mystery")) is False
     assert _is_messaging_resume_source(SimpleNamespace(platform=None)) is False
 
@@ -685,3 +702,33 @@ def test_attempt_store_prunes_ttl_and_corruption_fails_closed_once(tmp_path, cap
         assert corrupt.has_attempt("two", 2) is True
     warnings = [r for r in caplog.records if "auto_resume_attempts.json" in r.getMessage()]
     assert len(warnings) == 1
+
+
+def test_attempt_store_fsyncs_parent_directory_after_replace(tmp_path, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append(fd))
+    store = AutoResumeAttemptStore(tmp_path / "state" / "auto_resume_attempts.json")
+
+    assert store.consume("agent:main:telegram:dm:123", 2) is True
+    assert len(calls) == (2 if os.name == "posix" else 1)
+
+
+def test_attempt_store_tolerates_unsupported_directory_fsync(
+    tmp_path, monkeypatch, caplog
+):
+    calls = 0
+
+    def _unsupported_on_directory(_fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(errno.EINVAL, "directory fsync unsupported")
+
+    monkeypatch.setattr(os, "fsync", _unsupported_on_directory)
+    store = AutoResumeAttemptStore(tmp_path / "state" / "auto_resume_attempts.json")
+
+    with caplog.at_level(logging.WARNING, logger="gateway.auto_resume"):
+        assert store.consume("agent:main:telegram:dm:123", 2) is True
+    assert store.has_attempt("agent:main:telegram:dm:123", 2) is True
+    if os.name == "posix":
+        assert "Directory fsync is unsupported" in caplog.text

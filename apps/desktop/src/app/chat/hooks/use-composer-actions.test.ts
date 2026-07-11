@@ -122,9 +122,9 @@ describe('extractDroppedFiles', () => {
   }
 
   it('emits a dropped directory as a path-only entry with isDirectory (no File to upload)', () => {
-    const transfer = stubTransfer([
-      { path: '/Users/jeff/projects/hermes', isDirectory: true }
-    ]) as DataTransfer & { _pathByFile: Map<File, string> }
+    const transfer = stubTransfer([{ path: '/Users/jeff/projects/hermes', isDirectory: true }]) as DataTransfer & {
+      _pathByFile: Map<File, string>
+    }
 
     stubBridge(transfer)
 
@@ -174,9 +174,9 @@ describe('extractDroppedFiles', () => {
   it('does not duplicate a folder that appears in both items and files', () => {
     // Chromium lists a dropped folder in transfer.files too (as a size-0 File);
     // the items pass claims its path first so the files fallback skips it.
-    const transfer = stubTransfer([
-      { path: '/abs/project', isDirectory: true }
-    ]) as DataTransfer & { _pathByFile: Map<File, string> }
+    const transfer = stubTransfer([{ path: '/abs/project', isDirectory: true }]) as DataTransfer & {
+      _pathByFile: Map<File, string>
+    }
 
     stubBridge(transfer)
 

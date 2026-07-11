@@ -121,6 +121,118 @@ class TestCodexBuildKwargs:
         )
         assert "prompt_cache_key" not in kw
 
+    def test_github_responses_drops_message_item_id_end_to_end(self, transport):
+        # #32716: Copilot binds codex_message_items ids to a backend
+        # "connection" that doesn't survive credential rotation, a gateway
+        # restart, or load-balancer churn — replaying a stale id gets HTTP
+        # 401 "input item ID does not belong to this connection", even for
+        # ids well under the #27038 64-char length cap. build_kwargs must
+        # thread is_github_responses through to the input converter so the
+        # id never reaches the request.
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_but_connection_scoped",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses=True,
+        )
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+        assert message_item["status"] == "in_progress"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+    def test_github_responses_requires_literal_true(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_id",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses="false",
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert message_item["id"] == "msg_short_id"
+
+    def test_github_preflight_drops_id_reintroduced_by_request_override(self, transport):
+        injected = {
+            "type": "message",
+            "role": "assistant",
+            "status": "in_progress",
+            "content": [{"type": "output_text", "text": "pong"}],
+            "id": "stale_short",
+            "phase": "final_answer",
+        }
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "continue"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"input": [injected]},
+        )
+
+        preflight = transport.preflight_kwargs(
+            kw,
+            is_github_responses=True,
+        )
+
+        message_item = preflight["input"][0]
+        assert "id" not in message_item
+        assert message_item["status"] == "in_progress"
+        assert message_item["phase"] == "final_answer"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+    def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_id",
+                    }
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_codex_backend=True,
+        )
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert message_item["id"] == "msg_short_id"
+
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
         body-level cache-routing key (the ``x-grok-conv-id`` header is

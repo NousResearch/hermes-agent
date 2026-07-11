@@ -6,7 +6,9 @@ network error, the adapter must self-reschedule the next reconnect attempt
 rather than silently leaving polling dead.
 """
 
+import ast
 import asyncio
+from pathlib import Path
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -678,6 +680,123 @@ async def test_heartbeat_loop_ignores_non_connectivity_errors():
     adapter._handle_polling_network_error.assert_not_awaited()
 
 
+async def _heartbeat_exception_case(exc, *, pending_probe=False):
+    adapter = _make_adapter()
+    reconnect_handler = AsyncMock()
+    adapter._handle_polling_network_error = reconnect_handler  # type: ignore[method-assign]
+    mock_app = MagicMock()
+    mock_app.updater.running = True
+    if pending_probe:
+        mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
+        mock_app.bot.get_webhook_info = AsyncMock(side_effect=exc)
+    else:
+        mock_app.bot.get_me = AsyncMock(side_effect=exc)
+    adapter._app = mock_app
+
+    sleep_calls = 0
+
+    async def fast_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            raise asyncio.CancelledError()
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        await adapter._polling_heartbeat_loop()
+    await asyncio.sleep(0)
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_probe", [False, True])
+async def test_heartbeat_routes_ptb_transport_errors_to_reconnect(pending_probe):
+    from telegram.error import NetworkError, TimedOut
+
+    for exc in (NetworkError("network"), TimedOut("timeout")):
+        adapter = await _heartbeat_exception_case(exc, pending_probe=pending_probe)
+        reconnect_handler = adapter._handle_polling_network_error
+        assert isinstance(reconnect_handler, AsyncMock)
+        reconnect_handler.assert_awaited_once_with(exc)
+        assert adapter._polling_error_task is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_probe", [False, True])
+async def test_heartbeat_ignores_ptb_semantic_errors(pending_probe):
+    from telegram.error import BadRequest, Forbidden, InvalidToken, RetryAfter
+
+    for exc in (
+        BadRequest("bad request"),
+        Forbidden("forbidden"),
+        InvalidToken("invalid token"),
+        RetryAfter(1),
+    ):
+        adapter = await _heartbeat_exception_case(exc, pending_probe=pending_probe)
+        reconnect_handler = adapter._handle_polling_network_error
+        assert isinstance(reconnect_handler, AsyncMock)
+        reconnect_handler.assert_not_awaited()
+        assert adapter._polling_error_task is None
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected"),
+    [
+        ("NetworkError", True),
+        ("TimedOut", True),
+        ("BadRequest", False),
+        ("Forbidden", False),
+        ("InvalidToken", False),
+        ("RetryAfter", False),
+    ],
+)
+def test_network_error_classifier_matches_ptb_semantics(error_name, expected):
+    import telegram.error as telegram_error
+
+    error_type = getattr(telegram_error, error_name)
+    error = error_type(1) if error_name == "RetryAfter" else error_type(error_name)
+    assert TelegramAdapter._looks_like_network_error(error) is expected
+
+
+def _calls_shared_network_classifier(node):
+    return any(
+        isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr == "_looks_like_network_error"
+        for child in ast.walk(node)
+    )
+
+
+def test_polling_error_callback_uses_shared_network_classifier():
+    source = Path(TelegramAdapter.connect.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    callbacks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_polling_error_callback"
+    ]
+    assert len(callbacks) == 1
+    assert _calls_shared_network_classifier(callbacks[0])
+
+
+def test_connect_initialize_retry_uses_shared_network_classifier():
+    source = Path(TelegramAdapter.connect.__code__.co_filename).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    connect = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "connect"
+    )
+    exception_handlers = [
+        node
+        for node in ast.walk(connect)
+        if isinstance(node, ast.ExceptHandler)
+        and isinstance(node.type, ast.Name)
+        and node.type.id == "Exception"
+    ]
+    assert any(_calls_shared_network_classifier(handler) for handler in exception_handlers)
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_loop_exits_on_fatal_error():
     """A fatal error short-circuits the loop before probing get_me()."""
@@ -811,4 +930,60 @@ async def test_schedule_polling_recovery_tracks_background_task():
     assert adapter._polling_error_task in adapter._background_tasks
     await adapter._polling_error_task
     adapter._handle_polling_network_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_polling_network_error_updater_stop_timeout():
+    """updater.stop() hanging (CLOSE-WAIT) must not block the reconnect ladder.
+
+    When the underlying TCP connection is in CLOSE-WAIT, PTB's polling task is
+    blocked on epoll on the dead socket.  updater.stop() awaits that task and
+    therefore hangs indefinitely.  The fix wraps stop() in asyncio.wait_for()
+    with a 15-second timeout so the reconnect always advances.
+
+    This test simulates the hang by making stop() sleep forever and verifies
+    that _drain_polling_connections() and start_polling() are still called
+    after the timeout fires.
+    Refs: NousResearch/hermes-agent#58270
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 0
+
+    # Build a fake app whose updater.stop() hangs forever.
+    app = MagicMock()
+    app.updater = MagicMock()
+    app.updater.running = True
+
+    async def _hanging_stop():
+        await asyncio.sleep(9999)  # simulate CLOSE-WAIT block
+
+    app.updater.stop = _hanging_stop
+    app.updater.start_polling = AsyncMock()
+    adapter._app = app
+
+    drain_called = []
+
+    async def _fake_drain():
+        drain_called.append(True)
+
+    adapter._drain_polling_connections = _fake_drain
+
+    start_polling_called = []
+
+    async def _fake_start_polling(**kwargs):
+        start_polling_called.append(True)
+
+    app.updater.start_polling = AsyncMock(side_effect=_fake_start_polling)
+
+    # Shrink the stop() watchdog bound so the test completes fast instead of
+    # waiting the full _UPDATER_STOP_TIMEOUT. Patching the named constant is
+    # cleaner than monkeypatching asyncio.wait_for process-wide.
+    import plugins.platforms.telegram.adapter as _mod
+
+    with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05):
+        await adapter._handle_polling_network_error(OSError("CLOSE-WAIT test"))
+
+    # The reconnect ladder must have advanced past the hung stop().
+    assert drain_called, "_drain_polling_connections was not called after stop() timeout"
+    assert start_polling_called, "start_polling was not called after stop() timeout"
 

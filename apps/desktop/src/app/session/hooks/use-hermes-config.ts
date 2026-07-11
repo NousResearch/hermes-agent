@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { normalize } from '@/lib/text'
 import {
   $currentCwd,
   setAvailablePersonalities,
@@ -33,7 +34,7 @@ function normalizeConfigEffort(value: unknown): string {
     return ''
   }
 
-  const effort = value.trim().toLowerCase()
+  const effort = normalize(value)
 
   return effort === 'false' || effort === 'disabled' ? 'none' : effort
 }

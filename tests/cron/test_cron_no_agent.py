@@ -329,3 +329,79 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for the Windows-only path conversion (#62516)
+# ---------------------------------------------------------------------------
+
+
+def test_bash_arg_converts_windows_drive_path_to_msys_form():
+    """A native C:\\... script path must become /c/... for git-bash.
+
+    Without this, git-bash treats '\\' as an escape and collapses the
+    path to "C:Users..." -> exit 127 (script never found).
+    """
+    from cron.scheduler import _bash_arg_for_script_path
+
+    converted = _bash_arg_for_script_path(
+        "C:\\Users\\filip\\AppData\\Local\\hermes\\scripts\\nightly.sh",
+        platform="win32",
+    )
+    assert converted == "/c/Users/filip/AppData/Local/hermes/scripts/nightly.sh"
+    # No backslashes survive — that is what git-bash would have mangled.
+    assert "\\" not in converted
+
+
+def test_bash_arg_lowercases_windows_drive_letter():
+    """The drive letter must be lowercased in MSYS form (/c, not /C)."""
+    from cron.scheduler import _bash_arg_for_script_path
+
+    assert _bash_arg_for_script_path("D:\jobs\run.bash", platform="win32") == "/d/jobs/run.bash"
+
+
+def test_bash_arg_posix_path_unchanged():
+    """POSIX paths must be passed through untouched (no conversion)."""
+    from cron.scheduler import _bash_arg_for_script_path
+
+    posix_path = "/home/filip/.hermes/scripts/backup.sh"
+    assert _bash_arg_for_script_path(posix_path, platform="linux") == posix_path
+    assert _bash_arg_for_script_path(posix_path, platform="darwin") == posix_path
+
+
+def test_run_job_script_windows_argv_passes_msys_path(hermes_env, monkeypatch):
+    """End-to-end: on Windows the argv handed to bash is /c/... (no backslash).
+
+    Captures subprocess.run so we assert the path actually passed to git-bash,
+    regressing the original exit-127 failure where a native C:\\... path was
+    collapsed to "C:Users...".
+    """
+    import subprocess as _subprocess
+
+    from cron.scheduler import _run_job_script
+
+    script_path = hermes_env / "scripts" / "nightly.sh"
+    script_path.write_text('printf "ok\\n"\n')
+
+    captured = {}
+
+    def fake_run(argv, *args, **kwargs):
+        captured["argv"] = argv
+        # Emulate git-bash succeeding on the (converted) path.
+        result = _subprocess.CompletedProcess(argv, 0, "ok\n", "")
+        return result
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    # Force the Windows branch regardless of the host platform.
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr("cron.scheduler.sys.platform", "win32")
+
+    ok, output = _run_job_script("nightly.sh")
+    assert ok is True
+    argv = captured["argv"]
+    # argv == [git-bash, <script-arg>]
+    assert len(argv) == 2
+    script_arg = argv[1]
+    assert script_arg.startswith("/c/")
+    assert "\\" not in script_arg
+

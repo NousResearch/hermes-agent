@@ -21,7 +21,7 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
-import { flashPet } from './petFlashStore.js'
+import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -721,6 +721,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (ev.payload?.name) {
           turnController.pushTrail(ti('tool.drafting', { name: ev.payload.name }))
         }
+
+        return
+
+      case 'reaction':
+        // Core-detected affection (ily / <3 / good bot): flash the ♥ and let the
+        // pet celebrate. Same signal drives the desktop's floating hearts.
+        flashGoodVibes()
+        flashPet('jump')
 
         return
 

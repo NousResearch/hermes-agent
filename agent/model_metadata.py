@@ -229,6 +229,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # ChatGPT Codex OAuth caps it at 272K; both paths resolve via their own
     # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
     # This hardcoded value is only reached when every probe misses.
+    # GPT-5.6 series (Sol/Terra/Luna, GA 2026-07-09) — 1.05M on the direct
+    # OpenAI API (same as gpt-5.5). Codex OAuth caps these at 272K.
+    # (Lookups length-sort keys at match time, so dict order is cosmetic.)
+    "gpt-5.6-luna": 1050000,
+    "gpt-5.6-terra": 1050000,
+    "gpt-5.6-sol": 1050000,
     "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
@@ -1071,7 +1077,7 @@ def _load_context_cache() -> Dict[str, int]:
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return data.get("context_lengths", {})
+        return data.get("context_lengths") or {}
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
@@ -1837,6 +1843,9 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
     "gpt-5.3-codex-spark": 128_000,
     "gpt-5.2-codex": 272_000,
     "gpt-5.4-mini": 272_000,
+    "gpt-5.6-sol": 272_000,
+    "gpt-5.6-terra": 272_000,
+    "gpt-5.6-luna": 272_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.2": 272_000,

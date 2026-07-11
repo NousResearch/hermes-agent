@@ -8,6 +8,7 @@ libraries if `gws` is not installed.
 Usage:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
+  python google_api.py gmail thread THREAD_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
   python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
@@ -154,6 +155,20 @@ def _extract_message_body(msg: dict) -> str:
     return body
 
 
+def _normalize_gmail_message(msg: dict) -> dict:
+    headers = _headers_dict(msg)
+    return {
+        "id": msg["id"],
+        "threadId": msg["threadId"],
+        "from": headers.get("from", ""),
+        "to": headers.get("to", ""),
+        "subject": headers.get("subject", ""),
+        "date": headers.get("date", ""),
+        "labels": msg.get("labelIds", []),
+        "body": _extract_message_body(msg),
+    }
+
+
 def _extract_doc_text(doc: dict) -> str:
     text_parts = []
     for element in doc.get("body", {}).get("content", []):
@@ -281,17 +296,7 @@ def gmail_get(args):
             ["gmail", "users", "messages", "get"],
             params={"userId": "me", "id": args.message_id, "format": "full"},
         )
-        headers = _headers_dict(msg)
-        result = {
-            "id": msg["id"],
-            "threadId": msg["threadId"],
-            "from": headers.get("from", ""),
-            "to": headers.get("to", ""),
-            "subject": headers.get("subject", ""),
-            "date": headers.get("date", ""),
-            "labels": msg.get("labelIds", []),
-            "body": _extract_message_body(msg),
-        }
+        result = _normalize_gmail_message(msg)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
@@ -300,17 +305,31 @@ def gmail_get(args):
         userId="me", id=args.message_id, format="full"
     ).execute()
 
-    headers = _headers_dict(msg)
+    result = _normalize_gmail_message(msg)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def gmail_thread(args):
+    if _gws_binary():
+        thread = _run_gws(
+            ["gmail", "users", "threads", "get"],
+            params={"userId": "me", "id": args.thread_id, "format": "full"},
+        )
+    else:
+        service = build_service("gmail", "v1")
+        thread = service.users().threads().get(
+            userId="me", id=args.thread_id, format="full"
+        ).execute()
+
     result = {
-        "id": msg["id"],
-        "threadId": msg["threadId"],
-        "from": headers.get("from", ""),
-        "to": headers.get("to", ""),
-        "subject": headers.get("subject", ""),
-        "date": headers.get("date", ""),
-        "labels": msg.get("labelIds", []),
-        "body": _extract_message_body(msg),
+        "id": thread["id"],
+        "messages": [
+            _normalize_gmail_message(message)
+            for message in thread.get("messages", [])
+        ],
     }
+    if "historyId" in thread:
+        result["historyId"] = thread["historyId"]
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -1067,6 +1086,10 @@ def main():
     p = gmail_sub.add_parser("get")
     p.add_argument("message_id")
     p.set_defaults(func=gmail_get)
+
+    p = gmail_sub.add_parser("thread")
+    p.add_argument("thread_id")
+    p.set_defaults(func=gmail_thread)
 
     p = gmail_sub.add_parser("send")
     p.add_argument("--to", required=True)

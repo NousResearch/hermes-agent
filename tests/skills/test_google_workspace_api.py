@@ -269,6 +269,162 @@ def test_api_gmail_get_reads_headers_case_insensitively(api_module, capsys, head
     assert result["date"] == "Fri, 29 May 2026 12:00:00 +0000"
 
 
+def test_api_gmail_thread_returns_all_messages_in_gmail_order(api_module, capsys):
+    plain_body = api_module.base64.urlsafe_b64encode(b"received body").decode()
+    html_body = api_module.base64.urlsafe_b64encode(b"<p>sent body</p>").decode()
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        assert parts == ["gmail", "users", "threads", "get"]
+        assert params == {"userId": "me", "id": "thread-1", "format": "full"}
+        return {
+            "id": "thread-1",
+            "historyId": "98765",
+            "messages": [
+                {
+                    "id": "received-1",
+                    "threadId": "thread-1",
+                    "labelIds": ["INBOX"],
+                    "payload": {
+                        "headers": [
+                            {"name": "from", "value": "sender@example.com"},
+                            {"name": "TO", "value": "me@example.com"},
+                            {"name": "Subject", "value": "Thread subject"},
+                            {"name": "dAtE", "value": "First"},
+                        ],
+                        "body": {"data": plain_body},
+                    },
+                },
+                {
+                    "id": "sent-1",
+                    "threadId": "thread-1",
+                    "labelIds": ["SENT"],
+                    "payload": {
+                        "headers": [
+                            {"name": "From", "value": "me@example.com"},
+                            {"name": "to", "value": "sender@example.com"},
+                            {"name": "SUBJECT", "value": "Re: Thread subject"},
+                            {"name": "Date", "value": "Second"},
+                        ],
+                        "parts": [
+                            {
+                                "mimeType": "text/html",
+                                "body": {"data": html_body},
+                            }
+                        ],
+                    },
+                },
+            ],
+        }
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        thread_id="thread-1",
+        func=api_module.gmail_thread,
+    )
+
+    api_module.gmail_thread(args)
+
+    assert json.loads(capsys.readouterr().out) == {
+        "id": "thread-1",
+        "messages": [
+            {
+                "id": "received-1",
+                "threadId": "thread-1",
+                "from": "sender@example.com",
+                "to": "me@example.com",
+                "subject": "Thread subject",
+                "date": "First",
+                "labels": ["INBOX"],
+                "body": "received body",
+            },
+            {
+                "id": "sent-1",
+                "threadId": "thread-1",
+                "from": "me@example.com",
+                "to": "sender@example.com",
+                "subject": "Re: Thread subject",
+                "date": "Second",
+                "labels": ["SENT"],
+                "body": "<p>sent body</p>",
+            },
+        ],
+        "historyId": "98765",
+    }
+
+
+def test_api_gmail_thread_uses_google_client_threads_get(api_module, capsys):
+    thread = {
+        "id": "thread-sdk",
+        "messages": [
+            {
+                "id": "sdk-message",
+                "threadId": "thread-sdk",
+                "labelIds": ["SENT"],
+                "payload": {
+                    "headers": [
+                        {"name": "FROM", "value": "me@example.com"},
+                        {"name": "To", "value": "recipient@example.com"},
+                    ],
+                    "body": {},
+                },
+            }
+        ],
+    }
+    request = MagicMock()
+    request.execute.return_value = thread
+    service = MagicMock()
+    threads = service.users.return_value.threads.return_value
+    threads.get.return_value = request
+    api_module._gws_binary = lambda: None
+    api_module.build_service = MagicMock(return_value=service)
+    args = api_module.argparse.Namespace(
+        thread_id="thread-sdk",
+        func=api_module.gmail_thread,
+    )
+
+    api_module.gmail_thread(args)
+
+    api_module.build_service.assert_called_once_with("gmail", "v1")
+    threads.get.assert_called_once_with(
+        userId="me",
+        id="thread-sdk",
+        format="full",
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "id": "thread-sdk",
+        "messages": [
+            {
+                "id": "sdk-message",
+                "threadId": "thread-sdk",
+                "from": "me@example.com",
+                "to": "recipient@example.com",
+                "subject": "",
+                "date": "",
+                "labels": ["SENT"],
+                "body": "",
+            }
+        ],
+    }
+
+
+def test_api_gmail_thread_is_registered_in_cli_parser(api_module, monkeypatch):
+    called = {}
+
+    def fake_gmail_thread(args):
+        called["thread_id"] = args.thread_id
+
+    monkeypatch.setattr(api_module, "gmail_thread", fake_gmail_thread)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["google_api.py", "gmail", "thread", "thread-cli"],
+    )
+
+    api_module.main()
+
+    assert called == {"thread_id": "thread-cli"}
+
+
 @pytest.mark.parametrize(
     "header_names",
     [

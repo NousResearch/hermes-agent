@@ -178,11 +178,7 @@ _MEMORY_REVIEW_PROMPT = (
     "If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
-_SKILL_REVIEW_PROMPT = (
-    "Review the conversation above and update the skill library. Be "
-    "ACTIVE — most sessions produce at least one skill update, even if "
-    "small. A pass that does nothing is a missed learning opportunity, "
-    "not a neutral outcome.\n\n"
+_READ_BEFORE_WRITE_HANDSHAKE = (
     "READ-BEFORE-WRITE HANDSHAKE (load the target before patching — #62397):\n"
     "  Every background-review write goes through a guard that refuses the\n"
     "  mutation when the exact target file wasn't loaded via skill_view in\n"
@@ -206,7 +202,15 @@ _SKILL_REVIEW_PROMPT = (
     "      without a read.\n"
     "  Skipping this handshake is the #1 cause of \"the background review\n"
     "  ran but nothing got patched\" — don't skip it.\n\n"
-    "Target shape of the library: CLASS-LEVEL skills, each with a rich "
+)
+
+_SKILL_REVIEW_PROMPT = (
+    "Review the conversation above and update the skill library. Be "
+    "ACTIVE — most sessions produce at least one skill update, even if "
+    "small. A pass that does nothing is a missed learning opportunity, "
+    "not a neutral outcome.\n\n"
+    + _READ_BEFORE_WRITE_HANDSHAKE
+    + "Target shape of the library: CLASS-LEVEL skills, each with a rich "
     "SKILL.md and a `references/` directory for session-specific detail. "
     "Not a long flat list of narrow one-session-one-skill entries. This "
     "shapes HOW you update, not WHETHER you update.\n\n"
@@ -231,8 +235,10 @@ _SKILL_REVIEW_PROMPT = (
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the "
     "conversation for skills the user loaded via /skill-name or you "
     "read via skill_view. If any of them covers the territory of the "
-    "new learning, PATCH that one first. It is the skill that was in "
-    "play, so it's the right one to extend.\n"
+    "new learning, PATCH that one first (after re-loading it with "
+    "skill_view in this turn — see the read-before-write handshake "
+    "above). It is the skill that was in play, so it's the right one "
+    "to extend.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). "
     "If no loaded skill fits but an existing class-level skill does, "
     "patch it. Add a subsection, a pitfall, or broaden a trigger.\n"
@@ -315,7 +321,8 @@ _COMBINED_REVIEW_PROMPT = (
     "**Skills**: how to do this class of task. Be ACTIVE — most "
     "sessions produce at least one skill update. A pass that does "
     "nothing is a missed learning opportunity, not a neutral outcome.\n\n"
-    "Target shape of the skill library: CLASS-LEVEL skills with a rich "
+    + _READ_BEFORE_WRITE_HANDSHAKE
+    + "Target shape of the skill library: CLASS-LEVEL skills with a rich "
     "SKILL.md and a `references/` directory for session-specific detail. "
     "Not a long flat list of narrow one-session-one-skill entries.\n\n"
     "Signals that warrant a skill update (any one is enough):\n"
@@ -331,8 +338,9 @@ _COMBINED_REVIEW_PROMPT = (
     "Preference order for skills — pick the earliest that fits:\n"
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were "
     "loaded via /skill-name or skill_view in the conversation. If one "
-    "of them covers the learning, PATCH it first. It was in play; "
-    "it's the right place.\n"
+    "of them covers the learning, PATCH it first (after re-loading "
+    "it with skill_view in this turn — see the read-before-write "
+    "handshake above). It was in play; it's the right place.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (skills_list + skill_view to "
     "find the right one). Patch it.\n"
     "  3. ADD A SUPPORT FILE under an existing umbrella via "

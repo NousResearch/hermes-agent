@@ -308,7 +308,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return False
 
 
-# ── Disabled skills ───────────────────────────────────────────────────────
+# ── Skill visibility ──────────────────────────────────────────────────────
 
 
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
@@ -354,19 +354,15 @@ def _load_raw_config() -> Dict[str, Any]:
     return parsed
 
 
-def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
-    """Read disabled skill names from config.yaml.
+def _get_configured_skill_names(key: str, platform: str | None = None) -> Set[str]:
+    """Read one global/per-platform skill-name set from config.yaml.
 
-    Args:
-        platform: Explicit platform name (e.g. ``"telegram"``).  When
-            *None*, resolves from ``HERMES_PLATFORM`` or
-            ``HERMES_SESSION_PLATFORM`` env vars.  Returns the global
-            disabled list, unioned with the platform-specific list when a
-            platform is resolved (a globally-disabled skill stays disabled
-            on every platform).
+    ``key=hidden`` removes skills from offer surfaces while keeping explicit
+    ``skill_view`` and bundle loads available. ``key=disabled`` blocks both.
 
-    Reads the config file directly (no CLI config imports) to stay
-    lightweight.
+    Global values are unioned with the platform-specific list when a platform
+    is resolved, so a globally hidden or disabled skill stays that way on
+    every platform. The config is read through the shared lightweight cache.
     """
     parsed = _load_raw_config()
     if not parsed:
@@ -382,14 +378,24 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         or os.getenv("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
     )
-    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
+    global_values = _normalize_string_set(skills_cfg.get(key))
     if resolved_platform:
-        platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
+        platform_values = (skills_cfg.get(f"platform_{key}") or {}).get(
             resolved_platform
         )
-        if platform_disabled is not None:
-            return global_disabled | _normalize_string_set(platform_disabled)
-    return global_disabled
+        if platform_values is not None:
+            return global_values | _normalize_string_set(platform_values)
+    return global_values
+
+
+def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
+    """Return skills blocked from both discovery and explicit loading."""
+    return _get_configured_skill_names("disabled", platform)
+
+
+def get_hidden_skill_names(platform: str | None = None) -> Set[str]:
+    """Return skills hidden from discovery but available to explicit loading."""
+    return _get_configured_skill_names("hidden", platform)
 
 
 def _normalize_string_set(values) -> Set[str]:

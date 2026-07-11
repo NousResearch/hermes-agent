@@ -184,6 +184,26 @@ class TestResolveBundleCommandKey:
 
 
 class TestBuildBundleInvocationMessage:
+    def test_hidden_skill_is_bundle_only_but_loadable(self, bundles_env, monkeypatch, tmp_path):
+        bundles_dir, skills_dir = bundles_env
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("skills:\n  hidden: [manual]\n")
+        _make_skill(skills_dir, "manual", body="Manual workflow body.")
+        _make_bundle_yaml(bundles_dir, "manual", ["manual/SKILL"])
+        scan_bundles()
+
+        from agent.prompt_builder import build_skills_system_prompt
+        from agent.skill_commands import scan_skill_commands
+
+        assert "/manual" not in scan_skill_commands()
+        assert "manual" not in build_skills_system_prompt()
+        result = build_bundle_invocation_message("/manual")
+        assert result is not None
+        message, loaded, missing = result
+        assert "Manual workflow body." in message
+        assert loaded == ["manual"]
+        assert missing == []
+
     def test_loads_all_skills(self, bundles_env):
         bundles_dir, skills_dir = bundles_env
         _make_skill(skills_dir, "skill-a", body="Skill A content.")

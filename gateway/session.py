@@ -482,15 +482,20 @@ def build_session_context_prompt(
             f"**Session type:** {session_label} — messages are prefixed "
             "with [sender name]. Multiple users may participate."
         )
-    elif context.source.user_name:
-        lines.append(
-            f"**User:** {_format_untrusted_prompt_value(context.source.user_name)}"
-        )
-    elif context.source.user_id:
-        uid = context.source.user_id
-        if redact_pii:
-            uid = _hash_sender_id(uid)
-        lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+    else:
+        # Show display name AND the stable sender ID when both are available.
+        # Identity-sensitive lanes (audit, per-user routing) need the stable
+        # ID, not just a mutable display name; previously the elif chain
+        # dropped the ID whenever a name was present.
+        if context.source.user_name:
+            lines.append(
+                f"**User:** {_format_untrusted_prompt_value(context.source.user_name)}"
+            )
+        if context.source.user_id:
+            uid = context.source.user_id
+            if redact_pii:
+                uid = _hash_sender_id(uid)
+            lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

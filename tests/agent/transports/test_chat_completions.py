@@ -30,6 +30,19 @@ class TestChatCompletionsBasic:
         result = transport.convert_messages(msgs)
         assert result is msgs  # no copy needed
 
+    def test_convert_messages_strips_internal_effect_disposition(self, transport):
+        msgs = [{
+            "role": "tool",
+            "content": "uncertain",
+            "tool_call_id": "c1",
+            "effect_disposition": "unknown",
+        }]
+
+        result = transport.convert_messages(msgs)
+
+        assert "effect_disposition" not in result[0]
+        assert msgs[0]["effect_disposition"] == "unknown"
+
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],

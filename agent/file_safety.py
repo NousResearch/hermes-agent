@@ -118,6 +118,17 @@ def _classify_write_denial(path: str) -> Optional[str]:
             continue
 
     for base_real in hermes_dirs:
+        # Session transcripts are application-owned state.  Letting the agent's
+        # generic file tools rewrite state.db or legacy JSON snapshots can
+        # falsify conversation history and invalidate resume/compression state.
+        try:
+            if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
+                return True
+            sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
+            if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
+                return True
+        except Exception:
+            pass
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):

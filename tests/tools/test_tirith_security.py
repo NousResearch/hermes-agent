@@ -626,41 +626,55 @@ class TestCosignVerification:
         assert path is None
         assert reason == "cosign_verification_failed"
 
+    @patch("tools.tirith_security.tarfile.open")
     @patch("tools.tirith_security._verify_checksum", return_value=True)
     @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._download_file")
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_aborts_without_cosign(self, mock_target, mock_dl,
-                                            mock_which, mock_checksum):
+    def test_install_proceeds_without_cosign(self, mock_target, mock_dl,
+                                              mock_which, mock_checksum,
+                                              mock_tarfile):
         from tools.tirith_security import _install_tirith
+        mock_tar = MagicMock()
+        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
+        mock_tar.__exit__ = MagicMock(return_value=False)
+        mock_tar.getmembers.return_value = []
+        mock_tarfile.return_value = mock_tar
 
         path, reason = _install_tirith()
         assert path is None
-        assert reason == "cosign_missing"
-        mock_checksum.assert_not_called()
+        assert reason == "binary_not_in_archive"
+        assert mock_checksum.called
 
+    @patch("tools.tirith_security.tarfile.open")
     @patch("tools.tirith_security._verify_checksum", return_value=True)
     @patch("tools.tirith_security._verify_cosign", return_value=None)
     @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
     @patch("tools.tirith_security._download_file")
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_aborts_when_cosign_exec_fails(self, mock_target, mock_dl,
-                                                     mock_which, mock_cosign,
-                                                     mock_checksum):
+    def test_install_proceeds_when_cosign_exec_fails(self, mock_target, mock_dl,
+                                                       mock_which, mock_cosign,
+                                                       mock_checksum, mock_tarfile):
         from tools.tirith_security import _install_tirith
+        mock_tar = MagicMock()
+        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
+        mock_tar.__exit__ = MagicMock(return_value=False)
+        mock_tar.getmembers.return_value = []
+        mock_tarfile.return_value = mock_tar
 
         path, reason = _install_tirith()
         assert path is None
-        assert reason == "cosign_exec_failed"
-        mock_checksum.assert_not_called()
+        assert reason == "binary_not_in_archive"
+        assert mock_checksum.called
 
+    @patch("tools.tirith_security.tarfile.open")
     @patch("tools.tirith_security._verify_checksum", return_value=True)
     @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
     @patch("tools.tirith_security._download_file")
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
-    def test_install_aborts_when_cosign_artifacts_missing(self, mock_target,
-                                                            mock_dl, mock_which,
-                                                            mock_checksum):
+    def test_install_proceeds_when_cosign_artifacts_missing(self, mock_target,
+                                                              mock_dl, mock_which,
+                                                              mock_checksum, mock_tarfile):
         from tools.tirith_security import _install_tirith
         import urllib.request
 
@@ -669,10 +683,16 @@ class TestCosignVerification:
                 raise urllib.request.URLError("404 Not Found")
 
         mock_dl.side_effect = _dl_side_effect
+        mock_tar = MagicMock()
+        mock_tar.__enter__ = MagicMock(return_value=mock_tar)
+        mock_tar.__exit__ = MagicMock(return_value=False)
+        mock_tar.getmembers.return_value = []
+        mock_tarfile.return_value = mock_tar
+
         path, reason = _install_tirith()
         assert path is None
-        assert reason == "cosign_artifacts_unavailable"
-        mock_checksum.assert_not_called()
+        assert reason == "binary_not_in_archive"
+        assert mock_checksum.called
 
     @patch("tools.tirith_security.tarfile.open")
     @patch("tools.tirith_security._verify_checksum", return_value=True)
@@ -725,23 +745,18 @@ class TestInstallArchiveMemberValidation:
                 with open(checksums, "rb") as src, open(dest, "wb") as dst:
                     dst.write(src.read())
                 return
-            if url.endswith(".sig") or url.endswith(".pem"):
-                with open(dest, "wb") as dst:
-                    dst.write(b"verified-by-mock")
-                return
             raise AssertionError(f"unexpected download URL: {url}")
 
         return _download
 
     @patch("tools.tirith_security._verify_checksum", return_value=True)
-    @patch("tools.tirith_security._verify_cosign", return_value=True)
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
+    @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
     def test_install_extracts_regular_tirith_member(self, mock_target, mock_which,
-                                                    mock_cosign, mock_checksum,
+                                                    mock_checksum,
                                                     tmp_path, monkeypatch):
         """A valid regular-file tirith member is installed as a plain file."""
-        del mock_target, mock_which, mock_cosign, mock_checksum
+        del mock_target, mock_which, mock_checksum
         from tools.tirith_security import _install_tirith
 
         payload = b"#!/bin/sh\nexit 0\n"
@@ -764,14 +779,13 @@ class TestInstallArchiveMemberValidation:
             assert f.read() == payload
 
     @patch("tools.tirith_security._verify_checksum", return_value=True)
-    @patch("tools.tirith_security._verify_cosign", return_value=True)
-    @patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign")
+    @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
     def test_install_rejects_non_regular_tirith_member(self, mock_target, mock_which,
-                                                       mock_cosign, mock_checksum,
+                                                       mock_checksum,
                                                        tmp_path, monkeypatch):
         """Symlink or hardlink tar members must not be installed as tirith."""
-        del mock_target, mock_which, mock_cosign, mock_checksum
+        del mock_target, mock_which, mock_checksum
         from tools.tirith_security import _install_tirith
 
         member = tarfile.TarInfo("bin/tirith")

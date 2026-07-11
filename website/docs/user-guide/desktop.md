@@ -32,6 +32,12 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+### Standalone remote client
+
+Linux also has a remote-only AppImage and Flatpak build. It contains the Electron app only and neither installs nor launches Python or a local Hermes Agent checkout. On first launch, connect to Hermes Cloud or an existing `hermes serve` instance. Its app ID and user-data directory are separate from the full desktop app, so both variants can be installed together.
+
+The Flatpak intentionally has no blanket home-directory permission. Agent workspace data and tool calls come from the connected Hermes host. The embedded desktop terminal remains client-local; inside Flatpak it is limited to the sandbox and desktop portals.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -147,9 +153,11 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `--ignore-existing` / `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix. The React renderer talks to a headless backend the app launches for you — a `hermes serve` process that serves the `tui_gateway` JSON-RPC/WebSocket API — and reuses the agent runtime rather than embedding `hermes --tui`. The desktop app is **self-contained**: it runs its own `hermes serve` backend and never opens or requires the [web dashboard](./features/web-dashboard.md). (Runtimes older than the `serve` command fall back to a headless `dashboard --no-open` automatically, so an app update never outruns its backend.) Install, backend-resolution, and self-update logic live in the Electron main process.
 
+The standalone remote flavor uses the same renderer and remote transport, but bakes a remote-only capability into the Electron bundle. Local connection saves and local backend spawning are rejected in the main process, the Python bootstrap install stamp is omitted, and first launch waits for remote connection setup instead of probing or installing a runtime.
+
 ## Connecting to a remote backend
 
-By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
+By default the full app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale. The standalone remote client opens this connection setup automatically and does not offer Local mode.
 
 :::info The remote backend is a running `hermes serve` process
 "Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.
@@ -222,7 +230,7 @@ For the same setup from the web-dashboard angle, see [Web Dashboard → Connecti
 
 ## Troubleshooting
 
-Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure. You can also tail it from the CLI:
+Full-app boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and recent Python tracebacks). Standalone-client logs live in the Hermes Remote user-data directory and can be opened from **Settings → Gateway → Open logs**. For a full local install you can also tail the log from the CLI:
 
 ```bash
 hermes logs gui -f
@@ -285,8 +293,13 @@ Build installers:
 npm run dist:mac     # DMG + zip
 npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
+npm run dist:remote:linux    # standalone AppImage + Flatpak
+npm run dist:remote:appimage # standalone AppImage only
+npm run dist:remote:flatpak  # standalone Flatpak only
 npm run pack         # unpacked app under release/ (no installer)
 ```
+
+Standalone artifacts are written to `apps/desktop/release/remote/`. Flatpak builds require `flatpak`, `flatpak-builder`, and the Freedesktop 24.08 Platform and SDK runtimes on the build host.
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 

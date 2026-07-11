@@ -53,6 +53,7 @@ export function AboutSettings() {
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const [justChecked, setJustChecked] = useState(false)
+  const [remoteOnly, setRemoteOnly] = useState<boolean | null>(null)
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -60,6 +61,10 @@ export function AboutSettings() {
   // reflects the running build.
   useEffect(() => {
     void refreshDesktopVersion()
+    void window.hermesDesktop
+      ?.getDesktopCapabilities?.()
+      .then(capabilities => setRemoteOnly(capabilities.remoteOnly))
+      .catch(() => undefined)
   }, [])
 
   const behind = status?.behind ?? 0
@@ -176,7 +181,7 @@ export function AboutSettings() {
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {remoteOnly === false ? <UninstallSection /> : null}
       </div>
     </SettingsContent>
   )

@@ -27,6 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    MAX_PREVIOUS_RESPONSE_ID_LENGTH,
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
@@ -4249,3 +4250,38 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+class TestPreviousResponseIdHardening:
+    @pytest.mark.asyncio
+    async def test_previous_response_id_invalid_type_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": 123,
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "previous_response_id" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_too_long_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            too_long_id = "x" * (MAX_PREVIOUS_RESPONSE_ID_LENGTH + 1)
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": too_long_id,
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "too long" in data["error"]["message"].lower()

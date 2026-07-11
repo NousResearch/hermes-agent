@@ -215,7 +215,7 @@ def auth_add_command(args) -> None:
             priority=0,
             source=SOURCE_MANUAL,
             access_token=token,
-            base_url=_provider_base_url(provider),
+            base_url=(getattr(args, "base_url", None) or "").strip() or _provider_base_url(provider),
         )
         pool.add_entry(entry)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
@@ -434,6 +434,68 @@ def auth_add_command(args) -> None:
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
 
 
+def _short_endpoint(base_url: str, provider: str = "") -> str:
+    """Compact endpoint tag for auth list display.
+
+    Maps known multi-endpoint base URLs to short tags (coding, anthropic,
+    zai-cn, etc.). For single-endpoint providers where the URL matches the
+    PROVIDER_REGISTRY default, returns empty string (no noise). Falls back
+    to hostname for custom URLs.
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+
+    # ── Multi-endpoint providers (URL differs from registry default) ──
+    _MULTI_ENDPOINT_TAGS: Dict[str, str] = {
+        # Z.AI — 6 known endpoints
+        "https://api.z.ai/api/coding/paas/v4": "coding",
+        "https://open.bigmodel.cn/api/coding/paas/v4": "coding-cn",
+        "https://api.z.ai/api/paas/v4": "zai",
+        "https://open.bigmodel.cn/api/paas/v4": "zai-cn",
+        "https://api.z.ai/api/anthropic": "zai-anthropic",
+        "https://open.bigmodel.cn/api/anthropic": "zai-anthropic-cn",
+        # MiniMax — 2 regions
+        "https://api.minimax.io/anthropic": "minimax",
+        "https://api.minimaxi.com/anthropic": "minimax-cn",
+        # Kimi — 2 regions
+        "https://api.moonshot.ai/v1": "kimi",
+        "https://api.moonshot.cn/v1": "kimi-cn",
+        # Alibaba — standard + coding
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1": "alibaba",
+        "https://coding-intl.dashscope.aliyuncs.com/v1": "alibaba-coding",
+        # LM Studio — localhost variants
+        "http://127.0.0.1:1234/v1": "lmstudio",
+        "http://localhost:1234/v1": "lmstudio",
+        # Copilot ACP
+        "acp://copilot": "copilot-acp",
+    }
+
+    # Check multi-endpoint tags first
+    tag = _MULTI_ENDPOINT_TAGS.get(url)
+    if tag:
+        return tag
+
+    # If URL matches the provider's registry default, don't show it
+    if provider:
+        try:
+            pconfig = PROVIDER_REGISTRY.get(provider)
+            if pconfig and pconfig.inference_base_url:
+                default = pconfig.inference_base_url.rstrip("/")
+                if url == default:
+                    return ""
+        except Exception:
+            pass
+
+    # Custom URL — extract hostname
+    from urllib.parse import urlparse
+    hostname = urlparse(url).hostname or ""
+    if hostname:
+        hostname = hostname.replace("api.", "").replace("www.", "")
+        return hostname[:12] + "..." if len(hostname) > 12 else hostname
+    return url[:12] + "..." if len(url) > 12 else url
+
+
 def auth_list_command(args) -> None:
     provider_filter = _normalize_provider(getattr(args, "provider", "") or "")
     if provider_filter:
@@ -450,14 +512,20 @@ def auth_list_command(args) -> None:
         if not entries:
             continue
         current = pool.peek()
-        print(f"{provider} ({len(entries)} credentials):")
+        strategy = get_pool_strategy(provider)
+        header_strategy = f", strategy: {strategy}" if strategy else ""
+        print(f"{provider} ({len(entries)} credentials{header_strategy}):")
         for idx, entry in enumerate(entries, start=1):
             marker = "  "
             if current is not None and entry.id == current.id:
                 marker = "← "
             status = _format_exhausted_status(entry)
             source = _display_source(entry.source)
-            print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
+            ep = _short_endpoint(getattr(entry, "base_url", None) or "", provider=provider)
+            ep_str = f"  {ep}" if ep else ""
+            shown_label = entry.label[:12]
+            idx_str = f"#{idx:>2}"
+            print(f"  {idx_str}  {shown_label:<12} {entry.auth_type} {source}{ep_str}{status} {marker}".rstrip())
         print()
 
 

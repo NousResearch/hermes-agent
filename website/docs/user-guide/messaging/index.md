@@ -402,10 +402,21 @@ temporal reasoning ("you asked this morning…", noticing a long gap). It is
 **not** added to assistant messages or the system prompt.
 
 ```yaml
+message_timestamps:
+  enabled: true
+```
+
+This agent-wide setting applies consistently to CLI/TUI, Desktop, and gateway
+channels. Existing gateway-only configurations remain supported as a
+backward-compatible fallback:
+
+```yaml
 gateway:
   message_timestamps:
-    enabled: false   # set true to show send-times to the model
+    enabled: true
 ```
+
+When both spellings are present, the top-level setting is authoritative.
 
 Persisted transcripts always stay clean — the timestamp is stored as message
 metadata regardless of this toggle, so enabling it later also surfaces

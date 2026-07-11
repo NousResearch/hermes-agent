@@ -281,13 +281,19 @@ def test_installed_custom_opener_policy_is_preserved(monkeypatch):
     secured = _secure_opener_from_installed_policy(
         "foo://models.example.test/catalog"
     )
-    assert secured.addheaders == installed.addheaders
+    assert secured.addheaders == []
+    assert getattr(secured, "_hermes_initial_addheaders") == installed.addheaders
 
     request = urllib.request.Request(
         "foo://models.example.test/catalog", headers={"Authorization": "secret"}
     )
     with open_credentialed_url(request, timeout=3) as response:
         assert response.read() == b"custom"
+    request_headers = {
+        name.lower(): value for name, value in request.header_items()
+    }
+    assert request_headers["x-trace-policy"] == "installed"
+    assert request_headers["user-agent"] == "enterprise-client"
     assert opened == ["foo://models.example.test/catalog"]
 
 
@@ -311,6 +317,40 @@ def test_installed_proxy_handler_is_preserved(monkeypatch):
     assert getattr(proxy_handlers[0], "proxies", {}) == {
         "https": "http://proxy.example.test:8443"
     }
+
+
+def test_installed_request_processor_cannot_resurrect_cross_origin_secret(
+    monkeypatch,
+):
+    source = _server()
+    sink = _server()
+    _RecordingHandler.requests = []
+    _RecordingHandler.redirect_status = 302
+    _RecordingHandler.redirect_to = f"http://localhost:{sink.server_port}/sink"
+
+    class SecretProcessor(urllib.request.BaseHandler):
+        def http_request(self, request):
+            request.add_header("X-Installed-Secret", "must-not-cross")
+            return request
+
+    installed = urllib.request.build_opener(SecretProcessor())
+    installed.addheaders = [("X-Opener-Secret", "also-must-not-cross")]
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{source.server_port}/redirect",
+            headers={"Authorization": "Bearer secret"},
+        )
+        with open_credentialed_url(request, timeout=3) as response:
+            response.read()
+    finally:
+        source.shutdown()
+        sink.shutdown()
+
+    _, headers = _RecordingHandler.requests[-1]
+    assert "authorization" not in headers
+    assert "x-installed-secret" not in headers
+    assert "x-opener-secret" not in headers
 
 
 def test_multihop_redirects_never_resurrect_credentials():

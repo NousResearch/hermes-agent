@@ -113,7 +113,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     >
       <Tip
         label={
-          <span className="flex flex-col gap-0.5">
+          <span className="inline-flex flex-col gap-0.5">
             <span>{item.target}</span>
             <span className="opacity-70">{t.preview.linkHint}</span>
           </span>

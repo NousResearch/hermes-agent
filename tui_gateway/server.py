@@ -12224,13 +12224,26 @@ def _(rid, params: dict) -> dict:
                 if before_count
                 else 0
             )
-            removed, usage = _compress_session_history(
-                session,
-                arg.strip() or None,
-                approx_tokens=before_tokens,
-                before_messages=before_messages,
-                history_version=history_version,
-            )
+            if before_count >= 4:
+                _status_update(
+                    sid,
+                    "compressing",
+                    f"⠋ compressing {before_count} messages "
+                    f"(~{before_tokens:,} tok)…",
+                )
+            try:
+                removed, usage = _compress_session_history(
+                    session,
+                    arg.strip() or None,
+                    approx_tokens=before_tokens,
+                    before_messages=before_messages,
+                    history_version=history_version,
+                )
+            finally:
+                # Always clear the pinned compressing status so the bar
+                # reverts to neutral whether compaction succeeded, was a
+                # no-op, or raised — mirrors the session.compress RPC.
+                _status_update(sid, "ready")
             with session["history_lock"]:
                 after_messages = list(session.get("history", []))
             after_count = len(after_messages)
@@ -13006,7 +13019,20 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
                 else 0
             )
 
-            _compress_session_history(session, arg)
+            if _before_count >= 4:
+                _status_update(
+                    sid,
+                    "compressing",
+                    f"⠋ compressing {_before_count} messages "
+                    f"(~{_before_tokens:,} tok)…",
+                )
+            try:
+                _compress_session_history(session, arg)
+            finally:
+                # Always clear the pinned compressing status so the bar
+                # reverts to neutral whether compaction succeeded, was a
+                # no-op, or raised — mirrors the session.compress RPC.
+                _status_update(sid, "ready")
             _sync_session_key_after_compress(sid, session)
 
             with session["history_lock"]:

@@ -531,3 +531,42 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     # Assistant tool_calls stubs (content=None) must survive too, or the
     # tool message would dangle without its call.
     assert any(m.get("tool_calls") for m in passed), "assistant tool_calls stub dropped"
+
+
+@pytest.mark.asyncio
+async def test_compress_command_emits_in_progress_status():
+    """/compress must surface an in-progress status BEFORE the blocking
+    summary LLM call, so the user sees compression is running instead of the
+    command appearing to 'do nothing' until it returns.
+
+    Regression guard: previously the gateway /compress path went straight into
+    ``run_in_executor(_compress_context)`` with no status, so on a slow
+    summariser the user got silence for the whole call.
+    """
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    # A "Compressing context" status was emitted before the summary call ran.
+    assert agent_instance._emit_status.called
+    _status_texts = [c.args[0] for c in agent_instance._emit_status.call_args_list]
+    assert any("Compressing context" in t for t in _status_texts), (
+        f"expected an in-progress 'Compressing context' status, got: {_status_texts}"
+    )
+    # The compression call itself still happened.
+    agent_instance._compress_context.assert_called_once()

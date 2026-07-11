@@ -3231,6 +3231,12 @@ class GatewaySlashCommandsMixin:
                     return t("gateway.compress.nothing_to_do")
 
                 loop = asyncio.get_running_loop()
+                # Surface an in-progress indicator so the user sees compression
+                # is running (it's a blocking LLM summary call) instead of the
+                # command appearing to "do nothing" until it returns.
+                tmp_agent._emit_status(
+                    f"📦 Compressing context (~{approx_tokens:,} tokens)…"
+                )
                 compressed, _ = await loop.run_in_executor(
                     None,
                     lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)

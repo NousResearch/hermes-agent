@@ -152,7 +152,7 @@ class FactRetriever:
                 )
 
         # Score against individual fact vectors directly
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND length(hrr_vector) > 0"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -212,7 +212,7 @@ class FactRetriever:
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
 
         # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND length(hrr_vector) > 0"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -291,7 +291,7 @@ class FactRetriever:
             entity_residuals.append(probe_key)
 
         # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND length(hrr_vector) > 0"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -356,7 +356,7 @@ class FactRetriever:
         conn = self.store._conn
 
         # Get all facts with vectors and their linked entities
-        where = "WHERE f.hrr_vector IS NOT NULL"
+        where = "WHERE f.hrr_vector IS NOT NULL AND length(f.hrr_vector) > 0"
         params: list = []
         if category:
             where += " AND f.category = ?"
@@ -450,7 +450,7 @@ class FactRetriever:
         """Score facts by similarity to a target vector."""
         conn = self.store._conn
 
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND length(hrr_vector) > 0"
         params: list = []
         if category:
             where += " AND category = ?"

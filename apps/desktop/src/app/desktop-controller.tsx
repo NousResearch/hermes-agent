@@ -57,11 +57,13 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  coerceApprovalMode,
   CRON_SECTION_LIMIT,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   sessionPinId,
+  setApprovalMode,
   setAwaitingResponse,
   setBusy,
   setCronSessions,
@@ -844,13 +846,19 @@ export function DesktopController() {
       void refreshCurrentModel()
       void refreshActiveProfile()
       void refreshSessions().catch(() => undefined)
+      // Seed the composer's approval tier from the persisted global
+      // approvals.mode so a fresh draft (before any session.info arrives) shows
+      // the real tier instead of the default. session.info keeps it live after.
+      void requestGateway<{ value?: string }>('config.get', { key: 'approvals.mode' })
+        .then(result => setApprovalMode(coerceApprovalMode(result?.value)))
+        .catch(() => undefined)
       // Platform client-config: applied by the MAIN process pre-gateway via
       // config.yaml line surgery (main.cjs applyClientConfigToRuntime). The
       // old renderer apply — a full /api/config round-trip — was retired: the
       // dashboard GET drops schema-external keys (custom_providers/skills), so
       // PUT-ing it back wiped them.
     }
-  }, [gatewayState, refreshCurrentModel, refreshSessions])
+  }, [gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the

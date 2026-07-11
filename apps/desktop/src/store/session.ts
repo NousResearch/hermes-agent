@@ -262,6 +262,15 @@ export const $currentFastMode = atom(false)
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
 export const $yoloActive = atom(false)
+// Global three-value approvals.mode (manual/smart/off) mirrored from
+// session.info / config.get (hc-514). The composer pill WRITES only the two
+// gating values (manual/smart) here; its "full access" tier arms the
+// session-scoped yolo override instead and never persists a global "off" —
+// "off" appears only when a legacy config already carries it. The runtime has
+// no per-session form of this (only the binary $yoloActive override), so it is
+// a single global value, not per-session cached state.
+export type ApprovalRuntimeMode = 'manual' | 'off' | 'smart'
+export const $approvalMode = atom<ApprovalRuntimeMode>('manual')
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -346,6 +355,14 @@ export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($curr
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
+
+export const setApprovalMode = (next: Updater<ApprovalRuntimeMode>) => updateAtom($approvalMode, next)
+
+/** Narrow an arbitrary gateway value to a known approval mode. Unknown / legacy
+ *  values (including a bare `yolo=1` echo the runtime normalizes to `off`) fall
+ *  back to the safe gating default rather than a mode the pill can't render. */
+export const coerceApprovalMode = (value: unknown): ApprovalRuntimeMode =>
+  value === 'off' || value === 'smart' ? value : 'manual'
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)

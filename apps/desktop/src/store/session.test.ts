@@ -9,6 +9,7 @@ import {
   $currentCwd,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  coerceApprovalMode,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
@@ -62,6 +63,22 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
+  })
+})
+
+describe('coerceApprovalMode', () => {
+  it('passes through the two non-default runtime modes', () => {
+    expect(coerceApprovalMode('smart')).toBe('smart')
+    expect(coerceApprovalMode('off')).toBe('off')
+  })
+
+  it('maps the manual mode and every unknown/legacy value to the safe gating default', () => {
+    // manual is the explicit default; a legacy binary yolo echo, a stray casing,
+    // an empty string, or a nullish value must never leave the pill in a mode it
+    // cannot render — they all collapse to gating.
+    for (const value of ['manual', '1', 'yolo', 'Manual', '', null, undefined, 0, false]) {
+      expect(coerceApprovalMode(value)).toBe('manual')
+    }
   })
 })
 

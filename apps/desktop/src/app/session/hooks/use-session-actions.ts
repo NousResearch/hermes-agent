@@ -22,8 +22,10 @@ import {
   $messages,
   $sessions,
   $yoloActive,
+  coerceApprovalMode,
   sessionPinId,
   setActiveSessionId,
+  setApprovalMode,
   setAwaitingResponse,
   setBusy,
   setCurrentBranch,
@@ -353,6 +355,11 @@ function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeS
   if (typeof info.yolo === 'boolean') {
     setYoloActive(info.yolo)
     sessionState.yolo = info.yolo
+  }
+
+  // Global (not per-session) — reflect but don't cache into sessionState.
+  if (typeof info.approval_mode === 'string') {
+    setApprovalMode(coerceApprovalMode(info.approval_mode))
   }
 
   if (info.usage) {

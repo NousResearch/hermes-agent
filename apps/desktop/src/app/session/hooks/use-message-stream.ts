@@ -38,6 +38,8 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  coerceApprovalMode,
+  setApprovalMode,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -782,6 +784,10 @@ export function useMessageStream({
 
           if (typeof payload?.yolo === 'boolean') {
             setYoloActive(payload.yolo)
+          }
+
+          if (typeof payload?.approval_mode === 'string') {
+            setApprovalMode(coerceApprovalMode(payload.approval_mode))
           }
         }
 

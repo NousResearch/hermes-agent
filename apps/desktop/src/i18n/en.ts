@@ -1437,7 +1437,8 @@ export const en: Translations = {
     message: 'Message',
     approvalMode: {
       label: 'Approvals',
-      review: { label: 'Approve for me', desc: 'Only ask for detected risky operations' },
+      manual: { label: 'Manual', desc: 'Ask only before an operation flagged as dangerous' },
+      smart: { label: 'Smart', desc: 'AI weighs the risk, then asks when needed' },
       full: { label: 'Full access', desc: 'Unrestricted access to the internet and any file on your computer' }
     },
     wakingProfile: profile => `Waking up ${profile}…`,

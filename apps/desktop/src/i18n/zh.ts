@@ -1610,7 +1610,8 @@ export const zh: Translations = {
     message: '消息',
     approvalMode: {
       label: '审批',
-      review: { label: '替我审批', desc: '仅对检测到的风险操作请求批准' },
+      manual: { label: '手动审批', desc: '仅在检测到危险操作时请求批准' },
+      smart: { label: '智能审批', desc: 'AI 评估风险后再请求批准' },
       full: { label: '完全访问', desc: '可不受限制地访问互联网和你电脑上的任何文件' }
     },
     wakingProfile: profile => `正在唤醒 ${profile}…`,

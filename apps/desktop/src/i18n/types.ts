@@ -1156,7 +1156,8 @@ export interface Translations {
     message: string
     approvalMode: {
       label: string
-      review: { label: string; desc: string }
+      manual: { label: string; desc: string }
+      smart: { label: string; desc: string }
       full: { label: string; desc: string }
     }
     wakingProfile: (profile: string) => string

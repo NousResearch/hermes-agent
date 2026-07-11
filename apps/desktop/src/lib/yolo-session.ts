@@ -1,4 +1,4 @@
-import { setYoloActive } from '@/store/session'
+import { type ApprovalRuntimeMode, coerceApprovalMode, setApprovalMode, setYoloActive } from '@/store/session'
 
 export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
@@ -47,4 +47,32 @@ export async function setGlobalYolo(
   setYoloActive(active)
 
   return active
+}
+
+/**
+ * Persist a GLOBAL gating approvals.mode via gateway `config.set` — the two
+ * restrictive tiers of the composer's approval pill (hc-514):
+ *   manual → gate only detected-dangerous commands
+ *   smart  → LLM risk judge decides when to ask
+ * Persistent and global (approvals.mode has no per-session form), so it also
+ * changes the CLI / TUI / cron default. `off` is deliberately NOT accepted
+ * here: the desktop must never persist an unrestricted global default — the
+ * pill's "full access" tier arms the session-scoped `setSessionYolo` override
+ * instead (temporary, dies with the session). The narrowed parameter type is
+ * the static guarantee.
+ */
+export async function applyApprovalMode(
+  requestGateway: GatewayRequester,
+  mode: Exclude<ApprovalRuntimeMode, 'off'>
+): Promise<ApprovalRuntimeMode> {
+  const result = await requestGateway<{ value?: string }>('config.set', {
+    key: 'approvals.mode',
+    value: mode
+  })
+
+  const next = coerceApprovalMode(result?.value)
+
+  setApprovalMode(next)
+
+  return next
 }

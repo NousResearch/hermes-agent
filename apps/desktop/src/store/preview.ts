@@ -312,9 +312,9 @@ function migrateWebPreviewTab(tab: WebPreviewTab): WebPreviewTab {
   return isOpaquePreviewTabId(tab.id, 'preview') ? tab : { ...tab, id: webPreviewTabId(tab.target) }
 }
 
-function isPersistableWebPreviewTab(tab: WebPreviewTab): boolean {
+function isPersistableWebPreviewTarget(target: PreviewTarget): boolean {
   try {
-    const url = new URL(tab.target.url)
+    const url = new URL(target.url)
 
     // Credential-bearing and stateful URLs remain usable for this process but
     // are deliberately omitted from localStorage.
@@ -322,6 +322,10 @@ function isPersistableWebPreviewTab(tab: WebPreviewTab): boolean {
   } catch {
     return false
   }
+}
+
+function isPersistableWebPreviewTab(tab: WebPreviewTab): boolean {
+  return isPersistableWebPreviewTarget(tab.target)
 }
 
 function isPersistableLayoutTabId(tabId: string): boolean {
@@ -360,6 +364,21 @@ const SURFACE_PLACEMENTS: readonly PreviewSurfacePlacement[] = [
   'bottom-right-quarter'
 ]
 
+function isPreviewSurfaceRestore(value: unknown): value is PreviewSurfaceRestore {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const r = value as Record<string, unknown>
+
+  return (
+    SURFACE_PLACEMENTS.includes(r.placement as PreviewSurfacePlacement) &&
+    r.placement !== 'maximized' &&
+    r.placement !== 'minimized' &&
+    (r.geometry === undefined || isFloatingGeometry(r.geometry))
+  )
+}
+
 function isPreviewSurfaceLayout(value: unknown): value is PreviewSurfaceLayout {
   if (!value || typeof value !== 'object') {
     return false
@@ -369,7 +388,8 @@ function isPreviewSurfaceLayout(value: unknown): value is PreviewSurfaceLayout {
 
   return (
     SURFACE_PLACEMENTS.includes(r.placement as PreviewSurfacePlacement) &&
-    (r.geometry === undefined || isFloatingGeometry(r.geometry))
+    (r.geometry === undefined || isFloatingGeometry(r.geometry)) &&
+    (r.restore === undefined || isPreviewSurfaceRestore(r.restore))
   )
 }
 
@@ -416,7 +436,10 @@ function loadSessionPreviewRegistry(): SessionPreviewRegistry {
         continue
       }
 
-      const valid = records.filter(isPreviewRecord).slice(0, MAX_RECORDS_PER_SESSION)
+      const valid = records
+        .filter(isPreviewRecord)
+        .filter(record => record.normalized.kind !== 'url' || isPersistableWebPreviewTarget(record.normalized))
+        .slice(0, MAX_RECORDS_PER_SESSION)
 
       if (valid.length > 0) {
         out[sessionId] = valid
@@ -482,7 +505,7 @@ export function registerSessionPreview(
 ): SessionPreviewRecord | null {
   const id = sessionId?.trim()
 
-  if (!id) {
+  if (!id || (target.kind === 'url' && !isPersistableWebPreviewTarget(target))) {
     return null
   }
 
@@ -575,11 +598,14 @@ function previewTabIds(): RightRailTabId[] {
   return ids
 }
 
-function activateAvailableTab(excluding?: RightRailTabId) {
-  const next = previewTabIds().find(id => id !== excluding && previewSurfacePlacementForTab(id) !== 'minimized')
+function activateAvailableTab(excluding?: RightRailTabId, preserveExcluded = false) {
+  const candidates = previewTabIds().filter(id => id !== excluding)
+  const next = candidates.find(id => previewSurfacePlacementForTab(id) !== 'minimized') ?? candidates[0]
 
   if (next) {
     selectRightRailTab(next)
+  } else if (!preserveExcluded) {
+    selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
   }
 }
 
@@ -659,7 +685,7 @@ export function minimizeRightRailTab(tabId: RightRailTabId) {
   })
 
   if ($rightRailActiveTabId.get() === tabId) {
-    activateAvailableTab(tabId)
+    activateAvailableTab(tabId, true)
   }
 }
 
@@ -730,6 +756,29 @@ export function dismissSessionPreview(sessionId: string | null | undefined, url?
   })
 }
 
+function dismissSessionPreviewsForUrl(url: string) {
+  const current = $sessionPreviewRegistry.get()
+  const now = Date.now()
+  let changed = false
+  const next: SessionPreviewRegistry = {}
+
+  for (const [sessionId, records] of Object.entries(current)) {
+    next[sessionId] = records.map(record => {
+      if (record.normalized.url !== url || record.dismissedAt || record.autoOpen === false) {
+        return record
+      }
+
+      changed = true
+
+      return { ...record, autoOpen: false, dismissedAt: now }
+    })
+  }
+
+  if (changed) {
+    $sessionPreviewRegistry.set(next)
+  }
+}
+
 /** User clicked the close X — clear the target and persist dismissal for the current session. */
 export function dismissPreviewTarget() {
   const current = $previewTarget.get()
@@ -754,11 +803,13 @@ function closeWebPreviewTab(tabId: RightRailTabId) {
   }
 
   const current = $webPreviewTabs.get()
+  const closing = current.find(tab => tab.id === tabId)
 
-  if (!current.some(tab => tab.id === tabId)) {
+  if (!closing) {
     return
   }
 
+  dismissSessionPreviewsForUrl(closing.target.url)
   $webPreviewTabs.set(current.filter(tab => tab.id !== tabId))
   removeRightRailTabLayout(tabId)
 

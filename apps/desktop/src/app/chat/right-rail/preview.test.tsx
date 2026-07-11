@@ -9,7 +9,8 @@ import {
   detachRightRailTab,
   minimizeRightRailTab,
   type PreviewTarget,
-  setCurrentSessionPreviewTarget
+  setCurrentSessionPreviewTarget,
+  snapRightRailTab
 } from '@/store/preview'
 import { $activeSessionId } from '@/store/session'
 
@@ -18,6 +19,9 @@ import { ChatPreviewRail } from './preview'
 vi.mock('./preview-pane', () => ({
   PreviewPane: ({ target }: { target: PreviewTarget }) => <div data-testid="preview-pane">{target.label}</div>
 }))
+
+const ORIGINAL_INNER_HEIGHT = window.innerHeight
+const ORIGINAL_INNER_WIDTH = window.innerWidth
 
 function fileTarget(path: string): PreviewTarget {
   return {
@@ -41,6 +45,8 @@ describe('ChatPreviewRail workspace surfaces', () => {
     cleanup()
     clearSessionPreviewRegistry()
     $activeSessionId.set(null)
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: ORIGINAL_INNER_HEIGHT, writable: true })
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: ORIGINAL_INNER_WIDTH, writable: true })
     window.localStorage.clear()
     vi.restoreAllMocks()
   })
@@ -82,6 +88,39 @@ describe('ChatPreviewRail workspace surfaces', () => {
       placement: 'maximized',
       restore: { placement: 'floating' }
     })
+  })
+
+  it('keeps snapped surfaces above the minimized taskbar', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280, writable: true })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 633, writable: true })
+    setCurrentSessionPreviewTarget(fileTarget('/work/snapped.txt'), 'manual')
+    setCurrentSessionPreviewTarget(fileTarget('/work/minimized.txt'), 'manual')
+    const [snapped, minimized] = $filePreviewTabs.get()
+    snapRightRailTab(snapped!.id, 'right-half')
+    minimizeRightRailTab(minimized!.id)
+    render(<ChatPreviewRail />)
+
+    const surface = screen.getByTestId('floating-preview-surface')
+    const surfaceBottom = Number.parseFloat(surface.style.top) + Number.parseFloat(surface.style.height)
+
+    expect(surfaceBottom).toBeLessThanOrEqual(window.innerHeight - 56)
+  })
+
+  it('recomputes snapped geometry when the viewport changes', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200, writable: true })
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900, writable: true })
+    setCurrentSessionPreviewTarget(fileTarget('/work/one.txt'), 'manual')
+    const tabId = $filePreviewTabs.get()[0]!.id
+    snapRightRailTab(tabId, 'left-half')
+    render(<ChatPreviewRail />)
+
+    const surface = screen.getByTestId('floating-preview-surface')
+    expect(surface.style.width).toBe('600px')
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800, writable: true })
+    fireEvent(window, new Event('resize'))
+
+    expect(surface.style.width).toBe('400px')
   })
 
   it('opens the keyboard snap picker and chooses a corner slot', () => {

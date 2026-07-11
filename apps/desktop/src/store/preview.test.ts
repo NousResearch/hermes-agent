@@ -23,6 +23,7 @@ import {
   minimizeRightRailTab,
   type PreviewTarget,
   progressPreviewServerRestart,
+  registerSessionPreview,
   restoreRightRailTab,
   setCurrentSessionPreviewTarget,
   setRightRailTabFloatingGeometry
@@ -163,6 +164,19 @@ describe('preview store', () => {
     expect(activeId).not.toContain('https://example.com/two')
   })
 
+  it('dismisses a browser session record when its tab is closed', () => {
+    const target = previewTarget('https://example.com/closed')
+    setCurrentSessionPreviewTarget(target, 'manual')
+    registerSessionPreview('session-2', target, 'manual')
+    const tabId = $webPreviewTabs.get()[0]!.id
+
+    closeRightRailTab(tabId)
+
+    expect($webPreviewTabs.get()).toEqual([])
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+    expect(getSessionPreviewRecord('session-2')).toBeNull()
+  })
+
   it('keeps credential-bearing URLs out of persisted tabs and layout keys', () => {
     const sensitive = previewTarget('https://user:pass@example.com/app?token=secret-value#private')
 
@@ -174,6 +188,8 @@ describe('preview store', () => {
     expect(tabId).not.toContain(sensitive.url)
     expect($webPreviewTabs.get()[0]!.target.url).toBe(sensitive.url)
     expect(window.localStorage.getItem('hermes.desktop.webPreviewTabs.v1') ?? '').not.toContain('secret-value')
+    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1') ?? '').not.toContain('secret-value')
+    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1') ?? '').not.toContain(sensitive.url)
     expect(window.localStorage.getItem('hermes.desktop.previewSurfaceLayouts.v1') ?? '').not.toContain('secret-value')
     expect(window.localStorage.getItem('hermes.desktop.previewSurfaceLayouts.v1') ?? '').not.toContain(sensitive.url)
   })
@@ -212,6 +228,16 @@ describe('preview store', () => {
 
     expect($previewSurfaceLayouts.get()[secondId]?.placement).toBe('minimized')
     expect($rightRailActiveTabId.get()).toBe(firstId)
+  })
+
+  it('reconciles the active tab after closing the last file surface', () => {
+    setCurrentSessionPreviewTarget(previewTarget('/work/only.txt'), 'manual')
+    const onlyId = $filePreviewTabs.get()[0]!.id
+
+    closeRightRailTab(onlyId)
+
+    expect($filePreviewTabs.get()).toEqual([])
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
   })
 
   it('removes layouts on close and clears every layout on close-all', () => {

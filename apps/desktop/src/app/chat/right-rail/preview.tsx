@@ -61,7 +61,7 @@ export const PREVIEW_RAIL_MAX_WIDTH = '38rem'
 
 const INTRINSIC = `clamp(${PREVIEW_RAIL_MIN_WIDTH}, 36vw, 32rem)`
 const TITLEBAR_INSET = 40
-const TASKBAR_INSET = 44
+const TASKBAR_INSET = 56
 
 export const PREVIEW_RAIL_PANE_WIDTH = `min(${INTRINSIC}, max(0rem, calc(100vw - var(--pane-chat-sidebar-width) - var(--pane-file-browser-width, 0rem) - var(--chat-min-width))))`
 
@@ -233,6 +233,14 @@ function useSurfaceInteractions(tabId: RightRailTabId, layout: PreviewSurfaceLay
 
   useEffect(() => {
     setGeometry(layoutGeometry(tabId, layout))
+  }, [layout, tabId])
+
+  useEffect(() => {
+    const handleViewportResize = () => setGeometry(layoutGeometry(tabId, layout))
+
+    window.addEventListener('resize', handleViewportResize)
+
+    return () => window.removeEventListener('resize', handleViewportResize)
   }, [layout, tabId])
 
   useEffect(() => () => cleanupRef.current?.(), [])

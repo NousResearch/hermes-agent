@@ -5,6 +5,7 @@ import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import {
   $previewTarget,
   $sessionPreviewRegistry,
+  $webPreviewTabs,
   beginPreviewServerRestart,
   completePreviewServerRestart,
   getSessionPreviewRecord,
@@ -17,6 +18,22 @@ import { $currentCwd } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 type EventHandler = (event: RpcEvent) => void
+
+const MAX_ROUTED_PREVIEW_TOOL_IDS = 512
+
+function rememberRoutedPreviewToolId(ids: Set<string>, toolId: string) {
+  ids.add(toolId)
+
+  while (ids.size > MAX_ROUTED_PREVIEW_TOOL_IDS) {
+    const oldest = ids.values().next().value
+
+    if (typeof oldest !== 'string') {
+      break
+    }
+
+    ids.delete(oldest)
+  }
+}
 
 interface PreviewRoutingOptions {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -32,12 +49,8 @@ function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
-function activePreviewSessionId(
-  activeSessionIdRef: MutableRefObject<string | null>,
-  routedSessionId: string | null,
-  selectedStoredSessionId: string | null
-): string {
-  return selectedStoredSessionId || routedSessionId || activeSessionIdRef.current || ''
+function activePreviewSessionId(routedSessionId: string | null, selectedStoredSessionId: string | null): string {
+  return selectedStoredSessionId || routedSessionId || ''
 }
 
 export function usePreviewRouting({
@@ -51,7 +64,10 @@ export function usePreviewRouting({
 }: PreviewRoutingOptions) {
   const routedPreviewToolIdsRef = useRef(new Set<string>())
   const previewRegistry = useStore($sessionPreviewRegistry)
-  const previewSessionId = activePreviewSessionId(activeSessionIdRef, routedSessionId, selectedStoredSessionId)
+  const webPreviewTabs = useStore($webPreviewTabs)
+  const previewSessionId = activePreviewSessionId(routedSessionId, selectedStoredSessionId)
+  const previewRouteRef = useRef({ currentView, sessionId: previewSessionId })
+  previewRouteRef.current = { currentView, sessionId: previewSessionId }
 
   // Restore a *user-opened* preview when its session becomes active. Tool
   // results no longer auto-register/open a preview — the inline preview card in
@@ -66,8 +82,10 @@ export function usePreviewRouting({
 
     const record = getSessionPreviewRecord(previewSessionId)
 
-    setPreviewTarget(record?.normalized ?? null)
-  }, [currentView, previewRegistry, previewSessionId])
+    const representedByWebTab = record ? webPreviewTabs.some(tab => tab.target.url === record.normalized.url) : false
+
+    setPreviewTarget(record && !representedByWebTab ? record.normalized : null)
+  }, [currentView, previewRegistry, previewSessionId, webPreviewTabs])
 
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {
@@ -117,7 +135,9 @@ export function usePreviewRouting({
         }
       }
 
-      if (event.session_id && event.session_id !== activeSessionIdRef.current) {
+      const route = previewRouteRef.current
+
+      if (event.session_id && event.session_id !== route.sessionId) {
         return
       }
 
@@ -125,29 +145,43 @@ export function usePreviewRouting({
       const args = asRecord(payload.args)
       const toolId = typeof payload.tool_id === 'string' ? payload.tool_id : ''
       const path = typeof args.path === 'string' ? args.path.trim() : ''
-      const activeSessionId = activeSessionIdRef.current
 
       if (
+        route.currentView === 'chat' &&
+        route.sessionId &&
         event.type === 'tool.complete' &&
-        event.session_id === activeSessionId &&
+        event.session_id === route.sessionId &&
         payload.name === 'read_file' &&
         args.preview === true &&
         path &&
         toolId &&
         !routedPreviewToolIdsRef.current.has(toolId)
       ) {
-        routedPreviewToolIdsRef.current.add(toolId)
-        const cwd = $currentCwd.get() || currentCwd || undefined
+        const normalizePreviewTarget = window.hermesDesktop?.normalizePreviewTarget
 
-        void window.hermesDesktop
-          .normalizePreviewTarget(path, cwd)
+        if (typeof normalizePreviewTarget !== 'function') {
+          return
+        }
+
+        rememberRoutedPreviewToolId(routedPreviewToolIdsRef.current, toolId)
+        const cwd = $currentCwd.get() || currentCwd || undefined
+        const requestedSessionId = route.sessionId
+
+        void normalizePreviewTarget(path, cwd)
           .then(target => {
-            if (!target || target.kind !== 'file' || activeSessionIdRef.current !== activeSessionId) {
+            const currentRoute = previewRouteRef.current
+
+            if (
+              !target ||
+              target.kind !== 'file' ||
+              currentRoute.currentView !== 'chat' ||
+              currentRoute.sessionId !== requestedSessionId
+            ) {
               return
             }
 
             setSessionPreviewTarget(
-              activeSessionId,
+              requestedSessionId,
               { ...target, renderMode: 'source', source: path },
               'agent-request',
               path
@@ -166,7 +200,7 @@ export function usePreviewRouting({
         requestPreviewReload()
       }
     },
-    [activeSessionIdRef, baseHandleGatewayEvent, currentCwd]
+    [baseHandleGatewayEvent, currentCwd]
   )
 
   return { handleDesktopGatewayEvent, restartPreviewServer }

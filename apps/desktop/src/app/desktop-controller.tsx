@@ -95,6 +95,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { PetGenerateOverlay } from './pet-generate/pet-generate-overlay'
+import { shouldShowPreviewWorkspace } from './preview-workspace-context'
 import { RightSidebarPane } from './right-sidebar'
 import { FileActionDialogs } from './right-sidebar/file-actions'
 import { RemoteFolderPicker } from './right-sidebar/files/remote-picker'
@@ -232,6 +233,14 @@ export function DesktopController() {
   } = useOverlayRouting()
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
+  const hasPreviewSurfaces = Boolean(previewTarget || filePreviewTabs.length || webPreviewTabs.length)
+
+  const previewWorkspaceVisible = shouldShowPreviewWorkspace({
+    chatOpen,
+    hasPreviewSurfaces,
+    routedSessionId,
+    selectedStoredSessionId
+  })
 
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
@@ -258,10 +267,8 @@ export function DesktopController() {
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 
   useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(
-      Boolean(chatOpen && (filePreviewTabs.length || webPreviewTabs.length || previewTarget))
-    )
-  }, [chatOpen, filePreviewTabs.length, previewTarget, webPreviewTabs.length])
+    window.hermesDesktop?.setPreviewShortcutActive?.(previewWorkspaceVisible)
+  }, [previewWorkspaceVisible])
 
   useEffect(() => {
     startUpdatePoller()
@@ -1177,10 +1184,8 @@ export function DesktopController() {
 
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
-  const hasPreviewSurfaces = Boolean(previewTarget || filePreviewTabs.length || webPreviewTabs.length)
-
   const railColumnOpen =
-    (chatOpen && hasPreviewSurfaces && previewPaneOpen) ||
+    (previewWorkspaceVisible && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
 
@@ -1190,7 +1195,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || !hasPreviewSurfaces}
+      disabled={!previewWorkspaceVisible}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
@@ -1199,7 +1204,7 @@ export function DesktopController() {
       side={railSide}
       width={PREVIEW_RAIL_PANE_WIDTH}
     >
-      {chatOpen ? (
+      {previewWorkspaceVisible ? (
         <ChatPreviewRail onRestartServer={restartPreviewServer} setTitlebarToolGroup={setTitlebarToolGroup} />
       ) : null}
     </Pane>
@@ -1295,7 +1300,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && hasPreviewSurfaces}
+      previewPaneOpen={previewWorkspaceVisible}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}

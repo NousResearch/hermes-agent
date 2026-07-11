@@ -6,9 +6,11 @@ import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
   $filePreviewTabs,
   $previewTarget,
+  $webPreviewTabs,
   clearSessionPreviewRegistry,
   type PreviewTarget,
-  registerSessionPreview
+  registerSessionPreview,
+  setSessionPreviewTarget
 } from '@/store/preview'
 import { $currentCwd, $messages } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
@@ -38,17 +40,31 @@ function previewTarget(source: string): PreviewTarget {
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
 
-function PreviewRoutingHarness({ onEvent }: { onEvent: (handler: (event: RpcEvent) => void) => void }) {
-  const activeSessionIdRef = useRef<string | null>('session-1')
+interface PreviewRoutingHarnessProps {
+  activeSessionId?: string | null
+  currentView?: string
+  onEvent: (handler: (event: RpcEvent) => void) => void
+  routedSessionId?: string | null
+  selectedStoredSessionId?: string | null
+}
+
+function PreviewRoutingHarness({
+  activeSessionId = 'session-1',
+  currentView = 'chat',
+  onEvent,
+  routedSessionId = 'session-1',
+  selectedStoredSessionId = null
+}: PreviewRoutingHarnessProps) {
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
 
   const routing = usePreviewRouting({
     activeSessionIdRef,
     baseHandleGatewayEvent: vi.fn(),
     currentCwd: '/work',
-    currentView: 'chat',
+    currentView,
     requestGateway: vi.fn(),
-    routedSessionId: 'session-1',
-    selectedStoredSessionId: null
+    routedSessionId,
+    selectedStoredSessionId
   })
 
   useEffect(() => {
@@ -99,6 +115,50 @@ describe('usePreviewRouting', () => {
     await waitFor(() => {
       expect($previewTarget.get()).toEqual({ ...target, renderMode: 'preview' })
     })
+  })
+
+  it('does not duplicate a registered URL that already has a browser tab', async () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() => setSessionPreviewTarget('session-1', previewTarget('https://example.com/app'), 'manual'))
+
+    await waitFor(() => expect($webPreviewTabs.get()).toHaveLength(1))
+    expect($previewTarget.get()).toBeNull()
+  })
+
+  it('does not restore a stale active-session preview on the new-chat route', async () => {
+    const target = previewTarget('/work/stale.html')
+    registerSessionPreview('session-1', target, 'tool-result')
+
+    render(
+      <PreviewRoutingHarness
+        onEvent={handler => {
+          handleEvent = handler
+        }}
+        routedSessionId={null}
+      />
+    )
+
+    await waitFor(() => expect($previewTarget.get()).toBeNull())
+  })
+
+  it('ignores explicit preview completions when no chat session is routed', () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} routedSessionId={null} />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          args: { path: './stale.txt', preview: true },
+          name: 'read_file',
+          tool_id: 'stale-preview'
+        },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+    expect($filePreviewTabs.get()).toEqual([])
   })
 
   it('does not infer previews from assistant prose', async () => {
@@ -179,6 +239,57 @@ describe('usePreviewRouting', () => {
 
     await waitFor(() => expect($filePreviewTabs.get()).toHaveLength(1))
     expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not open a preview when normalization finishes after leaving the session', async () => {
+    let resolveNormalize: ((target: PreviewTarget) => void) | undefined
+    vi.mocked(window.hermesDesktop.normalizePreviewTarget).mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveNormalize = resolve
+      })
+    )
+    const view = render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() =>
+      handleEvent({
+        payload: { args: { path: 'late.txt', preview: true }, name: 'read_file', tool_id: 'late-tool' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+    view.rerender(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} routedSessionId={null} />)
+
+    await act(async () => resolveNormalize?.(previewTarget('/work/late.txt')))
+
+    expect($filePreviewTabs.get()).toEqual([])
+  })
+
+  it('bounds remembered preview tool ids', async () => {
+    render(<PreviewRoutingHarness onEvent={handler => (handleEvent = handler)} />)
+
+    act(() => {
+      for (let index = 0; index <= 512; index += 1) {
+        handleEvent({
+          payload: {
+            args: { path: `notes-${index}.txt`, preview: true },
+            name: 'read_file',
+            tool_id: `bounded-${index}`
+          },
+          session_id: 'session-1',
+          type: 'tool.complete'
+        })
+      }
+    })
+
+    await waitFor(() => expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(513))
+    act(() =>
+      handleEvent({
+        payload: { args: { path: 'notes-0.txt', preview: true }, name: 'read_file', tool_id: 'bounded-0' },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      })
+    )
+    await waitFor(() => expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledTimes(514))
   })
 
   it('ignores ordinary reads, other tools, other sessions, and empty paths', () => {

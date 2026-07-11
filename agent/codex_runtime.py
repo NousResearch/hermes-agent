@@ -495,9 +495,11 @@ def run_codex_app_server_turn(
         should_review_skills = True
         agent._iters_since_skill = 0
 
+    suppress = bool(getattr(agent, "_suppress_persistent_turn_hooks", False))
+
     # External memory provider sync (mirrors line ~15439). Skipped on
     # interrupt/error to avoid feeding partial transcripts to memory.
-    if not turn.interrupted and turn.error is None:
+    if not suppress and not turn.interrupted and turn.error is None:
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
@@ -512,7 +514,8 @@ def run_codex_app_server_turn(
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
     if (
-        turn.final_text
+        not suppress
+        and turn.final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):

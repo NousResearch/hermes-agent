@@ -484,17 +484,25 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
+    suppress = bool(getattr(agent, "_suppress_persistent_turn_hooks", False))
+
     # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message,
-        final_response=final_response,
-        interrupted=interrupted,
-        messages=messages,
-    )
+    if not suppress:
+        agent._sync_external_memory_for_turn(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+            messages=messages,
+        )
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        not suppress
+        and final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),
@@ -514,19 +522,20 @@ def finalize_turn(
     # Plugin hook: on_session_end
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_end",
-            session_id=agent.session_id,
-            task_id=effective_task_id,
-            turn_id=turn_id,
-            completed=completed,
-            interrupted=interrupted,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_end hook failed: %s", exc)
+    if not suppress:
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_end",
+                session_id=agent.session_id,
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                completed=completed,
+                interrupted=interrupted,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_end hook failed: %s", exc)
 
     return result

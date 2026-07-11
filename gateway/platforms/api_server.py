@@ -1267,6 +1267,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        execution_policy: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1361,6 +1362,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if execution_policy == _READ_ONLY_GENERATION_POLICY:
+            enabled_toolsets = []
 
         max_iterations = _current_max_iterations()
 
@@ -1386,6 +1389,10 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+        )
+        agent.execution_policy = execution_policy
+        agent._suppress_persistent_turn_hooks = (
+            execution_policy == _READ_ONLY_GENERATION_POLICY
         )
         return agent
 
@@ -1856,7 +1863,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         session_id = request.match_info["session_id"]
-        session, err = self._get_existing_session_or_404(session_id)
+        _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = self._ensure_session_db()
@@ -1869,7 +1876,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = self._ensure_session_db()
@@ -1938,7 +1945,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -1957,6 +1964,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            execution_policy=session.get("execution_policy"),
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -1982,7 +1990,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
+        session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -2048,6 +2056,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    execution_policy=session.get("execution_policy"),
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -4087,6 +4096,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        execution_policy: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4107,12 +4117,25 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _run():
             from gateway.session_context import clear_session_vars
+            from hermes_cli.plugins import (
+                clear_thread_tool_whitelist,
+                set_thread_tool_whitelist,
+            )
 
             tokens = self._bind_api_server_session(
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
             )
+            restricted = execution_policy == _READ_ONLY_GENERATION_POLICY
+            if restricted:
+                set_thread_tool_whitelist(
+                    set(),
+                    deny_msg_fmt=(
+                        "Read-only generation session denied tool dispatch: "
+                        "{tool_name}."
+                    ),
+                )
             try:
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
@@ -4123,6 +4146,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    execution_policy=execution_policy,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4145,6 +4169,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
+                if restricted:
+                    clear_thread_tool_whitelist()
                 clear_session_vars(tokens)
 
         self._inflight_agent_runs += 1

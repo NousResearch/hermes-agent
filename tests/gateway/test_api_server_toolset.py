@@ -148,6 +148,33 @@ class TestApiServerAdapterToolset:
             assert call_kwargs.kwargs.get("platform") == "api_server"
 
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    def test_create_agent_read_only_generation_has_no_tool_schemas(self):
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig())
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_gateway_model") as mock_model, \
+             patch("gateway.run._load_gateway_config") as mock_config, \
+             patch("run_agent.AIAgent") as agent_cls:
+
+            mock_kwargs.return_value = {"api_key": "test-key", "base_url": None,
+                                        "provider": None, "api_mode": None,
+                                        "command": None, "args": []}
+            mock_model.return_value = "test/model"
+            mock_config.return_value = {}
+            agent_cls.return_value = MagicMock()
+
+            agent = adapter._create_agent(
+                execution_policy="read_only_generation",
+            )
+
+            assert agent_cls.call_args.kwargs["enabled_toolsets"] == []
+            assert agent.execution_policy == "read_only_generation"
+            assert agent._suppress_persistent_turn_hooks is True
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_respects_config_override(self):
         """User can override API server toolsets via platform_toolsets in config.yaml."""
         from gateway.platforms.api_server import APIServerAdapter

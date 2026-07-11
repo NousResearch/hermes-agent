@@ -539,6 +539,11 @@ def init_agent(
     agent.reaction_callback = reaction_callback
     agent.tool_gen_callback = tool_gen_callback
 
+    # API session execution policy. Restricted sessions keep the ordinary
+    # prompt/context path while disabling model tools and persistent turn hooks.
+    agent.execution_policy = None
+    agent._suppress_persistent_turn_hooks = False
+
     
     # Tool execution state — allows _vprint during tool execution
     # even when stream consumers are registered (no tokens streaming then)

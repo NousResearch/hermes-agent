@@ -350,6 +350,26 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
   -d '{"input": "what files changed in the last hour?"}'
 ```
 
+### Read-only generation sessions
+
+Create a session with `execution_policy: "read_only_generation"` when a
+client needs model output without agent-side effects:
+
+```bash
+curl -X POST http://localhost:8642/api/sessions \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"draft-only","execution_policy":"read_only_generation"}'
+```
+
+The policy is immutable for the lifetime of the session and is inherited by
+forks and compression continuations. Restricted turns expose zero tool schemas
+to the model and also deny any fabricated tool dispatch at runtime. Identity,
+persona and context reads, transcript persistence, and provenance remain
+available; only external-memory sync, background memory/skill review, and the
+`on_session_end` persistence hook are suppressed. Sessions created without an
+execution policy keep the ordinary API-server toolset and lifecycle behavior.
+
 ## Skills and toolsets discovery
 
 `GET /v1/skills` and `GET /v1/toolsets` let external clients enumerate the agent's capabilities deterministically over REST instead of asking the model. Both are read-only and gated by `API_SERVER_KEY`.

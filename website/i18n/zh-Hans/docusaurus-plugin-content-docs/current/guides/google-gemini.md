@@ -18,6 +18,10 @@ Hermes Agent 通过 **Google AI Studio / Gemini API** 原生支持 Google Gemini
 设置 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`。Hermes 对 `gemini` provider 会同时检查这两个名称。
 :::
 
+:::warning Google AI 订阅不能替代 API 配置
+Google AI Pro 和 Ultra 权益并不授权在 Hermes 中使用 Gemini。Hermes 需要 [Gemini API 密钥](https://ai.google.dev/gemini-api/docs/api-key)，[API 配额和计费](https://ai.google.dev/gemini-api/docs/billing)需另行管理。请勿仅为解锁 Hermes 而购买消费者订阅。
+:::
+
 ## 快速开始
 
 ```bash
@@ -205,6 +209,10 @@ GEMINI_API_KEY=...
 ```
 
 然后重新运行 `hermes model`。
+
+### "Unknown provider 'gemini-oauth'" 或 "Unknown provider 'google-gemini-cli'"
+
+这些 provider ID 以及 `google-antigravity` 均不受支持。请使用 `provider: gemini`，并设置 `GOOGLE_API_KEY` 或 `GEMINI_API_KEY`；Hermes 无法复用订阅身份验证。
 
 ### "This Google API key is on the free tier"
 

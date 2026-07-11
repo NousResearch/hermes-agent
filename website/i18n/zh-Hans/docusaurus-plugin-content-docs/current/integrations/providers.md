@@ -45,6 +45,10 @@ sidebar_position: 1
 
 官方 API key 路径请参见专属的 [Google Gemini 指南](/guides/google-gemini)。
 
+:::warning Google AI Pro 和 Ultra
+消费者订阅不授权 Hermes 的 `gemini` provider。Hermes 需要 Google AI Studio API 密钥，API 配额和计费需另行管理。详情请参见 [Google Gemini 指南](/guides/google-gemini)。
+:::
+
 :::tip 模型 key 别名
 在 `model:` 配置节中，可以使用 `default:` 或 `model:` 作为模型 ID 的键名。`model: { default: my-model }` 和 `model: { model: my-model }` 效果完全相同。
 :::

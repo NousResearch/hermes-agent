@@ -86,6 +86,12 @@ def scoped_config_context_length(
     so both sides are compared in the same form; otherwise a valid config that
     names its model with a prefix would look like a mismatch and lose its override.
 
+    When both ``model.default`` and legacy ``model.model`` are present,
+    ``default`` wins — matching how the active model is actually resolved
+    (``cli.py`` promotes ``model.model`` only when ``default`` is absent, and
+    ``gateway.run._resolve_gateway_model`` reads ``default`` first). The
+    override therefore describes the model those resolvers would run.
+
     Returns ``(context_length, mismatch)``. ``mismatch`` is ``None`` when the
     override applies; otherwise ``(config_model, active_model, ignored_value)`` so
     the caller can log why the override was dropped.
@@ -95,7 +101,7 @@ def scoped_config_context_length(
     context_length = model_cfg.get("context_length")
     if context_length is None:
         return None, None
-    cfg_model = str(model_cfg.get("model") or model_cfg.get("default") or "").strip()
+    cfg_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
     model = str(active_model or "").strip()
     if not cfg_model or not model:
         return context_length, None

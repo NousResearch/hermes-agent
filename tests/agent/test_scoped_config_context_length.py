@@ -29,10 +29,14 @@ class TestScopedConfigContextLength:
         assert value is None, "override for glm-coding must not size glm-5.2"
         assert mismatch == ("glm-coding", "glm-5.2", 40960)
 
-    def test_model_key_wins_over_default_key(self):
+    def test_default_key_wins_over_legacy_model_key(self):
+        """`default` is the model the CLI/gateway actually resolve; the override
+        describes it. cli.py promotes legacy `model.model` only when `default`
+        is absent, and gateway._resolve_gateway_model reads `default` first —
+        a config containing both must not lose the override for its default."""
         cfg = {"model": "a", "default": "b", "context_length": 1000}
-        assert scoped_config_context_length(cfg, "a")[0] == 1000
-        assert scoped_config_context_length(cfg, "b")[0] is None
+        assert scoped_config_context_length(cfg, "b")[0] == 1000
+        assert scoped_config_context_length(cfg, "a")[0] is None
 
     def test_applies_when_config_names_no_model(self):
         """No model named -> the override is global by intent; keep prior behavior."""

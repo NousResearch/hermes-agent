@@ -37,6 +37,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import socket as _socket
 import re
@@ -546,7 +547,10 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Tool-Executor, X-Hermes-Tool-Executor-Token"
+    ),
 }
 
 
@@ -880,11 +884,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._response_store = ResponseStore()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
-        # Active event-stream consumer kind for each run_id. PR1 allows a single
-        # /events consumer because the legacy run-events channel is one queue;
-        # this prevents observers and local executors from stealing each other's
-        # events.
-        self._run_event_consumers: Dict[str, str] = {}
+        # Active split-runtime event-stream consumer lease for each run_id. The
+        # legacy channel is one queue, so split mode cannot safely fan out an
+        # executor plus independent observers.
+        self._run_event_consumers: Dict[str, tuple[str, str]] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         # Active run agent/task references for stop support
@@ -986,16 +989,6 @@ class APIServerAdapter(BasePlatformAdapter):
             if flat_key in extra:
                 cfg[key] = extra[flat_key]
 
-        env_enabled = os.getenv("API_SERVER_SPLIT_RUNTIME_ENABLED", "").strip()
-        if env_enabled:
-            cfg["enabled"] = env_enabled
-        env_toolsets = os.getenv("API_SERVER_SPLIT_RUNTIME_TOOLSETS", "").strip()
-        if env_toolsets:
-            cfg["routed_toolsets"] = env_toolsets
-        env_timeout = os.getenv("API_SERVER_SPLIT_RUNTIME_TIMEOUT_SECONDS", "").strip()
-        if env_timeout:
-            cfg["request_timeout_seconds"] = env_timeout
-
         from tools.execution_target import LOCAL_ROUTABLE_TOOLSETS, normalize_routed_toolsets
         from utils import is_truthy_value
 
@@ -1007,7 +1000,9 @@ class APIServerAdapter(BasePlatformAdapter):
             timeout = float(cfg.get("request_timeout_seconds", 300.0))
         except (TypeError, ValueError):
             timeout = 300.0
-        return enabled, routed_toolsets, max(0.1, timeout)
+        if not math.isfinite(timeout):
+            timeout = 300.0
+        return enabled and bool(routed_toolsets), routed_toolsets, max(0.1, timeout)
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -1534,6 +1529,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        from gateway.run import _load_gateway_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from tools.execution_target import LOCAL_ROUTABLE_TOOLS
+
+        enabled_toolsets = _get_platform_tools(_load_gateway_config(), "api_server")
+        split_runtime_active = self._split_runtime_enabled and "file" in enabled_toolsets
+        split_runtime_tools = sorted(LOCAL_ROUTABLE_TOOLS) if split_runtime_active else []
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1545,9 +1548,21 @@ class APIServerAdapter(BasePlatformAdapter):
             "runtime": {
                 "mode": "server_agent",
                 "tool_execution": "server",
-                "runs_tool_execution": "split" if self._split_runtime_enabled else "server",
-                "split_runtime": bool(self._split_runtime_enabled),
-                "split_runtime_toolsets": sorted(self._split_runtime_toolsets) if self._split_runtime_enabled else [],
+                "runs_tool_execution": "split" if split_runtime_active else "server",
+                "split_runtime": bool(split_runtime_active),
+                "split_runtime_toolsets": sorted(self._split_runtime_toolsets) if split_runtime_active else [],
+                "split_runtime_tools": split_runtime_tools,
+                "split_runtime_protocol": (
+                    {
+                        "version": 1,
+                        "correlation_key": "request_id",
+                        "single_events_consumer": True,
+                        "delegation_supported": False,
+                        "unsupported_api_modes": ["codex_app_server"],
+                    }
+                    if split_runtime_active
+                    else None
+                ),
                 "description": (
                     "The API server creates a server-side Hermes AIAgent. "
                     "Chat Completions and Responses tools execute on the API-server host. "
@@ -1565,10 +1580,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
-                "run_tool_result": bool(self._split_runtime_enabled),
+                "run_tool_result": bool(split_runtime_active),
                 "tool_progress_events": True,
                 "approval_events": True,
-                "tool_request_events": bool(self._split_runtime_enabled),
+                "tool_request_events": bool(split_runtime_active),
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
@@ -4042,13 +4057,16 @@ class APIServerAdapter(BasePlatformAdapter):
         The cap bounds total in-flight agent activity across every
         agent-serving endpoint: the non-streaming chat/responses paths
         (tracked by ``_inflight_agent_runs``) plus the ``/v1/runs`` streaming
-        path (tracked by ``_run_streams``). A configured value of 0 disables
+        path (tracked by active run tasks). Retained event buffers do not consume
+        execution capacity after their agent finishes. A configured value of 0 disables
         the cap entirely.
         """
         limit = self._max_concurrent_runs
         if limit <= 0:
             return None
-        inflight = self._inflight_agent_runs + len(self._run_streams)
+        inflight = self._inflight_agent_runs + sum(
+            1 for task in self._active_run_tasks.values() if not task.done()
+        )
         if inflight >= limit:
             return web.json_response(
                 _openai_error(
@@ -4372,6 +4390,26 @@ class APIServerAdapter(BasePlatformAdapter):
                     gateway_session_key=gateway_session_key,
                     route=route,
                 )
+                if self._split_runtime_enabled and getattr(agent, "api_mode", "") == "codex_app_server":
+                    error_msg = (
+                        "Split runtime is not supported by the codex_app_server runtime; "
+                        "that runtime executes file operations inside the server-side Codex process."
+                    )
+                    q.put_nowait({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": error_msg,
+                        "code": "split_runtime_incompatible_runtime",
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        error=error_msg,
+                        code="split_runtime_incompatible_runtime",
+                        last_event="run.failed",
+                    )
+                    return
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
@@ -4400,12 +4438,34 @@ class APIServerAdapter(BasePlatformAdapter):
                     except Exception:
                         pass
 
+                def _request_state_callback(last_event: str, request_id: str) -> None:
+                    def _update() -> None:
+                        from gateway.tool_channel_state import pending_tool_request_count
+
+                        current = self._run_statuses.get(run_id, {}).get("status")
+                        if current in {"completed", "failed", "cancelled"}:
+                            return
+                        status = (
+                            "waiting_for_tool_result"
+                            if pending_tool_request_count(approval_session_key) > 0
+                            else "running"
+                        )
+                        self._set_run_status(run_id, status, last_event=last_event)
+                        q.put_nowait({
+                            "event": last_event,
+                            "run_id": run_id,
+                            "request_id": request_id,
+                            "timestamp": time.time(),
+                        })
+
+                    loop.call_soon_threadsafe(_update)
+
                 def _run_sync():
                     from gateway.session_context import clear_session_vars
                     from gateway.tool_channel_state import (
+                        close_tool_channel,
                         reset_current_split_runtime,
                         set_current_split_runtime,
-                        unregister_tool_notify,
                     )
                     from tools.approval import (
                         register_gateway_notify,
@@ -4431,6 +4491,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             "enabled": self._split_runtime_enabled,
                             "routed_toolsets": self._split_runtime_toolsets,
                             "request_timeout_seconds": self._split_runtime_request_timeout,
+                            "_request_state_callback": _request_state_callback,
                         })
                         r = agent.run_conversation(
                             user_message=user_message,
@@ -4440,7 +4501,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     finally:
                         try:
                             unregister_gateway_notify(approval_session_key)
-                            unregister_tool_notify(approval_session_key)
+                            close_tool_channel(approval_session_key)
                         finally:
                             if split_runtime_token is not None:
                                 try:
@@ -4537,11 +4598,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 # waits immediately; the in-thread unregister is harmlessly
                 # idempotent on normal completion.
                 try:
-                    from gateway.tool_channel_state import unregister_tool_notify
+                    from gateway.tool_channel_state import close_tool_channel
                     from tools.approval import unregister_gateway_notify
 
                     unregister_gateway_notify(approval_session_key)
-                    unregister_tool_notify(approval_session_key)
+                    close_tool_channel(approval_session_key)
                 except Exception:
                     pass
                 # Sentinel: signal SSE stream to close
@@ -4553,7 +4614,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._run_tool_sessions.pop(run_id, None)
-                self._run_event_consumers.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -4614,37 +4674,54 @@ class APIServerAdapter(BasePlatformAdapter):
             or _coerce_request_bool(request.headers.get("X-Hermes-Tool-Executor"), default=False)
         )
         stream_kind = "tool_executor" if wants_executor else "events"
-        existing_consumer = self._run_event_consumers.get(run_id)
-        if existing_consumer is not None:
+
+        if wants_executor and not self._split_runtime_enabled:
             return web.json_response(
                 _openai_error(
-                    f"Run already has an active events consumer ({existing_consumer}). PR1 split runtime supports one /events stream per run.",
-                    code="run_events_consumer_conflict",
+                    "Split runtime is not enabled for this API server.",
+                    code="split_runtime_disabled",
                 ),
                 status=409,
             )
-        self._run_event_consumers[run_id] = stream_kind
-
         if wants_executor:
-            if not self._split_runtime_enabled:
-                self._run_event_consumers.pop(run_id, None)
-                return web.json_response(
-                    _openai_error(
-                        "Split runtime is not enabled for this API server.",
-                        code="split_runtime_disabled",
-                    ),
-                    status=409,
-                )
             executor_session_key = self._run_tool_sessions.get(run_id)
             if not executor_session_key:
-                self._run_event_consumers.pop(run_id, None)
+                run_status = self._run_statuses.get(run_id, {}).get("status")
+                if run_status in {"completed", "failed", "cancelled"}:
+                    # A fast terminal run may finish before the client can use
+                    # the run_id to attach. Let it drain lifecycle events as an
+                    # observer; there can no longer be a tool request to answer.
+                    wants_executor = False
+                    stream_kind = "events"
+                else:
+                    return web.json_response(
+                        _openai_error(
+                            f"Run has no active split-runtime tool session: {run_id}",
+                            code="tool_result_not_active",
+                        ),
+                        status=409,
+                    )
+
+        consumer_lease: Optional[tuple[str, str]] = None
+        if wants_executor or self._split_runtime_enabled:
+            existing_consumer = self._run_event_consumers.get(run_id)
+            if existing_consumer is not None:
+                existing_kind = (
+                    existing_consumer[0]
+                    if isinstance(existing_consumer, tuple)
+                    else str(existing_consumer)
+                )
                 return web.json_response(
                     _openai_error(
-                        f"Run has no active split-runtime tool session: {run_id}",
-                        code="tool_result_not_active",
+                        f"Run already has an active events consumer ({existing_kind}).",
+                        code="run_events_consumer_conflict",
                     ),
                     status=409,
                 )
+            consumer_lease = (stream_kind, uuid.uuid4().hex)
+            self._run_event_consumers[run_id] = consumer_lease
+
+        if wants_executor:
             client_token = (request.headers.get("X-Hermes-Tool-Executor-Token") or "").strip()
             notify_loop = asyncio.get_running_loop()
 
@@ -4656,20 +4733,33 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": time.time(),
                     "v": 1,
                 })
-                self._set_run_status(
-                    run_id,
-                    "waiting_for_tool_result",
-                    last_event="tool.request",
-                )
+                def _emit() -> None:
+                    from gateway.tool_channel_state import is_tool_request_pending
+
+                    request_id = str(event.get("request_id") or "")
+                    if not is_tool_request_pending(executor_session_key or "", request_id):
+                        return
+                    current = self._run_statuses.get(run_id, {}).get("status")
+                    if current in {"completed", "failed", "cancelled"}:
+                        return
+                    self._set_run_status(
+                        run_id,
+                        "waiting_for_tool_result",
+                        last_event="tool.request",
+                    )
+                    q.put_nowait(event)
+
                 try:
-                    notify_loop.call_soon_threadsafe(q.put_nowait, event)
+                    notify_loop.call_soon_threadsafe(_emit)
                 except Exception:
                     pass
 
             from gateway.tool_channel_state import register_tool_notify
 
+            assert executor_session_key is not None
             if not register_tool_notify(executor_session_key, _tool_notify, client_token):
-                self._run_event_consumers.pop(run_id, None)
+                if consumer_lease and self._run_event_consumers.get(run_id) == consumer_lease:
+                    self._run_event_consumers.pop(run_id, None)
                 return web.json_response(
                     _openai_error(
                         f"Run already has an attached split-runtime tool executor: {run_id}",
@@ -4679,29 +4769,50 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             executor_attached = True
 
-        response = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
-        await response.prepare(request)
-
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        response = web.StreamResponse(status=200, headers=sse_headers)
+        stream_closed = False
+        write_timeout = 15.0
         try:
+            await response.prepare(request)
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
                 except asyncio.TimeoutError:
-                    await response.write(b": keepalive\n\n")
+                    await asyncio.wait_for(
+                        response.write(b": keepalive\n\n"),
+                        timeout=write_timeout,
+                    )
                     continue
                 if event is None:
                     # Run finished — send final SSE comment and close
-                    await response.write(b": stream closed\n\n")
+                    stream_closed = True
+                    await asyncio.wait_for(
+                        response.write(b": stream closed\n\n"),
+                        timeout=write_timeout,
+                    )
                     break
+                if event.get("event") == "tool.request" and executor_session_key:
+                    from gateway.tool_channel_state import is_tool_request_pending
+
+                    if not is_tool_request_pending(
+                        executor_session_key,
+                        str(event.get("request_id") or ""),
+                    ):
+                        continue
                 payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+                await asyncio.wait_for(
+                    response.write(payload.encode()),
+                    timeout=write_timeout,
+                )
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
@@ -4712,10 +4823,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     unregister_tool_notify(executor_session_key, client_token=client_token)
                 except Exception:
                     pass
-            if self._run_event_consumers.get(run_id) == stream_kind:
+            if consumer_lease and self._run_event_consumers.get(run_id) == consumer_lease:
                 self._run_event_consumers.pop(run_id, None)
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            status = self._run_statuses.get(run_id, {}).get("status")
+            if stream_closed or status in {"completed", "failed", "cancelled"}:
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
 
         return response
 
@@ -4835,11 +4948,20 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
-        tool_call_id = str(body.get("tool_call_id") or "").strip()
-        if not tool_call_id or "result" not in body:
+        if not isinstance(body, dict):
             return web.json_response(
                 _openai_error(
-                    "Invalid tool result; expected non-empty tool_call_id and result",
+                    "Invalid tool result; expected a JSON object",
+                    code="invalid_tool_result",
+                ),
+                status=400,
+            )
+
+        request_id = str(body.get("request_id") or "").strip()
+        if not request_id or "result" not in body:
+            return web.json_response(
+                _openai_error(
+                    "Invalid tool result; expected non-empty request_id and result",
                     code="invalid_tool_result",
                 ),
                 status=400,
@@ -4872,14 +4994,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from agent.redact import redact_sensitive_text
-            from gateway.tool_channel_state import resolve_tool_result
+            from gateway.tool_channel_state import pending_tool_request_count, resolve_tool_result
 
             raw_result = body.get("result")
             if isinstance(raw_result, str):
-                result = redact_sensitive_text(raw_result)
+                result = redact_sensitive_text(raw_result, file_read=True)
             else:
-                result = redact_sensitive_text(json.dumps(raw_result, ensure_ascii=False))
-            outcome = resolve_tool_result(session_key, tool_call_id, result)
+                result = redact_sensitive_text(
+                    json.dumps(raw_result, ensure_ascii=False),
+                    file_read=True,
+                )
+            outcome = resolve_tool_result(session_key, request_id, result)
         except Exception as exc:
             logger.exception("[api_server] tool-result resolution failed for run %s", run_id)
             return web.json_response(_openai_error(str(exc)), status=500)
@@ -4895,7 +5020,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         response_status = "duplicate" if outcome == "duplicate" else "resolved"
         if outcome == "resolved":
-            self._set_run_status(run_id, "running", last_event="tool.result")
+            current_status = self._run_statuses.get(run_id, {}).get("status")
+            if current_status not in {"completed", "failed", "cancelled"}:
+                run_status = (
+                    "waiting_for_tool_result"
+                    if pending_tool_request_count(session_key) > 0
+                    else "running"
+                )
+                self._set_run_status(run_id, run_status, last_event="tool.result")
             q = self._run_streams.get(run_id)
             if q is not None:
                 try:
@@ -4903,7 +5035,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "tool.result",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "tool_call_id": tool_call_id,
+                        "request_id": request_id,
                         "status": response_status,
                     })
                 except Exception:
@@ -4912,7 +5044,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({
             "object": "hermes.run.tool_result_response",
             "run_id": run_id,
-            "tool_call_id": tool_call_id,
+            "request_id": request_id,
             "status": response_status,
         })
 
@@ -4965,17 +5097,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 run_id
                 for run_id, created_at in list(self._run_streams_created.items())
                 if now - created_at > self._RUN_STREAM_TTL
+                and run_id not in self._run_event_consumers
+                and (
+                    run_id not in self._active_run_tasks
+                    or self._active_run_tasks[run_id].done()
+                )
             ]
             for run_id in stale:
                 logger.debug("[api_server] sweeping orphaned run %s", run_id)
                 try:
-                    from gateway.tool_channel_state import unregister_tool_notify
+                    from gateway.tool_channel_state import close_tool_channel
                     from tools.approval import unregister_gateway_notify
 
                     approval_session_key = self._run_approval_sessions.get(run_id)
                     if approval_session_key:
                         unregister_gateway_notify(approval_session_key)
-                        unregister_tool_notify(approval_session_key)
+                        close_tool_channel(approval_session_key)
                 except Exception:
                     pass
                 self._run_streams.pop(run_id, None)
@@ -4994,6 +5131,12 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                try:
+                    from gateway.tool_channel_state import clear_tool_channel_state
+
+                    clear_tool_channel_state(run_id)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

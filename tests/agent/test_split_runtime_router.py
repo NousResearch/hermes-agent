@@ -1,5 +1,7 @@
 import json
 import threading
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import model_tools
 import agent.split_runtime_router as split_router
@@ -60,7 +62,7 @@ def test_route_tool_locally_returns_sentinel_for_non_routable_tool():
 
 
 def test_route_tool_locally_fails_closed_without_executor():
-    approval_token, split_token = _bind_split()
+    approval_token, split_token = _bind_split(timeout=0.1)
     try:
         result = route_tool_locally("read_file", {"path": "README.md"}, "call_no_executor")
     finally:
@@ -86,7 +88,7 @@ def test_route_tool_locally_round_trips_to_attached_executor():
         assert saw_request.wait(timeout=2.0)
         assert captured["tool_name"] == "read_file"
         assert captured["arguments"] == {"path": "README.md"}
-        resolve_tool_result(session_key, captured["tool_call_id"], "LOCAL RESULT")
+        resolve_tool_result(session_key, captured["request_id"], "LOCAL RESULT")
 
     thread = threading.Thread(target=resolver)
     thread.start()
@@ -110,6 +112,131 @@ def test_route_tool_locally_round_trips_to_attached_executor():
     assert captured["task_id"] == "task-1"
     assert captured["turn_id"] == "turn-1"
     assert captured["api_request_id"] == "api-1"
+
+
+def test_real_agent_tool_executor_routes_read_file_through_local_channel():
+    from run_agent import AIAgent
+
+    session_key = "run-real-agent"
+    approval_token, split_token = _bind_split(session_key=session_key)
+    captured = {}
+    saw_request = threading.Event()
+
+    def notify(request):
+        captured.update(request)
+        saw_request.set()
+
+    assert register_tool_notify(session_key, notify, "") is True
+
+    def resolve_request():
+        assert saw_request.wait(timeout=2.0)
+        resolve_tool_result(session_key, captured["request_id"], "REAL AGENT LOCAL RESULT")
+
+    resolver = threading.Thread(target=resolve_request)
+    resolver.start()
+    try:
+        with (
+            patch("run_agent.OpenAI"),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+        ):
+            agent = AIAgent(
+                model="test-model",
+                provider="openrouter",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                enabled_toolsets=["file"],
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        tool_call = SimpleNamespace(
+            id="call_real_agent",
+            function=SimpleNamespace(
+                name="read_file",
+                arguments=json.dumps({"path": "README.md"}),
+            ),
+        )
+        assistant_message = SimpleNamespace(tool_calls=[tool_call])
+        messages = []
+        agent._execute_tool_calls(assistant_message, messages, "task-real-agent")
+    finally:
+        resolver.join(timeout=2.0)
+        unregister_tool_notify(session_key)
+        _reset(approval_token, split_token)
+
+    assert captured["tool_name"] == "read_file"
+    assert len(messages) == 1
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["content"] == "REAL AGENT LOCAL RESULT"
+
+
+def test_route_tool_locally_waits_for_executor_to_attach():
+    session_key = "run_late_attach"
+    approval_token, split_token = _bind_split(session_key=session_key, timeout=1.0)
+    captured = {}
+
+    def attach_and_resolve():
+        def notify(request):
+            captured.update(request)
+            resolve_tool_result(session_key, request["request_id"], "LATE ATTACH RESULT")
+
+        assert register_tool_notify(session_key, notify, "client-late") is True
+
+    timer = threading.Timer(0.02, attach_and_resolve)
+    timer.start()
+    try:
+        result = route_tool_locally(
+            "read_file",
+            {"path": "README.md"},
+            "call_late_attach",
+        )
+    finally:
+        timer.join(timeout=1.0)
+        unregister_tool_notify(session_key)
+        _reset(approval_token, split_token)
+
+    assert result == "LATE ATTACH RESULT"
+    assert captured["tool_call_id"] == "call_late_attach"
+    assert captured["request_id"].startswith("toolreq_")
+
+
+def test_route_tool_locally_times_out_when_executor_never_answers():
+    session_key = "run_timeout"
+    approval_token, split_token = _bind_split(session_key=session_key, timeout=0.1)
+    assert register_tool_notify(session_key, lambda request: None, "client-timeout") is True
+    try:
+        result = route_tool_locally(
+            "read_file",
+            {"path": "README.md"},
+            "call_timeout",
+        )
+    finally:
+        unregister_tool_notify(session_key)
+        _reset(approval_token, split_token)
+
+    assert json.loads(result)["code"] == "split_runtime_tool_timeout"
+
+
+def test_route_tool_locally_reports_executor_disconnect():
+    session_key = "run_disconnect"
+    approval_token, split_token = _bind_split(session_key=session_key, timeout=1.0)
+
+    def disconnect(_request):
+        unregister_tool_notify(session_key, client_token="client-disconnect")
+
+    assert register_tool_notify(session_key, disconnect, "client-disconnect") is True
+    try:
+        result = route_tool_locally(
+            "search_files",
+            {"pattern": "*.py", "target": "files"},
+            "call_disconnect",
+        )
+    finally:
+        unregister_tool_notify(session_key)
+        _reset(approval_token, split_token)
+
+    assert json.loads(result)["code"] == "split_runtime_executor_disconnected"
 
 
 def test_handle_function_call_fails_closed_when_split_router_crashes(monkeypatch):

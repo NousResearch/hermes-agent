@@ -34,4 +34,9 @@ def test_mutating_file_tools_stay_server_even_when_file_toolset_routed():
 
 def test_non_file_toolsets_stay_server():
     routed = normalize_routed_toolsets(["terminal", "file"])
+    assert routed == frozenset({"file"})
     assert infer_execution_target(_entry("terminal", "terminal"), enabled=True, routed_toolsets=routed) is ExecutionTarget.SERVER
+
+
+def test_unknown_toolsets_do_not_advertise_effective_routing():
+    assert normalize_routed_toolsets(["terminal", "unknown"]) == frozenset()

@@ -19,7 +19,7 @@ class ExecutionTarget(enum.Enum):
     LOCAL = "local"
 
 
-# PR 1 routes only read-only file tools. The toolset gate keeps the policy
+# The first protocol version routes only read-only file tools. The toolset gate keeps the policy
 # broad enough to configure by capability group; the tool-name gate prevents
 # mutating file tools from becoming routable just because they share a toolset.
 LOCAL_ROUTABLE_TOOLSETS: frozenset[str] = frozenset({"file"})
@@ -27,7 +27,7 @@ LOCAL_ROUTABLE_TOOLS: frozenset[str] = frozenset({"read_file", "search_files"})
 
 
 def normalize_routed_toolsets(value: Any) -> frozenset[str]:
-    """Normalize config/env routed-toolset values to a frozenset of names."""
+    """Normalize configured toolsets and clamp them to implemented targets."""
 
     if value is None:
         return LOCAL_ROUTABLE_TOOLSETS
@@ -37,7 +37,8 @@ def normalize_routed_toolsets(value: Any) -> frozenset[str]:
         items = value
     else:
         items = [value]
-    return frozenset(str(item).strip() for item in items if str(item).strip())
+    normalized = frozenset(str(item).strip() for item in items if str(item).strip())
+    return normalized & LOCAL_ROUTABLE_TOOLSETS
 
 
 def infer_execution_target(
@@ -50,7 +51,7 @@ def infer_execution_target(
 
     Disabled split runtime, missing registry metadata, non-routed toolsets, and
     mutating file tools all resolve to ``SERVER``. This keeps the default path
-    and every non-PR1 tool unchanged.
+    and every non-routed tool unchanged.
     """
 
     if not enabled or entry is None:

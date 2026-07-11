@@ -1282,7 +1282,7 @@ def handle_function_call(
                     if routed is not _NOT_ROUTED:
                         return routed
                 except Exception as _split_err:
-                    logger.debug("split-runtime routing error for %s: %s", function_name, _split_err)
+                    logger.warning("split-runtime routing error for %s: %s", function_name, _split_err)
                     try:
                         from agent.split_runtime_router import _tool_error, should_route_tool_locally
 

@@ -478,9 +478,6 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |
 | `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). `API_SERVER_KEY` is still required on loopback; use a narrow `API_SERVER_CORS_ORIGINS` allowlist for browser access. |
 | `API_SERVER_MODEL_NAME` | Model name advertised on `/v1/models`. Defaults to the profile name (or `hermes-agent` for the default profile). Useful for multi-user setups where frontends like Open WebUI need distinct model names per connection. |
-| `API_SERVER_SPLIT_RUNTIME_ENABLED` | Enable experimental `/v1/runs` split runtime for attached local executors (`true`/`false`). Default: disabled. |
-| `API_SERVER_SPLIT_RUNTIME_TOOLSETS` | Comma-separated toolsets eligible for split runtime. PR 1 only honors `file` and only routes read-only file tools. |
-| `API_SERVER_SPLIT_RUNTIME_TIMEOUT_SECONDS` | Seconds a run waits for an attached local executor to return a tool result before injecting a tool error. Default: `300`. |
 | `GATEWAY_PROXY_URL` | URL of a remote Hermes API server to forward messages to ([proxy mode](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Also configurable via `gateway.proxy_url` in `config.yaml`. |
 | `GATEWAY_PROXY_KEY` | Bearer token for authenticating with the remote API server in proxy mode. Must match `API_SERVER_KEY` on the remote host. |
 | `MESSAGING_CWD` | Deprecated compatibility fallback for gateway working directory. Prefer `terminal.cwd` in `config.yaml`. |

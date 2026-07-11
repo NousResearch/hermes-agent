@@ -181,9 +181,9 @@ When you send a message in Open WebUI:
 
 Your agent has access to the same tools and capabilities as that API-server Hermes instance. If the API server is remote, those tools are remote too for `/v1/chat/completions` and `/v1/responses`.
 
-Hermes also exposes an experimental split-runtime path on `/v1/runs`: enable `gateway.api_server.split_runtime.enabled`, open `GET /v1/runs/{run_id}/events?tool_executor=1` from a trusted local executor, then answer `tool.request` events with `POST /v1/runs/{run_id}/tool_result`. PR 1 only routes read-only file tools (`read_file`, `search_files`) and defaults off. The local executor must still sandbox and validate paths; the remote server treats missing or disconnected executors as tool errors, not permission to run those tools remotely.
+Hermes also exposes an experimental split-runtime path on `/v1/runs`: enable `gateway.api_server.split_runtime.enabled`, open `GET /v1/runs/{run_id}/events?tool_executor=1` from a trusted local executor, then answer `tool.request` events with `POST /v1/runs/{run_id}/tool_result`. The initial protocol only routes read-only file tools (`read_file`, `search_files`) and defaults off. The local executor must still sandbox and validate paths; the remote server treats missing or disconnected executors as tool errors, not permission to run those tools remotely.
 
-PR 1 uses one SSE consumer per run. If a local executor attaches to `/events?tool_executor=1`, that stream receives both lifecycle events and `tool.request` events; a second observer stream is rejected with `run_events_consumer_conflict`. Clients that want an extra per-attachment guard can send `X-Hermes-Tool-Executor-Token` on both the executor SSE request and the matching `/tool_result` posts. Do not put executor tokens in the query string.
+Split runs use one SSE consumer. If a local executor attaches to `/events?tool_executor=1`, that stream receives both lifecycle events and `tool.request` events; a second observer stream is rejected with `run_events_consumer_conflict`. Echo the server-generated `request_id` from each `tool.request` in the matching `/tool_result` body; do not use the model's `tool_call_id` for transport correlation. Clients that want an extra per-attachment guard can send `X-Hermes-Tool-Executor-Token` on both the executor SSE request and the matching `/tool_result` posts. Do not put executor tokens in the query string.
 
 :::tip Tool Progress
 With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.
@@ -211,7 +211,7 @@ gateway:
       request_timeout_seconds: 300
 ```
 
-Environment overrides are available for embedded deployments: `API_SERVER_SPLIT_RUNTIME_ENABLED`, `API_SERVER_SPLIT_RUNTIME_TOOLSETS`, and `API_SERVER_SPLIT_RUNTIME_TIMEOUT_SECONDS`.
+The first routed call waits for the executor to attach after the run starts. Delegated subagents and the `codex_app_server` runtime are not supported in this protocol version and fail closed rather than reading from the server filesystem.
 
 ### Open WebUI
 

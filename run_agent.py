@@ -5699,6 +5699,20 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
+        try:
+            from gateway.tool_channel_state import get_current_split_runtime
+
+            if get_current_split_runtime():
+                return json.dumps({
+                    "error": (
+                        "delegate_task is unavailable during split-runtime runs because "
+                        "child-agent tool routing is not supported by this protocol version."
+                    ),
+                    "code": "split_runtime_delegation_unsupported",
+                }, ensure_ascii=False)
+        except ImportError:
+            pass
+
         from tools.delegate_tool import (
             _strip_model_hidden_task_fields,
             delegate_task as _delegate_task,

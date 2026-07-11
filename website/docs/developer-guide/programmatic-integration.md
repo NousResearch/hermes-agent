@@ -101,7 +101,9 @@ GET  /health, /health/detailed
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 
-Split-runtime notes for `/v1/runs`: when `gateway.api_server.split_runtime.enabled` is true, an executor may attach with `GET /v1/runs/{id}/events?tool_executor=1` and answer `tool.request` events through `/tool_result`. PR1 supports one `/events` consumer per run and only routes read-only file tools. Optional executor identity uses the `X-Hermes-Tool-Executor-Token` header on both attach and result requests.
+Split-runtime notes for `/v1/runs`: when `gateway.api_server.split_runtime.enabled` is true, an executor may attach with `GET /v1/runs/{id}/events?tool_executor=1` and answer `tool.request` events through `/tool_result`. The initial protocol supports one `/events` consumer per split run and only routes `read_file` and `search_files`. Each request carries a server-generated `request_id`; echo that value in `POST /tool_result` as `{"request_id": "toolreq_...", "result": ...}`. `tool_call_id` is model metadata and is not the transport correlation key. Optional executor identity uses the `X-Hermes-Tool-Executor-Token` header on both attach and result requests.
+
+The executor may attach after `POST /v1/runs` returns; the first routed tool waits up to `request_timeout_seconds` for attachment. A disconnected executor may reattach while the run remains active, but any request pending at disconnect fails closed. Delegation and the `codex_app_server` runtime are rejected in this protocol version because they cannot yet preserve local-tool routing.
 
 ---
 

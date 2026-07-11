@@ -26,6 +26,7 @@ from gateway.platforms.api_server import (
 from tools import approval as approval_mod
 from gateway.tool_channel_state import (
     clear_tool_channel_state,
+    has_attached_client,
     register_tool_notify,
     submit_tool_request,
     unregister_tool_notify,
@@ -208,6 +209,29 @@ class TestStartRun:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_split_runtime_rejects_codex_app_server_before_conversation(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "codex_app_server"
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(split_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "read local file"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                status = {}
+                for _ in range(50):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "failed":
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert status["status"] == "failed"
+        assert status["code"] == "split_runtime_incompatible_runtime"
+        mock_agent.run_conversation.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -454,20 +478,20 @@ class TestRunEvents:
         assert resp.status == 404
 
     @pytest.mark.asyncio
-    async def test_events_rejects_second_consumer(self, adapter):
-        app = _create_runs_app(adapter)
+    async def test_events_rejects_second_consumer_in_split_mode(self, split_adapter):
+        app = _create_runs_app(split_adapter)
         run_id = "run_events_conflict"
-        adapter._run_streams[run_id] = asyncio.Queue()
-        adapter._run_streams_created[run_id] = 1.0
-        adapter._run_event_consumers[run_id] = "events"
+        split_adapter._run_streams[run_id] = asyncio.Queue()
+        split_adapter._run_streams_created[run_id] = 1.0
+        split_adapter._run_event_consumers[run_id] = ("events", "lease-a")
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get(f"/v1/runs/{run_id}/events")
             data = await resp.json()
         assert resp.status == 409
         assert data["error"]["code"] == "run_events_consumer_conflict"
-        adapter._run_streams.pop(run_id, None)
-        adapter._run_streams_created.pop(run_id, None)
-        adapter._run_event_consumers.pop(run_id, None)
+        split_adapter._run_streams.pop(run_id, None)
+        split_adapter._run_streams_created.pop(run_id, None)
+        split_adapter._run_event_consumers.pop(run_id, None)
 
     @pytest.mark.asyncio
     async def test_events_tool_executor_disabled_returns_409_and_does_not_leak_consumer(self, adapter):
@@ -487,10 +511,78 @@ class TestRunEvents:
         adapter._run_tool_sessions.pop(run_id, None)
 
     @pytest.mark.asyncio
+    async def test_terminal_run_allows_late_executor_stream_to_drain_events(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_finished_before_executor_attach"
+        q = asyncio.Queue()
+        q.put_nowait({"event": "run.completed", "run_id": run_id})
+        q.put_nowait(None)
+        split_adapter._run_streams[run_id] = q
+        split_adapter._run_streams_created[run_id] = 1.0
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "completed"}
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/v1/runs/{run_id}/events?tool_executor=1")
+            assert resp.status == 200
+            body = await resp.text()
+
+        assert "run.completed" in body
+
+    @pytest.mark.asyncio
+    async def test_executor_stream_discards_canceled_tool_request_events(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_stale_request_event"
+        session_key = "stale-request-session"
+        q = asyncio.Queue()
+        q.put_nowait({
+            "event": "tool.request",
+            "run_id": run_id,
+            "request_id": "toolreq_canceled",
+            "tool_call_id": "call_canceled",
+        })
+        q.put_nowait({"event": "run.completed", "run_id": run_id})
+        q.put_nowait(None)
+        split_adapter._run_streams[run_id] = q
+        split_adapter._run_streams_created[run_id] = 1.0
+        split_adapter._run_tool_sessions[run_id] = session_key
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "completed"}
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/v1/runs/{run_id}/events?tool_executor=1")
+            assert resp.status == 200
+            body = await resp.text()
+
+        assert "toolreq_canceled" not in body
+        assert "run.completed" in body
+
+    @pytest.mark.asyncio
+    async def test_executor_prepare_failure_releases_attachment_and_lease(self, split_adapter):
+        run_id = "run_prepare_failure"
+        session_key = "prepare-failure-session"
+        split_adapter._run_streams[run_id] = asyncio.Queue()
+        split_adapter._run_streams_created[run_id] = 1.0
+        split_adapter._run_tool_sessions[run_id] = session_key
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        request = MagicMock()
+        request.match_info = {"run_id": run_id}
+        request.query = {"tool_executor": "1"}
+        request.headers = {"X-Hermes-Tool-Executor-Token": "prepare-client"}
+
+        async def fail_prepare(_response, _request):
+            raise ConnectionResetError("client disconnected during prepare")
+
+        with patch.object(web.StreamResponse, "prepare", fail_prepare):
+            await split_adapter._handle_run_events(request)
+
+        assert has_attached_client(session_key) is False
+        assert run_id not in split_adapter._run_event_consumers
+        assert run_id in split_adapter._run_streams
+
+    @pytest.mark.asyncio
     async def test_events_tool_executor_round_trips_routed_read_file(self, split_adapter):
         """A fake local executor can answer a routed read_file over /v1/runs SSE."""
+        split_adapter._cors_origins = ["https://executor.local"]
         app = _create_runs_app(split_adapter)
-        attach_ready = threading.Event()
 
         class FakeAgent:
             session_prompt_tokens = 0
@@ -500,15 +592,12 @@ class TestRunEvents:
             def run_conversation(self, user_message, conversation_history, task_id):
                 import model_tools
 
-                assert attach_ready.wait(timeout=3.0)
                 result = model_tools.handle_function_call(
                     "read_file",
                     {"path": "README.md"},
                     task_id=task_id,
                     tool_call_id="call_http_e2e",
                     session_id="session-http-e2e",
-                    skip_pre_tool_call_hook=True,
-                    skip_tool_request_middleware=True,
                 )
                 return {"final_response": f"local executor returned: {result}"}
 
@@ -520,10 +609,13 @@ class TestRunEvents:
 
                 events_resp = await cli.get(
                     f"/v1/runs/{run_id}/events?tool_executor=1",
-                    headers={"X-Hermes-Tool-Executor-Token": "executor-token"},
+                    headers={
+                        "X-Hermes-Tool-Executor-Token": "executor-token",
+                        "Origin": "https://executor.local",
+                    },
                 )
                 assert events_resp.status == 200
-                attach_ready.set()
+                assert events_resp.headers["Access-Control-Allow-Origin"] == "https://executor.local"
 
                 request_event = None
                 for _ in range(10):
@@ -535,13 +627,14 @@ class TestRunEvents:
                             request_event = event
                             break
                 assert request_event is not None
+                assert request_event["request_id"].startswith("toolreq_")
                 assert request_event["tool_call_id"] == "call_http_e2e"
                 assert request_event["tool_name"] == "read_file"
                 assert request_event["arguments"] == {"path": "README.md"}
 
                 result_resp = await cli.post(
                     f"/v1/runs/{run_id}/tool_result",
-                    json={"tool_call_id": "call_http_e2e", "result": "LOCAL README CONTENT"},
+                    json={"request_id": request_event["request_id"], "result": "LOCAL README CONTENT"},
                     headers={"X-Hermes-Tool-Executor-Token": "executor-token"},
                 )
                 assert result_resp.status == 200
@@ -550,6 +643,53 @@ class TestRunEvents:
                 assert "tool.result" in body
                 assert "run.completed" in body
                 assert "LOCAL README CONTENT" in body
+
+    @pytest.mark.asyncio
+    async def test_tool_timeout_restores_pollable_running_status(self, split_adapter):
+        split_adapter._split_runtime_request_timeout = 0.05
+        app = _create_runs_app(split_adapter)
+        tool_returned = threading.Event()
+        release_agent = threading.Event()
+
+        class FakeAgent:
+            api_mode = "chat_completions"
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_total_tokens = 0
+
+            def run_conversation(self, user_message, conversation_history, task_id):
+                import model_tools
+
+                result = model_tools.handle_function_call(
+                    "read_file",
+                    {"path": "README.md"},
+                    task_id=task_id,
+                    tool_call_id="call_timeout_status",
+                )
+                tool_returned.set()
+                release_agent.wait(timeout=1.0)
+                return {"final_response": result}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(split_adapter, "_create_agent", return_value=FakeAgent()):
+                start_resp = await cli.post("/v1/runs", json={"input": "timeout locally"})
+                run_id = (await start_resp.json())["run_id"]
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events?tool_executor=1")
+                assert events_resp.status == 200
+
+                for _ in range(10):
+                    raw = await asyncio.wait_for(events_resp.content.readline(), timeout=1.0)
+                    if b'"event": "tool.request"' in raw:
+                        break
+                assert await asyncio.to_thread(tool_returned.wait, 1.0)
+
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+                assert status["status"] == "running"
+                assert status["last_event"] == "tool.timeout"
+
+                release_agent.set()
+                events_resp.close()
 
     @pytest.mark.asyncio
     async def test_events_requires_auth(self, auth_adapter):
@@ -581,6 +721,23 @@ class TestRunToolResult:
         assert data["error"]["code"] == "split_runtime_disabled"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [None, [], "result", 42])
+    async def test_tool_result_rejects_non_object_json(self, split_adapter, body):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_invalid_shape"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        split_adapter._run_tool_sessions[run_id] = "invalid-shape-session"
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/v1/runs/{run_id}/tool_result",
+                data=json.dumps(body),
+                headers={"Content-Type": "application/json"},
+            )
+            data = await resp.json()
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_tool_result"
+
+    @pytest.mark.asyncio
     async def test_tool_result_resolves_pending_request_and_emits_event(self, split_adapter):
         app = _create_runs_app(split_adapter)
         run_id = "run_tool_result"
@@ -602,7 +759,7 @@ class TestRunToolResult:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.post(
                     f"/v1/runs/{run_id}/tool_result",
-                    json={"tool_call_id": "call_1", "result": "local output"},
+                    json={"request_id": entry.request["request_id"], "result": "local output"},
                 )
                 assert resp.status == 200
                 data = await resp.json()
@@ -610,7 +767,7 @@ class TestRunToolResult:
             assert data == {
                 "object": "hermes.run.tool_result_response",
                 "run_id": run_id,
-                "tool_call_id": "call_1",
+                "request_id": entry.request["request_id"],
                 "status": "resolved",
             }
             assert entry.event.is_set()
@@ -618,7 +775,41 @@ class TestRunToolResult:
             assert split_adapter._run_statuses[run_id]["status"] == "running"
             event = await asyncio.wait_for(q.get(), timeout=1.0)
             assert event["event"] == "tool.result"
-            assert event["tool_call_id"] == "call_1"
+            assert event["request_id"] == entry.request["request_id"]
+        finally:
+            unregister_tool_notify(session_key)
+            clear_tool_channel_state(session_key)
+
+    @pytest.mark.asyncio
+    async def test_tool_result_keeps_waiting_status_until_parallel_requests_finish(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_parallel_results"
+        session_key = "parallel-tool-session"
+        split_adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "waiting_for_tool_result",
+        }
+        split_adapter._run_tool_sessions[run_id] = session_key
+        try:
+            assert register_tool_notify(session_key, lambda request: None, "") is True
+            first = submit_tool_request(session_key, {"tool_call_id": "call_parallel_1"})
+            second = submit_tool_request(session_key, {"tool_call_id": "call_parallel_2"})
+            assert first is not None and second is not None
+
+            async with TestClient(TestServer(app)) as cli:
+                first_resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"request_id": first.request["request_id"], "result": "one"},
+                )
+                assert first_resp.status == 200
+                assert split_adapter._run_statuses[run_id]["status"] == "waiting_for_tool_result"
+
+                second_resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"request_id": second.request["request_id"], "result": "two"},
+                )
+                assert second_resp.status == 200
+                assert split_adapter._run_statuses[run_id]["status"] == "running"
         finally:
             unregister_tool_notify(session_key)
             clear_tool_channel_state(session_key)
@@ -637,7 +828,7 @@ class TestRunToolResult:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.post(
                     f"/v1/runs/{run_id}/tool_result",
-                    json={"tool_call_id": "call_token", "result": "wrong"},
+                    json={"request_id": entry.request["request_id"], "result": "wrong"},
                     headers={"X-Hermes-Tool-Executor-Token": "client-b"},
                 )
                 data = await resp.json()
@@ -662,7 +853,7 @@ class TestRunToolResult:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.post(
                     f"/v1/runs/{run_id}/tool_result",
-                    json={"tool_call_id": "call_token_ok", "result": "right"},
+                    json={"request_id": entry.request["request_id"], "result": "right"},
                     headers={"X-Hermes-Tool-Executor-Token": "client-a"},
                 )
                 data = await resp.json()
@@ -687,11 +878,11 @@ class TestRunToolResult:
             async with TestClient(TestServer(app)) as cli:
                 first = await cli.post(
                     f"/v1/runs/{run_id}/tool_result",
-                    json={"tool_call_id": "call_dup", "result": "one"},
+                    json={"request_id": entry.request["request_id"], "result": "one"},
                 )
                 second = await cli.post(
                     f"/v1/runs/{run_id}/tool_result",
-                    json={"tool_call_id": "call_dup", "result": "two"},
+                    json={"request_id": entry.request["request_id"], "result": "two"},
                 )
                 assert first.status == 200
                 assert second.status == 200
@@ -711,7 +902,7 @@ class TestRunToolResult:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post(
                 f"/v1/runs/{run_id}/tool_result",
-                json={"tool_call_id": "call_missing", "result": "late"},
+                json={"request_id": "toolreq_missing", "result": "late"},
             )
             data = await resp.json()
         assert resp.status == 409
@@ -765,6 +956,47 @@ class TestStopRun:
                 await asyncio.sleep(0.5)
                 assert run_id not in adapter._active_run_agents
                 assert run_id not in adapter._active_run_tasks
+
+    @pytest.mark.asyncio
+    async def test_stop_wakes_split_tool_waiting_for_executor_attachment(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        agent_started = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def run_conversation(user_message, conversation_history, task_id):
+            import model_tools
+
+            agent_started.set()
+            result = model_tools.handle_function_call(
+                "read_file",
+                {"path": "README.md"},
+                task_id=task_id,
+                tool_call_id="call_stop_before_attach",
+            )
+            return {"final_response": result}
+
+        mock_agent.run_conversation.side_effect = run_conversation
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(split_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "read before attach"})
+                run_id = (await resp.json())["run_id"]
+                assert agent_started.wait(timeout=1.0)
+
+                started = asyncio.get_running_loop().time()
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                for _ in range(50):
+                    if run_id not in split_adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert run_id not in split_adapter._active_run_tasks
+                assert asyncio.get_running_loop().time() - started < 1.0
 
     @pytest.mark.asyncio
     async def test_stop_nonexistent_run_returns_404(self, adapter):
@@ -875,3 +1107,38 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+class TestRunSweep:
+    @pytest.mark.asyncio
+    async def test_sweep_does_not_destroy_active_run_after_stream_ttl(self, adapter):
+        run_id = "run_active_past_ttl"
+        task = MagicMock()
+        task.done.return_value = False
+        agent = MagicMock()
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = 0.0
+        adapter._active_run_tasks[run_id] = task
+        adapter._active_run_agents[run_id] = agent
+        adapter._run_approval_sessions[run_id] = run_id
+        adapter._run_tool_sessions[run_id] = run_id
+
+        sleep_calls = 0
+
+        async def one_sweep(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                raise asyncio.CancelledError
+
+        with patch("gateway.platforms.api_server.asyncio.sleep", one_sweep), patch(
+            "gateway.platforms.api_server.time.time",
+            return_value=adapter._RUN_STREAM_TTL + 1,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await adapter._sweep_orphaned_runs()
+
+        assert adapter._run_streams[run_id] is not None
+        assert adapter._active_run_tasks[run_id] is task
+        assert adapter._active_run_agents[run_id] is agent
+        assert adapter._run_tool_sessions[run_id] == run_id

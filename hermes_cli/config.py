@@ -2962,7 +2962,8 @@ DEFAULT_CONFIG = {
             # Experimental split-runtime support for /v1/runs. When enabled,
             # an attached local executor on the SSE stream can execute a small
             # allowlisted tool surface locally while the agent loop runs on the
-            # API-server host. Default off; PR 1 routes read-only file tools.
+            # API-server host. Default off; the initial protocol routes only
+            # read-only file tools.
             "split_runtime": {
                 "enabled": False,
                 "routed_toolsets": ["file"],

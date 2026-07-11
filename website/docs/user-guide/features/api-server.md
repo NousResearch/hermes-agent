@@ -208,6 +208,13 @@ Returns a machine-readable description of the API server's stable surface for ex
   "platform": "hermes-agent",
   "model": "hermes-agent",
   "auth": {"type": "bearer", "required": true},
+  "runtime": {
+    "tool_execution": "server",
+    "runs_tool_execution": "server",
+    "split_runtime": false,
+    "split_runtime_tools": [],
+    "split_runtime_protocol": null
+  },
   "features": {
     "chat_completions": true,
     "responses_api": true,
@@ -267,6 +274,44 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 ### GET /v1/runs/\{run_id\}/events
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+#### Experimental split-runtime executor
+
+The `/v1/runs` API can route `read_file` and `search_files` to a trusted local executor while the agent loop remains on the API-server host. This protocol defaults off and is configured only in `config.yaml`:
+
+```yaml
+gateway:
+  api_server:
+    split_runtime:
+      enabled: false
+      routed_toolsets: [file]
+      request_timeout_seconds: 300
+```
+
+After creating a run, attach the executor with `GET /v1/runs/{run_id}/events?tool_executor=1`. The first routed call waits up to `request_timeout_seconds` for this attachment. A `tool.request` event includes a server-generated `request_id`, the model's `tool_call_id` as metadata, the tool name, and arguments:
+
+```json
+{
+  "event": "tool.request",
+  "run_id": "run_abc123",
+  "request_id": "toolreq_abc123",
+  "tool_call_id": "call_provider_id",
+  "tool_name": "read_file",
+  "arguments": {"path": "README.md"}
+}
+```
+
+Return the result through **POST `/v1/runs/{run_id}/tool_result`**:
+
+```json
+{"request_id": "toolreq_abc123", "result": "local file content"}
+```
+
+Use the server-generated `request_id` for transport correlation. Do not correlate results with `tool_call_id`, which providers may reuse. The executor may send `X-Hermes-Tool-Executor-Token` on both the SSE attachment and result POST for an additional per-attachment guard; never put this token in the query string.
+
+Protocol version 1 allows one events consumer per split run. Missing executors, timeouts, disconnects, stale results, and router failures become tool errors and never fall back to server-side execution. Delegated subagents and `codex_app_server` are rejected in split runs because those paths cannot yet preserve the local-routing contract. A fast run that finishes before executor attachment still permits the executor URL to drain terminal lifecycle events as an observer.
+
+The local executor is trusted but must enforce its own workspace/path sandbox and invoke the current local Hermes tool handlers. This version does not ship a packaged executor and does not route write, terminal, browser, GUI, or computer-use tools.
 
 ### POST /v1/runs/\{run_id\}/stop
 

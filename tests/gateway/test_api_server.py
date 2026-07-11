@@ -568,14 +568,25 @@ class TestConcurrencyCap:
         assert resp.headers.get("Retry-After")
 
     def test_cap_counts_both_buckets(self):
-        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        # Active /v1/runs tasks + chat/responses inflight work share the cap.
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 4
         adapter._inflight_agent_runs = 2
-        adapter._run_streams = {"r1": object(), "r2": object()}
+        task_1 = MagicMock()
+        task_1.done.return_value = False
+        task_2 = MagicMock()
+        task_2.done.return_value = False
+        adapter._active_run_tasks = {"r1": task_1, "r2": task_2}
         resp = adapter._concurrency_limited_response()
         assert resp is not None
         assert resp.status == 429
+
+    def test_completed_run_event_buffers_do_not_consume_capacity(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        adapter._run_streams = {"completed": asyncio.Queue()}
+        adapter._active_run_tasks = {}
+        assert adapter._concurrency_limited_response() is None
 
     def test_zero_disables_cap(self):
         adapter = _make_adapter()
@@ -3290,7 +3301,10 @@ class TestCORS:
                 },
             )
             assert resp.status == 200
-            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+            allowed_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Idempotency-Key" in allowed_headers
+            assert "X-Hermes-Tool-Executor" in allowed_headers
+            assert "X-Hermes-Tool-Executor-Token" in allowed_headers
 
     @pytest.mark.asyncio
     async def test_cors_sets_vary_origin_header(self):

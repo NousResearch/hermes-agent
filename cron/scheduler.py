@@ -3109,19 +3109,23 @@ def run_job(
         _is_oneshot = (
             isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
         )
+        _run_claim = job.get("run_claim")
+        _run_claim_owner = (
+            str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
+        )
         _CLAIM_HEARTBEAT_SECONDS = 60.0
         _last_claim_heartbeat = time.monotonic()
 
         def _heartbeat_run_claim_if_due():
             nonlocal _last_claim_heartbeat
-            if not _is_oneshot:
+            if not _is_oneshot or not _run_claim_owner:
                 return
             _mono = time.monotonic()
             if _mono - _last_claim_heartbeat < _CLAIM_HEARTBEAT_SECONDS:
                 return
             _last_claim_heartbeat = _mono
             try:
-                heartbeat_run_claim(job_id)
+                heartbeat_run_claim(job_id, expected_owner=_run_claim_owner)
             except Exception:
                 logger.debug(
                     "Job '%s': run_claim heartbeat failed", job_name, exc_info=True

@@ -1172,7 +1172,8 @@ class TestGetDueJobs:
         # Mid-run heartbeat before the TTL horizon refreshes the claim.
         monkeypatch.setattr("cron.jobs._hermes_now",
                             lambda: t0 + timedelta(seconds=ttl - 60))
-        assert heartbeat_run_claim("slowrun") is True
+        owner = get_job("slowrun")["run_claim"]["by"]
+        assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
 
         # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
         # tick would stale-remove the maxed one-shot; with it the claim is
@@ -1196,9 +1197,39 @@ class TestGetDueJobs:
             "schedule": {"kind": "once", "run_at": future},
             "next_run_at": future, "enabled": True, "state": "scheduled",
         }])
-        assert heartbeat_run_claim("noclaim") is False
-        assert heartbeat_run_claim("missing-job") is False
+        assert heartbeat_run_claim("noclaim", expected_owner="owner") is False
+        assert heartbeat_run_claim("missing-job", expected_owner="owner") is False
         assert get_job("noclaim").get("run_claim") is None
+
+    def test_heartbeat_run_claim_rejects_replaced_owner(self, tmp_cron_dir):
+        """A resumed stale runner must not keep a newer owner's claim alive."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "reclaimed", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": future},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+            "run_claim": {"at": original_at, "by": "new-owner"},
+        }])
+
+        assert heartbeat_run_claim("reclaimed", expected_owner="old-owner") is False
+        assert get_job("reclaimed")["run_claim"] == {
+            "at": original_at,
+            "by": "new-owner",
+        }
+
+    def test_heartbeat_run_claim_rejects_non_oneshot(self, tmp_cron_dir):
+        """Heartbeat ownership applies only to one-shot dispatch claims."""
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "recurring", "name": "R", "prompt": "x",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "enabled": True,
+            "run_claim": {"at": original_at, "by": "owner"},
+        }])
+
+        assert heartbeat_run_claim("recurring", expected_owner="owner") is False
+        assert get_job("recurring")["run_claim"]["at"] == original_at
 
 
     def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):

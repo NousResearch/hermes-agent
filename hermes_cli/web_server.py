@@ -59,6 +59,7 @@ from hermes_cli.config import (
     OPTIONAL_ENV_VARS,
     clear_model_endpoint_credentials,
     get_config_path,
+    get_env_value,
     get_env_path,
     get_hermes_home,
     load_config,
@@ -5209,6 +5210,42 @@ _EMPTY_MODEL_INFO: dict = {
 }
 
 
+def _retemplate_matching_api_keys(obj: Any, *, old_value: str, env_var: str) -> Any:
+    """Replace stale inline ``api_key`` values with ``${ENV_VAR}`` templates."""
+    if isinstance(obj, dict):
+        updated: Dict[str, Any] = {}
+        for key, value in obj.items():
+            if key == "api_key" and isinstance(value, str) and value == old_value:
+                updated[key] = f"${{{env_var}}}"
+            else:
+                updated[key] = _retemplate_matching_api_keys(
+                    value,
+                    old_value=old_value,
+                    env_var=env_var,
+                )
+        return updated
+    if isinstance(obj, list):
+        return [
+            _retemplate_matching_api_keys(item, old_value=old_value, env_var=env_var)
+            for item in obj
+        ]
+    return obj
+
+
+def _scrub_stale_inline_api_keys_for_env_var(env_var: str, old_value: str) -> bool:
+    """Re-template config.yaml api_key fields shadowing a rotated env secret."""
+    if not old_value:
+        return False
+    raw = read_raw_config()
+    if not isinstance(raw, dict) or not raw:
+        return False
+    updated = _retemplate_matching_api_keys(raw, old_value=old_value, env_var=env_var)
+    if updated == raw:
+        return False
+    save_config(updated)
+    return True
+
+
 @app.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Return resolved model metadata for the currently configured model.
@@ -6092,7 +6129,17 @@ async def get_env_vars(profile: Optional[str] = None):
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
+            old_value = ""
+            key_upper = body.key.upper()
+            if (
+                OPTIONAL_ENV_VARS.get(body.key, {}).get("password")
+                or key_upper.endswith(("_API_KEY", "_TOKEN"))
+                or key_upper.startswith("TERMINAL_SSH")
+            ):
+                old_value = str(get_env_value(body.key) or "").strip()
             save_env_value(body.key, body.value)
+            if old_value and body.value != old_value:
+                _scrub_stale_inline_api_keys_for_env_var(body.key, old_value)
         return {"ok": True, "key": body.key}
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys

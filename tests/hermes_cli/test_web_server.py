@@ -1984,6 +1984,44 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_put_env_retemplates_stale_inline_api_keys(self):
+        """Updating a provider key via /api/env must stop stale config.yaml
+        literals from shadowing the new .env value."""
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  provider: custom\n"
+            "  base_url: https://proxy.example.com/v1\n"
+            "  api_key: sk-old-inline\n"
+            "providers:\n"
+            "  proxy:\n"
+            "    name: Proxy\n"
+            "    base_url: https://proxy.example.com/v1\n"
+            "    api_key: sk-old-inline\n"
+            "custom_providers:\n"
+            "  - name: Proxy\n"
+            "    base_url: https://proxy.example.com/v1\n"
+            "    api_key: sk-old-inline\n",
+            encoding="utf-8",
+        )
+        (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-old-inline\n", encoding="utf-8")
+
+        resp = self.client.put(
+            "/api/env",
+            json={"key": "OPENAI_API_KEY", "value": "sk-new-live"},
+        )
+        assert resp.status_code == 200
+
+        env_text = (hermes_home / ".env").read_text(encoding="utf-8")
+        config_text = (hermes_home / "config.yaml").read_text(encoding="utf-8")
+
+        assert "OPENAI_API_KEY=sk-new-live" in env_text
+        assert "api_key: ${OPENAI_API_KEY}" in config_text
+        assert "sk-old-inline" not in config_text
+        assert "sk-new-live" not in config_text
+
     def test_get_env_vars_marks_channel_managed_keys(self):
         from hermes_cli.web_server import _channel_managed_env_keys
 

@@ -738,7 +738,7 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }):
+        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
@@ -798,7 +798,7 @@ class TestHealthDetailedEndpoint:
             "status": "degraded",
             "checks": {
                 "state_db": {"status": "ok"},
-                "config": {"status": "degraded", "detail": "using last-known-good"},
+                "config": {"status": "degraded", "detail": "invalid config"},
             },
         }
         with patch("gateway.status.read_runtime_status", return_value={"gateway_state": "running"}), \
@@ -819,6 +819,21 @@ class TestHealthDetailedEndpoint:
                 assert resp.status == 200
                 assert (await resp.json())["status"] == "ok"
         probe.assert_not_called()
+
+    def test_readiness_work_counts_exclude_retained_completed_runs(self, adapter):
+        adapter._run_statuses = {
+            "queued": {"status": "queued"},
+            "running": {"status": "running"},
+            "approval": {"status": "waiting_for_approval"},
+            "done": {"status": "completed"},
+            "failed": {"status": "failed"},
+        }
+        # Completed streams may remain attached for replay; they are not work.
+        adapter._run_streams = {"done": object(), "failed": object()}
+
+        with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=4), \
+             patch("tools.async_delegation.active_count", return_value=2):
+            assert adapter._readiness_work_counts() == (3, 4, 2)
 
 
 # ---------------------------------------------------------------------------

@@ -564,11 +564,33 @@ _GOOGLE_HIDDEN_MODELS = frozenset({
 })
 
 
+def _google_show_hidden_overrides() -> frozenset:
+    """Model IDs the user opted to un-hide via config.yaml's
+    ``models.show_hidden_google_models``.
+
+    Config-driven so the override survives a `hermes update` — unlike
+    editing _GOOGLE_HIDDEN_MODELS directly, which gets overwritten by the
+    next source update. Any failure to load config (missing file, bad
+    config on a first-run path, etc.) just means no overrides, same as an
+    empty list — never raises into the caller.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        overrides = cfg.get("models", {}).get("show_hidden_google_models", [])
+        return frozenset(
+            (m or "").strip().lower() for m in overrides if isinstance(m, str)
+        )
+    except Exception:
+        return frozenset()
+
+
 def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
     provider_lower = (provider or "").strip().lower()
     model_lower = (model_id or "").strip().lower()
     if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_HIDDEN_MODELS:
-        return True
+        return model_lower not in _google_show_hidden_overrides()
     return False
 
 

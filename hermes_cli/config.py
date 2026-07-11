@@ -979,6 +979,19 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "models": {
+        # Google/Gemini model IDs to force-show in the interactive model and
+        # fallback pickers despite agent/models_dev.py's built-in
+        # _GOOGLE_HIDDEN_MODELS filter (which hides some Gemma IDs by
+        # default — their low TPM quotas trip under agent-style traffic for
+        # most users, a reasonable default, just not a universal one).
+        # Config-driven so an override survives `hermes update` instead of
+        # needing a source patch to _GOOGLE_HIDDEN_MODELS reapplied every
+        # release. Only affects picker visibility — raw config entries
+        # (fallback_providers, a manually-typed model id, etc.) already
+        # bypass the filter entirely and always worked. Case-insensitive.
+        "show_hidden_google_models": [],
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
@@ -1050,6 +1063,16 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Skill self-patching guidance — controls whether the model is told
+        # to call skill_manage(action='patch') on its own initiative when it
+        # notices a loaded skill is outdated/incomplete/wrong (True, default
+        # — preserves existing behavior), or told to only patch a skill when
+        # the user explicitly asks for that change in the current turn
+        # (False). Positive feedback on a task's *output* ("that worked",
+        # "nice job") is not treated as authorization to edit skill files
+        # either way once this is False. Set False for a more deterministic,
+        # no-surprise-edits posture.
+        "skill_auto_patch": True,
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

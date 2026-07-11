@@ -293,6 +293,13 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
+    def test_matrix_base_spec_does_not_require_encryption_extra(self, monkeypatch):
+        self._fake_version(monkeypatch, {"mautrix": "0.21.0"})
+        assert ld._is_satisfied("mautrix==0.21.0") is True
+
+    def test_matrix_e2ee_feature_still_requires_encryption_extra_spec(self):
+        assert "mautrix[encryption]==0.21.0" in ld.LAZY_DEPS["platform.matrix.e2ee"]
+
 
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)

@@ -473,3 +473,11 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_skill_review_prompt_mentions_read_before_write_retry():
+    import agent.background_review as bg_review
+
+    assert "skill_view(name) for SKILL.md" in bg_review._SKILL_REVIEW_PROMPT
+    assert "_read_before_write_required" in bg_review._SKILL_REVIEW_PROMPT
+    assert "skill_view(name, file_path=...)" in bg_review._COMBINED_REVIEW_PROMPT

@@ -53,6 +53,37 @@ class TestRedactApprovalCommand:
         raw = "ls -la /tmp && echo hello"
         assert _redact_approval_command(raw) == raw
 
+    def test_redacts_web_url_userinfo_and_all_query_values(self):
+        sentinel = "opaque" + "X" * 24
+        raw = (
+            f"curl 'https://user:{sentinel}@example.com/run"
+            f"?token={sentinel}&label=public'"
+        )
+
+        out = _redact_approval_command(raw)
+
+        assert sentinel not in out
+        assert "example.com/run" in out
+        assert "token=[REDACTED]" in out
+        assert "label=[REDACTED]" in out
+
+    def test_redacts_secret_bearing_cli_flag_values(self):
+        sentinel = "opaque" + "Y" * 24
+        raw = (
+            f"deploy --password {sentinel} --api-key={sentinel} "
+            f"--access-token '{sentinel}'"
+        )
+
+        out = _redact_approval_command(raw)
+
+        assert sentinel not in out
+        assert "--password [REDACTED]" in out
+        assert "--api-key=[REDACTED]" in out
+        assert "--access-token [REDACTED]" in out
+
+    def test_bounds_approval_preview(self):
+        assert len(_redact_approval_command("x" * 5000)) == 4096
+
     def test_forces_redaction_even_when_disabled(self, monkeypatch):
         """force=True must redact even if security.redact_secrets is off -- the
         approval prompt is a hard secret-egress boundary regardless of config."""
@@ -77,13 +108,19 @@ class TestApprovalCommandWiring:
     benign refactor doesn't cause a false failure, and so a discarded-result
     call (`_redact(cmd); send(cmd)`) does NOT pass."""
 
-    def _assert_redacts_then_uses(self, module, func_name: str, sink_substr: str):
-        """Parse `module`'s full AST, locate the (possibly nested) function
-        `func_name`, and assert it contains an assignment
-        `<x> = _redact_approval_command(...)` whose result is then used by a
-        statement matching `sink_substr` on a LATER line. Walking the real AST
-        (not a source slice) is refactor-robust and rejects discarded-result
-        calls (the call must be an assignment, not a bare expression)."""
+    def _assert_redacts_then_uses(
+        self,
+        module,
+        func_name: str,
+        sink_substr: str,
+        helper_name: str = "_redact_approval_command",
+    ):
+        """Assert a helper result is assigned before the named egress sink.
+
+        Walking the real AST (not a source slice) is refactor-robust and rejects
+        discarded-result calls: the helper call must be an assignment, not a
+        bare expression.
+        """
         import ast
         import inspect
 
@@ -100,10 +137,10 @@ class TestApprovalCommandWiring:
         for node in ast.walk(target_fn):
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
                 fn = node.value.func
-                if isinstance(fn, ast.Name) and fn.id == "_redact_approval_command":
+                if isinstance(fn, ast.Name) and fn.id == helper_name:
                     redact_line = node.lineno
         assert redact_line is not None, (
-            f"{func_name} must assign the result of _redact_approval_command(...) "
+            f"{func_name} must assign the result of {helper_name}(...) "
             "(a discarded-result call would still leak the raw command)"
         )
 
@@ -125,4 +162,9 @@ class TestApprovalCommandWiring:
     def test_sse_api_path_redacts_before_enqueue(self):
         from gateway.platforms import api_server
 
-        self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+        self._assert_redacts_then_uses(
+            api_server,
+            "_approval_notify",
+            "put_nowait",
+            helper_name="_build_run_approval_request_event",
+        )

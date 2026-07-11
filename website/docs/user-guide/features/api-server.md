@@ -274,7 +274,20 @@ Interrupt a running agent turn. The endpoint returns immediately with `{"status"
 
 ### POST /v1/runs/\{run_id\}/approval
 
-Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
+Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). Each `approval.request` event includes an opaque `approval_id`; external UIs should retain that ID with the displayed request and send it back with the decision:
+
+```json
+{
+  "approval_id": "approval_0123456789abcdef0123456789abcdef",
+  "choice": "once"
+}
+```
+
+When `approval_id` is present, Hermes atomically resolves only that exact pending entry. A stale or unknown ID returns `409` and never falls through to another queued approval. The successful `approval.responded` event and HTTP acknowledgement echo the same ID. Legacy callers that omit the field retain FIFO behavior for compatibility, but detached or asynchronous UIs must not rely on that path.
+
+Approval event display fields are allowlisted, aggressively redacted, and bounded before they leave Hermes. They remain potentially sensitive operational context and should not be logged or cached by clients.
+
+Require `features.run_approval_ids == true` from `/v1/capabilities` before surfacing identity-bound controls. `features.run_approval_response` only indicates that the older response endpoint exists.
 
 ## Jobs API (background scheduled work)
 

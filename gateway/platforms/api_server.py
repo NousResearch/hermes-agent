@@ -645,6 +645,50 @@ def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
     return redacted
 
 
+_APPROVAL_ID_PATTERN = re.compile(r"approval_[0-9a-f]{32}")
+_APPROVAL_CHOICES = ["once", "session", "always", "deny"]
+
+
+def _build_run_approval_request_event(run_id: str, approval_data: dict) -> dict:
+    """Build the bounded, allowlisted approval event exposed to API clients."""
+    from gateway.run import _redact_approval_command
+
+    approval_id = approval_data.get("approval_id")
+    if (
+        not isinstance(approval_id, str)
+        or _APPROVAL_ID_PATTERN.fullmatch(approval_id) is None
+    ):
+        raise ValueError("invalid approval ID")
+
+    def display_text(name: str, limit: int) -> str:
+        value = approval_data.get(name, "")
+        if not isinstance(value, str):
+            value = ""
+        return _redact_approval_command(value)[:limit]
+
+    raw_pattern_keys = approval_data.get("pattern_keys", [])
+    if not isinstance(raw_pattern_keys, list):
+        raw_pattern_keys = []
+    pattern_keys = [
+        _redact_approval_command(value)[:256]
+        for value in raw_pattern_keys[:16]
+        if isinstance(value, str)
+    ]
+
+    return {
+        "event": "approval.request",
+        "run_id": run_id,
+        "timestamp": time.time(),
+        "approval_id": approval_id,
+        "command": display_text("command", 4096),
+        "description": display_text("description", 1024),
+        "pattern_key": display_text("pattern_key", 256),
+        "pattern_keys": pattern_keys,
+        "allow_permanent": approval_data.get("allow_permanent") is True,
+        "choices": list(_APPROVAL_CHOICES),
+    }
+
+
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
     """OpenAI-style error envelope."""
     return {
@@ -1493,6 +1537,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "run_approval_ids": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -4299,21 +4344,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
-                    event = dict(approval_data or {})
-                    # Redact credentials from the command before it enters the
-                    # SSE/API event stream — same egress bug as #48456, second
-                    # transport: API/desktop clients would otherwise receive the
-                    # raw command Tirith flagged. Reuse the gateway seam.
-                    if "command" in event:
-                        from gateway.run import _redact_approval_command
-
-                        event["command"] = _redact_approval_command(event.get("command"))
-                    event.update({
-                        "event": "approval.request",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "choices": ["once", "session", "always", "deny"],
-                    })
+                    try:
+                        event = _build_run_approval_request_event(
+                            run_id,
+                            approval_data or {},
+                        )
+                    except (TypeError, ValueError):
+                        logger.error(
+                            "[api_server] rejected malformed approval event for run %s",
+                            run_id,
+                        )
+                        return
                     self._set_run_status(
                         run_id,
                         "waiting_for_approval",
@@ -4587,17 +4628,56 @@ class APIServerAdapter(BasePlatformAdapter):
             _coerce_request_bool(body.get("all"), default=False)
             or _coerce_request_bool(body.get("resolve_all"), default=False)
         )
-        try:
-            from tools.approval import resolve_gateway_approval
-
-            resolved = resolve_gateway_approval(
-                approval_session_key,
-                choice,
-                resolve_all=resolve_all,
+        approval_id = body.get("approval_id")
+        if approval_id is not None and (
+            not isinstance(approval_id, str)
+            or _APPROVAL_ID_PATTERN.fullmatch(approval_id) is None
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval ID",
+                    code="invalid_approval_id",
+                ),
+                status=400,
             )
-        except Exception as exc:
-            logger.exception("[api_server] approval resolution failed for run %s", run_id)
-            return web.json_response(_openai_error(str(exc)), status=500)
+        if approval_id is not None and resolve_all:
+            return web.json_response(
+                _openai_error(
+                    "approval_id cannot be combined with resolve_all",
+                    code="invalid_approval_request",
+                ),
+                status=400,
+            )
+        try:
+            if approval_id is None:
+                from tools.approval import resolve_gateway_approval
+
+                resolved = resolve_gateway_approval(
+                    approval_session_key,
+                    choice,
+                    resolve_all=resolve_all,
+                )
+            else:
+                from tools.approval import resolve_gateway_approval_by_id
+
+                resolved = resolve_gateway_approval_by_id(
+                    approval_session_key,
+                    approval_id,
+                    choice,
+                )
+        except Exception:
+            logger.error(
+                "[api_server] approval resolution failed for run %s",
+                run_id,
+            )
+            return web.json_response(
+                _openai_error(
+                    "Approval resolution failed",
+                    err_type="api_error",
+                    code="approval_resolution_failed",
+                ),
+                status=500,
+            )
 
         if resolved <= 0:
             return web.json_response(
@@ -4612,22 +4692,28 @@ class APIServerAdapter(BasePlatformAdapter):
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
-                q.put_nowait({
+                response_event = {
                     "event": "approval.responded",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "choice": choice,
                     "resolved": resolved,
-                })
+                }
+                if approval_id is not None:
+                    response_event["approval_id"] = approval_id
+                q.put_nowait(response_event)
             except Exception:
                 pass
 
-        return web.json_response({
+        response_payload = {
             "object": "hermes.run.approval_response",
             "run_id": run_id,
             "choice": choice,
             "resolved": resolved,
-        })
+        }
+        if approval_id is not None:
+            response_payload["approval_id"] = approval_id
+        return web.json_response(response_payload)
 
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""

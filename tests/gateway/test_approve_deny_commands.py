@@ -155,6 +155,65 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_resolve_by_id_never_retargets_fifo_head(self):
+        from tools.approval import (
+            resolve_gateway_approval_by_id,
+            _ApprovalEntry,
+            _gateway_queues,
+        )
+        session_key = "test-exact-id"
+        first = _ApprovalEntry({"command": "first"})
+        second = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [first, second]
+
+        assert first.approval_id.startswith("approval_")
+        assert len(first.approval_id) == len("approval_") + 32
+        assert first.data["approval_id"] == first.approval_id
+        assert first.approval_id != second.approval_id
+
+        assert resolve_gateway_approval_by_id(
+            session_key,
+            second.approval_id,
+            "deny",
+        ) == 1
+        assert not first.event.is_set()
+        assert second.event.is_set()
+        assert second.result == "deny"
+        assert _gateway_queues[session_key] == [first]
+
+        assert resolve_gateway_approval_by_id(
+            session_key,
+            second.approval_id,
+            "once",
+        ) == 0
+        assert not first.event.is_set()
+        assert _gateway_queues[session_key] == [first]
+
+    def test_gateway_notify_receives_approval_id(self, monkeypatch):
+        from tools import approval as approval_module
+
+        captured = {}
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"gateway_timeout": 0},
+        )
+
+        result = approval_module._await_gateway_decision(
+            "notify-with-id",
+            lambda data: captured.update(data),
+            {
+                "command": "dangerous-command",
+                "description": "test",
+                "pattern_key": "test",
+                "pattern_keys": ["test"],
+            },
+        )
+
+        assert captured["approval_id"].startswith("approval_")
+        assert len(captured["approval_id"]) == len("approval_") + 32
+        assert result == {"resolved": False, "choice": None, "reason": None}
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

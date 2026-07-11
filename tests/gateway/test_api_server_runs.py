@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _build_run_approval_request_event,
     cors_middleware,
     security_headers_middleware,
 )
@@ -276,6 +278,43 @@ class TestRunStatus:
 # ---------------------------------------------------------------------------
 
 
+def test_approval_request_event_allowlists_and_redacts_display_fields():
+    sentinel = "opaque" + "Z" * 24
+    approval_id = "approval_" + "a" * 32
+
+    event = _build_run_approval_request_event(
+        "run_safe_event",
+        {
+            "approval_id": approval_id,
+            "command": f"curl 'https://user:{sentinel}@example.com/?key={sentinel}'",
+            "description": f"deploy --password {sentinel}",
+            "pattern_key": f"pattern --token={sentinel}",
+            "pattern_keys": [f"first?value={sentinel}", "second"],
+            "allow_permanent": True,
+            "raw_internal_field": sentinel,
+        },
+    )
+
+    assert set(event) == {
+        "event",
+        "run_id",
+        "timestamp",
+        "approval_id",
+        "command",
+        "description",
+        "pattern_key",
+        "pattern_keys",
+        "allow_permanent",
+        "choices",
+    }
+    assert event["approval_id"] == approval_id
+    assert event["choices"] == ["once", "session", "always", "deny"]
+    assert sentinel not in json.dumps(event)
+    assert len(event["command"]) <= 4096
+    assert len(event["description"]) <= 1024
+    assert len(event["pattern_key"]) <= 256
+
+
 class TestRunEvents:
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
@@ -333,6 +372,70 @@ class TestRunEvents:
                     "approval_not_active",
                     "approval_not_pending",
                 }
+
+    @pytest.mark.asyncio
+    async def test_approval_resolution_failure_redacts_exception(self, adapter, caplog):
+        app = _create_runs_app(adapter)
+        run_id = "run_redacted_failure"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = "session-redacted"
+        sentinel = "github_pat_NEVER_EXPOSE_THIS_SENTINEL"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                "tools.approval.resolve_gateway_approval",
+                side_effect=RuntimeError(sentinel),
+            ):
+                with caplog.at_level("ERROR", logger="gateway.platforms.api_server"):
+                    response = await cli.post(
+                        f"/v1/runs/{run_id}/approval",
+                        json={"choice": "deny"},
+                    )
+                body = await response.text()
+                data = await response.json()
+
+        assert response.status == 500
+        assert data["error"] == {
+            "message": "Approval resolution failed",
+            "type": "api_error",
+            "param": None,
+            "code": "approval_resolution_failed",
+        }
+        assert sentinel not in body
+        assert sentinel not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_approval_response_by_id_never_retargets_fifo_head(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_exact_approval"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        adapter._run_approval_sessions[run_id] = run_id
+        adapter._run_streams[run_id] = asyncio.Queue()
+        first = approval_mod._ApprovalEntry({"command": "first"})
+        second = approval_mod._ApprovalEntry({"command": "second"})
+        approval_mod._gateway_queues[run_id] = [first, second]
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/v1/runs/{run_id}/approval",
+                json={"choice": "deny", "approval_id": second.approval_id},
+            )
+            data = await response.json()
+
+        assert response.status == 200
+        assert data == {
+            "object": "hermes.run.approval_response",
+            "run_id": run_id,
+            "approval_id": second.approval_id,
+            "choice": "deny",
+            "resolved": 1,
+        }
+        assert not first.event.is_set()
+        assert second.event.is_set()
+        assert approval_mod._gateway_queues[run_id] == [first]
+        event = adapter._run_streams[run_id].get_nowait()
+        assert event["event"] == "approval.responded"
+        assert event["approval_id"] == second.approval_id
 
     @pytest.mark.asyncio
     async def test_approval_string_false_does_not_resolve_all(self, adapter):

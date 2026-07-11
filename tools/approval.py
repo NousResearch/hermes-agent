@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -1419,11 +1420,13 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("approval_id", "event", "data", "result", "reason")
 
     def __init__(self, data: dict):
+        self.approval_id = f"approval_{uuid.uuid4().hex}"
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = dict(data)    # command, description, pattern_keys, …
+        self.data["approval_id"] = self.approval_id
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
@@ -1494,6 +1497,40 @@ def resolve_gateway_approval(session_key: str, choice: str,
             entry.reason = reason
         entry.event.set()
     return len(targets)
+
+
+def resolve_gateway_approval_by_id(session_key: str, approval_id: str,
+                                   choice: str,
+                                   reason: Optional[str] = None) -> int:
+    """Resolve exactly one pending approval without FIFO retargeting.
+
+    A stale or unknown ID resolves nothing, even when another approval is
+    pending in the same session. This identity-bound path is intended for
+    external UIs whose response can arrive after the queue has changed.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return 0
+        entry = next(
+            (
+                candidate
+                for candidate in queue
+                if candidate.approval_id == approval_id
+            ),
+            None,
+        )
+        if entry is None:
+            return 0
+        queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    entry.result = choice
+    if reason:
+        entry.reason = reason
+    entry.event.set()
+    return 1
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -2462,7 +2499,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_cb(entry.data)
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()

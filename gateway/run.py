@@ -337,20 +337,45 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
-def _redact_approval_command(cmd: "str | None") -> str:
-    """Redact credentials from a command before it goes into an approval prompt.
+_APPROVAL_URL_USERINFO_RE = re.compile(
+    r"(?i)\b((?:https?|wss?)://)[^/\s'\"<>]*@"
+)
+_APPROVAL_URL_QUERY_VALUE_RE = re.compile(
+    r"([?&][^=\s&#'\"<>]+=)([^&#\s'\"<>]*)"
+)
+_APPROVAL_SECRET_FLAG_RE = re.compile(
+    r"(?i)(--(?:password|passwd|passphrase|token|access-token|auth-token|"
+    r"api-key|apikey|secret|client-secret|credential)(?:=|\s+))"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s]+)"
+)
+_APPROVAL_PREVIEW_MAX_CHARS = 4096
 
-    Tirith's *findings* are already redacted, but the gateway approval prompt
-    is built from the raw command string, so a credential-shaped value Tirith
-    flagged would otherwise be echoed verbatim to the chat platform (#48456).
-    Uses ``redact_sensitive_text(force=True)`` — the same Tirith-grade redactor
-    — so the prompt honors redaction even when ``security.redact_secrets`` is
-    off. Module-level so the wiring is unit-testable (the call site is a deeply
-    nested gateway closure that cannot be driven directly).
+
+def _redact_approval_command(cmd: "str | None") -> str:
+    """Build a bounded, aggressively redacted approval-command preview.
+
+    Approval prompts are display-only egress, unlike command execution. In
+    addition to the shared credential-shape pass, mask all web URL userinfo and
+    query values plus values supplied to secret-bearing long flags. This keeps
+    OAuth and magic-link commands executable while preventing those values from
+    being echoed to chat/API clients.
     """
     from agent.redact import redact_sensitive_text
 
-    return redact_sensitive_text(str(cmd or ""), force=True)
+    redacted = redact_sensitive_text(str(cmd or ""), force=True)
+    redacted = _APPROVAL_URL_USERINFO_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]@",
+        redacted,
+    )
+    redacted = _APPROVAL_URL_QUERY_VALUE_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
+    redacted = _APPROVAL_SECRET_FLAG_RE.sub(
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
+    return redacted[:_APPROVAL_PREVIEW_MAX_CHARS]
 
 
 def _gateway_provider_error_reply(text: str) -> str:

@@ -1713,12 +1713,19 @@ class HindsightMemoryProvider(MemoryProvider):
                     tags=args.get("tags"),
                 )
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
+                # Read retain_async from provider config (self._retain_async) instead
+                # of hard-coding True, so users who set retain_async: false in
+                # config.yaml get consistent behavior across sync_turn and the
+                # tool handler path. (#60648 sweeper feedback)
                 item.pop("bank_id", None)
                 item.pop("retain_async", None)
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
+                retain_async_flag = self._retain_async
                 self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                    lambda client: client.aretain_batch(
+                        bank_id=self._bank_id, items=[item], retain_async=retain_async_flag,
+                    )
                 )
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})

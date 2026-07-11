@@ -227,6 +227,15 @@ _AUTO_FOCUS_MAX_CHARS = 700
 _HIGH_SIGNAL_ANCHOR_MIN_TOKENS = 256
 _HIGH_SIGNAL_ANCHOR_MAX_TOKENS = 800
 _HIGH_SIGNAL_ANCHOR_MAX_CHARS = 800
+_FIDELITY_LEDGER_START = "<!-- hermes-compaction-fidelity:v1 -->"
+_FIDELITY_LEDGER_END = "<!-- /hermes-compaction-fidelity -->"
+_FIDELITY_LEDGER_TOKEN_BUDGET = 800
+_FIDELITY_LEDGER_MAX_ENTRIES = 32
+_FIDELITY_KIND_PRIORITY = {
+    "correction": 3,
+    "decision": 2,
+    "configuration": 1,
+}
 
 # Target explicit language instead of classifying every user turn. False
 # negatives still flow through the normal summarizer; false positives consume
@@ -1588,6 +1597,171 @@ class ContextCompressor(ContextEngine):
             )
         return "\n".join(lines)
 
+    @classmethod
+    def _normalize_fidelity_text(cls, value: str) -> str:
+        """Normalize ledger text and prevent delimiter injection."""
+        normalized = redact_sensitive_text(value)
+        normalized = normalized.replace(
+            _FIDELITY_LEDGER_START, "[fidelity marker removed]"
+        )
+        normalized = normalized.replace(
+            _FIDELITY_LEDGER_END, "[fidelity marker removed]"
+        )
+        return re.sub(r"\s+", " ", normalized).strip()[
+            :_HIGH_SIGNAL_ANCHOR_MAX_CHARS
+        ]
+
+    @classmethod
+    def _split_fidelity_ledger(
+        cls,
+        summary: str,
+    ) -> tuple[str, list[tuple[str, str]]]:
+        """Separate a valid persisted ledger from its narrative summary.
+
+        Invalid or incomplete markers are left untouched. This avoids deleting
+        user/model text that merely resembles the internal ledger delimiter.
+        """
+        text = summary or ""
+        start = text.rfind(_FIDELITY_LEDGER_START)
+        if start < 0:
+            return text, []
+        payload_start = start + len(_FIDELITY_LEDGER_START)
+        end = text.find(_FIDELITY_LEDGER_END, payload_start)
+        if end < 0:
+            return text, []
+
+        try:
+            payload = json.loads(text[payload_start:end].strip())
+        except (json.JSONDecodeError, TypeError):
+            return text, []
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return text, []
+        raw_entries = payload.get("entries")
+        if not isinstance(raw_entries, list):
+            return text, []
+
+        entries: list[tuple[str, str]] = []
+        for raw in raw_entries[:_FIDELITY_LEDGER_MAX_ENTRIES]:
+            if not isinstance(raw, dict):
+                continue
+            kind = raw.get("kind")
+            value = raw.get("text")
+            if kind not in _FIDELITY_KIND_PRIORITY or not isinstance(value, str):
+                continue
+            value = cls._normalize_fidelity_text(value)
+            if not value:
+                continue
+            entries.append((kind, value))
+
+        narrative = (text[:start] + text[end + len(_FIDELITY_LEDGER_END):]).strip()
+        return narrative, entries
+
+    @classmethod
+    def _merge_fidelity_ledger(
+        cls,
+        existing: list[tuple[str, str]],
+        new: list[tuple[str, str]],
+        token_budget: int = _FIDELITY_LEDGER_TOKEN_BUDGET,
+    ) -> list[tuple[str, str]]:
+        """Merge exact anchors, preserving chronology under a hard budget."""
+        deduped: dict[str, tuple[int, str, str, int]] = {}
+        for sequence, (kind, raw_value) in enumerate(existing + new):
+            if kind not in _FIDELITY_KIND_PRIORITY or not isinstance(raw_value, str):
+                continue
+            value = cls._normalize_fidelity_text(raw_value)
+            if not value:
+                continue
+            key = re.sub(r"\s+", " ", value).strip().casefold()
+            if key in deduped:
+                del deduped[key]
+            cost = estimate_messages_tokens_rough(
+                [{"role": "user", "content": f"[{kind}] {value}"}]
+            )
+            deduped[key] = (sequence, kind, value, cost)
+
+        candidates = list(deduped.values())
+        if not candidates:
+            return []
+        newest = max(candidates, key=lambda item: item[0])
+        ranked = [newest] + sorted(
+            (item for item in candidates if item[0] != newest[0]),
+            key=lambda item: (-_FIDELITY_KIND_PRIORITY[item[1]], -item[0]),
+        )
+
+        selected: list[tuple[int, str, str]] = []
+        used = 0
+        for sequence, kind, value, cost in ranked:
+            if used + cost > token_budget:
+                continue
+            selected.append((sequence, kind, value))
+            used += cost
+            if len(selected) >= _FIDELITY_LEDGER_MAX_ENTRIES:
+                break
+        selected.sort(key=lambda item: item[0])
+        return [(kind, value) for _sequence, kind, value in selected]
+
+    @classmethod
+    def _serialize_fidelity_ledger(
+        cls,
+        entries: list[tuple[str, str]],
+    ) -> str:
+        """Serialize a bounded ledger as a versioned, parseable summary block."""
+        if not entries:
+            return ""
+        payload = {
+            "version": 1,
+            "entries": [
+                {"kind": kind, "text": cls._normalize_fidelity_text(value)}
+                for kind, value in entries
+            ],
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return f"{_FIDELITY_LEDGER_START}\n{encoded}\n{_FIDELITY_LEDGER_END}"
+
+    @classmethod
+    def _append_fidelity_ledger(
+        cls,
+        summary: str,
+        entries: list[tuple[str, str]],
+    ) -> str:
+        """Replace any valid existing ledger with the authoritative entries."""
+        narrative, _existing = cls._split_fidelity_ledger(summary)
+        ledger = cls._serialize_fidelity_ledger(entries)
+        if not ledger:
+            return narrative
+        return f"{narrative.rstrip()}\n\n{ledger}" if narrative.strip() else ledger
+
+    @classmethod
+    def _render_fidelity_ledger_prompt(
+        cls,
+        entries: list[tuple[str, str]],
+    ) -> str:
+        """Render the deterministic ledger as quoted summarizer source data."""
+        anchors = [
+            (sequence, kind, value)
+            for sequence, (kind, value) in enumerate(entries)
+        ]
+        return cls._render_high_signal_user_anchors(anchors)
+
+    def _prepare_fidelity_ledger(
+        self,
+        turns: List[Dict[str, Any]],
+        new_anchor_budget: int,
+    ) -> tuple[str, list[tuple[str, str]]]:
+        """Merge persisted and newly selected anchors for one compaction."""
+        previous_narrative, existing = self._split_fidelity_ledger(
+            self._previous_summary or ""
+        )
+        new = [
+            (kind, value)
+            for _index, kind, value in self._select_high_signal_user_anchors(
+                turns,
+                token_budget=new_anchor_budget,
+            )
+        ]
+        merged = self._merge_fidelity_ledger(existing, new)
+        return previous_narrative, merged
+
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
@@ -1792,12 +1966,13 @@ class ContextCompressor(ContextEngine):
                     break
             return "\n".join(f"- {item}" for item in unique) if unique else "None."
 
+        _previous_narrative, fidelity_ledger = self._prepare_fidelity_ledger(
+            turns_to_summarize,
+            new_anchor_budget=512,
+        )
         preserved_signals = [
             f"[{kind}] {excerpt}"
-            for _index, kind, excerpt in self._select_high_signal_user_anchors(
-                turns_to_summarize,
-                token_budget=512,
-            )
+            for kind, excerpt in fidelity_ledger
         ]
 
         completed: list[str] = []
@@ -1865,9 +2040,17 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-        summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
-        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
-            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
+        narrative = redact_sensitive_text(body.strip())
+        ledger_block = self._serialize_fidelity_ledger(fidelity_ledger)
+        body_limit = _FALLBACK_SUMMARY_MAX_CHARS - len(SUMMARY_PREFIX) - 1
+        narrative_limit = body_limit - len(ledger_block) - (2 if ledger_block else 0)
+        if len(narrative) > narrative_limit:
+            marker = "\n...[fallback summary truncated]"
+            narrative = narrative[: max(0, narrative_limit - len(marker))].rstrip()
+            narrative += marker
+        summary_body = self._append_fidelity_ledger(narrative, fidelity_ledger)
+        self._previous_summary = summary_body
+        summary = self._with_summary_prefix(summary_body)
         return summary
 
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
@@ -1933,11 +2116,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _HIGH_SIGNAL_ANCHOR_MAX_TOKENS,
             max(_HIGH_SIGNAL_ANCHOR_MIN_TOKENS, summary_budget // 10),
         )
-        high_signal_anchors = self._render_high_signal_user_anchors(
-            self._select_high_signal_user_anchors(
-                turns_to_summarize,
-                token_budget=anchor_budget,
-            )
+        previous_summary_narrative, fidelity_ledger = self._prepare_fidelity_ledger(
+            turns_to_summarize,
+            new_anchor_budget=anchor_budget,
+        )
+        high_signal_anchors = self._render_fidelity_ledger_prompt(
+            fidelity_ledger
         )
 
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
@@ -2071,7 +2255,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{self._previous_summary}
+{previous_summary_narrative}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
@@ -2177,6 +2361,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            summary = self._append_fidelity_ledger(summary, fidelity_ledger)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()

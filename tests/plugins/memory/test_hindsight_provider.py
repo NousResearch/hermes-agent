@@ -637,8 +637,18 @@ class TestPostSetup:
 # ---------------------------------------------------------------------------
 
 
+def _drain_one_retain_job(provider):
+    """Run one queued retain job synchronously for payload assertions."""
+    job = provider._retain_queue.get_nowait()
+    try:
+        job()
+    finally:
+        provider._retain_queue.task_done()
+
+
 class TestToolHandlers:
-    def test_retain_success(self, provider):
+    def test_retain_success(self, provider_with_config):
+        provider = provider_with_config(retain_async=False)
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "user likes dark mode"}
         ))
@@ -646,10 +656,33 @@ class TestToolHandlers:
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
-        assert call_kwargs["retain_async"] is True
+        assert call_kwargs["retain_async"] is False
         item = call_kwargs["items"][0]
         assert item["content"] == "user likes dark mode"
         # bank_id/retain_async are call-level args, never item keys.
+        assert "bank_id" not in item
+        assert "retain_async" not in item
+
+    def test_retain_async_queues_work_without_blocking(self, provider, monkeypatch):
+        monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
+        monkeypatch.setattr(provider, "_register_atexit", lambda: None)
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_retain", {"content": "user likes dark mode"}
+        ))
+
+        assert result["result"] == "Memory stored successfully."
+        provider._client.aretain_batch.assert_not_called()
+        assert provider._retain_queue.qsize() == 1
+
+        _drain_one_retain_job(provider)
+
+        provider._client.aretain_batch.assert_called_once()
+        call_kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert call_kwargs["bank_id"] == "test-bank"
+        assert call_kwargs["retain_async"] is True
+        item = call_kwargs["items"][0]
+        assert item["content"] == "user likes dark mode"
         assert "bank_id" not in item
         assert "retain_async" not in item
 
@@ -662,13 +695,13 @@ class TestToolHandlers:
         assert "retain_async" not in call_kwargs["items"][0]
 
     def test_retain_with_tags(self, provider_with_config):
-        p = provider_with_config(retain_tags=["pref", "ui"])
+        p = provider_with_config(retain_tags=["pref", "ui"], retain_async=False)
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["tags"] == ["pref", "ui"]
 
     def test_retain_merges_per_call_tags_with_config_tags(self, provider_with_config):
-        p = provider_with_config(retain_tags=["pref", "ui"])
+        p = provider_with_config(retain_tags=["pref", "ui"], retain_async=False)
         p.handle_tool_call(
             "hindsight_retain",
             {"content": "likes dark mode", "tags": ["client:x", "ui"]},
@@ -676,18 +709,20 @@ class TestToolHandlers:
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["tags"] == ["pref", "ui", "client:x"]
 
-    def test_retain_without_tags(self, provider):
+    def test_retain_without_tags(self, provider_with_config):
+        provider = provider_with_config(retain_async=False)
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "tags" not in item
 
     def test_retain_passes_observation_scopes(self, provider_with_config):
-        p = provider_with_config(observation_scopes="per_tag")
+        p = provider_with_config(observation_scopes="per_tag", retain_async=False)
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["observation_scopes"] == "per_tag"
 
-    def test_retain_omits_observation_scopes_by_default(self, provider):
+    def test_retain_omits_observation_scopes_by_default(self, provider_with_config):
+        provider = provider_with_config(retain_async=False)
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "observation_scopes" not in item
@@ -755,7 +790,8 @@ class TestToolHandlers:
         ))
         assert "error" in result
 
-    def test_retain_error_handling(self, provider):
+    def test_retain_error_handling(self, provider_with_config):
+        provider = provider_with_config(retain_async=False)
         provider._client.aretain_batch.side_effect = RuntimeError("connection failed")
         result = json.loads(provider.handle_tool_call(
             "hindsight_retain", {"content": "test"}

@@ -816,6 +816,7 @@ class TestAuthFailureAborts:
             "billing portal is temporarily unavailable",
             "usage limit documentation could not be loaded",
             "rate limit exceeded; retry later",
+            "quota exceeded, please retry after the window resets",
             "request timed out",
         ],
     )
@@ -859,6 +860,29 @@ class TestAuthFailureAborts:
         assert c._last_summary_auth_failure is True
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
+
+    def test_402_quota_with_retry_uses_existing_fallback(self):
+        """A reset-window quota remains transient instead of aborting compression."""
+        err = StubProviderError(
+            "quota exceeded, please retry after the window resets",
+            status_code=402,
+        )
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch("agent.context_compressor.call_llm", side_effect=err):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result != msgs
+        assert c._last_summary_auth_failure is False
+        assert c._last_compress_aborted is False
+        assert c._last_summary_fallback_used is True
 
     def test_generate_summary_flags_auth_failure(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

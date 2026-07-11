@@ -1,0 +1,7 @@
+name: qwen
+version: 1.0.0
+description: "Wanxiang V2 (万相) text-to-image via Alibaba DashScope — wan2.6-t2i, wan2.5, wan2.2"
+author: Agent
+kind: backend
+requires_env:
+  - DASHSCOPE_API_KEY

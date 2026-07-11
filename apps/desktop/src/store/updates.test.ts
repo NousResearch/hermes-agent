@@ -526,4 +526,49 @@ describe('startUpdatePoller', () => {
 
     expect(checkMock).toHaveBeenCalled()
   })
+
+  it('re-checks backend updates when switching directly between two remote profiles', async () => {
+    // Both profiles resolve to mode: 'remote' — only baseUrl differs. A
+    // mode-only comparison would treat this as "no change" and never
+    // re-check, leaving profile A's stale status on screen for profile B.
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    setConnection({
+      baseUrl: 'http://profile-a:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-a:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkHermesUpdateSpy.mockClear()
+
+    setConnection({
+      baseUrl: 'http://profile-b:9119',
+      isFullscreen: false,
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      token: 't',
+      wsUrl: 'ws://profile-b:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
 })

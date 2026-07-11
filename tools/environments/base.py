@@ -8,6 +8,7 @@ or a temp file (local).
 
 import codecs
 import json
+import re
 import logging
 import os
 import select
@@ -45,10 +46,14 @@ _activity_callback_local = threading.local()
 
 # Credential environment variable prefixes that should be filtered from
 # terminal snapshots to prevent persisting secrets to disk.
-_CREDENTIAL_ENV_FILTER_PATTERN = (
-    r'^(declare -x (AWS_|BWS_|BITWARDEN_|OPENAI_|ANTHROPIC_|GOOGLE_|GCP_|'
+# Applied at the Python level (not in the shell pipeline) to avoid
+# cross-platform grep/bash behaviour differences that can corrupt the
+# snapshot file and silently drop non-credential variables (issue #62346).
+_CREDENTIAL_ENV_FILTER_RE=re.compile(
+    r'^(declare -x )?(AWS_|BWS_|BITWARDEN_|OPENAI_|ANTHROPIC_|GOOGLE_|GCP_|'
     r'DEEPSEEK_|MISTRAL_|GROQ_|TOGETHER_|PERPLEXITY_|COHERE_|FIREWORKS_|'
-    r'XAI_|HELICONE_|PARALLEL_|FIRECRAWL_|MODAL_)|.*(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)=)'
+    r'XAI_|HELICONE_|PARALLEL_|FIRECRAWL_|MODAL_)'
+    r'|.*(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)='
 )
 
 
@@ -404,7 +409,7 @@ class BaseEnvironment(ABC):
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
-            f"export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp}\n"
+            f"export -p > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -440,6 +445,7 @@ class BaseEnvironment(ABC):
                 )
             self._snapshot_ready = True
             self._update_cwd(result)
+            self._filter_snapshot_credentials()
             logger.info(
                 "Session snapshot created (session=%s, cwd=%s)",
                 self._session_id,
@@ -453,6 +459,32 @@ class BaseEnvironment(ABC):
                 exc,
             )
             self._snapshot_ready = False
+
+    def _filter_snapshot_credentials(self) -> None:
+        """Remove credential-bearing env vars from the on-disk snapshot.
+
+        Called after ``init_session`` and after each ``execute()`` so that
+        secrets never persist in ``hermes-snap-*.sh``.  Done at the Python
+        level to avoid cross-platform ``grep``/``bash`` pipeline differences
+        that can silently corrupt the snapshot file.
+        """
+        snap = self._snapshot_path
+        try:
+            with open(snap, encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except (OSError, ValueError):
+            return
+        filtered = [ln for ln in lines if not _CREDENTIAL_ENV_FILTER_RE.search(ln)]
+        if len(filtered) != len(lines):
+            tmp = snap + ".filtmp"
+            try:
+                import os as _os, stat as _stat
+                fd = _os.open(tmp, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, _stat.S_IRUSR | _stat.S_IWUSR)
+                with _os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
+                    f.writelines(filtered)
+                _os.replace(tmp, snap)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # Command wrapping
@@ -519,10 +551,9 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
-        # Filter credential-bearing env vars before persisting to disk.
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 
@@ -944,6 +975,7 @@ class BaseEnvironment(ABC):
         )
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
+        self._filter_snapshot_credentials()
 
         return result
 

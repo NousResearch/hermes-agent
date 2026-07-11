@@ -269,6 +269,21 @@ def test_every_dynamic_or_shell_byte_requires_a_new_approval(changed_command):
     assert changed["approval_id"] != original["approval_id"]
 
 
+def test_named_profile_binding_is_stable_and_not_machine_specific(monkeypatch):
+    import hermes_constants
+
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.setattr(
+        hermes_constants,
+        "get_hermes_home",
+        lambda: Path("/srv/hermes/profiles/linear-agent-dev"),
+    )
+    assert approval_module._external_approval_profile_binding() == "linear-agent-dev"
+
+    monkeypatch.setenv("HERMES_PROFILE", "linear-agent-explicit")
+    assert approval_module._external_approval_profile_binding() == "linear-agent-explicit"
+
+
 def test_protocol_records_use_dedicated_fds_not_stdio_or_a_generic_adapter(external_protocol, capsys):
     harness, _private_key, _profile_home = external_protocol
     executions: list[str] = []

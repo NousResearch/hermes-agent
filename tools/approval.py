@@ -3153,11 +3153,24 @@ def _collect_command_approval_warnings(
     return warnings
 
 
-def _external_exact_once_guard(command: str) -> dict:
+def _external_approval_profile_binding() -> str:
+    """Return a stable profile identity, not a machine-specific profile path."""
     from hermes_constants import get_hermes_home
 
+    explicit = os.getenv("HERMES_PROFILE", "").strip()
+    if explicit:
+        return explicit
+    home = Path(get_hermes_home())
+    if home.parent.name == "profiles" and home.name:
+        return home.name
+    return str(home)
+
+
+def _external_exact_once_guard(command: str) -> dict:
+    """Run the exact-once FD protocol for a warning-requiring command."""
+
     session_id = get_current_session_key()
-    profile = str(get_hermes_home())
+    profile = _external_approval_profile_binding()
     request = build_external_approval_request(
         command=command,
         operation_kind=_EXTERNAL_OPERATION_KIND,

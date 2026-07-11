@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -502,6 +503,39 @@ async def test_config_extra_overrides_env(monkeypatch):
     try:
         assert adapter._heartbeat_enabled is True
         assert adapter._heartbeat_interval == 15
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_enabled_warns_about_generic_notifier_overlap(caplog):
+    """hc-493: enabling hc-385's heartbeat must warn about the OTHER,
+    independently-gated "still working" notifier (gateway/run.py's
+    _notify_long_running, driven by long_running_notifications — on by
+    default for Feishu) so nobody flips this on expecting a single heartbeat
+    and ships duplicate "still running" messages instead.
+    """
+    adapter = _instrumented_adapter(config_extra={"heartbeat_enabled": True})
+    with caplog.at_level(logging.WARNING, logger="apex_overlay.feishu_supervisor"):
+        assert await adapter.connect() is True
+    try:
+        assert any(
+            "long_running_notifications" in r.message for r in caplog.records
+        ), "must warn that the generic notifier can double up with hc-385's heartbeat"
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_disabled_does_not_warn(caplog):
+    """Default (heartbeat off) must stay silent — no spurious overlap warning."""
+    adapter = _instrumented_adapter()
+    with caplog.at_level(logging.WARNING, logger="apex_overlay.feishu_supervisor"):
+        assert await adapter.connect() is True
+    try:
+        assert not any(
+            "long_running_notifications" in r.message for r in caplog.records
+        )
     finally:
         await adapter.disconnect()
 

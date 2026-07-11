@@ -188,6 +188,18 @@ def _load_overlay_settings(adapter: Any) -> None:
       opt-in).
     * ``heartbeat_interval_seconds`` (min 10) and
       ``heartbeat_initial_delay_seconds`` (min 5).
+
+    hc-493 note — heartbeat_enabled overlaps a SEPARATE mechanism: the generic
+    gateway-level "still working" notifier (``gateway/run.py``'s
+    ``_notify_long_running``, gated by the unrelated
+    ``display.platforms.feishu.long_running_notifications`` — Hermes Cloud's
+    provisioned config defaults this ON for every Feishu agent). That loop is
+    scheduled from inside the same message-processing call chain this
+    overlay's ``on_processing_start`` hook wraps, so the two run concurrently
+    on their own independent timers/wording. Turning hc-385's heartbeat on
+    WITHOUT also turning the generic notifier off for this platform produces
+    two overlapping "still running" messages per long task, not one — see the
+    warning below.
     """
     extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
     adapter._ws_self_reconnect = _to_bool(
@@ -198,6 +210,16 @@ def _load_overlay_settings(adapter: Any) -> None:
         extra.get("heartbeat_enabled", os.getenv("FEISHU_HEARTBEAT", "false")),
         default=False,
     )
+    if adapter._heartbeat_enabled:
+        logger.warning(
+            "[Feishu] apex-overlay hc-385 heartbeat is enabled. This fires "
+            "independently of the generic gateway 'long_running_notifications' "
+            "notifier, which Hermes Cloud provisions ON by default for Feishu "
+            "(display.platforms.feishu.long_running_notifications). If that "
+            "setting is also on, users will see two separate 'still working' "
+            "messages per long task. Set it to false for this agent if only "
+            "the Feishu-native heartbeat is wanted (hc-493)."
+        )
     adapter._heartbeat_interval = _to_int(
         extra.get("heartbeat_interval_seconds", os.getenv("FEISHU_HEARTBEAT_INTERVAL_SECONDS", 60)),
         default=60, min_value=10,

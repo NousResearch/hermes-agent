@@ -246,6 +246,34 @@ def test_giveup_sentinel_with_warning_prefix_is_replaced(sentinel):
 
 
 @pytest.mark.parametrize("sentinel", GIVEUP_SENTINELS)
+def test_giveup_sentinel_in_processing_stopped_wrapper_is_replaced(sentinel):
+    """The empty-partial fallback wraps the error before it reaches chat.
+
+    ``_normalize_empty_agent_response`` emits
+    "⚠️ Processing stopped: {error}. Try again." when the agent did work but
+    returned only a partial failure, so the sentinel arrives wrapped rather
+    than bare. That exact wrapper form must also be rewritten to the nudge.
+    """
+    wrapped = f"⚠️ Processing stopped: {sentinel}. Try again."
+
+    assert (
+        _sanitize_gateway_final_response(Platform.TELEGRAM, wrapped)
+        == _GATEWAY_GIVEUP_REPLY
+    )
+
+
+def test_processing_stopped_wrapper_with_ordinary_error_passes_through():
+    """The wrapper itself is only rewritten when it wraps a give-up sentinel.
+
+    Other partial-failure errors (e.g. the "processing incomplete" default)
+    are already human-readable, so their wrapped form must survive unchanged.
+    """
+    wrapped = "⚠️ Processing stopped: processing incomplete. Try again."
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, wrapped) == wrapped
+
+
+@pytest.mark.parametrize("sentinel", GIVEUP_SENTINELS)
 def test_programmatic_surfaces_keep_giveup_sentinels(sentinel):
     """Raw surfaces (CLI/TUI, API JSON, webhooks) must keep the exact text."""
     for platform in ("local", "api_server", "webhook", "msgraph_webhook"):

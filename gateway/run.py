@@ -150,16 +150,20 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
 # of these phrases mid-sentence is never rewritten. Like
 # ``_GATEWAY_PROVIDER_ERROR_SHAPE_RE``, an optional symbol/whitespace prefix
 # is tolerated because the empty-response fallback path re-emits the error
-# field with a leading warning glyph.
+# field with a leading warning glyph. The empty-partial fallback in
+# ``_normalize_empty_agent_response`` wraps the same error field as
+# "⚠️ Processing stopped: {error}. Try again.", so that exact wrapper is
+# part of the anchored grammar too — the whole reply must still be nothing
+# but the (optionally wrapped) diagnostic.
 _GATEWAY_GIVEUP_SENTINEL_RE = re.compile(
-    r"(?:\W*\s*)?(?:"
+    r"(?:\W*\s*)?(?:Processing stopped:\s*)?(?:"
     r"Codex response remained incomplete after \d+ continuation attempts?"
     r"|Response remained truncated after \d+ continuation attempts?"
     r"|Incomplete REASONING_SCRATCHPAD after \d+ retr(?:y|ies)"
     r"|(?:First )?response truncated due to output length limit"
     r"|Stream repeatedly dropped mid tool-call \(network\); "
     r"the tool was not executed"
-    r")\.?\s*",
+    r")\.?(?:\s*Try again\.?)?\s*",
     re.IGNORECASE,
 )
 

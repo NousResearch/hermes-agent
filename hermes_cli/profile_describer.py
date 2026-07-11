@@ -171,18 +171,18 @@ def describe_profile(
     ``description_auto: false`` to protect curated text. Auto-generated
     descriptions (``description_auto: true``) are always replaceable.
     """
-    canon = profiles_mod.normalize_profile_name(profile_name)
+    try:
+        canon = profiles_mod.normalize_profile_name(profile_name)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as exc:
+        fallback = str(profile_name).strip()
+        return DescribeOutcome(fallback, False, str(exc))
+
     if not profiles_mod.profile_exists(canon):
-        # Special case: "default" exists as a virtual profile name
-        # mapped to the default home dir. profile_exists() handles it.
         return DescribeOutcome(canon, False, "profile not found")
 
     try:
-        if canon == "default":
-            from hermes_constants import get_hermes_home  # type: ignore
-            profile_dir = Path(get_hermes_home())
-        else:
-            profile_dir = profiles_mod.get_profile_dir(canon)
+        profile_dir = profiles_mod.get_profile_dir(canon)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"cannot resolve profile dir: {exc}")
 

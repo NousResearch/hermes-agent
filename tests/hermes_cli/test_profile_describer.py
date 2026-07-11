@@ -87,6 +87,17 @@ def _patch_aux_client(content: str):
     )
 
 
+@pytest.fixture
+def multi_profile_env(tmp_path, monkeypatch):
+    """Default profile root plus one active named profile."""
+    default_home = tmp_path / ".hermes"
+    worker_dir = default_home / "profiles" / "worker"
+    worker_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(worker_dir))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return {"default": default_home, "worker": worker_dir}
+
+
 def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     # Pretend "myprof" is a registered profile pointing at profile_env.
     monkeypatch.setattr(
@@ -166,3 +177,40 @@ def test_describer_returns_false_when_profile_missing(profile_env, monkeypatch):
     outcome = describer.describe_profile("ghost")
     assert outcome.ok is False
     assert "not found" in outcome.reason
+
+
+def test_describer_default_profile_uses_canonical_default_home_under_named_profile(
+    multi_profile_env,
+):
+    """Auto-describing default must not write to the active named profile."""
+    payload = jsonlib.dumps({"description": "default route planner"})
+    with _patch_aux_client(payload), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("default", overwrite=True)
+
+    assert outcome.ok, outcome.reason
+    default_yaml = multi_profile_env["default"] / "profile.yaml"
+    worker_yaml = multi_profile_env["worker"] / "profile.yaml"
+    assert default_yaml.exists(), "default profile.yaml was not written"
+    assert not worker_yaml.exists(), "active named profile was incorrectly written"
+    meta = profiles_mod.read_profile_meta(multi_profile_env["default"])
+    assert meta == {"description": "default route planner", "description_auto": True}
+
+
+@pytest.mark.parametrize("bad_name", ["..", "bad.name"])
+def test_describer_invalid_profile_name_returns_false_without_writing_metadata(
+    multi_profile_env,
+    bad_name,
+):
+    payload = jsonlib.dumps({"description": "should not be written"})
+    with _patch_aux_client(payload), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile(bad_name, overwrite=True)
+
+    assert outcome.profile_name == bad_name
+    assert outcome.ok is False
+    assert "Invalid profile name" in outcome.reason
+    assert not (multi_profile_env["default"] / "profile.yaml").exists()
+    assert not (multi_profile_env["worker"] / "profile.yaml").exists()

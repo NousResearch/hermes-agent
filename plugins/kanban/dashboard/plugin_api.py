@@ -2154,12 +2154,13 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     try:
         from hermes_cli import profiles as profiles_mod
         canon = profiles_mod.normalize_profile_name(profile_name)
-        if canon == "default":
-            from hermes_constants import get_hermes_home  # type: ignore
-            from pathlib import Path as _Path
-            profile_dir = _Path(get_hermes_home())
-        else:
-            profile_dir = profiles_mod.get_profile_dir(canon)
+        try:
+            profiles_mod.validate_profile_name(canon)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        # get_profile_dir resolves "default" to the canonical ~/.hermes root
+        # independent of which profile the dashboard process is running under.
+        profile_dir = profiles_mod.get_profile_dir(canon)
         if not profile_dir.is_dir():
             raise HTTPException(status_code=404, detail=f"profile '{profile_name}' not found")
         text = (payload.description or "").strip()

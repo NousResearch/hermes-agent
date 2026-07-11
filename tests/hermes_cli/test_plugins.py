@@ -1011,6 +1011,86 @@ class TestResolvePreToolBlock:
         assert resolve_pre_tool_block("write_file", {}) is None
         assert seen["rule_key"] == "write_file"
 
+    def test_approve_without_arguments_fails_closed(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": "why"}],
+        )
+        monkeypatch.setattr(
+            "tools.approval.request_tool_approval",
+            lambda *args, **kwargs: pytest.fail("missing arguments must not reach the gate"),
+        )
+
+        assert resolve_pre_tool_block("write_file", None) == (
+            "BLOCKED: plugin approval requires call arguments for write_file"
+        )
+
+    def test_approve_does_not_reuse_resolved_identity_for_different_args(self, monkeypatch):
+        import tools.approval as approval
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        session = "plugin-identity-session"
+        with approval._lock:
+            approval._gateway_queues.clear()
+            approval._gateway_notify_cbs.clear()
+            approval._session_approved.clear()
+            approval._permanent_approved.clear()
+            approval._pending.clear()
+            approval._pending_by_session.clear()
+        token = approval.set_current_session_key(session)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        monkeypatch.setattr(approval, "is_approved", lambda *args: False)
+        monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "approve", "message": "same reason"}],
+        )
+        try:
+            first_block = resolve_pre_tool_block(
+                "write_file",
+                {"path": "one"},
+                task_id="task-1",
+                session_id=session,
+                tool_call_id="tool-1",
+            )
+            assert first_block is not None
+            request = approval.get_pending_approval("tool-1")
+            assert request is not None
+            assert request["arguments"] == {"path": "one"}
+            assert request["requester"] == session
+            assert request["channel"] == "task-1"
+
+            assert approval.resolve_gateway_approval(
+                session,
+                "once",
+                request_id="tool-1",
+                request_hash=request["argument_hash"],
+            ) == 1
+
+            second_block = resolve_pre_tool_block(
+                "write_file",
+                {"path": "two"},
+                task_id="task-1",
+                session_id=session,
+                tool_call_id="tool-2",
+            )
+            assert second_block is not None
+            remaining = approval.get_pending_approval("tool-1")
+            assert remaining is not None
+            assert remaining["status"] == "resolved"
+        finally:
+            approval.reset_current_session_key(token)
+            with approval._lock:
+                approval._gateway_queues.clear()
+                approval._gateway_notify_cbs.clear()
+                approval._session_approved.clear()
+                approval._permanent_approved.clear()
+                approval._pending.clear()
+                approval._pending_by_session.clear()
+
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         monkeypatch.setattr(

@@ -1776,8 +1776,6 @@ def _consume_matching_pending_approval(
             None,
         )
         if matching is None:
-            for request in candidates:
-                request["status"] = "stale"
             return None, bool(candidates)
         request_id = matching["request_id"]
 

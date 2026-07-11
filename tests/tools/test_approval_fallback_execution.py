@@ -52,12 +52,9 @@ def test_terminal_fallback_retry_consumes_exact_approval(monkeypatch):
         assert changed.get("status") != "pending_approval"
 
         pending = approval.check_all_command_guards(command, "local")
-        assert approval.resolve_gateway_approval(
-            SESSION, "once", request_id=pending["request_id"]
-        ) == 1
-        retried = approval.check_all_command_guards(command, "local")
-        assert retried["approved"] is True
-        assert pending["request_id"] not in approval._pending
+        assert pending["approved"] is True
+        assert pending.get("status") != "pending_approval"
+        assert pending["user_approved"] is True
         assert SESSION not in approval._pending_by_session
     finally:
         _finish_session(token)
@@ -81,13 +78,53 @@ def test_execute_code_fallback_retry_consumes_exact_approval(monkeypatch):
         assert changed.get("status") != "pending_approval"
 
         pending = approval.check_execute_code_guard(code, "local")
-        assert approval.resolve_gateway_approval(
-            SESSION, "once", request_id=pending["request_id"]
-        ) == 1
-        retried = approval.check_execute_code_guard(code, "local")
-        assert retried["approved"] is True
-        assert pending["request_id"] not in approval._pending
+        assert pending["approved"] is True
+        assert pending.get("status") != "pending_approval"
+        assert pending["user_approved"] is True
         assert SESSION not in approval._pending_by_session
+    finally:
+        _finish_session(token)
+
+
+def test_changed_terminal_retry_does_not_invalidate_other_resolved_approvals(monkeypatch):
+    token = _gateway_session(monkeypatch)
+    try:
+        requests = [
+            approval.submit_pending(
+                SESSION,
+                {
+                    "operation": "terminal",
+                    "tool_name": "terminal",
+                    "arguments": {"command": command},
+                    "command": command,
+                    "pattern_key": "recursive delete",
+                },
+            )
+            for command in (
+                "rm -rf /tmp/fallback-first",
+                "rm -rf /tmp/fallback-second",
+            )
+        ]
+        for request in requests:
+            assert approval.resolve_gateway_approval(
+                SESSION,
+                "once",
+                request_id=request["request_id"],
+                request_hash=request["argument_hash"],
+            ) == 1
+
+        changed = approval.check_all_command_guards(
+            "rm -rf /tmp/fallback-third", "local"
+        )
+        assert changed["status"] == "stale"
+        for request in requests:
+            assert approval._pending[request["request_id"]]["status"] == "resolved"
+
+        for request in requests:
+            retried = approval.check_all_command_guards(
+                request["arguments"]["command"], "local"
+            )
+            assert retried["approved"] is True
     finally:
         _finish_session(token)
 
@@ -172,7 +209,7 @@ def test_terminal_public_tool_preserves_pending_identity(monkeypatch):
     monkeypatch.setitem(terminal_tool._active_environments, "default", object())
 
     result = json.loads(terminal_tool.terminal_tool("rm -rf /tmp/a"))
-    for key in ("request_id", "argument_hash", "operation", "tool_name"):
+    for key in ("request_id", "argument_hash", "operation", "tool_name", "created_at", "expires_at"):
         assert result[key] == pending[key]
 
 
@@ -184,7 +221,7 @@ def test_execute_code_public_tool_preserves_pending_identity(monkeypatch):
     monkeypatch.setattr(approval, "check_execute_code_guard", lambda *args, **kwargs: pending)
 
     result = json.loads(code_execution_tool.execute_code("print(1)", task_id="identity-test"))
-    for key in ("request_id", "argument_hash", "operation", "tool_name"):
+    for key in ("request_id", "argument_hash", "operation", "tool_name", "created_at", "expires_at"):
         assert result[key] == pending[key]
 
 

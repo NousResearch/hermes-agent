@@ -2297,7 +2297,10 @@ def terminal_tool(
                         "pattern_key": approval.get("pattern_key", ""),
                         **{
                             key: approval[key]
-                            for key in ("request_id", "argument_hash", "operation", "tool_name")
+                            for key in (
+                                "request_id", "argument_hash", "operation", "tool_name",
+                                "created_at", "expires_at",
+                            )
                             if key in approval
                         },
                     }, ensure_ascii=False)

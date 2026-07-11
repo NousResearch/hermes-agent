@@ -1166,7 +1166,10 @@ def execute_code(
             "duration_seconds": 0,
             **{
                 key: _guard[key]
-                for key in ("request_id", "argument_hash", "operation", "tool_name")
+                for key in (
+                    "request_id", "argument_hash", "operation", "tool_name",
+                    "created_at", "expires_at",
+                )
                 if key in _guard
             },
         }, ensure_ascii=False)

@@ -213,7 +213,11 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
     decisions are already collected in the parent shell before this point.
     """
     _assert_windows()
-    args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command]
+    args = ["-m", "hermes_cli.main"]
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_home:
+        args.extend(["--hermes-home", hermes_home])
+    args.extend([*_current_profile_cli_args(), "gateway", command])
     if extra_args:
         args.extend(extra_args)
     params = subprocess.list2cmdline(args)

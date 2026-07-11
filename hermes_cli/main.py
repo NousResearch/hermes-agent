@@ -354,6 +354,26 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    explicit_hermes_home = None
+    home_consume = 0
+    home_index = None
+    for index, arg in enumerate(sys.argv[1:]):
+        if arg == "--hermes-home" and index + 2 <= len(sys.argv) - 1:
+            explicit_hermes_home = sys.argv[index + 2]
+            home_consume = 2
+            home_index = index
+            break
+        if arg.startswith("--hermes-home="):
+            explicit_hermes_home = arg.split("=", 1)[1]
+            home_consume = 1
+            home_index = index
+            break
+
+    if explicit_hermes_home:
+        os.environ["HERMES_HOME"] = explicit_hermes_home
+        start = home_index + 1
+        sys.argv = sys.argv[:start] + sys.argv[start + home_consume :]
+
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
@@ -445,6 +465,9 @@ def _apply_profile_override() -> None:
             i += 2
         else:
             i += 1
+
+    if explicit_hermes_home and profile_name is None:
+        return
 
     # 1b. Reject values that can't be valid profile names (e.g. pytest's
     # "-p no:xdist" would be misread as profile "no:xdist" otherwise).

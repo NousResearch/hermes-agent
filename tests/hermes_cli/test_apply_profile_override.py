@@ -50,6 +50,32 @@ def _run_apply_profile_override(
     return os.environ.get("HERMES_HOME")
 
 
+def test_explicit_hermes_home_flag_is_applied_and_removed(tmp_path, monkeypatch):
+    target = tmp_path / "runtime-home"
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--hermes-home", str(target), "gateway", "status"])
+
+    from hermes_cli.main import _apply_profile_override
+
+    _apply_profile_override()
+
+    assert os.environ["HERMES_HOME"] == str(target)
+    assert sys.argv == ["hermes", "gateway", "status"]
+
+
+def test_explicit_hermes_home_equals_form_is_applied_and_removed(tmp_path, monkeypatch):
+    target = tmp_path / "runtime-home"
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", f"--hermes-home={target}", "gateway", "status"])
+
+    from hermes_cli.main import _apply_profile_override
+
+    _apply_profile_override()
+
+    assert os.environ["HERMES_HOME"] == str(target)
+    assert sys.argv == ["hermes", "gateway", "status"]
+
+
 class TestApplyProfileOverrideHermesHomeGuard:
     """Regression guard for issue #22502.
 

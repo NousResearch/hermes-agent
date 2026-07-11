@@ -184,3 +184,36 @@ def test_semantic_clip_fields_round_trip(tmp_path):
     matches = store.search_clips("厨师拉面")
     assert matches[0]["id"] == clip["id"]
     assert matches[0]["score"] > 0
+
+
+def test_search_clips_matches_relevant_phrases_inside_a_full_chinese_script_sentence(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    store = VideoLibraryStore(root=tmp_path / "library")
+    asset = store.import_asset(source)
+    job = store.create_analysis_job(asset["id"], analyzer_version="semantic-v1")
+    result = store.commit_analysis(
+        asset["id"],
+        job["id"],
+        {},
+        [
+            {
+                "confidence": 0.9,
+                "description": "后厨大型汤锅热气升腾，大块牛肉清晰可见",
+                "end_seconds": 5,
+                "file_path": "",
+                "keyframe_path": str(tmp_path / "key.jpg"),
+                "materialized": False,
+                "quality_score": 0.88,
+                "semantic_json": {"content": {"subjects": ["汤锅", "牛肉"]}},
+                "source_file_path": asset["managed_path"],
+                "start_seconds": 0,
+                "tags": [{"name": "内容/热汤", "source": "semantic-controlled"}],
+            }
+        ],
+    )
+
+    matches = store.search_clips("热气腾腾的牛肉汤刚刚出锅，大块牛肉铺满整碗。")
+
+    assert matches[0]["id"] == result["clips"][0]["id"]
+    assert matches[0]["score"] > 0

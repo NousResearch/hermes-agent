@@ -582,6 +582,11 @@ class VideoLibraryStore:
         if not needle and not tag:
             return self.list_clips(tag=tag)[: max(1, int(limit))]
         terms = [term for term in needle.split(" ") if term]
+        chinese_phrases = {
+            chunk[index : index + 2]
+            for chunk in re.findall(r"[\u3400-\u9fff]+", needle)
+            for index in range(len(chunk) - 1)
+        }
         ranked: list[dict[str, Any]] = []
         for clip in self.list_clips(tag=tag):
             if clip.get("status") == "unusable":
@@ -599,6 +604,7 @@ class VideoLibraryStore:
             if needle and needle in haystack:
                 lexical += 1.0
             lexical += sum(0.25 for term in terms if term in haystack)
+            lexical += sum(0.12 for phrase in chinese_phrases if phrase in haystack)
             if needle and lexical <= 0:
                 continue
             score = lexical + (float(clip.get("quality_score") or 0) * 0.2) + (float(clip.get("confidence") or 0) * 0.1)

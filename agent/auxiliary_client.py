@@ -183,6 +183,20 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     # by default and let Hermes control the budget; explicit callers can still
     # override via kwargs.
     kwargs.setdefault("max_retries", 0)
+    # OpenRouter attribution headers (#61099): when the base URL targets
+    # OpenRouter, merge ``build_or_headers()`` (HTTP-Referer, X-Title,
+    # X-OpenRouter-Categories) into the client default_headers so every
+    # request is identified as Hermes Agent on the OpenRouter Logs page.
+    # Without this auto-injection, clients constructed via the central
+    # factory (without the caller remembering to pass
+    # default_headers=build_or_headers()) ship without attribution and
+    # OpenRouter logs them as "Unknown". Caller-supplied default_headers
+    # win over the auto-attached ones (operator-config precedence).
+    if base_url_host_matches(base_url, "openrouter.ai"):
+        existing = dict(kwargs.get("default_headers") or {})
+        for key, value in build_or_headers().items():
+            existing.setdefault(key, value)
+        kwargs["default_headers"] = existing
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 

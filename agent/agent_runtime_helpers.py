@@ -1757,6 +1757,22 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # restore, request-scoped); auxiliary_client builds its own clients and keeps
     # SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
+    # OpenRouter attribution headers (#61099): when the base URL targets
+    # OpenRouter, merge ``build_or_headers()`` (HTTP-Referer, X-Title,
+    # X-OpenRouter-Categories) into the client default_headers so every
+    # request is identified as Hermes Agent on the OpenRouter Logs page.
+    # Without this auto-injection, clients constructed via the central
+    # factory ship without attribution and OpenRouter logs them as
+    # "Unknown" (some requests show the right name; some show
+    # "Unknown" — inconsistent because the headers are only set on a
+    # few specific code paths). Caller-supplied default_headers win
+    # over the auto-attached ones (operator-config precedence).
+    if base_url_host_matches(str(client_kwargs.get("base_url", "") or ""), "openrouter.ai"):
+        from agent.auxiliary_client import build_or_headers
+        existing = dict(client_kwargs.get("default_headers") or {})
+        for key, value in build_or_headers().items():
+            existing.setdefault(key, value)
+        client_kwargs["default_headers"] = existing
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

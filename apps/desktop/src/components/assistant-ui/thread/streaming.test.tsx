@@ -1,7 +1,10 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { $previewTarget, clearSessionPreviewRegistry, getSessionPreviewRecord } from '@/store/preview'
+import { $activeSessionId, $currentCwd } from '@/store/session'
 
 import { Thread } from '.'
 
@@ -48,6 +51,10 @@ vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
   window.setTimeout(() => callback(performance.now()), 0)
 )
 vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
+vi.stubGlobal('CSS', {
+  ...globalThis.CSS,
+  escape: (value: string) => value.replace(/[^A-Za-z0-9_-]/g, character => `\\${character.codePointAt(0)?.toString(16)} `)
+})
 
 Element.prototype.scrollTo = function scrollTo() {}
 
@@ -127,6 +134,14 @@ function assistantErrorMessage(error: string): ThreadMessage {
       steps: [],
       custom: {}
     }
+  } as ThreadMessage
+}
+
+function assistantIncompleteTextMessage(text: string): ThreadMessage {
+  return {
+    ...assistantMessage(text, false),
+    id: 'assistant-incomplete-text-1',
+    status: { type: 'incomplete', reason: 'error', error: 'Provider failed after partial output.' }
   } as ThreadMessage
 }
 
@@ -394,6 +409,7 @@ function DismissibleErrorHarness({ onDismissError }: { onDismissError: (messageI
 
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
+    cleanup()
     resizeObservers.clear()
   })
 
@@ -450,6 +466,134 @@ describe('assistant-ui streaming renderer', () => {
 
     expect(onDismissError).toHaveBeenCalledTimes(1)
     expect(onDismissError).toHaveBeenCalledWith('assistant-error-1')
+  })
+
+  it('does not normalize or read a local path until Open preview is clicked', async () => {
+    const path = '/Users/andrewconsidine/Hermes-Workspace/context/report.md'
+    const previousDesktop = window.hermesDesktop
+    const previousCwd = $currentCwd.get()
+    const previousSessionId = $activeSessionId.get()
+
+    const normalizePreviewTarget = vi.fn(async (target: string) => ({
+      kind: 'file' as const,
+      label: 'report.md',
+      path: target,
+      previewKind: 'text' as const,
+      source: target,
+      url: `file://${target}`
+    }))
+
+    const readFileText = vi.fn()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { normalizePreviewTarget, readFileText }
+    })
+    $activeSessionId.set('auto-preview-consent-test')
+    $currentCwd.set('')
+    $previewTarget.set(null)
+    clearSessionPreviewRegistry()
+
+    try {
+      const running = assistantMessage(`Saved at ${path}`)
+      const completed = assistantMessage(`Saved at ${path}`, false)
+      const view = render(<RunningMessageHarness message={running} />)
+
+      expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+      expect(normalizePreviewTarget).not.toHaveBeenCalled()
+      expect(readFileText).not.toHaveBeenCalled()
+
+      view.rerender(<MessageHarness message={completed} />)
+
+      const button = await screen.findByRole('button', { name: 'Open preview' })
+
+      expect(screen.getByTitle(path).textContent).toBe('report.md')
+      expect(normalizePreviewTarget).not.toHaveBeenCalled()
+      expect(readFileText).not.toHaveBeenCalled()
+      expect($previewTarget.get()).toBeNull()
+
+      fireEvent.click(button)
+
+      await waitFor(() => {
+        expect(normalizePreviewTarget).toHaveBeenCalledTimes(1)
+        expect($previewTarget.get()?.source).toBe(path)
+      })
+      expect(normalizePreviewTarget.mock.calls[0]?.[0]).toBe(path)
+      expect(getSessionPreviewRecord('auto-preview-consent-test')?.source).toBe('auto-detected')
+      expect(readFileText).not.toHaveBeenCalled()
+    } finally {
+      clearSessionPreviewRegistry()
+      $previewTarget.set(null)
+      $activeSessionId.set(previousSessionId)
+      $currentCwd.set(previousCwd)
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: previousDesktop })
+    }
+  })
+
+  it.each([
+    ['inline code', 'Inline `/tmp/example.md`'],
+    ['fenced code', '```text\n/tmp/example.md\n```'],
+    [
+      'diff output',
+      'diff --git a/x b/x\n--- /tmp/old.md\n+++ /tmp/new.md\n@@ -1 +1 @@\n-Saved /tmp/removed.md\n+Saved /tmp/added.md\ndiff --git a/old.md b/new.md\nsimilarity index 100%\nrename from /tmp/old.md\nrename to /tmp/new.md\ndiff --git a/a.png b/b.png\nBinary files /tmp/a.png and /tmp/b.png differ'
+    ],
+    ['timestamped log output', '2026-01-01T12:00:00Z wrote /tmp/report.md'],
+    ['plain-clock log output', '12:34:56 INFO wrote /tmp/report.md'],
+    ['syslog output', 'Jul 10 12:34:56 host app[1]: wrote /tmp/report.md'],
+    ['bracketed log output', '[12:00:00] wrote /tmp/report.md'],
+    ['terminal exception', 'RuntimeError: failed reading /tmp/report.md'],
+    ['Markdown image', '![chart](/tmp/chart.png)'],
+    ['reference Markdown image', '![chart][img]\n\n[img]: /tmp/chart.png']
+  ])('does not render automatic preview affordances for %s', async (_name, text) => {
+    render(<MessageHarness message={assistantMessage(text, false)} />)
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+    })
+  })
+
+  it('renders one preview affordance for a local Markdown link', async () => {
+    const path = '/Users/andrewconsidine/Hermes-Workspace/context/report.md'
+
+    render(<MessageHarness message={assistantMessage(`[artifact](${path})`, false)} />)
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(1)
+    })
+    expect(screen.getByTitle(path).textContent).toBe('report.md')
+  })
+
+  it('does not render inferred previews for incomplete or errored messages', async () => {
+    render(<MessageHarness message={assistantIncompleteTextMessage('Partial output saved at /tmp/report.md')} />)
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+    })
+  })
+
+  it('caps inferred Markdown-link and plain-path previews at three per message', async () => {
+    render(
+      <MessageHarness
+        message={assistantMessage(
+          '[one](/tmp/one.md) [two](/tmp/two.md) [three](/tmp/three.md) [four](/tmp/four.md) plus /tmp/five.md',
+          false
+        )}
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(3)
+    })
+  })
+
+  it('preserves explicit preview markers', async () => {
+    const path = '/Users/andrewconsidine/Hermes-Workspace/context/report.md'
+    const href = `#preview/${encodeURIComponent(path)}`
+
+    render(<MessageHarness message={assistantMessage(`[Preview: report.md](${href})`, false)} />)
+
+    expect(await screen.findByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(screen.getByTitle(path).textContent).toBe('report.md')
   })
 
   // Scroll behavior (follow-at-bottom, escape-on-scroll-up, re-engage) is owned

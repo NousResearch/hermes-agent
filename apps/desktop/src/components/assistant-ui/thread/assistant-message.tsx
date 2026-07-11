@@ -31,11 +31,16 @@ import {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
-import { extractPreviewTargets } from '@/lib/preview-targets'
+import {
+  extractAutoPreviewTargets,
+  extractLocalMarkdownPreviewTargets,
+  extractPreviewTargets
+} from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { $currentCwd } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 interface MessageActionProps {
@@ -54,6 +59,7 @@ export const AssistantMessage: FC<{
 }> = ({ onBranchInNewChat, onDismissError }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
+  const currentCwd = useStore($currentCwd)
   const { t } = useI18n()
 
   // PERF: this component must NOT subscribe to the streaming text. Every
@@ -70,16 +76,44 @@ export const AssistantMessage: FC<{
   // the selector returns '' (stable), so per-token flushes skip the regex
   // scan and the re-render it would cause.
   const completedText = useAuiState(s =>
-    s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
+    s.message.status?.type === 'complete' ? messageContentText(s.message.content) : ''
   )
 
   const previewTargets = useMemo(() => {
-    if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
+    if (!completedText) {
       return []
     }
 
-    return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
-  }, [completedText])
+    const explicitTargets = pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
+
+    const includeRelative = Boolean(currentCwd)
+    const markdownTargets = new Set(extractLocalMarkdownPreviewTargets(completedText, includeRelative))
+
+    const autoTargets = extractAutoPreviewTargets(completedText, {
+      includeRelative,
+      maxTargets: 3
+    }).filter(target => !markdownTargets.has(target))
+
+    const candidates = [
+      ...explicitTargets.map(target => ({ source: 'explicit-link' as const, target })),
+      ...[...markdownTargets].map(target => ({ source: 'auto-detected' as const, target })),
+      ...autoTargets.map(target => ({ source: 'auto-detected' as const, target }))
+    ]
+
+    const seen = new Set<string>()
+
+    return candidates
+      .filter(({ target }) => {
+        if (seen.has(target)) {
+          return false
+        }
+
+        seen.add(target)
+
+        return true
+      })
+      .slice(0, 3)
+  }, [completedText, currentCwd])
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
@@ -106,8 +140,8 @@ export const AssistantMessage: FC<{
         {isRunning && <StreamStallIndicator />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {previewTargets.map(target => (
-              <PreviewAttachment key={target} source="explicit-link" target={target} />
+            {previewTargets.map(({ source, target }) => (
+              <PreviewAttachment key={target} source={source} target={target} />
             ))}
           </div>
         )}

@@ -6,6 +6,7 @@ import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
   $previewTarget,
   clearSessionPreviewRegistry,
+  getSessionPreviewRecord,
   type PreviewTarget,
   registerSessionPreview
 } from '@/store/preview'
@@ -112,7 +113,8 @@ describe('usePreviewRouting', () => {
     act(() => {
       $messages.set([
         assistantMessage('a1', 'Preview: http://localhost:5173/'),
-        assistantMessage('a2', 'Open /work/demo.html')
+        assistantMessage('a2', 'Open /work/demo.html'),
+        assistantMessage('a3', 'Saved file:///work/report.pdf and ./dist/index.html')
       ])
     })
 
@@ -139,6 +141,7 @@ describe('usePreviewRouting', () => {
     act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
 
     expect($previewTarget.get()).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
   })
 })

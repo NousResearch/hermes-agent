@@ -2415,15 +2415,20 @@ def _channel_override_lookup_keys(
     *,
     thread_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
 ) -> list[str]:
     """Ordered, de-duplicated keys for ``channel_overrides`` lookup.
 
     Matches ``resolve_channel_prompt`` semantics: exact thread/channel id first,
     then parent channel/forum id (Discord threads inherit parent overrides).
+    Wildcard keys come last so exact entries always win: ``"<chat_type>:*"``
+    (when ``chat_type`` is known), then the global ``"*"``.
     """
     keys: list[str] = []
     seen: set[str] = set()
-    for key in (chat_id, thread_id, parent_id):
+    wildcards = [f"{chat_type}:*"] if chat_type else []
+    wildcards.append("*")
+    for key in (chat_id, thread_id, parent_id, *wildcards):
         if not key:
             continue
         sk = str(key)
@@ -2434,6 +2439,92 @@ def _channel_override_lookup_keys(
     return keys
 
 
+def _expand_whatsapp_override_keys(
+    keys: list[str], overrides: Dict[str, ChannelOverride]
+) -> list[str]:
+    """Widen lookup keys with WhatsApp phone/LID alias forms.
+
+    A WhatsApp DM chat_id may arrive as ``<phone>@s.whatsapp.net`` or
+    ``<lid>@lid`` for the same human, while the operator configures a bare
+    phone number (or ``+``-prefixed, or a LID) as the override key. For each
+    non-wildcard lookup key, add its normalized identifier plus every alias
+    reachable through the bridge's lid-mapping files, and map ``+``/JID-styled
+    *config* keys back to their normalized form so both sides meet in the
+    middle. Priority order of the original keys is preserved; aliases slot in
+    directly after the key they expand.
+    """
+    from gateway.whatsapp_identity import (
+        expand_whatsapp_aliases,
+        normalize_whatsapp_identifier,
+    )
+
+    # Config keys that only match after normalization (e.g. "+5519..." or a
+    # full JID) — map normalized form -> literal config key.
+    normalized_config_keys: Dict[str, str] = {}
+    for cfg_key in overrides:
+        if cfg_key.endswith("*"):
+            continue
+        norm = normalize_whatsapp_identifier(cfg_key)
+        if norm and norm != cfg_key:
+            normalized_config_keys.setdefault(norm, cfg_key)
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(key: str) -> None:
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+
+    for key in keys:
+        if key.endswith("*"):
+            _add(key)
+            continue
+        _add(key)
+        try:
+            aliases = expand_whatsapp_aliases(key)
+        except Exception:
+            aliases = {normalize_whatsapp_identifier(key)}
+        for alias in sorted(aliases, key=lambda a: (len(a), a)):
+            _add(alias)
+            mapped = normalized_config_keys.get(alias)
+            if mapped:
+                _add(mapped)
+    return out
+
+
+def _iter_channel_overrides(
+    config: GatewayConfig,
+    platform: Platform,
+    chat_id: str,
+    *,
+    thread_id: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
+):
+    """Yield ``ChannelOverride`` matches for this chat in priority order.
+
+    Exact chat/thread/parent ids first, then ``"<chat_type>:*"``, then ``"*"``.
+    On WhatsApp, ids are additionally matched across phone/LID alias forms.
+    """
+    platforms = getattr(config, "platforms", None)
+    if not platforms:
+        return
+    platform_config = platforms.get(platform)
+    if not platform_config or not platform_config.channel_overrides:
+        return
+    overrides = platform_config.channel_overrides
+    keys = _channel_override_lookup_keys(
+        chat_id, thread_id=thread_id, parent_id=parent_id, chat_type=chat_type
+    )
+    if platform == Platform.WHATSAPP:
+        keys = _expand_whatsapp_override_keys(keys, overrides)
+    for key in keys:
+        ov = overrides.get(key)
+        if ov is not None:
+            yield ov
+
+
 def _get_channel_override(
     config: GatewayConfig,
     platform: Platform,
@@ -2441,26 +2532,74 @@ def _get_channel_override(
     *,
     thread_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
 ) -> Optional[ChannelOverride]:
     """Return per-channel override for this platform/chat_id, or None.
 
     Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
-    ``parent_id`` (forum threads / child channels inherit the parent entry).
+    ``parent_id`` (forum threads / child channels inherit the parent entry),
+    then the ``"<chat_type>:*"`` / ``"*"`` wildcards.
     """
-    platforms = getattr(config, "platforms", None)
-    if not platforms:
-        return None
-    platform_config = platforms.get(platform)
-    if not platform_config or not platform_config.channel_overrides:
-        return None
-    overrides = platform_config.channel_overrides
-    for key in _channel_override_lookup_keys(
-        chat_id, thread_id=thread_id, parent_id=parent_id
+    for ov in _iter_channel_overrides(
+        config,
+        platform,
+        chat_id,
+        thread_id=thread_id,
+        parent_id=parent_id,
+        chat_type=chat_type,
     ):
-        ov = overrides.get(key)
-        if ov is not None:
-            return ov
+        return ov
     return None
+
+
+def _resolve_channel_toolsets(
+    config: Optional[GatewayConfig],
+    source: "SessionSource",
+    default_enabled: list,
+) -> list:
+    """Effective ``enabled_toolsets`` for this chat, resolved BEFORE the agent
+    for the session is created or reused.
+
+    Walks the chat's ``channel_overrides`` matches in priority order and adopts
+    the first entry that sets ``enabled_toolsets`` (``[]`` pins the chat to
+    conversation-only). Entries without the field fall through, so a
+    prompt-only override can never shadow a restrictive wildcard into full
+    access. Chats with no toolset override inherit ``default_enabled``.
+
+    Fail-closed: any error during resolution returns ``[]`` (no tools) —
+    a broken policy must never widen a chat to the full platform toolsets.
+    """
+    if config is None:
+        return default_enabled
+    try:
+        chat_id = str(source.chat_id) if source.chat_id else ""
+        thread_id = (
+            str(source.thread_id) if getattr(source, "thread_id", None) else None
+        )
+        parent_id = (
+            str(source.parent_chat_id)
+            if getattr(source, "parent_chat_id", None)
+            else None
+        )
+        for ov in _iter_channel_overrides(
+            config,
+            source.platform,
+            chat_id,
+            thread_id=thread_id,
+            parent_id=parent_id,
+            chat_type=getattr(source, "chat_type", None) or None,
+        ):
+            if ov.enabled_toolsets is not None:
+                return sorted({str(ts) for ts in ov.enabled_toolsets})
+        return default_enabled
+    except Exception:
+        logger.exception(
+            "channel toolset override resolution failed for %s:%s — "
+            "failing closed to no tools",
+            getattr(getattr(source, "platform", None), "value", "?"),
+            getattr(source, "chat_id", "?"),
+        )
+        return []
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -4758,6 +4897,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if override and override.model:
                 return override.model
         return _resolve_gateway_model(user_config)
+
+    def _effective_enabled_toolsets(
+        self,
+        user_config: dict,
+        platform_key: str,
+        source: "SessionSource",
+    ) -> list:
+        """Enabled toolsets for this chat: platform defaults narrowed by the
+        chat's ``channel_overrides`` policy.
+
+        Resolved from chat identity BEFORE the agent for the session is
+        created or reused — the result feeds both the AIAgent constructor and
+        the agent-cache signature, so a chat's tool surface never flips
+        mid-session and prompt caching stays intact.
+        """
+        from hermes_cli.tools_config import _get_platform_tools
+
+        default_enabled = sorted(_get_platform_tools(user_config, platform_key))
+        return _resolve_channel_toolsets(
+            getattr(self, "config", None), source, default_enabled
+        )
 
     def _get_system_prompt_for_channel(
         self,
@@ -13375,8 +13535,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             platform_key = _platform_config_key(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = self._effective_enabled_toolsets(
+                user_config, platform_key, source
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -17041,8 +17202,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = self._effective_enabled_toolsets(
+            user_config, platform_key, source
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

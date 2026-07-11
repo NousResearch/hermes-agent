@@ -1348,6 +1348,58 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
     )
 
 
+def _fallback_explicit_api_mode(
+    fb: dict, fb_provider: str, *candidate_urls: str,
+) -> "tuple[Optional[str], str]":
+    """Resolve an explicitly configured wire protocol for a fallback entry.
+
+    Mirrors primary-path precedence (hermes_cli.runtime_provider): a
+    configured ``api_mode`` wins over provider-name and URL heuristics, so a
+    custom Anthropic-compatible gateway without an ``/anthropic`` path suffix
+    still routes to the Messages API when its config says so.  Reads the
+    fallback entry itself first (``api_mode`` / ``transport``), then the
+    ``providers`` / ``custom_providers`` entry matching the fallback's
+    provider name or endpoint.
+
+    Returns ``(api_mode, configured_base_url)``; ``api_mode`` is None when
+    nothing explicit is declared, and ``configured_base_url`` is the matched
+    config entry's endpoint ("" when the mode came from the fallback entry
+    itself), so callers can prefer the un-normalized configured URL for
+    Anthropic SDK construction.
+    """
+    from hermes_cli.runtime_provider import _parse_api_mode
+
+    mode = _parse_api_mode(fb.get("api_mode") or fb.get("transport"))
+    if mode:
+        return mode, ""
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+
+        entries = get_compatible_custom_providers(load_config())
+    except Exception:
+        logger.debug("Fallback custom-provider api_mode lookup skipped", exc_info=True)
+        return None, ""
+    urls = {u.rstrip("/").lower() for u in candidate_urls if u}
+    name_target = (fb_provider or "").strip().lower()
+    if name_target.startswith("custom:"):
+        name_target = name_target[len("custom:"):]
+    name_target = name_target.replace(" ", "-")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_name = str(entry.get("name") or "").strip().lower().replace(" ", "-")
+        entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        if not (
+            (name_target and entry_name == name_target)
+            or (entry_url and entry_url.lower() in urls)
+        ):
+            continue
+        mode = _parse_api_mode(entry.get("api_mode"))
+        if mode:
+            return mode, entry_url
+    return None, ""
+
+
 def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
     """Return a skip reason for fallback entries known to be unusable locally."""
     fb_provider = (fb.get("provider") or "").strip().lower()
@@ -1509,10 +1561,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_base_url = str(fb_client.base_url)
         fb_protocol_url = fb_base_url_hint or fb_base_url
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
+        # An explicit api_mode on the fallback entry or its matching custom
+        # provider takes precedence over the provider-name/URL heuristics
+        # below — same order as the primary path in runtime_provider.
+        fb_explicit_mode, fb_explicit_cfg_url = _fallback_explicit_api_mode(
+            fb, fb_provider, fb_protocol_url, fb_base_url,
+        )
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif (
-            fb_provider == "anthropic"
+            fb_explicit_mode == "anthropic_messages"
+            or fb_provider == "anthropic"
             or fb_protocol_url.rstrip("/").lower().endswith("/anthropic")
             or base_url_hostname(fb_protocol_url) == "api.anthropic.com"
         ):
@@ -1521,11 +1580,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # name/suffix checks above miss them and they default to
             # chat_completions → POST /v1/chat/completions → 404. Match the
             # host the same way determine_api_mode() and _detect_api_mode_for_url()
-            # do on the primary path. (#32243, #49247)
+            # do on the primary path, and honor an explicitly declared
+            # anthropic_messages mode for gateways whose URL carries no
+            # Anthropic signal at all. (#32243, #49247)
             fb_api_mode = "anthropic_messages"
             # Anthropic SDK construction needs the un-normalized endpoint;
             # it appends ``/v1/messages`` itself.
-            fb_base_url = fb_protocol_url
+            fb_base_url = fb_base_url_hint or fb_explicit_cfg_url or fb_protocol_url
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
             # support the Responses API. Stay on chat_completions.

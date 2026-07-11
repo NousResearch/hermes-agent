@@ -247,6 +247,83 @@ class TestFallbackChainAdvancement:
         assert build_client.call_args.args[0] == "env-secret"
         assert build_client.call_args.kwargs["extra_headers"] == headers
 
+    def test_explicit_fallback_api_mode_wins_without_anthropic_url(self):
+        """A fallback entry declaring api_mode=anthropic_messages must route
+        to the Messages API even when the endpoint has no "/anthropic" path
+        suffix and is not the native Anthropic host — explicit config beats
+        the URL heuristics, matching primary-path precedence."""
+        explicit_url = "https://gateway.example.com/api"
+        fbs = [{
+            "provider": "custom",
+            "model": "claude-sonnet-4-6",
+            "base_url": explicit_url,
+            "api_key": "test-key",
+            "api_mode": "anthropic_messages",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "provider", "openai-codex")
+        setattr(agent, "model", "primary-model")
+        normalized_client = _mock_client(
+            base_url="https://gateway.example.com/api/v1/",
+            api_key="test-key",
+        )
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(normalized_client, "claude-sonnet-4-6"),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as build_client,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.base_url == explicit_url
+        assert build_client.call_args.args[1] == explicit_url
+
+    def test_custom_provider_config_api_mode_wins_without_anthropic_url(self):
+        """api_mode declared on the matching custom_providers entry (not on
+        the fallback entry itself) must also route to the Messages API for a
+        non-/anthropic endpoint, and its extra_headers must be applied."""
+        explicit_url = "https://gateway.example.com/api"
+        headers = {"anthropic-version": "vertex-2023-10-16"}
+        fbs = [{
+            "provider": "my-gateway",
+            "model": "claude-sonnet-4-6",
+            "base_url": explicit_url,
+            "api_key": "test-key",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "provider", "openai-codex")
+        setattr(agent, "model", "primary-model")
+        cfg = {
+            "custom_providers": [{
+                "name": "my-gateway",
+                "base_url": explicit_url,
+                "api_mode": "anthropic_messages",
+                "extra_headers": headers,
+            }]
+        }
+        normalized_client = _mock_client(
+            base_url="https://gateway.example.com/api/v1/",
+            api_key="test-key",
+        )
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(normalized_client, "claude-sonnet-4-6"),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as build_client,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.base_url == explicit_url
+        assert agent._anthropic_extra_headers == headers
+        assert build_client.call_args.kwargs["extra_headers"] == headers
+
     def test_explicit_openai_wire_url_keeps_resolver_normalization(self):
         """Anthropic URL preservation must not alter OpenAI-wire fallbacks."""
         fbs = [{

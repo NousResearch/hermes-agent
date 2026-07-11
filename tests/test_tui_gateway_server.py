@@ -9001,3 +9001,116 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_session_create_rejects_unresolved_explicit_profile(monkeypatch):
+    """The discovery-to-create race must fail closed.
+
+    A profile deleted or renamed after the client discovered it used to resolve
+    to ``None`` and silently scope the new session to the launch profile while
+    the client believed it was profile-scoped. An explicit profile that does
+    not resolve is now rejected before any session state is claimed.
+    """
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    before = set(server._sessions)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80, "profile": "ghost-profile-that-does-not-exist"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4041
+    assert resp["error"]["message"] == "profile not found: ghost-profile-that-does-not-exist"
+    assert set(server._sessions) == before
+
+
+def test_session_create_echoes_effective_profile(monkeypatch, tmp_path):
+    """session.create returns the authoritative effective profile scope.
+
+    Clients that request an explicit profile compare this echo against their
+    request before trusting the session ("" = launch profile).
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    profile_home = tmp_path / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: profile_home)
+
+    scoped = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80, "profile": "research"}}
+    )
+    scoped_sid = scoped["result"]["session_id"]
+    try:
+        assert scoped["result"]["profile"] == "research"
+        assert server._sessions[scoped_sid]["profile_home"] == str(profile_home)
+    finally:
+        server._sessions.pop(scoped_sid, None)
+
+    launch = server.handle_request(
+        {"id": "2", "method": "session.create", "params": {"cols": 80}}
+    )
+    launch_sid = launch["result"]["session_id"]
+    try:
+        assert launch["result"]["profile"] == ""
+        assert server._sessions[launch_sid]["profile_home"] is None
+    finally:
+        server._sessions.pop(launch_sid, None)
+
+
+def test_session_resume_rejects_unresolved_explicit_profile(monkeypatch):
+    """Resume rejects a stale explicit profile before touching any database."""
+    touched = []
+
+    class FakeDB:
+        def get_session(self, target):
+            touched.append(target)
+            return {"id": target}
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "any", "profile": "ghost-profile-that-does-not-exist"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4041
+    assert resp["error"]["message"] == "profile not found: ghost-profile-that-does-not-exist"
+    assert touched == []
+
+
+def test_session_resume_echoes_effective_profile(monkeypatch):
+    """Successful resumes echo the validated effective profile scope."""
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target}
+
+        def reopen_session(self, target):
+            pass
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
+    )
+    sid = resp["result"]["session_id"]
+    try:
+        assert resp["result"]["profile"] == ""
+        assert resp["result"]["resumed"] == "tip"
+        assert resp["result"]["session_key"] == "tip"
+        assert sid and sid != "tip"
+    finally:
+        server._sessions.pop(sid, None)

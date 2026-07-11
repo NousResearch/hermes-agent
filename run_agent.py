@@ -3371,6 +3371,7 @@ class AIAgent:
         final_response: Any,
         interrupted: bool,
         messages: list | None = None,
+        turn_outcome: str | None = None,
     ) -> None:
         """Mirror a completed turn into external memory providers.
 
@@ -3393,12 +3394,16 @@ class AIAgent:
         the same intent, and a prefetch keyed on the interrupted turn
         would fire against stale context.
 
-        Normal completed turns still sync as before.  The whole body is
+        Only the canonical ``verified`` outcome is durable in this phase.
+        ``completed_unverified`` stays denied until a later policy explicitly
+        permits it.  External memory providers remain best-effort.
+
+        Verified turns still sync as before.  The whole body is
         wrapped in ``try/except Exception`` because external memory
         providers are strictly best-effort — a misconfigured or offline
         backend must not block the user from seeing their response.
         """
-        if interrupted:
+        if interrupted or turn_outcome != "verified":
             return
         if not (self._memory_manager and final_response and original_user_message):
             return

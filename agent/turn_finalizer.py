@@ -495,17 +495,23 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
-    # External memory provider: sync the completed turn + queue next prefetch.
+    # External memory provider: sync only a verified turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
         final_response=final_response,
         interrupted=interrupted,
         messages=messages,
+        turn_outcome=_turn_outcome["outcome"],
     )
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        _turn_outcome["outcome"] == "verified"
+        and final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

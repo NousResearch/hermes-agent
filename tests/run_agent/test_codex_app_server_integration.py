@@ -53,7 +53,7 @@ def _make_codex_agent(**kwargs):
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
-    return run_agent.AIAgent(
+    agent = run_agent.AIAgent(
         api_key="stub",
         base_url="https://stub.invalid",
         provider="openai",
@@ -63,6 +63,9 @@ def _make_codex_agent(**kwargs):
         skip_memory=True,
         **kwargs,
     )
+    # Fake Codex responses represent the explicitly verified positive path.
+    setattr(agent, "_turn_verification_status", "passed")
+    return agent
 
 
 class TestApiModeAccepted:

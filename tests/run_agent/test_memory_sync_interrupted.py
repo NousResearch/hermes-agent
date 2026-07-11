@@ -81,6 +81,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="What's the weather in Paris?",
             final_response="It's sunny and 22°C.",
             interrupted=False,
+            turn_outcome="verified",
         )
         agent._memory_manager.sync_all.assert_called_once_with(
             "What's the weather in Paris?", "It's sunny and 22°C.",
@@ -120,6 +121,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="run tests",
             final_response="tests passed",
             interrupted=False,
+            turn_outcome="verified",
             messages=messages,
         )
 
@@ -151,6 +153,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message=skill_message,
             final_response="Done.",
             interrupted=False,
+            turn_outcome="verified",
         )
 
         agent._memory_manager.sync_all.assert_called_once_with(
@@ -173,6 +176,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="Hello",
             final_response=None,
             interrupted=False,
+            turn_outcome="verified",
         )
         agent._memory_manager.sync_all.assert_not_called()
 
@@ -185,6 +189,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message=None,
             final_response="Proactive notification text",
             interrupted=False,
+            turn_outcome="verified",
         )
         agent._memory_manager.sync_all.assert_not_called()
 
@@ -201,6 +206,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="hi",
             final_response="hey",
             interrupted=False,
+            turn_outcome="verified",
         )
 
     # --- Exception safety ----------------------------------------------
@@ -219,6 +225,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="hi",
             final_response="hey",
             interrupted=False,
+            turn_outcome="verified",
         )
         # sync_all was attempted.
         agent._memory_manager.sync_all.assert_called_once()
@@ -236,6 +243,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="hi",
             final_response="hey",
             interrupted=False,
+            turn_outcome="verified",
         )
         # sync_all still happened before the prefetch blew up.
         agent._memory_manager.sync_all.assert_called_once()
@@ -256,6 +264,7 @@ class TestSyncExternalMemoryForTurn:
             ],
             final_response="A terminal window showing a stack trace.",
             interrupted=False,
+            turn_outcome="verified",
         )
         agent._memory_manager.sync_all.assert_called_once_with(
             "[1 image] what is in this screenshot?",
@@ -273,6 +282,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message="describe it",
             final_response=[{"type": "text", "text": "a cat"}],
             interrupted=False,
+            turn_outcome="verified",
         )
         agent._memory_manager.sync_all.assert_called_once_with(
             "describe it", "a cat",
@@ -287,6 +297,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message=[{"type": "audio", "data": "..."}],
             final_response="noted",
             interrupted=False,
+            turn_outcome="verified",
         )
         agent._memory_manager.sync_all.assert_not_called()
         agent._memory_manager.queue_prefetch_all.assert_not_called()
@@ -309,6 +320,7 @@ class TestSyncExternalMemoryForTurn:
             original_user_message=user,
             final_response=final,
             interrupted=interrupted,
+            turn_outcome="verified" if expect_sync else "partial",
         )
         if expect_sync:
             agent._memory_manager.sync_all.assert_called_once()

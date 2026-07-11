@@ -22,6 +22,8 @@ import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from agent.turn_outcome import classify_turn_outcome
+
 logger = logging.getLogger(__name__)
 
 
@@ -497,22 +499,31 @@ def run_codex_app_server_turn(
 
     # External memory provider sync (mirrors line ~15439). Skipped on
     # interrupt/error to avoid feeding partial transcripts to memory.
-    if not turn.interrupted and turn.error is None:
+    turn_outcome = classify_turn_outcome(
+        final_response=turn.final_text,
+        failed=turn.error is not None,
+        interrupted=turn.interrupted,
+        unresolved=getattr(turn, "should_retire", False) and turn.error is None,
+        verification_status=getattr(agent, "_turn_verification_status", None),
+    )
+    if turn_outcome["outcome"] == "verified":
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
                 final_response=turn.final_text,
-                interrupted=False,
+                interrupted=turn.interrupted,
                 messages=messages,
+                turn_outcome=turn_outcome["outcome"],
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
 
     # Background review fork — same cadence + signature as the default
     # path (line ~15449). Only fires when a trigger actually tripped AND
-    # we have a real final response.
+    # we have a verified final response.
     if (
-        turn.final_text
+        turn_outcome["outcome"] == "verified"
+        and turn.final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):

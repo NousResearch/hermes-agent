@@ -438,6 +438,61 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_required_null_is_stripped(self):
+        """MCP servers that emit required: null must not leak into output."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": None,
+        })
+
+        assert "required" not in schema
+
+    def test_required_non_list_string_is_stripped(self):
+        """MCP servers that emit required as a bare string must not leak."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": "q",
+        })
+
+        assert "required" not in schema
+
+    def test_required_non_list_integer_is_stripped(self):
+        """MCP servers that emit required as an integer must not leak."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": 42,
+        })
+
+        assert "required" not in schema
+
+    def test_required_null_in_nested_object_is_stripped(self):
+        """Nested objects with required: null should also be cleaned."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "opts": {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer"}},
+                    "required": None,
+                },
+            },
+            "required": ["opts"],
+        })
+
+        assert schema["required"] == ["opts"]
+        assert "required" not in schema["properties"]["opts"]
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool import _normalize_mcp_input_schema

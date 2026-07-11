@@ -4148,7 +4148,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                 if not isinstance(repaired.get("properties"), dict):
                     repaired["properties"] = {}
 
-            # Prune required to only include names that exist in properties
+            # Prune required to only include names that exist in properties.
+            # Also strip non-list values (null, string, int, …) that would
+            # cause strict OpenAI-compatible backends to return HTTP 400.
             required = repaired.get("required")
             if isinstance(required, list):
                 props = repaired.get("properties") or {}
@@ -4158,6 +4160,8 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                         repaired["required"] = valid
                     else:
                         repaired.pop("required", None)
+            elif "required" in repaired:
+                repaired.pop("required", None)
 
         return repaired
 

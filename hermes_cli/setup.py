@@ -74,6 +74,9 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "devin-acp": [
+        "devin-acp",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",

@@ -4,6 +4,14 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const { EventEmitter } = require('node:events')
 
+// hc-473: keep this suite hermetic regardless of how it's invoked (npm run
+// test:desktop:platforms already sets this too, but this file must not rely
+// on that -- a bare `node --test electron/shell-updater.test.cjs` must never
+// let createShellUpdater's default sendTelemetry touch the real network).
+// Tests that assert on beacon content inject their own fake sendTelemetry,
+// which always takes priority over this env var.
+process.env.APEXNODES_TELEMETRY = 'off'
+
 const {
   SHELL_UPDATE_EVENT_CHANNEL,
   SHELL_UPDATE_FEED_BASE,
@@ -286,4 +294,121 @@ test('a rejecting checkForUpdates is swallowed and logged (no unhandled rejectio
   await updater.checkNow()
 
   assert.ok(logs.some(line => line.includes('[shell-update] check failed (silent): feed unreachable')))
+})
+
+// ---------------------------------------------------------------------------
+// hc-473: anonymous shell-update telemetry
+// ---------------------------------------------------------------------------
+
+function telemetryHarness(extra = {}) {
+  const telemetryEvents = []
+  const h = harness({ appVersion: '0.16.7', sendTelemetry: ev => telemetryEvents.push(ev), ...extra })
+  return { ...h, telemetryEvents }
+}
+
+test('update-available fires a shell_update start beacon', () => {
+  const { autoUpdater, telemetryEvents } = telemetryHarness()
+
+  autoUpdater.emit('update-available', { version: '0.16.1' })
+
+  assert.deepEqual(telemetryEvents, [
+    { platform: 'mac', arch: 'arm64', app_version: '0.16.7', stage: 'shell_update', status: 'start' }
+  ])
+})
+
+test('update-downloaded fires a shell_update success beacon', () => {
+  const { autoUpdater, telemetryEvents } = telemetryHarness()
+
+  autoUpdater.emit('update-available', { version: '0.16.1' })
+  autoUpdater.emit('update-downloaded', { version: '0.16.1' })
+
+  assert.deepEqual(
+    telemetryEvents.map(ev => ev.status),
+    ['start', 'success']
+  )
+  assert.ok(telemetryEvents.every(ev => ev.stage === 'shell_update'))
+})
+
+test('an updater error fires a shell_update failure beacon with a categorized error_code', () => {
+  const { autoUpdater, telemetryEvents } = telemetryHarness()
+
+  autoUpdater.emit('error', new Error('ECONNRESET'))
+
+  assert.deepEqual(telemetryEvents, [
+    {
+      platform: 'mac',
+      arch: 'arm64',
+      app_version: '0.16.7',
+      stage: 'shell_update',
+      status: 'failure',
+      error_code: 'shell_update:network'
+    }
+  ])
+})
+
+test('checking-for-update / update-not-available / download-progress fire NO telemetry (high-frequency, non-actionable)', () => {
+  const { autoUpdater, telemetryEvents } = telemetryHarness()
+
+  autoUpdater.emit('checking-for-update')
+  autoUpdater.emit('update-not-available', { version: '0.16.0' })
+  autoUpdater.emit('download-progress', { percent: 42.5 })
+
+  assert.deepEqual(telemetryEvents, [])
+})
+
+test('quitAndInstall requested fires a shell_update_apply start beacon (no success beacon is possible — the process exits)', async () => {
+  const { ipcMain, autoUpdater, telemetryEvents } = telemetryHarness()
+
+  autoUpdater.emit('update-downloaded', { version: '0.16.1' })
+  telemetryEvents.length = 0 // drop the update-downloaded beacon, isolate the install call
+  assert.deepEqual(await ipcMain.invoke('hermes:shell-update:install'), { ok: true })
+  await flushImmediate()
+
+  assert.deepEqual(telemetryEvents, [
+    { platform: 'mac', arch: 'arm64', app_version: '0.16.7', stage: 'shell_update_apply', status: 'start' }
+  ])
+})
+
+test('a throwing quitAndInstall ALSO fires a shell_update_apply failure beacon', async () => {
+  const { ipcMain, autoUpdater, telemetryEvents } = telemetryHarness()
+  autoUpdater.quitAndInstall = () => {
+    throw new Error('spawn failed')
+  }
+
+  autoUpdater.emit('update-downloaded', { version: '0.16.1' })
+  telemetryEvents.length = 0
+  assert.deepEqual(await ipcMain.invoke('hermes:shell-update:install'), { ok: true })
+  await flushImmediate()
+
+  assert.deepEqual(
+    telemetryEvents.map(ev => ev.status),
+    ['start', 'failure']
+  )
+  const failure = telemetryEvents.find(ev => ev.status === 'failure')
+  assert.equal(failure.error_code, 'shell_update_apply:unknown')
+})
+
+test('install IPC refused before downloaded fires no telemetry at all', async () => {
+  const { ipcMain, telemetryEvents } = telemetryHarness()
+
+  assert.deepEqual(await ipcMain.invoke('hermes:shell-update:install'), { ok: false, error: 'not_downloaded' })
+  await flushImmediate()
+
+  assert.deepEqual(telemetryEvents, [])
+})
+
+test('a disabled (unpackaged) updater never touches telemetry', async () => {
+  const { ipcMain, telemetryEvents } = telemetryHarness({ isPackaged: false })
+
+  await ipcMain.invoke('hermes:shell-update:install')
+
+  assert.deepEqual(telemetryEvents, [])
+})
+
+test('omitting sendTelemetry still drives the state machine correctly (real default, network suppressed by APEXNODES_TELEMETRY=off)', () => {
+  const { updater, autoUpdater } = harness()
+
+  autoUpdater.emit('update-available', { version: '0.16.1' })
+
+  assert.equal(updater.getState().phase, 'available')
 })

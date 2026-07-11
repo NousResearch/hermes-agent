@@ -6,6 +6,14 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
+// hc-473: keep this suite hermetic regardless of how it's invoked (npm run
+// test:desktop:platforms already sets this too, but this file must not rely
+// on that -- a bare `node --test electron/apex-bundle-install.test.cjs` must
+// never let applyBundleUpdate's default sendTelemetry touch the real
+// network). Tests that assert on beacon content inject their own fake
+// sendTelemetry, which always takes priority over this env var.
+process.env.APEXNODES_TELEMETRY = 'off'
+
 const layout = require('./apex-bundle-layout.cjs')
 const migrate = require('./apex-bundle-migrate.cjs')
 const install = require('./apex-bundle-install.cjs')
@@ -438,6 +446,35 @@ test('applyBundleUpdate: migrates a legacy in-place install side-by-side', { ski
   }
 })
 
+// ---------------------------------------------------------------------------
+// hc-473: anonymous download/verify/switch telemetry
+// ---------------------------------------------------------------------------
+
+const TELEMETRY_BASE = { platform: 'win', arch: 'x64', app_version: '0.18.2', runtime_key: REAL_KEY }
+
+test('applyBundleUpdate: full success fires download/verify/switch start+success beacons in order', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    const telemetryEvents = []
+    const deps = baseDeps(home)
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, true)
+
+    assert.deepEqual(telemetryEvents, [
+      { ...TELEMETRY_BASE, stage: 'download', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'download', status: 'success' },
+      { ...TELEMETRY_BASE, stage: 'verify', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'verify', status: 'success' },
+      { ...TELEMETRY_BASE, stage: 'switch', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'switch', status: 'success' }
+    ])
+  } finally {
+    rm(home)
+  }
+})
+
 test('applyBundleUpdate: refuses migration when user data lives in the runtime dir', { skip: process.platform === 'win32' }, async () => {
   const home = mkHome()
   try {
@@ -450,6 +487,138 @@ test('applyBundleUpdate: refuses migration when user data lives in the runtime d
     assert.equal(layout.readPointer(home), null)
     assert.equal(fs.existsSync(migrate.legacyAsidePath(home)), false)
     assert.equal(layout.linkStatus(layout.bundlePaths(home).activeLink).kind, 'dir')
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: a manifest-gate rejection (min_desktop_version) fires no telemetry at all', async () => {
+  const home = mkHome()
+  try {
+    const telemetryEvents = []
+    const deps = baseDeps(home, REAL_KEY, winManifest({ min_desktop_version: '9.9.9' }))
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'min_desktop_version')
+    // Out of this ticket's explicit download/verify/switch scope — the manifest
+    // gate itself isn't telemetered (see applyBundleUpdate's own JSDoc).
+    assert.deepEqual(telemetryEvents, [])
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: a C2 disk-preflight refusal fires no telemetry at all', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    const telemetryEvents = []
+    const deps = baseDeps(home)
+    deps.freeBytesOf = () => 100 * 1024 * 1024 // far below a bundle install
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'insufficient_disk')
+    // Like the manifest gate, the C2 preflight sits BEFORE the ticket's
+    // download/verify/switch scope — no beacons (see applyBundleUpdate JSDoc).
+    assert.deepEqual(telemetryEvents, [])
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: a download failure fires download start+failure, no verify/switch beacons', async () => {
+  const home = mkHome()
+  try {
+    const telemetryEvents = []
+    const deps = baseDeps(home)
+    deps.download = async () => {
+      throw new Error('getaddrinfo ENOTFOUND cos.example.com')
+    }
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, false)
+    assert.deepEqual(telemetryEvents, [
+      { ...TELEMETRY_BASE, stage: 'download', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'download', status: 'failure', error_code: 'download:network' }
+    ])
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: a verify failure fires download success + verify start/failure, no switch beacons', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    const telemetryEvents = []
+    const deps = baseDeps(home)
+    deps.runTool = (_e, _a, label) => {
+      if (label === 'verify') throw new Error('sha256 mismatch on 3 files')
+    }
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, false)
+    assert.deepEqual(telemetryEvents, [
+      { ...TELEMETRY_BASE, stage: 'download', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'download', status: 'success' },
+      { ...TELEMETRY_BASE, stage: 'verify', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'verify', status: 'failure', error_code: 'verify:checksum_mismatch' }
+    ])
+  } finally {
+    rm(home)
+  }
+})
+
+// hc-472 D1 rebased the switch stage onto switchToVersionOrMigrate: a bare real
+// dir at the active path now MIGRATES (success) instead of failing with
+// active-path-occupied-by-real-dir. The deterministic switch-stage failure on
+// the new baseline is the D1 data-safety refusal (user data inside the legacy
+// runtime dir -> migration_refused), so that is what the failure beacon test
+// drives; a companion test pins the migration-success case to the same stage.
+test('applyBundleUpdate: a switch failure (D1 migration refused) fires switch start+failure after a clean download+verify', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    seedLegacyInPlace(home, { '.env': 'RELAY_KEY=secret' })
+    const telemetryEvents = []
+    const deps = baseDeps(home)
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'migration_refused')
+    assert.deepEqual(telemetryEvents, [
+      { ...TELEMETRY_BASE, stage: 'download', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'download', status: 'success' },
+      { ...TELEMETRY_BASE, stage: 'verify', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'verify', status: 'success' },
+      { ...TELEMETRY_BASE, stage: 'switch', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'switch', status: 'failure', error_code: 'switch:user-data-in-runtime-dir' }
+    ])
+  } finally {
+    rm(home)
+  }
+})
+
+test('applyBundleUpdate: a D1 legacy migration reports as switch success (rides inside the switch stage)', { skip: process.platform === 'win32' }, async () => {
+  const home = mkHome()
+  try {
+    seedLegacyInPlace(home)
+    const telemetryEvents = []
+    const deps = baseDeps(home)
+    deps.sendTelemetry = ev => telemetryEvents.push(ev)
+
+    const r = await install.applyBundleUpdate(deps)
+    assert.equal(r.ok, true)
+    assert.equal(r.switched.migrated, true)
+    const switchEvents = telemetryEvents.filter(ev => ev.stage === 'switch')
+    assert.deepEqual(switchEvents, [
+      { ...TELEMETRY_BASE, stage: 'switch', status: 'start' },
+      { ...TELEMETRY_BASE, stage: 'switch', status: 'success' }
+    ])
   } finally {
     rm(home)
   }

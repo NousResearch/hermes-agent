@@ -22,6 +22,10 @@
  *
  * Manifest schema authored by scripts/build-runtime-bundle.mjs (sibling
  * manifest.json adds `archive:{name,sha256,size}`).
+ *
+ * hc-473: applyBundleUpdate also fires anonymous download/verify/switch
+ * telemetry beacons around its own F1/F2/C1 steps (apexnodes-telemetry.cjs);
+ * see that function's JSDoc for exactly which sub-step maps to which stage.
  */
 
 const fs = require('node:fs')
@@ -30,6 +34,14 @@ const path = require('node:path')
 const layout = require('./apex-bundle-layout.cjs')
 const migrate = require('./apex-bundle-migrate.cjs')
 const diskspace = require('./apex-bundle-diskspace.cjs')
+const {
+  sendDesktopTelemetry,
+  fireTelemetry,
+  classifyErrorCategory,
+  STATUS_START,
+  STATUS_SUCCESS,
+  STATUS_FAILURE
+} = require('./apexnodes-telemetry.cjs')
 
 const MANIFEST_SCHEMA = 1
 const BUNDLE_KIND = 'apexnodes-runtime-bundle'
@@ -283,6 +295,19 @@ async function stageAndCommitBundle(o) {
  * @param {number} [o.minFreeBytes]    C2 install free-space floor override
  * @param {string[]} [o.migrateMarkers] D1 data-location assertion marker override
  * @param {(msg:string)=>void} [o.log]
+ * @param {(event:object) => any} [o.sendTelemetry] hc-473 anonymous beacon
+ *   emitter, defaults to the real apexnodes-telemetry.cjs; tests inject a
+ *   fake to capture events without touching the network. Fires around the
+ *   three stages the dispatch asks for: download (F1), verify (F2 — covers
+ *   stageAndCommitBundle's own extract+fixup+verify sub-steps as one outer
+ *   telemetry stage), switch (C1 — since hc-472 D1 this wraps
+ *   switchToVersionOrMigrate, so a legacy-dir migration rides inside the
+ *   same switch stage and its failure reasons surface via the switch
+ *   failure beacon). The manifest-fetch/compat-gate step above and the C2
+ *   disk preflight are deliberately NOT telemetered here (out of this
+ *   ticket's explicit 3-stage scope; their absence from the funnel is
+ *   itself visible as a low download:start count relative to check
+ *   frequency).
  * @returns {Promise<{ok:true, key, versionDir, switched}|{ok:false, error, code, stage}>}
  */
 async function applyBundleUpdate(o) {
@@ -302,11 +327,18 @@ async function applyBundleUpdate(o) {
     dirSizeOf,
     minFreeBytes,
     migrateMarkers,
-    log = () => {}
+    log = () => {},
+    sendTelemetry = sendDesktopTelemetry
   } = o
   const platform = platformOpts && platformOpts.platform
   const paths = layout.bundlePaths(hermesHome)
   const cos = bundleCosLayout({ cosBase, key, os, arch })
+  // hc-473: one {platform, arch, app_version, runtime_key} shape reused by
+  // every beacon this update fires — os/key are already exactly the
+  // platform/runtime_key vocabulary the cloud endpoint expects, no
+  // normalization needed (unlike bootstrap-runner/shell-updater, which start
+  // from raw process.platform).
+  const telemetryBase = { platform: os, arch, app_version: desktopVersion || null, runtime_key: key }
 
   try {
     // 1. Manifest first (small): schema + platform match + compat gate BEFORE we
@@ -357,25 +389,63 @@ async function applyBundleUpdate(o) {
     const downloadDir = o.downloadDir || path.join(paths.versionsDir, '.downloads')
     const archivePath = path.join(downloadDir, archiveName)
     log(`[bundle-install] downloading ${archiveName}`)
-    await download({
-      url: cos.objectUrl(archiveName),
-      dest: archivePath,
-      sha256: manifest.archive.sha256,
-      size: manifest.archive.size
-    })
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'download', status: STATUS_START })
+    try {
+      await download({
+        url: cos.objectUrl(archiveName),
+        dest: archivePath,
+        sha256: manifest.archive.sha256,
+        size: manifest.archive.size
+      })
+    } catch (err) {
+      fireTelemetry(sendTelemetry, {
+        ...telemetryBase,
+        stage: 'download',
+        status: STATUS_FAILURE,
+        error_code: `download:${classifyErrorCategory(err)}`
+      })
+      throw err
+    }
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'download', status: STATUS_SUCCESS })
 
-    // 3. Stage → fixup → verify → atomic commit (F2).
-    const staged = await stageAndCommitBundle({ hermesHome, key, archivePath, manifest, extract, runTool, opts: platformOpts, log })
+    // 3. Stage → fixup → verify → atomic commit (F2). Telemetered as one
+    //    outer "verify" stage — extract/fixup/verify are its internal
+    //    sub-steps, not separately beaconed (see this function's own JSDoc).
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'verify', status: STATUS_START })
+    let staged
+    try {
+      staged = await stageAndCommitBundle({ hermesHome, key, archivePath, manifest, extract, runTool, opts: platformOpts, log })
+    } catch (err) {
+      fireTelemetry(sendTelemetry, {
+        ...telemetryBase,
+        stage: 'verify',
+        status: STATUS_FAILURE,
+        error_code: `verify:${classifyErrorCategory(err)}`
+      })
+      throw err
+    }
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'verify', status: STATUS_SUCCESS })
 
     // 4. Atomic switch: pointer (truth) then link (derived) (C1) — upgraded to a
     //    CONTROLLED side-by-side MIGRATION (D1) when the active path is a legacy
     //    in-place dir (turning the add-only layer's real-dir refusal into a
-    //    migration + a `legacy-inplace` rollback fallback).
+    //    migration + a `legacy-inplace` rollback fallback). hc-473: the whole
+    //    migrate-or-switch composite is telemetered as the one `switch` stage —
+    //    a D1 migration failure surfaces via this beacon's error_code (its
+    //    sw.reason, e.g. `switch:user-data-in-runtime-dir`).
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'switch', status: STATUS_START })
     const sw = migrate.switchToVersionOrMigrate(hermesHome, key, { platform, markers: migrateMarkers, log })
     if (!sw.ok) {
+      fireTelemetry(sendTelemetry, {
+        ...telemetryBase,
+        stage: 'switch',
+        status: STATUS_FAILURE,
+        error_code: `switch:${(sw.reason || 'unknown').toString().slice(0, 100)}`
+      })
       const code = sw.reason === 'user-data-in-runtime-dir' ? 'migration_refused' : 'switch_failed'
       return { ok: false, code, stage: 'switch', error: `could not activate versions/${key}: ${sw.reason}`, reason: sw.reason, found: sw.found }
     }
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'switch', status: STATUS_SUCCESS })
 
     // 5. Best-effort cleanup of the downloaded archive + startup-style GC (keep
     //    current+previous). Never fatal.

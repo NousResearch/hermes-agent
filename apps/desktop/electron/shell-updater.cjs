@@ -18,6 +18,26 @@
 // 依赖注入设计(同 apex-runtime-latest.cjs):模块不 require electron /
 // electron-updater,autoUpdater、ipcMain、broadcast 全部由 main.cjs 传入,
 // 这样 node --test 能用假件直接测事件流→IPC 推送,不需要 electron 环境。
+//
+// hc-473: 同样的注入设计延伸到匿名遥测 —— sendTelemetry 缺省即真实发射器
+// (apexnodes-telemetry.cjs),main.cjs 不需要任何接线改动;测试注入假件截获
+// 事件而不碰网络。四个上报点对应 dispatch 的 update-available/downloaded/
+// applied/error:'shell_update' 一个 stage 覆盖 available(start)→downloaded
+// (success)/error(failure)的检查+下载生命周期,'shell_update_apply' 另一个
+// stage 覆盖用户点击「重启以更新」之后(只有 start —— quitAndInstall 一旦成功
+// 进程即退出重启,这一侧永远看不到 success,是已知且预期的不对称)。
+// checking-for-update / update-not-available / download-progress 故意不打点
+// (高频 + 无操作性,不在 dispatch 的四项清单里)。
+
+const {
+  sendDesktopTelemetry,
+  fireTelemetry,
+  classifyErrorCategory,
+  normalizeDesktopPlatform,
+  STATUS_START,
+  STATUS_SUCCESS,
+  STATUS_FAILURE
+} = require('./apexnodes-telemetry.cjs')
 
 const SHELL_UPDATE_EVENT_CHANNEL = 'hermes:shell-update:event'
 const SHELL_UPDATE_FEED_BASE = 'https://apexnodes-runtime-202606250443-1300912302.cos.ap-guangzhou.myqcloud.com/desktop'
@@ -64,6 +84,10 @@ function initialState(disabled) {
  * @param {string} [options.arch]            缺省 process.arch
  * @param {number} [options.initialDelayMs]  首查延迟,缺省 60s
  * @param {number} [options.recheckIntervalMs] 重查周期,缺省 6h
+ * @param {(event:object) => any} [options.sendTelemetry] hc-473 匿名遥测发射
+ *   函数,缺省真实 apexnodes-telemetry.cjs;测试传假件截获事件。
+ * @param {string|null} [options.appVersion] 当前壳版本(app.getVersion());
+ *   缺省 null——遥测里的 app_version 字段本就是可选的。
  */
 function createShellUpdater(options) {
   const {
@@ -76,11 +100,16 @@ function createShellUpdater(options) {
     platform = process.platform,
     arch = process.arch,
     initialDelayMs = SHELL_UPDATE_INITIAL_DELAY_MS,
-    recheckIntervalMs = SHELL_UPDATE_RECHECK_INTERVAL_MS
+    recheckIntervalMs = SHELL_UPDATE_RECHECK_INTERVAL_MS,
+    sendTelemetry = sendDesktopTelemetry,
+    appVersion = null
   } = options
 
   const disabled = !isPackaged || !autoUpdater
   const state = initialState(disabled)
+  // hc-473: one {platform, arch, app_version} shape reused by every beacon
+  // this updater fires; `stage`/`status`/`error_code` vary per call site.
+  const telemetryBase = { platform: normalizeDesktopPlatform(platform), arch, app_version: appVersion }
 
   function setState(patch) {
     Object.assign(state, patch)
@@ -99,6 +128,11 @@ function createShellUpdater(options) {
       return { ok: false, error: disabled ? 'disabled' : 'not_downloaded' }
     }
     log(`[shell-update] quitAndInstall requested (version=${state.version || '?'})`)
+    // hc-473: 'start' only, by design — a successful quitAndInstall quits
+    // this very process to relaunch the updated one, so there is no code
+    // path left here to ever observe/report a 'success'. The process exiting
+    // cleanly is itself the (unobservable-from-here) success signal.
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'shell_update_apply', status: STATUS_START })
     // setImmediate:先让 IPC 应答回到 renderer 再拆窗口,避免 renderer 在
     // await 上挂到进程退出。win 上 (true, true) = 静默装 + 装完拉起;mac 的
     // Squirrel.Mac 忽略参数,quit 后换包自动重启。
@@ -108,6 +142,12 @@ function createShellUpdater(options) {
       } catch (error) {
         log(`[shell-update] quitAndInstall failed: ${error && error.message}`)
         setState({ phase: 'error', error: (error && error.message) || String(error) })
+        fireTelemetry(sendTelemetry, {
+          ...telemetryBase,
+          stage: 'shell_update_apply',
+          status: STATUS_FAILURE,
+          error_code: `shell_update_apply:${classifyErrorCategory(error)}`
+        })
       }
     })
     return { ok: true }
@@ -145,19 +185,28 @@ function createShellUpdater(options) {
   // 事件 → 状态机。'error' 监听必须挂上:EventEmitter 没有 error 监听时 emit
   // 会直接 throw,把静默失败变成主进程崩溃。
   const listeners = [
+    // hc-473: checking-for-update fires every ~6h and mostly finds nothing —
+    // deliberately NOT telemetered (high-frequency, non-actionable; not one
+    // of the dispatch's four beacon points).
     ['checking-for-update', () => setState({ phase: 'checking', error: null })],
     [
       'update-available',
       info => {
         setState({ phase: 'available', version: (info && info.version) || null, error: null })
         log(`[shell-update] update available: ${(info && info.version) || '?'} (auto-downloading)`)
+        // hc-473: 'start' of the shell_update funnel — found + autoDownload
+        // begins right after this listener returns.
+        fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'shell_update', status: STATUS_START })
       }
     ],
+    // hc-473: the common/expected outcome of a check — deliberately silent.
     ['update-not-available', () => setState({ phase: 'idle', percent: null, error: null })],
     [
       'download-progress',
       progress => {
         // 静默下载:只记状态(renderer 胶囊对 downloading 不渲染),不打扰。
+        // hc-473: per-tick progress is deliberately NOT telemetered (would
+        // flood the beacon with many events per download for no signal).
         setState({ phase: 'downloading', percent: progress && typeof progress.percent === 'number' ? progress.percent : null })
       }
     ],
@@ -166,6 +215,9 @@ function createShellUpdater(options) {
       info => {
         setState({ phase: 'downloaded', version: (info && info.version) || state.version, percent: 100, error: null })
         log(`[shell-update] update downloaded: ${(info && info.version) || '?'} (waiting for restart)`)
+        // hc-473: 'success' of the shell_update funnel (electron-updater has
+        // already verified the download internally by this point).
+        fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'shell_update', status: STATUS_SUCCESS })
       }
     ],
     [
@@ -175,6 +227,16 @@ function createShellUpdater(options) {
         const message = (error && error.message) || String(error)
         setState({ phase: 'error', error: message })
         log(`[shell-update] error (silent): ${message}`)
+        // hc-473: covers BOTH a check failure and a download failure — the
+        // underlying autoUpdater API collapses both into this one 'error'
+        // event, so this beacon can't distinguish which sub-stage failed any
+        // more finely than the existing state machine already does.
+        fireTelemetry(sendTelemetry, {
+          ...telemetryBase,
+          stage: 'shell_update',
+          status: STATUS_FAILURE,
+          error_code: `shell_update:${classifyErrorCategory(error)}`
+        })
       }
     ]
   ]

@@ -4,14 +4,24 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
+// hc-473: keep this suite hermetic regardless of how it's invoked (npm run
+// test:desktop:platforms already sets this too, but this file must not rely
+// on that -- a bare `node --test electron/bootstrap-runner.test.cjs` must
+// never let runBootstrap's default sendTelemetry touch the real network).
+// Tests that assert on beacon content inject their own fake sendTelemetry,
+// which always takes priority over this env var.
+process.env.APEXNODES_TELEMETRY = 'off'
+
 const {
   runBootstrap,
   resolveInstallScript,
   installedAgentInstallScript,
   bundledInstallScript,
   cnInstallEnv,
-  cachedScriptPath
+  cachedScriptPath,
+  runtimeKeyFromStamp
 } = require('./bootstrap-runner.cjs')
+const { normalizeDesktopPlatform } = require('./apexnodes-telemetry.cjs')
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
 
@@ -24,6 +34,7 @@ test('runBootstrap bails immediately when the signal is already aborted', async 
   controller.abort()
 
   const events = []
+  const telemetryEvents = []
   const result = await runBootstrap({
     installStamp: null,
     activeRoot: '/tmp/hermes-runner-test',
@@ -31,7 +42,8 @@ test('runBootstrap bails immediately when the signal is already aborted', async 
     hermesHome: '/tmp/hermes-runner-test',
     logRoot: '/tmp/hermes-runner-test',
     onEvent: ev => events.push(ev),
-    abortSignal: controller.signal
+    abortSignal: controller.signal,
+    sendTelemetry: ev => telemetryEvents.push(ev)
   })
 
   // Cancelled before any install script is spawned.
@@ -40,6 +52,33 @@ test('runBootstrap bails immediately when the signal is already aborted', async 
     events.some(ev => ev.type === 'failed' && /cancelled/i.test(ev.error)),
     'should emit a cancelled failure event'
   )
+  // hc-473: a cancelled-before-anything-started run still beacons — reported
+  // as a bootstrap-level failure (there's no cleaner tri-state slot for
+  // "user cancelled", and "did this run reach completion" is what the
+  // ops-dashboard funnel actually wants to answer).
+  assert.deepEqual(telemetryEvents, [
+    {
+      platform: normalizeDesktopPlatform(process.platform),
+      arch: process.arch,
+      app_version: null,
+      runtime_key: null,
+      stage: 'bootstrap',
+      status: 'failure',
+      error_code: 'bootstrap:cancelled'
+    }
+  ])
+})
+
+// ---------------------------------------------------------------------------
+// hc-473: runtimeKeyFromStamp — commit > branch > version priority
+// ---------------------------------------------------------------------------
+
+test('runtimeKeyFromStamp: prefers commit, then branch, then version; null for no stamp', () => {
+  assert.equal(runtimeKeyFromStamp(null), null)
+  assert.equal(runtimeKeyFromStamp({}), null)
+  assert.equal(runtimeKeyFromStamp({ version: '2026.7.1' }), '2026.7.1')
+  assert.equal(runtimeKeyFromStamp({ branch: 'v2026.7.1', version: '2026.7.1' }), 'v2026.7.1')
+  assert.equal(runtimeKeyFromStamp({ commit: 'a'.repeat(40), branch: 'main', version: '2026.7.1' }), 'a'.repeat(40))
 })
 
 test('installedAgentInstallScript resolves the installer in the agent checkout', () => {
@@ -343,3 +382,141 @@ describeManifestFlow('runBootstrap defaults updateInfo to a first-install shape 
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// hc-473: per-stage + bootstrap-level telemetry, driven end to end against the
+// same fake install.sh stub as the updateInfo tests above (posix-only, same
+// win32 skip rationale).
+// ---------------------------------------------------------------------------
+
+function writeFakeInstallShFailingStage(sourceRepoRoot) {
+  // Same one-stage manifest as writeFakeInstallSh, but the stage itself
+  // reports ok:false with a reason that should classify as checksum_mismatch
+  // (apexnodes-telemetry.cjs classifyErrorCategory) -- exercises the failure
+  // beacon path end to end, both the per-stage AND the bootstrap rollup.
+  const scriptsDir = path.join(sourceRepoRoot, 'scripts')
+  fs.mkdirSync(scriptsDir, { recursive: true })
+  const scriptPath = path.join(scriptsDir, 'install.sh')
+  fs.writeFileSync(
+    scriptPath,
+    [
+      '#!/bin/bash',
+      'set -e',
+      'if [ "$1" = "--manifest" ]; then',
+      '  echo \'{"protocol_version":1,"stages":[{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}\'',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "--stage" ] && [ "$2" = "complete" ]; then',
+      '  echo \'{"ok":false,"stage":"complete","reason":"sha256 mismatch on 3 files"}\'',
+      '  exit 0',
+      'fi',
+      'echo "unexpected args: $*" >&2',
+      'exit 1',
+      ''
+    ].join('\n'),
+    { mode: 0o755 }
+  )
+  return scriptPath
+}
+
+describeManifestFlow('runBootstrap success: fires bootstrap+stage start/success beacons in order', async () => {
+  const home = mkTmpHome()
+  try {
+    writeFakeInstallSh(home)
+    const telemetryEvents = []
+    const result = await runBootstrap({
+      installStamp: { commit: 'a'.repeat(40), version: '2026.7.1' },
+      activeRoot: path.join(home, 'hermes-agent'),
+      sourceRepoRoot: home,
+      hermesHome: home,
+      logRoot: home,
+      appVersion: '0.16.7',
+      onEvent: () => {},
+      writeMarker: payload => payload,
+      sendTelemetry: ev => telemetryEvents.push(ev)
+    })
+
+    assert.equal(result.ok, true, `bootstrap should succeed against the fake stub: ${JSON.stringify(result)}`)
+
+    const expectedBase = {
+      platform: normalizeDesktopPlatform(process.platform),
+      arch: process.arch,
+      app_version: '0.16.7',
+      runtime_key: 'a'.repeat(40)
+    }
+    assert.deepEqual(telemetryEvents, [
+      { ...expectedBase, stage: 'bootstrap', status: 'start' },
+      { ...expectedBase, stage: 'complete', status: 'start' },
+      { ...expectedBase, stage: 'complete', status: 'success' },
+      { ...expectedBase, stage: 'bootstrap', status: 'success' }
+    ])
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+describeManifestFlow(
+  'runBootstrap failure: stage failure fires BOTH a per-stage AND a bootstrap-rollup failure beacon',
+  async () => {
+    const home = mkTmpHome()
+    try {
+      writeFakeInstallShFailingStage(home)
+      const telemetryEvents = []
+      const result = await runBootstrap({
+        installStamp: null,
+        activeRoot: path.join(home, 'hermes-agent'),
+        sourceRepoRoot: home,
+        hermesHome: home,
+        logRoot: home,
+        onEvent: () => {},
+        writeMarker: payload => payload,
+        sendTelemetry: ev => telemetryEvents.push(ev)
+      })
+
+      assert.equal(result.ok, false)
+      assert.equal(result.failedStage, 'complete')
+
+      const stageStart = telemetryEvents.find(ev => ev.stage === 'complete' && ev.status === 'start')
+      const stageFailure = telemetryEvents.find(ev => ev.stage === 'complete' && ev.status === 'failure')
+      const bootstrapStart = telemetryEvents.find(ev => ev.stage === 'bootstrap' && ev.status === 'start')
+      const bootstrapFailure = telemetryEvents.find(ev => ev.stage === 'bootstrap' && ev.status === 'failure')
+
+      assert.ok(stageStart, 'the stage still fires its start beacon')
+      assert.ok(stageFailure, 'the stage fires a failure beacon')
+      assert.equal(stageFailure.error_code, 'complete:checksum_mismatch')
+      assert.ok(bootstrapStart, 'the whole run still fires a start beacon')
+      assert.ok(bootstrapFailure, 'the whole run rolls up to a bootstrap-level failure beacon too')
+      assert.equal(bootstrapFailure.error_code, 'bootstrap:stage_failed:complete')
+      // No bootstrap-level success beacon on a failed run.
+      assert.ok(!telemetryEvents.some(ev => ev.stage === 'bootstrap' && ev.status === 'success'))
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  }
+)
+
+describeManifestFlow(
+  'runBootstrap: omitting sendTelemetry still succeeds (real default, network suppressed by APEXNODES_TELEMETRY=off)',
+  async () => {
+    const home = mkTmpHome()
+    try {
+      writeFakeInstallSh(home)
+      const result = await runBootstrap({
+        installStamp: null,
+        activeRoot: path.join(home, 'hermes-agent'),
+        sourceRepoRoot: home,
+        hermesHome: home,
+        logRoot: home,
+        onEvent: () => {},
+        writeMarker: payload => payload
+        // sendTelemetry intentionally omitted -- must fall back to the real
+        // emitter without throwing or otherwise affecting the result. This
+        // file sets APEXNODES_TELEMETRY=off at module scope, so the real
+        // emitter is a fast no-op here rather than a live network call.
+      })
+      assert.equal(result.ok, true, `bootstrap should succeed even with no sendTelemetry override: ${JSON.stringify(result)}`)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  }
+)

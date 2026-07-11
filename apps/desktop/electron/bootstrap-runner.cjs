@@ -45,6 +45,16 @@ const path = require('node:path')
 const https = require('node:https')
 const { spawn } = require('node:child_process')
 
+const {
+  sendDesktopTelemetry,
+  fireTelemetry,
+  buildErrorCode,
+  normalizeDesktopPlatform,
+  STATUS_START,
+  STATUS_SUCCESS,
+  STATUS_FAILURE
+} = require('./apexnodes-telemetry.cjs')
+
 const IS_WINDOWS = process.platform === 'win32'
 
 function hiddenWindowsChildOptions(options = {}) {
@@ -544,6 +554,16 @@ function buildPinArgs(installStamp) {
   return args
 }
 
+// hc-473: the runtime_key a bootstrap-stage beacon carries. Same priority
+// order overlayStampWithPin / derivePinFromLatest (apex-runtime-latest.cjs)
+// already use for "the key" -- commit first (what install.sh actually keys
+// the COS/git-checkout source by), then branch, then the human version label
+// as a last resort so a tag-only or pre-hc-085 stamp still reports something.
+function runtimeKeyFromStamp(installStamp) {
+  if (!installStamp) return null
+  return installStamp.commit || installStamp.branch || installStamp.version || null
+}
+
 function buildPosixPinArgs({ installStamp, activeRoot, hermesHome }) {
   const args = ['--dir', activeRoot, '--hermes-home', hermesHome]
   if (installStamp && installStamp.branch) {
@@ -617,10 +637,19 @@ async function runStage({
   activeRoot,
   abortSignal,
   installStamp,
-  extraEnv
+  extraEnv,
+  // hc-473: anonymous per-stage install telemetry. sendTelemetry defaults to
+  // the real emitter (apexnodes-telemetry.cjs) so every caller of runBootstrap
+  // gets beacons for free, with zero main.cjs wiring; tests override it (via
+  // runBootstrap's own sendTelemetry option, threaded down to here) to capture
+  // events without touching the network. telemetryBase is precomputed once by
+  // runBootstrap and just carries {platform, arch, app_version, runtime_key}.
+  sendTelemetry = sendDesktopTelemetry,
+  telemetryBase = {}
 }) {
   const startedAt = Date.now()
   emit({ type: 'stage', name: stage.name, state: 'running' })
+  fireTelemetry(sendTelemetry, { ...telemetryBase, stage: stage.name, status: STATUS_START })
 
   const isPosix = installerKind === 'posix'
   const args = isPosix
@@ -645,6 +674,12 @@ async function runStage({
   if (result.killed) {
     const ev = { type: 'stage', name: stage.name, state: 'failed', durationMs, error: 'cancelled by user' }
     emit(ev)
+    fireTelemetry(sendTelemetry, {
+      ...telemetryBase,
+      stage: stage.name,
+      status: STATUS_FAILURE,
+      error_code: buildErrorCode(stage.name, ev.error)
+    })
     return ev
   }
 
@@ -660,17 +695,28 @@ async function runStage({
       json: null
     }
     emit(ev)
+    fireTelemetry(sendTelemetry, {
+      ...telemetryBase,
+      stage: stage.name,
+      status: STATUS_FAILURE,
+      error_code: buildErrorCode(stage.name, ev.error)
+    })
     return ev
   }
 
   if (json.ok && json.skipped) {
     const ev = { type: 'stage', name: stage.name, state: 'skipped', durationMs, json }
     emit(ev)
+    // No terminal beacon here on purpose: a deliberately-skipped stage (e.g. a
+    // needs_user_input stage under -NonInteractive) neither succeeded nor
+    // failed. The `start` beacon above already recorded that this stage was
+    // reached; leaving it without a terminal is honest telemetry, not a gap.
     return ev
   }
   if (json.ok) {
     const ev = { type: 'stage', name: stage.name, state: 'succeeded', durationMs, json }
     emit(ev)
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: stage.name, status: STATUS_SUCCESS })
     return ev
   }
   const ev = {
@@ -682,6 +728,12 @@ async function runStage({
     error: json.reason || `exit code ${result.code}`
   }
   emit(ev)
+  fireTelemetry(sendTelemetry, {
+    ...telemetryBase,
+    stage: stage.name,
+    status: STATUS_FAILURE,
+    error_code: buildErrorCode(stage.name, ev.error)
+  })
   return ev
 }
 
@@ -721,7 +773,15 @@ async function runBootstrap(opts) {
     // a genuine first install. Defaults to a plain first-install shape so
     // every existing caller (tests, dev shortcuts) that doesn't pass this
     // keeps working unchanged.
-    updateInfo = { isUpdate: false, toVersion: null, fromVersion: null }
+    updateInfo = { isUpdate: false, toVersion: null, fromVersion: null },
+    // hc-473: anonymous install-chain telemetry (apexnodes-telemetry.cjs).
+    // sendTelemetry defaults to the real emitter so this beacons with zero
+    // main.cjs wiring; tests override it to capture events without touching
+    // the network. appVersion is the Electron shell's own app.getVersion() --
+    // optional, main.cjs can thread it through later; omitted just means the
+    // beacon's app_version field is absent (it's optional cloud-side too).
+    sendTelemetry = sendDesktopTelemetry,
+    appVersion = null
   } = opts
 
   // Where the bundled installer lives (process.resourcesPath in a packaged
@@ -731,10 +791,27 @@ async function runBootstrap(opts) {
   // Extra spawn env that turns on install.sh's CN mirror mode. {} when off.
   const extraEnv = cnInstallEnv({ cnMirrors, runtimeCosBase })
 
+  // hc-473: one {platform, arch, app_version, runtime_key} shape reused by
+  // every beacon this run fires -- only `stage` (and status/error_code) vary
+  // per call site: 'bootstrap' for the whole-run lifecycle emitted here,
+  // the manifest stage name (uv/repository/venv/...) inside runStage.
+  const telemetryBase = {
+    platform: normalizeDesktopPlatform(process.platform),
+    arch: process.arch,
+    app_version: appVersion,
+    runtime_key: runtimeKeyFromStamp(installStamp)
+  }
+
   // Bail before spawning anything if the user already cancelled — otherwise an
   // already-aborted signal would still fetch the manifest (a spawn) before the
   // in-loop abort check fires.
   if (abortSignal && abortSignal.aborted) {
+    fireTelemetry(sendTelemetry, {
+      ...telemetryBase,
+      stage: 'bootstrap',
+      status: STATUS_FAILURE,
+      error_code: 'bootstrap:cancelled'
+    })
     if (typeof onEvent === 'function') {
       try {
         onEvent({ type: 'failed', error: 'bootstrap cancelled by user' })
@@ -744,6 +821,8 @@ async function runBootstrap(opts) {
     }
     return { ok: false, cancelled: true }
   }
+
+  fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'bootstrap', status: STATUS_START })
 
   const runLog = openRunLog(logRoot || path.join(hermesHome, 'logs'))
 
@@ -808,6 +887,12 @@ async function runBootstrap(opts) {
     for (const stage of manifest.stages) {
       if (abortSignal && abortSignal.aborted) {
         emit({ type: 'failed', error: 'bootstrap cancelled by user' })
+        fireTelemetry(sendTelemetry, {
+          ...telemetryBase,
+          stage: 'bootstrap',
+          status: STATUS_FAILURE,
+          error_code: 'bootstrap:cancelled'
+        })
         return { ok: false, cancelled: true }
       }
       const ev = await runStage({
@@ -819,10 +904,21 @@ async function runBootstrap(opts) {
         activeRoot,
         abortSignal,
         installStamp,
-        extraEnv
+        extraEnv,
+        sendTelemetry,
+        telemetryBase
       })
       if (ev.state === 'failed') {
         emit({ type: 'failed', stage: stage.name, error: ev.error || 'stage failed' })
+        // Bootstrap-level rollup, IN ADDITION TO runStage's own per-stage
+        // failure beacon above (deliberate double-signal, not a duplicate:
+        // one answers "how far did this run get", the other "which stage").
+        fireTelemetry(sendTelemetry, {
+          ...telemetryBase,
+          stage: 'bootstrap',
+          status: STATUS_FAILURE,
+          error_code: `bootstrap:stage_failed:${stage.name}`.slice(0, 120)
+        })
         return { ok: false, failedStage: stage.name, error: ev.error }
       }
     }
@@ -836,9 +932,16 @@ async function runBootstrap(opts) {
     }
     const marker = typeof writeMarker === 'function' ? writeMarker(markerPayload) : markerPayload
     emit({ type: 'complete', marker })
+    fireTelemetry(sendTelemetry, { ...telemetryBase, stage: 'bootstrap', status: STATUS_SUCCESS })
     return { ok: true, marker }
   } catch (err) {
     emit({ type: 'failed', error: err.message || String(err) })
+    fireTelemetry(sendTelemetry, {
+      ...telemetryBase,
+      stage: 'bootstrap',
+      status: STATUS_FAILURE,
+      error_code: buildErrorCode('bootstrap', err)
+    })
     return { ok: false, error: err.message || String(err) }
   } finally {
     try {
@@ -858,5 +961,6 @@ module.exports = {
   installedAgentInstallScript,
   bundledInstallScript,
   cnInstallEnv,
-  cachedScriptPath
+  cachedScriptPath,
+  runtimeKeyFromStamp
 }

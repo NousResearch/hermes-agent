@@ -4128,15 +4128,19 @@ def _parse_tui_skills_env() -> list[str]:
 def _load_fallback_model():
     """Return the configured fallback chain for TUI-created agents.
 
-    Delegates to the shared ``get_fallback_chain`` helper so the TUI path
-    stays in parity with ``HermesCLI.__init__`` and ``gateway/run.py``:
-    ``fallback_providers`` is the primary source of truth and keeps its
-    order, with legacy ``fallback_model`` entries merged in afterwards
-    (deduped on provider/model/base_url).
+    Delegates to the shared helper so legacy and current keys stay in parity
+    with the CLI and messaging gateway.
     """
     from hermes_cli.fallback_config import get_fallback_chain
 
     return get_fallback_chain(_load_cfg())
+
+
+def _load_fallback_auto_activate() -> bool:
+    """Return the primary fallback activation policy for new TUI agents."""
+    from hermes_cli.fallback_config import get_fallback_auto_activate
+
+    return get_fallback_auto_activate(_load_cfg())
 
 
 def _agent_fallback_model(agent):
@@ -4183,6 +4187,10 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),
+        "fallback_auto_activate": getattr(
+            agent, "_fallback_auto_activate", _load_fallback_auto_activate()
+        ),
+        "fallback_selection_interactive": False,
     }
 
 
@@ -4444,6 +4452,8 @@ def _resolve_runtime_with_fallback(
     try:
         return resolve_runtime_provider(**kwargs)
     except AuthError as primary_exc:
+        if not _load_fallback_auto_activate():
+            raise
         fb_chain = _load_fallback_model() or []
         for entry in fb_chain:
             if not isinstance(entry, dict):
@@ -4632,6 +4642,7 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        fallback_auto_activate=_load_fallback_auto_activate(),
         **_agent_cbs(sid),
     )
 

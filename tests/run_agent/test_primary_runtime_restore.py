@@ -644,6 +644,31 @@ class TestRateLimitCooldown:
         assert result is False
         assert agent._fallback_activated is True  # still on fallback
 
+    def test_manual_selection_restores_primary_despite_cooldown(self):
+        """An explicit one-turn route choice must not pin the next turn."""
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4",
+            },
+        )
+        mock_client = _mock_resolve()
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            agent._try_activate_fallback()
+
+        setattr(agent, "_fallback_manual_selected_index", 0)
+        setattr(agent, "_rate_limited_until", time.monotonic() + 60)
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert getattr(agent, "_fallback_activated") is False
+        assert getattr(agent, "provider") == "custom"
+
     def test_restore_allowed_after_cooldown_expires(self):
         """Once the cooldown window passes, restore proceeds normally."""
         agent = _make_agent(

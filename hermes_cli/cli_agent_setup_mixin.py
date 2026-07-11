@@ -46,8 +46,14 @@ class CLIAgentSetupMixin:
         except Exception as exc:
             _primary_exc = exc
 
-        # Primary provider auth failed — try fallback providers before giving up.
-        if runtime is None and _primary_exc is not None:
+        # Primary provider auth failed — automatic mode may try configured
+        # fallbacks. Manual mode has no agent/clarification surface yet, so it
+        # must fail closed rather than silently replacing the primary runtime.
+        if (
+            runtime is None
+            and _primary_exc is not None
+            and getattr(self, "_fallback_auto_activate", True)
+        ):
             from hermes_cli.auth import AuthError
             if isinstance(_primary_exc, AuthError):
                 _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
@@ -375,6 +381,7 @@ class CLIAgentSetupMixin:
                 reasoning_callback=self._current_reasoning_callback(),
 
                 fallback_model=self._fallback_model,
+                fallback_auto_activate=getattr(self, "_fallback_auto_activate", True),
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,

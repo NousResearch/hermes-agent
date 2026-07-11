@@ -1234,8 +1234,163 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _fallback_entry_matches_current(agent, fb: dict) -> bool:
+    """Return whether *fb* resolves to the route that just failed."""
+
+    fb_provider = str(fb.get("provider") or "").strip().lower()
+    fb_model = str(fb.get("model") or "").strip()
+    if not fb_provider or not fb_model:
+        return True
+    current_provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    current_model = str(getattr(agent, "model", "") or "").strip()
+    if fb_provider == current_provider and fb_model == current_model:
+        return True
+    current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
+    fb_base_url = str(fb.get("base_url") or "").strip().rstrip("/").lower()
+    return bool(
+        fb_base_url
+        and current_base_url
+        and fb_base_url == current_base_url
+        and fb_model == current_model
+    )
+
+
+def _fallback_choice_label(fb: dict) -> str:
+    """Render an unambiguous choice without exposing endpoint credentials."""
+
+    from urllib.parse import urlsplit, urlunsplit
+
+    provider = str(fb.get("provider") or "?").strip()
+    model = str(fb.get("model") or "?").strip()
+    base_url = str(fb.get("base_url") or "").strip().rstrip("/")
+    if base_url:
+        try:
+            parts = urlsplit(base_url)
+            if parts.scheme and parts.hostname:
+                host = parts.hostname
+                if ":" in host:
+                    host = f"[{host}]"
+                if parts.port:
+                    host = f"{host}:{parts.port}"
+                # Paths can carry bearer tokens just as query strings and
+                # userinfo can. Show only the endpoint origin; if that makes
+                # two routes indistinguishable, the duplicate-label guard
+                # fails closed instead of exposing credentials.
+                base_url = urlunsplit((parts.scheme, host, "", "", ""))
+            else:
+                base_url = "[custom endpoint]"
+        except ValueError:
+            base_url = "[custom endpoint]"
+    suffix = f" ({base_url})" if base_url else ""
+    return f"Continue with {model} via {provider}{suffix}"
+
+
+def _try_activate_manual_fallback(
+    agent, reason: "FailoverReason | None" = None
+) -> bool:
+    """Prompt once and attempt exactly the route selected for this turn."""
+
+    if getattr(agent, "_fallback_manual_attempted", False):
+        return False
+    chain = list(getattr(agent, "_fallback_chain", None) or [])
+    if not chain:
+        return False
+    if getattr(agent, "_fallback_selection_interactive", None) is False:
+        return False
+    callback = getattr(agent, "clarify_callback", None)
+    if not callable(callback):
+        return False
+    agent._fallback_manual_attempted = True
+
+    unavailable = getattr(agent, "_unavailable_fallback_keys", set()) or set()
+    candidates: list[tuple[int, dict, str]] = []
+    for index, fb in enumerate(chain):
+        if not isinstance(fb, dict):
+            continue
+        if _fallback_entry_key(fb) in unavailable:
+            continue
+        if _fallback_entry_unavailable_without_network(agent, fb):
+            continue
+        if _fallback_entry_matches_current(agent, fb):
+            continue
+        candidates.append((index, fb, _fallback_choice_label(fb)))
+
+    if not candidates:
+        buffer_status = getattr(agent, "_buffer_status", None)
+        if callable(buffer_status):
+            buffer_status("No eligible manual fallback routes remain for this turn.")
+        return False
+    from tools.clarify_tool import MAX_CHOICES
+
+    if len(candidates) > MAX_CHOICES:
+        logger.error(
+            "Manual fallback has %d choices, exceeding clarify limit %d",
+            len(candidates),
+            MAX_CHOICES,
+        )
+        buffer_status = getattr(agent, "_buffer_status", None)
+        if callable(buffer_status):
+            buffer_status(
+                f"Manual fallback supports at most {MAX_CHOICES} choices; "
+                "reduce the configured chain or enable automatic fallback."
+            )
+        return False
+
+    labels = [label for _, _, label in candidates]
+    if len(set(labels)) != len(labels):
+        logger.error("Manual fallback choices are ambiguous after safe rendering")
+        buffer_status = getattr(agent, "_buffer_status", None)
+        if callable(buffer_status):
+            buffer_status(
+                "Manual fallback choices are ambiguous; make provider/model/endpoint routes unique."
+            )
+        return False
+    try:
+        answer = callback(
+            "Primary model failed. Select a fallback route for this turn:", labels
+        )
+    except Exception as exc:
+        logger.warning("Manual fallback selection failed: %s", exc)
+        return False
+
+    answer_text = str(answer or "").strip()
+    numeric_choices = {str(i): label for i, label in enumerate(labels, start=1)}
+    selected_label = numeric_choices.get(answer_text, answer_text)
+    selected = next(
+        (item for item in candidates if item[2] == selected_label), None
+    )
+    if selected is None:
+        return False
+
+    selected_index, selected_entry, _ = selected
+    agent._fallback_manual_selected_index = selected_index
+    original_chain = agent._fallback_chain
+    original_index = agent._fallback_index
+    activated = False
+    try:
+        # Reuse the full route activation path with a one-entry chain. Its
+        # recursive skip behavior can exhaust only the selected route and can
+        # never cascade to a different user-visible choice.
+        agent._fallback_chain = [selected_entry]
+        agent._fallback_index = 0
+        activated = _try_activate_next_fallback(agent, reason)
+        return activated
+    finally:
+        agent._fallback_chain = original_chain
+        agent._fallback_index = selected_index + 1 if activated else original_index
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+    """Activate a fallback automatically or through manual selection."""
+
+    if not getattr(agent, "_fallback_auto_activate", True):
+        return _try_activate_manual_fallback(agent, reason)
+    return _try_activate_next_fallback(agent, reason)
+
+
+def _try_activate_next_fallback(
+    agent, reason: "FailoverReason | None" = None
+) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
     Called when the current model is failing after retries.  Swaps the
@@ -1282,11 +1437,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent._unavailable_fallback_keys = unavailable
     if fb_key in unavailable:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
-        return agent._try_activate_fallback(reason)
+        return _try_activate_next_fallback(agent, reason)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
-        return agent._try_activate_fallback(reason)  # skip invalid, try next
+        return _try_activate_next_fallback(agent, reason)  # skip invalid, try next
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
@@ -1297,7 +1452,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_model,
             local_skip_reason,
         )
-        return agent._try_activate_fallback(reason)
+        return _try_activate_next_fallback(agent, reason)
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -1312,7 +1467,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
-        return agent._try_activate_fallback(reason)
+        return _try_activate_next_fallback(agent, reason)
     if (
         fb_base_url_for_dedup
         and current_base_url
@@ -1323,7 +1478,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
-        return agent._try_activate_fallback(reason)
+        return _try_activate_next_fallback(agent, reason)
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
@@ -1355,7 +1510,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
             unavailable.add(fb_key)
-            return agent._try_activate_fallback(reason)  # try next in chain
+            return _try_activate_next_fallback(agent, reason)  # try next in chain
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1575,7 +1730,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_provider == "nous":
             unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback(reason)  # try next in chain
+        return _try_activate_next_fallback(agent, reason)  # try next in chain
 
 
 

@@ -21,6 +21,8 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
+        "fallback:\n"
+        "  auto_activate: false\n"
         "fallback_providers:\n"
         "  - provider: deepseek\n"
         "    model: deepseek-v4-flash\n"
@@ -35,6 +37,7 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
 
     assert chain == [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
     assert runner._fallback_model == chain
+    assert runner._fallback_auto_activate is False
 
     cfg.write_text(
         "fallback_providers:\n"
@@ -46,6 +49,7 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
         {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}
     ]
     assert runner._fallback_model == updated
+    assert runner._fallback_auto_activate is True
 
 
 def test_refresh_fallback_model_clears_when_config_removed(tmp_path, monkeypatch):
@@ -110,10 +114,13 @@ def test_apply_fallback_chain_updates_primary_agent():
         _rate_limited_until=0,
     )
     chain = [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
-    GatewayRunner._apply_fallback_chain_to_agent(agent, chain)
+    GatewayRunner._apply_fallback_chain_to_agent(
+        agent, chain, auto_activate=False
+    )
 
     assert agent._fallback_chain == chain
     assert agent._fallback_model == chain[0]
+    assert agent._fallback_auto_activate is False
     assert agent._fallback_index == 0
 
 
@@ -132,11 +139,38 @@ def test_apply_fallback_chain_skips_while_cooldown_holds_fallback():
     GatewayRunner._apply_fallback_chain_to_agent(
         agent,
         [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"}],
+        auto_activate=False,
     )
 
     assert agent._fallback_chain == live
     assert agent._fallback_index == 1
     assert agent._fallback_activated is True
+    assert agent._fallback_auto_activate is False
+
+
+def test_apply_fallback_chain_clears_manual_routes_during_cooldown():
+    """A manual route may stay active until restore, but stale choices must not."""
+    from gateway.run import GatewayRunner
+
+    live = [{"provider": "deepseek", "model": "deepseek-v4-flash"}]
+    agent = SimpleNamespace(
+        _fallback_chain=live,
+        _fallback_model=live[0],
+        _fallback_index=1,
+        _fallback_activated=True,
+        _fallback_manual_selected_index=0,
+        _rate_limited_until=time.monotonic() + 30,
+        _unavailable_fallback_keys=set(),
+    )
+
+    GatewayRunner._apply_fallback_chain_to_agent(
+        agent, [], auto_activate=False
+    )
+
+    assert agent._fallback_chain == []
+    assert agent._fallback_model is None
+    assert agent._fallback_activated is True
+    assert agent._fallback_manual_selected_index == 0
 
 
 def test_apply_fallback_chain_updates_after_cooldown_expires():

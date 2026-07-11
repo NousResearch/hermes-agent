@@ -324,6 +324,8 @@ def init_agent(
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
+    fallback_auto_activate: bool = True,
+    fallback_selection_interactive: Optional[bool] = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
@@ -528,6 +530,12 @@ def init_agent(
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
+    # Activation policy must exist before client construction because the
+    # constructor itself has a legacy authentication-recovery path.
+    agent._fallback_auto_activate = bool(fallback_auto_activate)
+    # ``None`` defers interactivity detection until activation time; explicit
+    # ``False`` is the fail-closed override for noninteractive runtimes.
+    agent._fallback_selection_interactive = fallback_selection_interactive
     agent.read_terminal_callback = read_terminal_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
@@ -989,13 +997,22 @@ def init_agent(
                     except Exception:
                         pass
                     # --- Init-time fallback (#17929) ---
+                    # This runs before an interactive agent/callback exists.
+                    # Preserve legacy eager recovery in automatic mode, but
+                    # never spend through another route when manual consent is
+                    # configured.
                     _fb_entries = []
-                    if isinstance(fallback_model, list):
+                    if agent._fallback_auto_activate and isinstance(fallback_model, list):
                         _fb_entries = [
                             f for f in fallback_model
                             if isinstance(f, dict) and f.get("provider") and f.get("model")
                         ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+                    elif (
+                        agent._fallback_auto_activate
+                        and isinstance(fallback_model, dict)
+                        and fallback_model.get("provider")
+                        and fallback_model.get("model")
+                    ):
                         _fb_entries = [fallback_model]
                     _fb_resolved = False
                     for _fb in _fb_entries:
@@ -1142,6 +1159,8 @@ def init_agent(
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+    agent._fallback_manual_attempted = False
+    agent._fallback_manual_selected_index = None
     if agent._fallback_chain and not agent.quiet_mode:
         if len(agent._fallback_chain) == 1:
             fb = agent._fallback_chain[0]

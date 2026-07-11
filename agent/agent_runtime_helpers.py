@@ -1157,8 +1157,14 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
+    manual_turn_route = (
+        getattr(agent, "_fallback_manual_selected_index", None) is not None
+    )
+    if (
+        getattr(agent, "_rate_limited_until", 0) > time.monotonic()
+        and not manual_turn_route
+    ):
+        return False  # automatic fallback remains active during primary cooldown
 
     rt = agent._primary_runtime
     try:

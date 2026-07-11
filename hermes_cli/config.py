@@ -5204,7 +5204,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "fallback", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
@@ -5293,6 +5293,25 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         f"custom_providers[{i}] is missing 'base_url' field",
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
+
+    # ── fallback activation policy ───────────────────────────────────────
+    if "fallback" in config:
+        fallback_cfg = config["fallback"]
+        if not isinstance(fallback_cfg, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"fallback should be a YAML mapping, got {type(fallback_cfg).__name__}",
+                "Change to:\n  fallback:\n    auto_activate: false",
+            ))
+        elif (
+            "auto_activate" in fallback_cfg
+            and not isinstance(fallback_cfg["auto_activate"], bool)
+        ):
+            issues.append(ConfigIssue(
+                "error",
+                "fallback.auto_activate should be a boolean",
+                "Use: auto_activate: true or auto_activate: false (without quotes)",
+            ))
 
     # ── fallback_model: single dict OR list of dicts (chain) ─────────────
     fb = config.get("fallback_model")

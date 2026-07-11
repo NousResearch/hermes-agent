@@ -95,6 +95,29 @@ class TestCustomProvidersValidation:
         assert len(issues) == 0
 
 
+class TestFallbackActivationValidation:
+    def test_fallback_section_must_be_mapping(self):
+        issues = validate_config_structure({"fallback": []})
+        assert any(
+            i.severity == "error" and "fallback" in i.message and "mapping" in i.message
+            for i in issues
+        )
+
+    def test_auto_activate_must_be_boolean(self):
+        issues = validate_config_structure(
+            {"fallback": {"auto_activate": "false"}}
+        )
+        assert any(
+            i.severity == "error" and "auto_activate" in i.message and "boolean" in i.message
+            for i in issues
+        )
+
+    def test_valid_manual_policy_has_no_issue(self):
+        assert validate_config_structure(
+            {"fallback": {"auto_activate": False}}
+        ) == []
+
+
 class TestFallbackModelValidation:
     """fallback_model should be a top-level dict with provider + model."""
 

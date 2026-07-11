@@ -8759,6 +8759,35 @@ class TestResolveRuntimeWithFallback:
         )
         assert result == fallback_runtime
 
+    def test_auth_error_manual_mode_fails_closed_before_agent_exists(
+        self, monkeypatch
+    ):
+        from hermes_cli.auth import AuthError
+
+        calls = []
+
+        def fake_resolve(**kwargs):
+            calls.append(kwargs.get("requested"))
+            raise AuthError("No credentials")
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(server, "_load_fallback_auto_activate", lambda: False)
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
+        )
+
+        import pytest
+
+        with pytest.raises(AuthError, match="No credentials"):
+            server._resolve_runtime_with_fallback({"requested": "openai-codex"})
+
+        assert calls == ["openai-codex"]
+
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
         from hermes_cli.auth import AuthError

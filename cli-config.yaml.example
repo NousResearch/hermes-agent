@@ -139,6 +139,22 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Primary Provider Fallback (optional)
+# =============================================================================
+# `auto_activate: false` asks you to choose one route for the current turn.
+# Set it to true for ordered automatic fallback. Existing configs that omit
+# the key keep the historical automatic behavior.
+#
+# fallback:
+#   auto_activate: false
+#
+# fallback_providers:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+#   - provider: xai
+#     model: grok-4
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

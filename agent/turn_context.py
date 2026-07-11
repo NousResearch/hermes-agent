@@ -151,7 +151,22 @@ def build_turn_context(
     # null; rebuilding from scratch" warning and a needless first-turn prefix
     # cache miss. (Issue #45499.)
 
-    # Tell auxiliary_client what the live main provider/model are for this turn.
+    # Restore a previous turn's runtime before publishing the live main route
+    # to auxiliary_client. A manual choice is explicit consent for one turn;
+    # if its required restore fails, abort rather than silently starting a new
+    # turn on that paid route or publishing it process-wide.
+    manual_restore_required = bool(
+        getattr(agent, "_fallback_activated", False)
+        and getattr(agent, "_fallback_manual_selected_index", None) is not None
+    )
+    restored = agent._restore_primary_runtime()
+    if manual_restore_required and not restored:
+        raise RuntimeError(
+            "Could not restore the primary runtime after the previous manual "
+            "fallback; refusing to start a new turn."
+        )
+
+    # Tell auxiliary_client what the resulting live provider/model are.
     try:
         from agent.auxiliary_client import set_runtime_main
         set_runtime_main(
@@ -169,9 +184,6 @@ def build_turn_context(
 
     # Bind the skill write-origin ContextVar for this thread.
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
-
-    # Restore the primary runtime if the previous turn activated fallback.
-    agent._restore_primary_runtime()
 
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold

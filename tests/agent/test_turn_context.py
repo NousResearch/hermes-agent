@@ -69,6 +69,8 @@ class _FakeAgent:
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
         self._stream_think_scrubber = None
+        self._fallback_activated = False
+        self._fallback_manual_selected_index: int | None = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
         self._vision_supported = None
@@ -188,6 +190,51 @@ def test_applies_agent_side_effects():
     # task/turn ids assigned on the agent.
     assert agent._current_task_id
     assert agent._current_turn_id
+
+
+def test_manual_fallback_restores_before_aux_runtime_is_published():
+    agent = _FakeAgent()
+    agent.provider = "openrouter"
+    agent.model = "fallback/model"
+    agent.base_url = "https://fallback.example/v1"
+    agent.api_key = "fb"
+    agent._fallback_activated = True
+    agent._fallback_manual_selected_index = 0
+
+    def restore_primary():
+        agent.provider = "anthropic"
+        agent.model = "primary/model"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_key = "pk"
+        agent._fallback_activated = False
+        return True
+
+    agent._restore_primary_runtime = MagicMock(side_effect=restore_primary)
+
+    with patch("agent.auxiliary_client.set_runtime_main") as publish:
+        _build(agent)
+
+    agent._restore_primary_runtime.assert_called_once_with()
+    publish.assert_called_once_with(
+        "anthropic",
+        "primary/model",
+        base_url="https://api.anthropic.com",
+        api_key="pk",
+        api_mode="chat_completions",
+    )
+
+
+def test_manual_fallback_restore_failure_aborts_new_turn():
+    agent = _FakeAgent()
+    agent._fallback_activated = True
+    agent._fallback_manual_selected_index = 0
+    agent._restore_primary_runtime = MagicMock(return_value=False)
+
+    with patch("agent.auxiliary_client.set_runtime_main") as publish:
+        with pytest.raises(RuntimeError, match="restore the primary runtime"):
+            _build(agent)
+
+    publish.assert_not_called()
 
 
 def test_task_id_passthrough():

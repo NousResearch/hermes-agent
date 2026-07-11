@@ -3973,6 +3973,10 @@ class TestModelRoutesAgentCreation:
                 captured.update(kwargs)
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_auto_activate",
+            lambda: False,
+        )
         adapter = _make_routing_adapter(
             {"alias": {
                 "model": "minimax/minimax-m1",
@@ -3991,6 +3995,8 @@ class TestModelRoutesAgentCreation:
         assert captured["model"] == "minimax/minimax-m1"
         assert captured["api_key"] == "sk-route"
         assert captured["base_url"] == "https://route.example/v1"
+        assert captured["fallback_auto_activate"] is False
+        assert captured["fallback_selection_interactive"] is False
 
     def test_route_provider_resolves_provider_credentials(self, monkeypatch):
         captured = {}

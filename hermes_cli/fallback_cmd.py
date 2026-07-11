@@ -1,8 +1,8 @@
 """
 hermes fallback — manage the fallback provider chain.
 
-Fallback providers are tried in order when the primary model fails with
-rate-limit, overload, or connection errors. See:
+Fallback providers are offered for selection or tried in order when the primary
+model fails with rate-limit, overload, or connection errors. See:
 https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers
 
 Subcommands:
@@ -11,6 +11,7 @@ Subcommands:
                            then append the selection to the chain
   hermes fallback remove   Pick an entry to delete from the chain
   hermes fallback clear    Remove all fallback entries
+  hermes fallback auto     Set automatic activation on or off
 
 Storage: ``fallback_providers`` in ``~/.hermes/config.yaml`` (top-level, list of
 ``{provider, model, base_url?, api_mode?}`` dicts).  The legacy single-dict
@@ -21,7 +22,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain
 
 
 # ---------------------------------------------------------------------------
@@ -105,13 +106,19 @@ def _restore_auth_active_provider(value: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_fallback_list(args) -> None:  # noqa: ARG001
-    """Print the current fallback chain."""
+    """Print the current fallback chain and activation mode."""
     from hermes_cli.config import load_config
 
     config = load_config()
     chain = _read_chain(config)
+    mode = (
+        "Automatic"
+        if get_fallback_auto_activate(config)
+        else "Manual selection"
+    )
 
     print()
+    print(f"  Mode: {mode}")
     if not chain:
         print("  No fallback providers configured.")
         print()
@@ -127,7 +134,10 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
     for i, entry in enumerate(chain, 1):
         print(f"    {i}. {_format_entry(entry)}")
     print()
-    print("  Tried in order when the primary fails (rate-limit, 5xx, connection errors).")
+    if get_fallback_auto_activate(config):
+        print("  Tried in order when the primary fails (rate-limit, 5xx, connection errors).")
+    else:
+        print("  Offered for manual selection when the primary fails.")
     print("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers")
     print()
 
@@ -204,6 +214,7 @@ def cmd_fallback_add(args) -> None:
 
     final_cfg = load_config()
     chain = _read_chain(final_cfg)
+    first_entry = not chain
 
     # Reject exact-duplicate fallback entries.
     for existing in chain:
@@ -215,11 +226,25 @@ def cmd_fallback_add(args) -> None:
 
     chain.append(new_entry)
     _write_chain(final_cfg, chain)
+    if first_entry:
+        fallback_cfg = final_cfg.get("fallback")
+        if not isinstance(fallback_cfg, dict):
+            fallback_cfg = {}
+        fallback_cfg.setdefault("auto_activate", False)
+        final_cfg["fallback"] = fallback_cfg
     save_config(final_cfg)
 
     print()
     print(f"  Added fallback: {_format_entry(new_entry)}")
     print(f"  Chain is now {len(chain)} {'entry' if len(chain) == 1 else 'entries'} long.")
+    automatic = get_fallback_auto_activate(final_cfg)
+    print(f"  Mode: {'Automatic' if automatic else 'Manual selection'}")
+    if not automatic:
+        print(
+            "  Cron, API, background, and delegated runs are noninteractive and "
+            "fail closed in this mode."
+        )
+        print("  Use `hermes fallback auto on` to enable noninteractive failover.")
     print()
     print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
 
@@ -311,6 +336,32 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
     print()
 
 
+def cmd_fallback_auto(args) -> None:
+    """Enable automatic activation or switch to interactive selection."""
+
+    from hermes_cli.config import load_config, save_config
+
+    mode = str(getattr(args, "mode", "") or "").strip().lower()
+    if mode not in {"on", "off"}:
+        raise SystemExit("Usage: hermes fallback auto {on|off}")
+    config = load_config()
+    fallback_cfg = config.get("fallback")
+    if not isinstance(fallback_cfg, dict):
+        fallback_cfg = {}
+    fallback_cfg["auto_activate"] = mode == "on"
+    config["fallback"] = fallback_cfg
+    save_config(config)
+    if mode == "on":
+        print("Automatic fallback enabled.")
+    else:
+        print("Manual fallback selection enabled.")
+        print(
+            "Cron, API, background, and delegated runs are noninteractive and "
+            "will fail closed."
+        )
+        print("Use `hermes fallback auto on` to enable noninteractive failover.")
+
+
 def _numbered_pick(question: str, choices: List[str]) -> Optional[int]:
     """Fallback numbered-list picker when curses is unavailable."""
     print(question)
@@ -348,7 +399,9 @@ def cmd_fallback(args) -> None:
         cmd_fallback_remove(args)
     elif sub == "clear":
         cmd_fallback_clear(args)
+    elif sub == "auto":
+        cmd_fallback_auto(args)
     else:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, remove, clear, auto")
         raise SystemExit(2)

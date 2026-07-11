@@ -508,3 +508,141 @@ class TestArgparseWiring:
         assert "add" in out
         assert "remove" in out
         assert "clear" in out
+
+
+class TestAutoModeCommand:
+    def test_invalid_explicit_auto_activate_fails_closed(self):
+        from hermes_cli.fallback_config import get_fallback_auto_activate
+
+        assert get_fallback_auto_activate({}) is True
+        assert get_fallback_auto_activate({"fallback": False}) is False
+        assert get_fallback_auto_activate(
+            {"fallback": {"auto_activate": "false"}}
+        ) is False
+
+    def test_first_add_to_empty_chain_persists_manual_mode(
+        self, isolated_home, capsys
+    ):
+        _write_config(
+            isolated_home,
+            {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}},
+        )
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "openrouter",
+                "default": "gpt-5.4",
+            }
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), patch(
+            "hermes_cli.main._require_tty"
+        ):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+
+            cmd_fallback_add(types.SimpleNamespace())
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback"]["auto_activate"] is False
+        out = capsys.readouterr().out
+        assert "Mode: Manual selection" in out
+        assert "noninteractive" in out
+        assert "hermes fallback auto on" in out
+
+    def test_add_to_existing_chain_without_mode_keeps_legacy_automatic(self, isolated_home):
+        _write_config(
+            isolated_home,
+            {
+                "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+                "fallback_providers": [{"provider": "openai", "model": "gpt-4o"}],
+            },
+        )
+
+        def fake_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "openrouter",
+                "default": "gpt-5.4",
+            }
+            save_config(cfg)
+
+        with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), patch(
+            "hermes_cli.main._require_tty"
+        ):
+            from hermes_cli.fallback_cmd import cmd_fallback_add
+
+            cmd_fallback_add(types.SimpleNamespace())
+
+        cfg = _read_config(isolated_home)
+        assert "fallback" not in cfg or "auto_activate" not in cfg.get("fallback", {})
+
+    def test_list_shows_manual_selection_mode(self, isolated_home, capsys):
+        _write_config(
+            isolated_home,
+            {
+                "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+                "fallback": {"auto_activate": False},
+                "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}],
+            },
+        )
+
+        from hermes_cli.fallback_cmd import cmd_fallback_list
+
+        cmd_fallback_list(types.SimpleNamespace())
+        out = capsys.readouterr().out
+        assert "Mode: Manual selection" in out
+
+    def test_list_defaults_to_automatic_mode_when_key_missing(self, isolated_home, capsys):
+        _write_config(
+            isolated_home,
+            {
+                "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
+                "fallback_providers": [{"provider": "openrouter", "model": "gpt-5.4"}],
+            },
+        )
+
+        from hermes_cli.fallback_cmd import cmd_fallback_list
+
+        cmd_fallback_list(types.SimpleNamespace())
+        out = capsys.readouterr().out
+        assert "Mode: Automatic" in out
+
+    def test_auto_command_round_trips_config(self, isolated_home, capsys):
+        _write_config(isolated_home, {})
+
+        from hermes_cli.fallback_cmd import cmd_fallback
+
+        cmd_fallback(types.SimpleNamespace(fallback_command="auto", mode="off"))
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback"]["auto_activate"] is False
+
+        cmd_fallback(types.SimpleNamespace(fallback_command="auto", mode="on"))
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback"]["auto_activate"] is True
+
+        out = capsys.readouterr().out
+        assert "Automatic fallback enabled." in out
+        assert "Manual fallback selection enabled." in out
+        assert "will fail closed" in out
+        assert "hermes fallback auto on" in out
+
+    def test_help_lists_auto_subcommand(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "fallback", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        out = result.stdout + result.stderr
+        assert "auto" in out
+        assert "offered or tried" in out

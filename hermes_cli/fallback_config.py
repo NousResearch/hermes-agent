@@ -70,3 +70,25 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
             chain.append(entry)
 
     return chain
+
+
+def get_fallback_auto_activate(config: dict[str, Any] | None) -> bool:
+    """Return whether configured fallback routes auto-activate.
+
+    Missing keys default to ``True`` for backward compatibility with existing
+    ``fallback_providers`` users.
+    """
+
+    config = config or {}
+    if "fallback" not in config:
+        return True
+    fallback_cfg = config["fallback"]
+    if not isinstance(fallback_cfg, dict):
+        return False
+    if "auto_activate" not in fallback_cfg:
+        return True
+
+    value = fallback_cfg["auto_activate"]
+    # A present-but-invalid value is an explicit configuration error. Prefer
+    # manual/fail-closed behavior over silently spending through another route.
+    return value if isinstance(value, bool) else False

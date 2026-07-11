@@ -480,6 +480,8 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        fallback_auto_activate: bool = True,
+        fallback_selection_interactive: Optional[bool] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
@@ -556,6 +558,8 @@ class AIAgent:
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
             fallback_model=fallback_model,
+            fallback_auto_activate=fallback_auto_activate,
+            fallback_selection_interactive=fallback_selection_interactive,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
             checkpoint_max_snapshots=checkpoint_max_snapshots,
@@ -4784,8 +4788,39 @@ class AIAgent:
         ``try_activate_fallback`` (#35314, #17446).
         """
         chain = getattr(self, "_fallback_chain", None) or []
+        if self._uses_manual_fallback_selection():
+            return bool(
+                chain
+                and not getattr(self, "_fallback_manual_attempted", False)
+                and getattr(self, "_fallback_selection_interactive", None) is not False
+                and callable(getattr(self, "clarify_callback", None))
+            )
         index = getattr(self, "_fallback_index", 0)
         return index < len(chain)
+
+    def _uses_manual_fallback_selection(self) -> bool:
+        """Whether fallback selection should prompt instead of auto-advancing."""
+
+        chain = getattr(self, "_fallback_chain", None) or []
+        return bool(chain) and not bool(getattr(self, "_fallback_auto_activate", True))
+
+    def _fallback_attempt_status(
+        self,
+        automatic_text: str,
+        *,
+        manual_text: str | None = None,
+    ) -> str:
+        """Return the correct pre-attempt status for auto vs manual fallback."""
+
+        if self._uses_manual_fallback_selection() and self._has_pending_fallback():
+            return manual_text or automatic_text
+        return automatic_text
+
+    def _reset_turn_scoped_fallback_state(self) -> None:
+        """Clear per-turn manual fallback selection state."""
+
+        self._fallback_manual_attempted = False
+        self._fallback_manual_selected_index = None
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 

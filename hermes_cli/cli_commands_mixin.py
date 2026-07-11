@@ -1660,6 +1660,10 @@ class CLICommandsMixin:
                     provider_data_collection=self._provider_data_collection,
                     openrouter_min_coding_score=self._openrouter_min_coding_score,
                     fallback_model=self._fallback_model,
+                    fallback_auto_activate=getattr(
+                        self, "_fallback_auto_activate", True
+                    ),
+                    fallback_selection_interactive=False,
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None

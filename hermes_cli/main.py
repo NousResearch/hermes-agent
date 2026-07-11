@@ -12856,11 +12856,11 @@ def main():
 
     fallback_parser = subparsers.add_parser(
         "fallback",
-        help="Manage fallback providers (tried when the primary model fails)",
+        help="Manage fallback providers (offered or tried when the primary fails)",
         description=(
-            "Manage the fallback provider chain.  Fallback providers are tried "
-            "in order when the primary model fails with rate-limit, overload, or "
-            "connection errors.  See: "
+            "Manage the fallback provider chain. Fallback providers are offered or tried "
+            "automatically according to fallback.auto_activate when the primary model "
+            "fails with rate-limit, overload, or connection errors. See: "
             "https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers"
         ),
     )
@@ -12882,6 +12882,15 @@ def main():
     fallback_subparsers.add_parser(
         "clear",
         help="Remove all fallback entries",
+    )
+    fallback_auto_parser = fallback_subparsers.add_parser(
+        "auto",
+        help="Enable automatic fallback or use interactive selection",
+    )
+    fallback_auto_parser.add_argument(
+        "mode",
+        choices=["on", "off"],
+        help="on: try routes automatically; off: prompt before continuing",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
 

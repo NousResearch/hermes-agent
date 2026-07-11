@@ -1,6 +1,6 @@
 ---
 title: Fallback Providers
-description: Configure automatic failover to backup LLM providers when your primary model is unavailable.
+description: Configure automatic or user-selected failover to backup LLM providers when your primary model is unavailable.
 sidebar_label: Fallback Providers
 sidebar_position: 8
 ---
@@ -10,14 +10,14 @@ sidebar_position: 8
 Hermes Agent has three layers of resilience that keep your sessions running when providers hit issues:
 
 1. **[Credential pools](./credential-pools.md)** — rotate across multiple API keys for the *same* provider (tried first)
-2. **Primary model fallback** — automatically switches to a *different* provider:model when your main model fails
+2. **Primary model fallback** — automatically switches to, or asks you to select, a *different* provider:model when your main model fails
 3. **Auxiliary task fallback** — independent provider resolution for side tasks like vision, compression, and web extraction
 
 Credential pools handle same-provider rotation (e.g., multiple OpenRouter keys). This page covers cross-provider fallback. Both are optional and work independently.
 
 ## Primary Model Fallback
 
-When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can automatically switch to a backup provider:model pair mid-session without losing your conversation.
+When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can either switch automatically or ask you which backup provider:model pair should continue the current turn. Your conversation is preserved in both modes.
 
 ### Configuration
 
@@ -27,17 +27,30 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), `clear`, and `auto on|off` to manage the chain and activation mode. Changes persist under the top-level `fallback_providers:` list and `fallback.auto_activate` in `config.yaml`.
+
+The first fallback added through the CLI defaults to **manual selection**. Enable ordered automatic failover explicitly with:
+
+```bash
+hermes fallback auto on
+```
 
 If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
 ```yaml
+fallback:
+  auto_activate: false  # ask before using a configured fallback
+
 fallback_providers:
   - provider: openrouter
     model: anthropic/claude-sonnet-4
 ```
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
+
+`auto_activate: false` displays one provider-neutral clarification choice per configured route. Labels are generated from `provider`, `model`, and (when present) a safe endpoint origin derived from `base_url`; URL userinfo, paths, queries, and fragments are never shown. There is no separate label or ID setting. Manual mode supports up to four choices, matching the shared clarification UI limit. It never truncates a longer chain silently: reduce the chain to four entries or enable automatic mode.
+
+For backward compatibility, existing configs that have a fallback chain but omit `fallback.auto_activate` keep the historical automatic behavior. Chains created by the CLI write `auto_activate: false` explicitly.
 
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
@@ -98,7 +111,7 @@ fallback_providers:
 
 ### When Fallback Triggers
 
-The fallback activates automatically when the primary model fails with:
+Fallback handling starts when the primary model fails with:
 
 - **Rate limits** (HTTP 429) — after exhausting retry attempts
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
@@ -106,7 +119,9 @@ The fallback activates automatically when the primary model fails with:
 - **Not found** (HTTP 404) — immediately
 - **Invalid responses** — when the API returns malformed or empty responses repeatedly
 
-When triggered, Hermes:
+With `fallback.auto_activate: true`, Hermes walks the configured chain in order. With `false`, Hermes asks once during the turn and attempts only the selected route. Closing or timing out the prompt, returning an unmatched answer, running without an interactive clarification surface, or failing to activate the selected route all fail closed — Hermes does not silently move to another provider.
+
+When a route is activated, Hermes:
 
 1. Resolves credentials for the fallback provider
 2. Builds a new API client
@@ -119,8 +134,10 @@ The switch is seamless — your conversation history, tool calls, and context ar
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::
 
-:::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+:::info Turn scope
+Manual fallback is **strictly turn-scoped**: a selected route is used only for the failing turn, and each new user message starts with the primary model restored—even when the failure armed a rate-limit cooldown. Manual mode prompts at most once and never cascades from the selected route to another route.
+
+Automatic mode keeps its existing behavior: it may walk the configured chain during a turn, and a short rate-limit cooldown can keep the active fallback for a later message until the primary is eligible again. Outside that cooldown, the primary is restored on the next turn. These rules prevent failover loops while preserving automatic recovery from an unavailable primary.
 :::
 
 ### Examples
@@ -165,13 +182,17 @@ fallback_providers:
 
 ### Where Fallback Works
 
-| Context | Fallback Supported |
-|---------|-------------------|
-| CLI sessions | ✔ |
-| Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
-| Cron jobs | ✔ (cron agents inherit configured fallback providers) |
-| Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
+| Context | Automatic mode | Manual selection |
+|---------|----------------|------------------|
+| CLI sessions | ✔ | ✔ |
+| Messaging gateway (Telegram, Discord, Slack, etc.) | ✔ | ✔, through the shared clarification UI |
+| TUI/Desktop sessions | ✔ | ✔ |
+| API server | ✔ | Fails closed (no interactive clarification surface) |
+| Subagent delegation | ✔ (inherits the parent policy and chain) | Fails closed |
+| Cron jobs | ✔ (inherits configured fallback providers) | Fails closed |
+| Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) | Independent policy |
+
+`fallback.auto_activate` controls the **primary agent** fallback path. Auxiliary tasks retain their independent provider-resolution policy. Manual selection is available only after an interactive agent surface exists; a primary authentication failure during CLI/Gateway/TUI bootstrap therefore fails closed before any route is activated.
 
 :::tip
 There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `hermes fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.

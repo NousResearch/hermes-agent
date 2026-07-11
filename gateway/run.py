@@ -7402,9 +7402,190 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # engages drain on the first tick.
         asyncio.create_task(self._drain_control_watcher())
 
+        # ------------------------------------------------------------------
+        # Auth-relay: install the operator-WhatsApp sudo/secret callbacks.
+        # Must run after adapters are connected (so a WhatsApp adapter is
+        # available) and after self.adapters is populated.  Idempotent + safe
+        # no-op when the feature is disabled or no WhatsApp adapter exists.
+        # ------------------------------------------------------------------
+        try:
+            from gateway.auth_relay import (
+                configure as _auth_relay_configure,
+                install_gateway_callbacks as _auth_relay_install,
+            )
+            _auth_relay_configure(self.config.auth_relay)
+            if _auth_relay_install():
+                logger.info("auth_relay: operator WhatsApp relay active")
+        except Exception as _ar_exc:
+            logger.warning("auth_relay: startup wiring failed: %s", _ar_exc)
+
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    # ------------------------------------------------------------------
+    # Auth-relay helpers (exposed so gateway/auth_relay.py can reach the
+    # running gateway's WhatsApp adapter + event loop without a hard import
+    # cycle).  Module-level functions keep the helper surface small and test
+    # friendly.
+    # ------------------------------------------------------------------
+    def _get_whatsapp_operator_adapter(self):
+        """Return the connected WhatsApp adapter (operator relay target).
+
+        Prefers the ``whatsapp`` platform (the configured ``WHATSAPP``
+        adapter in this user's config), falling back to ``whatsapp_cloud``.
+        Returns None when no WhatsApp adapter is connected.
+        """
+        from gateway.config import Platform
+        for plat in (Platform.WHATSAPP, Platform.WHATSAPP_CLOUD):
+            adapter = self.adapters.get(plat)
+            if adapter is not None:
+                return adapter
+        return None
+
+    def _get_gateway_event_loop(self):
+        """Return the running asyncio event loop (for sync→async bridging)."""
+        return getattr(self, "_gateway_loop", None)
+
+    # ------------------------------------------------------------------
+    # Auth-relay delivery (clarify / approval).  These reuse the operator
+    # WhatsApp adapter's EXISTING button-rendering + interactive-reply
+    # resolution, so the operator's tap unblocks the originating (possibly
+    # non-WhatsApp) agent thread via the already-wired resolve_* callers.
+    # ------------------------------------------------------------------
+    def _auth_relay_target_for(self, kind: str, status_adapter):
+        """Return the operator WhatsApp adapter to relay a prompt to, or None.
+
+        Returns the adapter only when:
+          * the auth-relay feature is enabled for ``kind``,
+          * a WhatsApp adapter is connected,
+          * the originating session's own adapter is NOT already WhatsApp
+            (otherwise the prompt is already delivered there — relaying again
+            would double-prompt the operator for no benefit).
+        """
+        try:
+            from gateway.auth_relay import kind_enabled, is_enabled, get_config
+        except Exception:
+            return None
+        if not is_enabled() or not kind_enabled(kind):
+            return None
+        wa = self._get_whatsapp_operator_adapter()
+        if wa is None:
+            return None
+        # Don't relay if the prompt is already going to WhatsApp natively.
+        from gateway.config import Platform
+        if status_adapter is not None and getattr(status_adapter, "platform", None) in (
+            Platform.WHATSAPP,
+            Platform.WHATSAPP_CLOUD,
+        ):
+            return None
+        # Operator gating: the adapter must consider the configured operator
+        # chat an allowed DM, or the relayed prompt can't be delivered there.
+        op = get_config().operator_chat
+        if not op:
+            return None
+        try:
+            if not wa._is_dm_allowed(op):
+                logger.warning(
+                    "auth_relay: operator_chat %s not in WhatsApp allowlist; "
+                    "skipping relay for %s",
+                    op, kind,
+                )
+                return None
+        except Exception:
+            return None
+        return wa
+
+    def _auth_relay_send_clarify(
+        self, adapter, clarify_id: str, question: str, choices, session_key: str
+    ) -> str:
+        """Deliver a clarify prompt to the operator's WhatsApp and block.
+
+        Mirrors the native _clarify_callback_sync path but targets the
+        operator adapter.  Returns the resolved response string (or a timeout
+        sentinel) — the same contract the clarify tool expects.
+        """
+        from tools import clarify_gateway as _clarify_mod
+        from gateway.auth_relay import wait_for_response as _relay_wait, get_config
+
+        op = get_config().operator_chat
+        try:
+            adapter.pause_typing_for_chat(op)
+        except Exception:
+            pass
+
+        send_ok = False
+        loop = self._get_gateway_event_loop()
+        try:
+            fut = safe_schedule_threadsafe(
+                adapter.send_clarify(
+                    chat_id=op,
+                    question=question,
+                    choices=list(choices) if choices else None,
+                    clarify_id=clarify_id,
+                    session_key=session_key,
+                    metadata=None,
+                ),
+                loop,
+                logger=logger,
+                log_message="auth_relay clarify send failed",
+            )
+            if fut is not None:
+                result = fut.result(timeout=15)
+                send_ok = bool(getattr(result, "success", False))
+        except Exception as exc:
+            logger.warning("auth_relay clarify send failed: %s", exc)
+            send_ok = False
+
+        if not send_ok:
+            _clarify_mod.clear_session(session_key)
+            return "[clarify prompt could not be delivered to operator]"
+
+        timeout = _clarify_mod.get_clarify_timeout()
+        response = _relay_wait(clarify_id, timeout=float(timeout))
+        if response is None or response == "":
+            return f"[user did not respond within {int(timeout / 60)}m]"
+        return response
+
+    def _auth_relay_send_approval(
+        self, adapter, approval_id: str, command: str, description: str, session_key: str
+    ) -> None:
+        """Deliver a dangerous-command approval prompt to the operator's WhatsApp.
+
+        Notify-style (mirrors the native ``_approval_notify_sync`` contract:
+        deliver the prompt and return).  The agent thread is blocked in
+        ``tools.approval``'s gateway queue; the operator's WhatsApp button tap
+        calls ``resolve_gateway_approval(session_key, choice)`` which unblocks
+        the originating thread.
+        """
+        from gateway.auth_relay import get_config as _ar_get_config
+
+        op = _ar_get_config().operator_chat
+        # Redact credentials from the command before showing the operator.
+        try:
+            from tools.approval import _redact_approval_command
+            cmd = _redact_approval_command(command)
+        except Exception:
+            cmd = command
+
+        loop = self._get_gateway_event_loop()
+        try:
+            fut = safe_schedule_threadsafe(
+                adapter.send_exec_approval(
+                    chat_id=op,
+                    command=cmd,
+                    session_key=session_key,
+                    description=description,
+                    metadata=None,
+                ),
+                loop,
+                logger=logger,
+                log_message="auth_relay approval send failed",
+            )
+            if fut is not None:
+                fut.result(timeout=15)
+        except Exception as exc:
+            logger.warning("auth_relay approval send failed: %s", exc)
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
@@ -18408,6 +18589,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     choices=list(choices) if choices else None,
                 )
 
+                # Auth-relay: when the originating session is NOT a WhatsApp
+                # chat (CLI background task, cron, Telegram, ...) and the relay
+                # is enabled for clarify, deliver the prompt to the operator's
+                # WhatsApp instead of (or in addition to) the originating
+                # adapter.  The operator's tap on the WhatsApp button resolves
+                # this same clarify_id via the adapter's existing interactive
+                # reply handler — which unblocks THIS (originating) thread.
+                _relay_adapter = _auth_relay_target_for("clarify", _status_adapter)
+                if _relay_adapter is not None:
+                    return _auth_relay_send_clarify(
+                        _relay_adapter, clarify_id, question, choices, session_key or "",
+                    )
+
                 # Pause typing — like approval, we don't want a "thinking..."
                 # status to obscure the prompt or block the user from typing
                 # an "Other" response on platforms that disable input while
@@ -18538,6 +18732,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 UX.  Otherwise fall back to a plain text message with
                 ``/approve`` instructions.
                 """
+                # Auth-relay: when the originating session is NOT a WhatsApp
+                # chat and the relay is enabled for approval, deliver the
+                # prompt to the operator's WhatsApp instead.  The operator's
+                # button tap calls resolve_gateway_approval, unblocking the
+                # originating thread exactly like the native path.
+                _relay_adapter = _auth_relay_target_for("approval", _status_adapter)
+                if _relay_adapter is not None:
+                    _auth_relay_send_approval(
+                        _relay_adapter,
+                        _uuid.uuid4().hex[:12],
+                        approval_data.get("command", ""),
+                        approval_data.get("description", "dangerous command"),
+                        _approval_session_key,
+                    )
+                    return
+
                 # Pause the typing indicator while the agent waits for
                 # user approval.  Critical for Slack's Assistant API where
                 # assistant_threads_setStatus disables the compose box — the

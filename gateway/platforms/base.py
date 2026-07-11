@@ -83,6 +83,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
         scope_id = getattr(source, "scope_id", None)
         if scope_id:
             metadata["slack_team_id"] = str(scope_id)
+    if _platform_name(getattr(source, "platform", None)) == "telegram" and str(thread_id).startswith("guest:"):
+        metadata["telegram_guest_query_id"] = str(thread_id).split(":", 1)[1]
+        return metadata
     if not metadata:
         return None
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":

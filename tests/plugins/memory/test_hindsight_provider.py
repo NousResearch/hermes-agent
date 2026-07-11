@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -837,6 +838,46 @@ class TestPrefetch:
         # The query passed to arecall should be truncated
         if original_query is not None:
             assert len(original_query) <= 10
+
+    def test_prefetch_waits_for_pending_retain_before_recall(self, provider):
+        """The background prefetch must wait for queued retains to drain so the
+        next turn's recall observes the just-completed turn (no retain race)."""
+        import threading
+
+        order = []
+        release = threading.Event()
+
+        async def _slow_retain(*args, **kwargs):
+            release.wait(timeout=5.0)
+            order.append("retain")
+
+        async def _recall(**kwargs):
+            order.append("recall")
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        provider._client.aretain_batch = AsyncMock(side_effect=_slow_retain)
+        provider._client.arecall = AsyncMock(side_effect=_recall)
+
+        # Enqueue a slow retain, then immediately queue the next-turn prefetch.
+        provider.sync_turn("hello", "world")
+        provider.queue_prefetch("next turn query")
+
+        # Let the prefetch thread start and reach the drain barrier.
+        time.sleep(0.2)
+        assert order == [], "recall ran before the pending retain drained"
+
+        # Release the retain; the prefetch should now proceed AFTER it.
+        release.set()
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+        provider._retain_queue.join()
+        assert order and order[0] == "retain"
+        assert "recall" in order
+
+    def test_prefetch_wait_for_retain_can_be_disabled(self, provider_with_config):
+        p = provider_with_config(prefetch_waits_for_retain=False)
+        p._client = _make_mock_client()
+        assert p._prefetch_waits_for_retain is False
 
     def test_queue_prefetch_passes_recall_params(self, provider_with_config):
         p = provider_with_config(

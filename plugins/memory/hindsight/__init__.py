@@ -39,6 +39,7 @@ import os
 import queue
 import sys
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -685,6 +686,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._auto_retain = True
         self._retain_every_n_turns = 1
         self._retain_async = True
+        # Async retain never blocks the reply (writes drain on the single
+        # writer thread). But the next turn's warm prefetch runs on its own
+        # thread and could read BEFORE the just-enqueued retain write lands,
+        # dropping the latest turn from recall. When True, the background
+        # prefetch waits (bounded) for pending retains to drain first, closing
+        # that race without putting any write on the reply path.
+        self._prefetch_waits_for_retain = True
+        self._prefetch_retain_drain_timeout = 10.0
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # accumulates ALL turns for the session
@@ -1000,6 +1009,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
+            {"key": "prefetch_waits_for_retain", "description": "Have the background next-turn prefetch wait for pending retain writes to drain first, so recall includes the just-completed turn (runs off the reply path, adds no response latency)", "default": True},
+            {"key": "prefetch_retain_drain_timeout", "description": "Max seconds the background prefetch waits for pending retains to drain before recalling anyway", "default": 10.0},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
@@ -1103,6 +1114,32 @@ class HindsightMemoryProvider(MemoryProvider):
         # external code that joins _sync_thread keeps working.
         self._sync_thread = thread
         thread.start()
+
+    def _wait_for_retains_drained(self, timeout: float) -> bool:
+        """Block up to *timeout* seconds for queued retains to finish.
+
+        Used by the background prefetch so the next turn's recall observes
+        the just-completed turn's write instead of racing ahead of it. Runs
+        only on the background prefetch thread — never on the reply path.
+
+        Returns True if the queue drained within the budget, False on timeout.
+        Polls ``unfinished_tasks`` rather than ``queue.join()`` so the wait is
+        bounded even if a write is wedged (the writer is best-effort).
+        """
+        if timeout <= 0:
+            return self._retain_queue.unfinished_tasks == 0
+        deadline = time.monotonic() + timeout
+        while self._retain_queue.unfinished_tasks > 0:
+            if self._shutting_down.is_set():
+                return False
+            if time.monotonic() >= deadline:
+                logger.debug(
+                    "Prefetch: retain drain timed out after %.1fs (%d pending)",
+                    timeout, self._retain_queue.unfinished_tasks,
+                )
+                return False
+            time.sleep(0.05)
+        return True
 
     def _writer_loop(self) -> None:
         """Drain the retain queue serially. Exits on sentinel.
@@ -1352,6 +1389,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+        self._prefetch_waits_for_retain = self._config.get("prefetch_waits_for_retain", True)
+        self._prefetch_retain_drain_timeout = float(
+            self._config.get("prefetch_retain_drain_timeout", 10.0)
+        )
 
         _client_version = "unknown"
         try:
@@ -1496,6 +1537,12 @@ class HindsightMemoryProvider(MemoryProvider):
             query = query[:self._recall_max_input_chars]
 
         def _run():
+            # Ensure the just-completed turn's retain has landed before we
+            # recall, so the warmed context for the next turn includes it.
+            # This runs on the background prefetch thread, never the reply
+            # path, so it adds no latency to the user's response.
+            if self._prefetch_waits_for_retain:
+                self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
             try:
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))

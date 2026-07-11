@@ -56,6 +56,17 @@ class _FakeAgent:
         self.context_compressor = types.SimpleNamespace(
             protect_first_n=2, protect_last_n=2
         )
+        # Make the fake compressor honour the ContextEngine contract that the
+        # real code now relies on (should_compress_info returns a (bool, reason)
+        # tuple). Without it build_turn_context raises AttributeError.
+        def _fake_should_compress(tokens=None):
+            return False
+
+        def _fake_should_compress_info(tokens=None):
+            return (False, None)
+
+        self.context_compressor.should_compress = _fake_should_compress
+        self.context_compressor.should_compress_info = _fake_should_compress_info
         self._cached_system_prompt = "SYSTEM"
         self._memory_store = None
         self._memory_manager = None
@@ -66,6 +77,7 @@ class _FakeAgent:
         self._tool_guardrails = _FakeGuardrails()
         self._compression_warning = None
         self._emit_warning = MagicMock()
+        self._last_ctx_overflow_warn = None
         self._interrupt_requested = False
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
@@ -74,9 +86,23 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
-        # Records _cached_system_prompt at the moment _ensure_db_session()
-        # is called (regression guard for #45499 turn-setup ordering).
+        # Records _cached_system_prompt at the moment _ensure_db_session() ...
         self._ensure_db_prompt_at_call = "<unset>"
+
+    def _warn_context_overflow_blocked(self, reason, preflight_tokens, threshold_tokens):
+        # Mirror the real AIAgent helper so tests can assert the warning fired.
+        _warn_kind = (reason or "unknown").split(":", 1)[0]
+        _warn_key = ("ctx_overflow_blocked", _warn_kind)
+        if self._last_ctx_overflow_warn != _warn_key:
+            self._last_ctx_overflow_warn = _warn_key
+            self._emit_warning(
+                f"⚠ Context is over the compression threshold "
+                f"(~{preflight_tokens:,} tokens >= {threshold_tokens:,}) "
+                f"but compression is currently blocked ({reason})."
+            )
+
+    def _clear_context_overflow_warn(self):
+        self._last_ctx_overflow_warn = None
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):

@@ -83,6 +83,18 @@ class ContextEngine(ABC):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
 
+    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+        """Return ``(should_compress, reason)``.
+
+        The base implementation is backward-compatible: engines that only
+        implement ``should_compress`` get ``(should_compress(prompt_tokens),
+        None)``. Concrete engines with richer block reasons (e.g. a
+        summary-LLM cooldown or an anti-thrashing guard) override this to
+        surface a human-readable reason so callers can warn the user instead
+        of silently skipping compression. Added for the silent-overflow
+        warning fix (#62625) so plugin engines don't raise AttributeError.
+        """
+
     @abstractmethod
     def compress(
         self,

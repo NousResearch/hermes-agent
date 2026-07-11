@@ -445,6 +445,10 @@ def build_turn_context(
                 # for the human-readable reason so we can surface a warning below.
                 _compress_block_reason = _compressor.should_compress_info(_preflight_tokens)[1]
         if _should_compress_now:
+            # Compression is actually running (block cleared / was never
+            # blocked) — reset the dedup so a future blocked-over-threshold
+            # turn can warn again. Real session boundary.
+            agent._clear_context_overflow_warn()
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
@@ -494,24 +498,15 @@ def build_turn_context(
             # answering — the conversation hits the hard provider token limit
             # with no explanation. Surface a deduped warning so the user can
             # take action (/new or /compress) instead of hitting a silent hang.
-            # Dedup on the *kind* of block (cooldown / ineffective), not the
-            # exact countdown, so a cooldown ticking down 30→29→… doesn't re-fire
-            # the warning every turn.
-            _warn_kind = _compress_block_reason.split(":", 1)[0]
-            _warn_key = ("ctx_overflow_blocked", _warn_kind)
-            if getattr(agent, "_last_ctx_overflow_warn", None) != _warn_key:
-                agent._last_ctx_overflow_warn = _warn_key
-                agent._emit_warning(
-                    f"⚠ Context is over the compression threshold "
-                    f"(~{_preflight_tokens:,} tokens >= {_compressor.threshold_tokens:,}) "
-                    f"but compression is currently blocked ({_compress_block_reason}). "
-                    f"The model may stop responding. Run /new to start a fresh session "
-                    f"or /compress to retry immediately."
-                )
+            agent._warn_context_overflow_blocked(
+                _compress_block_reason,
+                _preflight_tokens,
+                _compressor.threshold_tokens,
+            )
         else:
             # Block cleared this turn — allow the warning to fire again next
             # time the context is over threshold but compression is blocked.
-            agent._last_ctx_overflow_warn = None
+            agent._clear_context_overflow_warn()
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""

@@ -1289,12 +1289,13 @@ def run_conversation(
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
                     _use_streaming = False
-                # CopilotACPClient communicates via subprocess stdio and
-                # returns a plain SimpleNamespace — not an iterable
-                # stream.  Mirror the ACP exclusion used for Responses
-                # API upgrade (lines ~1083-1085).
+                # ACP backends can stream agent_message_chunk frames as
+                # OpenAI-style deltas. Without a display/TTS consumer, keep
+                # the complete-response path (cheaper for quiet/subagent
+                # turns). Process/session reuse still applies either way.
                 elif is_acp_provider(agent.provider, agent.base_url):
-                    _use_streaming = False
+                    if not agent._has_stream_consumers():
+                        _use_streaming = False
                 # MoA streams only when a display/TTS consumer is present to
                 # receive the deltas. MoAChatCompletions.create() honors
                 # stream=True (runs the references, then returns the aggregator's

@@ -605,6 +605,20 @@ class CopilotACPClient:
         proc = self._active_process
         return proc is not None and proc.poll() is None
 
+    def _normalize_timeout(self, timeout: Any) -> float:
+        if timeout is None:
+            return _DEFAULT_TIMEOUT_SECONDS
+        if isinstance(timeout, (int, float)):
+            return float(timeout)
+        # httpx.Timeout or similar — pick the largest component so the
+        # subprocess has enough wall-clock time for the full response.
+        _candidates = [
+            getattr(timeout, attr, None)
+            for attr in ("read", "write", "connect", "pool", "timeout")
+        ]
+        _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
+        return max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
+
     def _create_chat_completion(
         self,
         *,
@@ -617,32 +631,34 @@ class CopilotACPClient:
         **_: Any,
     ) -> Any:
         msg_list = [m for m in (messages or []) if isinstance(m, dict)]
-        # Normalise timeout: run_agent.py may pass an httpx.Timeout object
-        # (used natively by the OpenAI SDK) rather than a plain float.
-        if timeout is None:
-            _effective_timeout = _DEFAULT_TIMEOUT_SECONDS
-        elif isinstance(timeout, (int, float)):
-            _effective_timeout = float(timeout)
-        else:
-            # httpx.Timeout or similar — pick the largest component so the
-            # subprocess has enough wall-clock time for the full response.
-            _candidates = [
-                getattr(timeout, attr, None)
-                for attr in ("read", "write", "connect", "pool", "timeout")
-            ]
-            _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
-            _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
+        _effective_timeout = self._normalize_timeout(timeout)
+        model_name = model or self._default_model_name
+
+        if stream:
+            return self._iter_stream_completion(
+                msg_list,
+                model=model_name,
+                tools=tools,
+                tool_choice=tool_choice,
+                timeout_seconds=_effective_timeout,
+            )
 
         response_text, reasoning_text = self._run_conversation_prompt(
             msg_list,
-            model=model,
+            model=model_name,
             tools=tools,
             tool_choice=tool_choice,
             timeout_seconds=_effective_timeout,
         )
+        return self._build_completion(response_text, reasoning_text, model_name)
 
+    def _build_completion(
+        self,
+        response_text: str,
+        reasoning_text: str,
+        model_name: str,
+    ) -> SimpleNamespace:
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
-
         usage = SimpleNamespace(
             prompt_tokens=0,
             completion_tokens=0,
@@ -658,14 +674,104 @@ class CopilotACPClient:
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        completion = SimpleNamespace(
+        return SimpleNamespace(
             choices=[choice],
             usage=usage,
-            model=model or self._default_model_name,
+            model=model_name,
         )
-        if stream:
-            return _completion_to_stream_chunks(completion)
-        return completion
+
+    def _iter_stream_completion(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: Any,
+        timeout_seconds: float,
+    ):
+        """Yield OpenAI-style stream chunks as ACP ``agent_message_chunk`` arrives."""
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        def _on_text(chunk: str) -> None:
+            events.put(("text", chunk))
+
+        def _on_reasoning(chunk: str) -> None:
+            events.put(("reasoning", chunk))
+
+        def _worker() -> None:
+            try:
+                text, reasoning = self._run_conversation_prompt(
+                    messages,
+                    model=model,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    timeout_seconds=timeout_seconds,
+                    on_text_chunk=_on_text,
+                    on_reasoning_chunk=_on_reasoning,
+                )
+                events.put(("done", (text, reasoning)))
+            except Exception as exc:
+                events.put(("error", exc))
+
+        worker = threading.Thread(target=_worker, daemon=True, name="acp-stream-worker")
+        worker.start()
+
+        role_sent = False
+        while True:
+            kind, payload = events.get()
+            if kind == "text":
+                delta = SimpleNamespace(
+                    role="assistant" if not role_sent else None,
+                    content=payload,
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content=None,
+                )
+                role_sent = True
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(index=0, delta=delta, finish_reason=None)],
+                    model=model,
+                    usage=None,
+                )
+            elif kind == "reasoning":
+                delta = SimpleNamespace(
+                    role=None,
+                    content=None,
+                    tool_calls=None,
+                    reasoning=payload,
+                    reasoning_content=payload,
+                )
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(index=0, delta=delta, finish_reason=None)],
+                    model=model,
+                    usage=None,
+                )
+            elif kind == "error":
+                worker.join(timeout=2)
+                raise payload
+            elif kind == "done":
+                text, reasoning = payload
+                completion = self._build_completion(text, reasoning or "", model)
+                # Emit terminal tool-call / finish frames (tool calls are only
+                # known after the full ACP text is assembled).
+                for chunk in _completion_to_stream_chunks(completion):
+                    # Skip the bulk content frame if we already streamed tokens
+                    # — only keep tool_call + finish + usage frames.
+                    choice0 = chunk.choices[0] if chunk.choices else None
+                    delta = getattr(choice0, "delta", None) if choice0 else None
+                    content = getattr(delta, "content", None) if delta else None
+                    tool_calls = getattr(delta, "tool_calls", None) if delta else None
+                    finish = getattr(choice0, "finish_reason", None) if choice0 else None
+                    if content and not tool_calls and not finish and role_sent:
+                        continue
+                    if content and role_sent and not tool_calls:
+                        # Strip already-streamed content from the finish frame.
+                        if delta is not None:
+                            delta.content = None
+                    yield chunk
+                break
+
+        worker.join(timeout=5)
 
     def _spawn_process(self) -> subprocess.Popen[str]:
         label = self._acp_display_name
@@ -729,6 +835,8 @@ class CopilotACPClient:
         timeout_seconds: float,
         text_parts: list[str] | None = None,
         reasoning_parts: list[str] | None = None,
+        on_text_chunk: Any = None,
+        on_reasoning_chunk: Any = None,
     ) -> Any:
         """Send one JSON-RPC request on the live transport. Caller holds ``_rpc_lock``."""
         label = self._acp_display_name
@@ -764,6 +872,8 @@ class CopilotACPClient:
                 cwd=self._acp_cwd,
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
+                on_text_chunk=on_text_chunk,
+                on_reasoning_chunk=on_reasoning_chunk,
             ):
                 continue
 
@@ -831,6 +941,8 @@ class CopilotACPClient:
         tools: list[dict[str, Any]] | None,
         tool_choice: Any,
         timeout_seconds: float,
+        on_text_chunk: Any = None,
+        on_reasoning_chunk: Any = None,
     ) -> tuple[str, str]:
         """Run one completion, reusing process and optionally ACP session."""
         label = self._acp_display_name
@@ -862,7 +974,11 @@ class CopilotACPClient:
                     assert session_id is not None
                     try:
                         text, reasoning = self._session_prompt(
-                            session_id, prompt_text, timeout_seconds=timeout_seconds
+                            session_id,
+                            prompt_text,
+                            timeout_seconds=timeout_seconds,
+                            on_text_chunk=on_text_chunk,
+                            on_reasoning_chunk=on_reasoning_chunk,
                         )
                         self._session_continues += 1
                         self._session_history = list(messages)
@@ -894,7 +1010,11 @@ class CopilotACPClient:
                 self._session_count += 1
 
                 text, reasoning = self._session_prompt(
-                    session_id, prompt_text, timeout_seconds=timeout_seconds
+                    session_id,
+                    prompt_text,
+                    timeout_seconds=timeout_seconds,
+                    on_text_chunk=on_text_chunk,
+                    on_reasoning_chunk=on_reasoning_chunk,
                 )
                 self._session_history = list(messages)
                 return text, reasoning
@@ -913,6 +1033,8 @@ class CopilotACPClient:
         prompt_text: str,
         *,
         timeout_seconds: float,
+        on_text_chunk: Any = None,
+        on_reasoning_chunk: Any = None,
     ) -> tuple[str, str]:
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -930,6 +1052,8 @@ class CopilotACPClient:
             timeout_seconds=timeout_seconds,
             text_parts=text_parts,
             reasoning_parts=reasoning_parts,
+            on_text_chunk=on_text_chunk,
+            on_reasoning_chunk=on_reasoning_chunk,
         )
         return "".join(text_parts), "".join(reasoning_parts)
 
@@ -951,6 +1075,8 @@ class CopilotACPClient:
         cwd: str,
         text_parts: list[str] | None,
         reasoning_parts: list[str] | None,
+        on_text_chunk: Any = None,
+        on_reasoning_chunk: Any = None,
     ) -> bool:
         method = msg.get("method")
         if not isinstance(method, str):
@@ -964,10 +1090,22 @@ class CopilotACPClient:
             chunk_text = ""
             if isinstance(content, dict):
                 chunk_text = str(content.get("text") or "")
-            if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
-                text_parts.append(chunk_text)
-            elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:
-                reasoning_parts.append(chunk_text)
+            if kind == "agent_message_chunk" and chunk_text:
+                if text_parts is not None:
+                    text_parts.append(chunk_text)
+                if on_text_chunk is not None:
+                    try:
+                        on_text_chunk(chunk_text)
+                    except Exception:
+                        pass
+            elif kind == "agent_thought_chunk" and chunk_text:
+                if reasoning_parts is not None:
+                    reasoning_parts.append(chunk_text)
+                if on_reasoning_chunk is not None:
+                    try:
+                        on_reasoning_chunk(chunk_text)
+                    except Exception:
+                        pass
             return True
 
         if process.stdin is None:

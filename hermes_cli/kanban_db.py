@@ -965,6 +965,10 @@ class Task:
     # None when unclassified. Compared to the project's autonomy_ceiling at the
     # dispatch gate; None is treated as the repo-only floor (never a deploy).
     risk_tier: Optional[str] = None
+    # REQ-045: denormalised project autonomy_ceiling (VALID_AUTONOMY_CEILINGS) or
+    # None = repo-only default. Snapshot at create; the gate compares it to
+    # risk_tier without a projects.db lookup.
+    autonomy_ceiling: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1051,6 +1055,11 @@ class Task:
             ),
             risk_tier=(
                 row["risk_tier"] if "risk_tier" in keys and row["risk_tier"] else None
+            ),
+            autonomy_ceiling=(
+                row["autonomy_ceiling"]
+                if "autonomy_ceiling" in keys and row["autonomy_ceiling"]
+                else None
             ),
         )
 
@@ -1236,7 +1245,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- gate — never a deploy). Compared against the card's project
     -- autonomy_ceiling: a card whose tier exceeds the ceiling is never
     -- spawned-to-execute (routed to a human instead).
-    risk_tier            TEXT
+    risk_tier            TEXT,
+    -- REQ-045: denormalised snapshot of the card's project autonomy_ceiling at
+    -- create time (VALID_AUTONOMY_CEILINGS, or NULL = repo-only default). Read
+    -- together with risk_tier at the dispatch gate so the cross-profile
+    -- dispatcher never needs projects.db access.
+    autonomy_ceiling     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2076,6 +2090,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # (never a deploy) — the same conservative default a pre-column board had.
         _add_column_if_missing(conn, "tasks", "risk_tier", "risk_tier TEXT")
 
+    if "autonomy_ceiling" not in cols:
+        # REQ-045: denormalised project autonomy ceiling. NULL on legacy rows =
+        # repo-only default at the gate (no autonomous deploy without opt-in).
+        _add_column_if_missing(
+            conn, "tasks", "autonomy_ceiling", "autonomy_ceiling TEXT"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2498,6 +2519,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     risk_tier: Optional[str] = None,
+    autonomy_ceiling: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2540,6 +2562,13 @@ def create_task(
         raise ValueError(
             f"risk_tier must be one of {sorted(VALID_RISK_TIERS)}, got {risk_tier!r}"
         )
+    if autonomy_ceiling is not None:
+        autonomy_ceiling = str(autonomy_ceiling).strip() or None
+    if autonomy_ceiling is not None and autonomy_ceiling not in VALID_AUTONOMY_CEILINGS:
+        raise ValueError(
+            "autonomy_ceiling must be one of "
+            f"{sorted(VALID_AUTONOMY_CEILINGS)}, got {autonomy_ceiling!r}"
+        )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
@@ -2575,6 +2604,11 @@ def create_task(
             # Canonicalise (a slug may have been passed) and anchor the
             # worktree under the project's primary repo.
             project_id = project_obj.id
+            # REQ-045: denormalise the project's autonomy ceiling onto the card so
+            # the dispatch gate enforces it without cross-profile projects.db
+            # access. An explicit autonomy_ceiling arg (rare) wins.
+            if autonomy_ceiling is None:
+                autonomy_ceiling = getattr(project_obj, "autonomy_ceiling", None)
             if workspace_kind == "scratch" and project_obj.primary_path:
                 workspace_kind = "worktree"
             if (
@@ -2749,8 +2783,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id,
-                        risk_tier
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        risk_tier, autonomy_ceiling
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2774,6 +2808,7 @@ def create_task(
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
                         risk_tier,
+                        autonomy_ceiling,
                     ),
                 )
                 for pid in parents:
@@ -6110,6 +6145,15 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    skipped_ceiling: list[str] = field(default_factory=list)
+    """REQ-046 (decision 0007): ready task ids NOT spawned because their
+    ``risk_tier`` exceeds their project's ``autonomy_ceiling`` — routed to
+    blocked-for-human (plan-only). This is the deployment-safety enforcement: a
+    Tier-C card (wanctl/work-ansible) or a deploy card on a repo whose ceiling
+    doesn't permit that tier lands here instead of executing."""
+    autonomy_paused: bool = False
+    """REQ-046: True when the global kill-switch halted spawning this tick.
+    Reclaim/promote housekeeping still ran; no new workers were launched."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7379,6 +7423,71 @@ def dispatch_once(
         )
 
 
+def _autonomy_pause_file() -> Path:
+    """Path to the global autonomy kill-switch sentinel (REQ-046).
+
+    Lives at the shared kanban root so it halts the WHOLE board, not one
+    profile. ``touch``-ing it pauses all spawning; ``rm``-ing it resumes.
+    Overridable via ``HERMES_AUTONOMY_PAUSE_FILE`` (used by tests).
+    """
+    override = os.environ.get("HERMES_AUTONOMY_PAUSE_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return kanban_home() / "AUTONOMY_PAUSED"
+
+
+def _autonomy_is_paused() -> bool:
+    """REQ-046 global kill-switch. Paused when ``HERMES_AUTONOMY_PAUSED`` is
+    truthy OR the sentinel file exists. A FS error resolving the sentinel is
+    treated as NOT paused for that check (the env var is the reliable override),
+    so a transient hiccup can't wedge the dispatcher.
+    """
+    if os.environ.get("HERMES_AUTONOMY_PAUSED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+    try:
+        return _autonomy_pause_file().exists()
+    except Exception:
+        return False
+
+
+def _block_over_ceiling(
+    conn: sqlite3.Connection,
+    task_id: str,
+    risk_tier: Optional[str],
+    ceiling: Optional[str],
+) -> None:
+    """REQ-046: route a ready card whose risk tier exceeds its project ceiling to
+    ``blocked`` for a human (plan-only), with an auditable event — never execute
+    it. ``block_kind='needs_input'`` keeps it out of the auto-dispatch path (it
+    needs a human decision, not a retry).
+    """
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status='blocked', block_kind='needs_input', "
+            "claim_lock=NULL, claim_expires=NULL "
+            "WHERE id=? AND status='ready'",
+            (task_id,),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "skipped_autonomy_ceiling",
+            {
+                "risk_tier": risk_tier,
+                "autonomy_ceiling": ceiling or DEFAULT_AUTONOMY_CEILING,
+                "reason": (
+                    "risk tier exceeds the project autonomy ceiling; "
+                    "routed to a human (plan-only, not executed)"
+                ),
+            },
+        )
+
+
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
@@ -7450,6 +7559,13 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
+    # REQ-046: global kill-switch. When autonomy is paused, still reclaim/promote
+    # above (safety housekeeping keeps running) but spawn NOTHING new this tick —
+    # the emergency brake for deployment autonomy.
+    if _autonomy_is_paused():
+        result.autonomy_paused = True
+        return result
+
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
     # rationale; the short version is that a 60-second tick interval with a
@@ -7466,7 +7582,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, risk_tier, autonomy_ceiling FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -7524,6 +7640,20 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        # REQ-046: autonomy-ceiling gate. A card whose deploy tier exceeds its
+        # project's ceiling is never spawned-to-execute — routed to blocked-for-
+        # human (plan-only). Applied BEFORE assignment so an over-ceiling card
+        # can't dispatch regardless of who it is routed to. inspect/repo-only
+        # work under the default ceiling passes untouched; a deploy-C card
+        # (wanctl/work-ansible) never passes any ceiling.
+        _rk = row.keys()
+        _risk = row["risk_tier"] if "risk_tier" in _rk else None
+        _ceil = row["autonomy_ceiling"] if "autonomy_ceiling" in _rk else None
+        if not tier_permitted_by_ceiling(_risk, _ceil):
+            if not dry_run:
+                _block_over_ceiling(conn, row["id"], _risk, _ceil)
+            result.skipped_ceiling.append(row["id"])
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an

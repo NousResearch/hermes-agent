@@ -64,6 +64,12 @@ CREATE TABLE IF NOT EXISTS projects (
     color         TEXT,
     board_slug    TEXT,
     primary_path  TEXT,
+    -- REQ-045 (decision 0007): highest deploy tier the autonomous loop may
+    -- EXECUTE for this repo (one of VALID_AUTONOMY_CEILINGS, or NULL = the
+    -- repo-only default). Denormalised onto each card at create time so the
+    -- cross-profile dispatcher never needs projects.db at dispatch. Tier-C repos
+    -- (wanctl, work-ansible) are set to 'plan-only' = execute nothing, draft only.
+    autonomy_ceiling TEXT,
     created_at    INTEGER NOT NULL,
     archived      INTEGER NOT NULL DEFAULT 0
 );
@@ -200,7 +206,13 @@ def connect_closing(db_path: Optional[Path] = None):
 
 # TEXT columns added to `projects` after v1; re-applied idempotently on every
 # open so a legacy DB upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = (
+    "board_slug",
+    "primary_path",
+    "icon",
+    "color",
+    "autonomy_ceiling",
+)
 
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
@@ -243,6 +255,9 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    # REQ-045: highest deploy tier the autonomous loop may execute for this repo
+    # (VALID_AUTONOMY_CEILINGS) or None = the repo-only default.
+    autonomy_ceiling: Optional[str] = None
     archived: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
 
@@ -256,6 +271,7 @@ class Project:
             "color": self.color,
             "board_slug": self.board_slug,
             "primary_path": self.primary_path,
+            "autonomy_ceiling": self.autonomy_ceiling,
             "archived": bool(self.archived),
             "created_at": self.created_at,
             "folders": [f.to_dict() for f in self.folders],
@@ -274,6 +290,11 @@ def _project_from_row(row: sqlite3.Row) -> Project:
         color=row["color"] if "color" in keys else None,
         board_slug=row["board_slug"] if "board_slug" in keys else None,
         primary_path=row["primary_path"] if "primary_path" in keys else None,
+        autonomy_ceiling=(
+            row["autonomy_ceiling"]
+            if "autonomy_ceiling" in keys and row["autonomy_ceiling"]
+            else None
+        ),
         archived=bool(row["archived"]) if "archived" in keys else False,
     )
 
@@ -422,12 +443,15 @@ def update_project(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     board_slug: Optional[str] = None,
+    autonomy_ceiling: Optional[str] = None,
 ) -> bool:
     """Patch top-level project fields. Only provided fields change.
 
-    ``icon``, ``color``, and ``board_slug`` accept an empty string to clear
-    (store NULL) — passing ``None`` leaves the field untouched, so callers that
-    want to clear must send ``""``.
+    ``icon``, ``color``, ``board_slug``, and ``autonomy_ceiling`` accept an empty
+    string to clear (store NULL) — passing ``None`` leaves the field untouched, so
+    callers that want to clear must send ``""``. ``autonomy_ceiling`` is validated
+    against ``VALID_AUTONOMY_CEILINGS`` (decision 0007); clearing it means the
+    dispatch gate falls back to the repo-only default for this repo.
     """
     sets: List[str] = []
     params: List[object] = []
@@ -449,6 +473,20 @@ def update_project(
     if board_slug is not None:
         sets.append("board_slug = ?")
         params.append(normalize_slug(board_slug) if board_slug.strip() else None)
+    if autonomy_ceiling is not None:
+        ac = str(autonomy_ceiling).strip()
+        if ac:
+            # Single source of truth for the vocabulary lives in kanban_db; lazy
+            # import avoids a module-load cycle (kanban_db imports projects_db).
+            from hermes_cli.kanban_db import VALID_AUTONOMY_CEILINGS
+
+            if ac not in VALID_AUTONOMY_CEILINGS:
+                raise ValueError(
+                    "autonomy_ceiling must be one of "
+                    f"{sorted(VALID_AUTONOMY_CEILINGS)}, got {ac!r}"
+                )
+        sets.append("autonomy_ceiling = ?")
+        params.append(ac or None)
     if not sets:
         return False
     params.append(project_id)

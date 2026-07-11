@@ -187,6 +187,14 @@ def build_models_payload(
 
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
+        # Desktop chat pickers request the explicit subset without the full
+        # unconfigured provider universe. If the configured current provider
+        # has lost its credential, list_authenticated_providers() omits it;
+        # keep that one row visible so the UI can show the saved selection and
+        # a re-auth affordance instead of appearing to jump to another provider.
+        rows = list(rows) + _append_unconfigured_rows(
+            rows, ctx, current_only=True
+        )
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -292,7 +300,12 @@ def _apply_capabilities(rows: list[dict]) -> None:
 # ─── Internal: row post-processing ──────────────────────────────────────
 
 
-def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+def _append_unconfigured_rows(
+    rows: list[dict],
+    ctx: ConfigContext,
+    *,
+    current_only: bool = False,
+) -> list[dict]:
     """Build fallback rows for canonical providers missing from ``rows``.
 
     Most missing canonical providers become empty setup skeletons. The one
@@ -309,6 +322,8 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
             cfg = PROVIDER_REGISTRY.get(entry.slug)

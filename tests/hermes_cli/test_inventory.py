@@ -415,6 +415,24 @@ def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_
         "gemini",
         "custom:lab",
     ]
+
+
+def test_explicit_only_keeps_unauthenticated_current_provider_visible():
+    """Desktop's configured-only picker must retain its saved provider row."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            picker_hints=True,
+        )
+
+    assert [row["slug"] for row in payload["providers"]] == ["deepseek"]
+    row = payload["providers"][0]
+    assert row["source"] == "configured-current"
+    assert row["authenticated"] is False
+    assert row["models"] == ["deepseek-v4-pro"]
+    assert "DEEPSEEK_API_KEY" in row["warning"]
 def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
     """If the saved provider is currently unauthenticated, keep a visible row
     with the saved model so GUI pickers don't silently jump to another
@@ -434,6 +452,19 @@ def test_include_unconfigured_keeps_current_provider_visible_without_credentials
     assert deepseek["auth_type"] == "api_key"
     assert "DEEPSEEK_API_KEY" in deepseek["warning"]
     assert "saved model only" in deepseek["warning"]
+
+
+def test_include_unconfigured_does_not_duplicate_configured_current_row():
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            include_unconfigured=True,
+            picker_hints=True,
+        )
+
+    assert sum(row["slug"] == "deepseek" for row in payload["providers"]) == 1
 
 def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     rows = [
@@ -468,8 +499,10 @@ def test_explicit_only_keeps_moa_when_raw_config_has_enabled_preset():
     ):
         payload = build_models_payload(ctx, explicit_only=True)
 
-    assert [row["slug"] for row in payload["providers"]] == ["moa"]
+    assert [row["slug"] for row in payload["providers"]] == ["moa", "openrouter"]
     assert payload["providers"][0]["models"] == ["review"]
+    assert payload["providers"][1]["source"] == "configured-current"
+    assert payload["providers"][1]["authenticated"] is False
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

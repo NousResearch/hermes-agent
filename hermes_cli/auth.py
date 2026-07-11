@@ -5247,10 +5247,23 @@ def resolve_nous_access_token(
             ).rstrip("/")
 
             parsed_portal_url = urlparse(portal_base_url)
-            if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
+            portal_host = parsed_portal_url.hostname
+            loopback_http = (
+                parsed_portal_url.scheme == "http"
+                and portal_host in {"localhost", "127.0.0.1"}
+            )
+            trusted_scheme = (
+                parsed_portal_url.scheme == "https" or loopback_http
+            )
+            if (
+                not portal_host
+                or portal_host not in _NOUS_PORTAL_ALLOWED_HOSTS
+                or not trusted_scheme
+            ):
                 logger.warning(
-                    "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
-                    portal_base_url, parsed_portal_url.hostname,
+                    "auth: ignoring invalid portal_base_url %r "
+                    "(host %r or scheme not allowed), using default",
+                    portal_base_url, portal_host,
                 )
                 portal_base_url = DEFAULT_NOUS_PORTAL_URL
 

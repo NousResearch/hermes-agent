@@ -142,3 +142,59 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+class _FakeMemoryManager:
+    """Minimal memory-manager stand-in exposing only build_system_prompt()."""
+
+    def __init__(self, block: str):
+        self._block = block
+
+    def build_system_prompt(self) -> str:
+        return self._block
+
+
+def _volatile_prompt(agent):
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)["volatile"]
+
+
+class TestMemoryProviderPromptGate:
+    """The external memory-provider prompt block must respect enabled_toolsets
+    the same way inject_memory_provider_tools() gates the tool schemas
+    (agent/memory_manager.py's memory_provider_tools_enabled) — otherwise a
+    toolset-restricted session (e.g. api_server scoped to ["engram"]) would
+    advertise mem0_search/mem0_add/etc. in its own system prompt while the
+    tool schemas themselves are withheld from its tool roster.
+    """
+
+    _BLOCK = "# Mem0 Memory\nUse mem0_search to find memories."
+
+    def test_none_toolsets_includes_block(self):
+        """enabled_toolsets=None (no filter) — backward compat, block included."""
+        agent = _make_agent(_memory_manager=_FakeMemoryManager(self._BLOCK), enabled_toolsets=None)
+        assert self._BLOCK in _volatile_prompt(agent)
+
+    def test_memory_in_toolsets_includes_block(self):
+        agent = _make_agent(_memory_manager=_FakeMemoryManager(self._BLOCK), enabled_toolsets=["memory"])
+        assert self._BLOCK in _volatile_prompt(agent)
+
+    def test_toolsets_without_memory_excludes_block(self):
+        """A restricted toolset (e.g. api_server's ["engram"]) must not
+        advertise mem0 tools in the prompt when the tool schemas themselves
+        are withheld — this is the exact bug the gate fixes."""
+        agent = _make_agent(_memory_manager=_FakeMemoryManager(self._BLOCK), enabled_toolsets=["engram"])
+        assert self._BLOCK not in _volatile_prompt(agent)
+
+    def test_empty_toolsets_excludes_block(self):
+        agent = _make_agent(_memory_manager=_FakeMemoryManager(self._BLOCK), enabled_toolsets=[])
+        assert self._BLOCK not in _volatile_prompt(agent)
+
+    def test_no_memory_manager_no_block(self):
+        agent = _make_agent(_memory_manager=None, enabled_toolsets=None)
+        assert self._BLOCK not in _volatile_prompt(agent)

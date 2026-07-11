@@ -483,12 +483,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
-    # External memory provider system prompt block (additive to built-in)
+    # External memory provider system prompt block (additive to built-in).
+    # Gated the same way as the tool schemas themselves (memory_provider_tools_enabled)
+    # so a restricted-toolset session never advertises mem0_search/mem0_add/etc. in its
+    # prompt while the actual tool schemas are withheld.
     if agent._memory_manager:
         try:
-            _ext_mem_block = agent._memory_manager.build_system_prompt()
-            if _ext_mem_block:
-                volatile_parts.append(_ext_mem_block)
+            from agent.memory_manager import memory_provider_tools_enabled
+            if memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None)):
+                _ext_mem_block = agent._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    volatile_parts.append(_ext_mem_block)
         except Exception:
             pass
 

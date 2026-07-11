@@ -10,6 +10,7 @@
   "scripts": {
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
+    "fix": "npm run lint:fix",
     "typecheck": "tsc -p . --noEmit",
     "check": "npm run typecheck"
   },

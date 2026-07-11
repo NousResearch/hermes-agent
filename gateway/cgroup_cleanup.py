@@ -51,17 +51,17 @@ def _read_cgroup_pids(cgroup_path: str) -> list[int]:
     return pids
 
 
-def _running_kanban_worker_pids() -> set[int]:
+def _running_kanban_worker_pids() -> set[int] | None:
     """Return worker roots that must survive a gateway service restart."""
     try:
         from hermes_cli import kanban_db
     except Exception:
-        return set()
+        return None
     workers: set[int] = set()
     try:
         boards = kanban_db.list_boards(include_archived=False)
     except Exception:
-        boards = [{"slug": kanban_db.DEFAULT_BOARD}]
+        return None
     for board in boards:
         try:
             with kanban_db.connect(board=board.get("slug")) as connection:
@@ -72,7 +72,7 @@ def _running_kanban_worker_pids() -> set[int]:
                     )
                 )
         except Exception:
-            continue
+            return None
     return workers
 
 
@@ -102,6 +102,8 @@ def reap_cgroup(cgroup_path: str | None = None) -> int:
     own = os.getpid()
     pids = _read_cgroup_pids(cgroup_path)
     worker_roots = _running_kanban_worker_pids()
+    if worker_roots is None:
+        return 0
     protected = worker_roots | _descendant_pids(worker_roots, pids)
     killed = 0
     for pid in pids:

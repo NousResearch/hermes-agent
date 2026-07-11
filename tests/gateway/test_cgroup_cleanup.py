@@ -115,3 +115,18 @@ class TestReapCgroup:
 
         monkeypatch.setattr(cgroup_cleanup.os, "kill", _explode)
         assert cgroup_cleanup.reap_cgroup(cgroup_path) == 0
+
+    def test_worker_discovery_failure_fails_closed(self, tmp_path, monkeypatch):
+        procs_file = tmp_path / "cgroup.procs"
+        procs_file.write_text("1001\n")
+        monkeypatch.setattr(
+            cgroup_cleanup,
+            "Path",
+            lambda p: procs_file if p.endswith("cgroup.procs") else Path(p),
+        )
+        monkeypatch.setattr(cgroup_cleanup, "_running_kanban_worker_pids", lambda: None)
+        killed = []
+        monkeypatch.setattr(cgroup_cleanup.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+        assert cgroup_cleanup.reap_cgroup("/user.slice/hermes-gateway.service") == 0
+        assert killed == []

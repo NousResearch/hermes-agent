@@ -43,6 +43,33 @@ def test_notify_subscribe_updates_explicit_notifier_identity(kanban_home):
         conn.close()
 
 
+def test_notification_claim_recovers_after_crash_without_losing_event(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="lease", assignee="developer")
+        kb.add_notify_sub(conn, task_id=tid, platform="slack", chat_id="C1")
+        kb.complete_task(conn, tid, summary="done")
+        old, claimed, events = kb.claim_unseen_events_for_sub(
+            conn, task_id=tid, platform="slack", chat_id="C1", kinds=("completed",)
+        )
+        assert [event.kind for event in events] == ["completed"]
+        conn.execute("update kanban_notify_subs set pending_claimed_at = 0 where task_id = ?", (tid,))
+        old_retry, claimed_retry, retry_events = kb.claim_unseen_events_for_sub(
+            conn, task_id=tid, platform="slack", chat_id="C1", kinds=("completed",)
+        )
+        assert (old_retry, claimed_retry) == (old, claimed)
+        assert [event.id for event in retry_events] == [event.id for event in events]
+        kb.advance_notify_cursor(
+            conn, task_id=tid, platform="slack", chat_id="C1", new_cursor=claimed_retry
+        )
+        _, _, final_events = kb.claim_unseen_events_for_sub(
+            conn, task_id=tid, platform="slack", chat_id="C1", kinds=("completed",)
+        )
+        assert final_events == []
+    finally:
+        conn.close()
+
+
 @pytest.mark.asyncio
 async def test_notifier_retains_delivery_receipt_after_completed_event(kanban_home):
     """Completed subscriptions retain their cursor as a durable delivery receipt."""

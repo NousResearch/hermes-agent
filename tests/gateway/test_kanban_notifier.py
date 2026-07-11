@@ -26,6 +26,12 @@ def test_completed_message_is_concise_and_omits_technical_ids():
     assert "t_" not in message and "ff04ae4" not in message
 
 
+def test_completed_message_collapses_lines_and_strips_technical_ids():
+    message = _format_completed_message("Task t_94f38ab5\ncommit deadbeef rollout", "")
+    assert message == "Task commit rollout fertig."
+    assert len(message.splitlines()) == 1
+
+
 class DisconnectedAdapters(dict):
     """Expose a platform during collection, then simulate disconnect on get()."""
 

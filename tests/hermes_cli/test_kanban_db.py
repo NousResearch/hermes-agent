@@ -3897,6 +3897,47 @@ def test_detect_stale_returns_running_task_with_no_heartbeat(kanban_home, monkey
         assert task.status == "ready"
 
 
+def test_repeated_stall_escalates_to_hermes_once(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="repeat-stall", assignee="developer")
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        for attempt in range(2):
+            kb.claim_task(conn, task_id)
+            kb._set_worker_pid(conn, task_id, os.getpid())
+            five_hours_ago = int(time.time()) - (5 * 3600)
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET started_at = ?, last_heartbeat_at = NULL WHERE id = ?",
+                    (five_hours_ago, task_id),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                    (five_hours_ago, task_id),
+                )
+            assert task_id in kb.detect_stale_running(
+                conn, stale_timeout_seconds=14400, signal_fn=lambda _p, _s: None,
+            )
+            task = kb.get_task(conn, task_id)
+            assert task is not None
+            assert task.status == ("ready" if attempt == 0 else "blocked")
+
+        assert conn.execute(
+            "SELECT count(*) FROM tasks WHERE created_by = 'kanban-stall-escalation'"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id = ? AND kind = 'escalated'",
+            (task_id,),
+        ).fetchone()[0] == 1
+        assert kb.detect_stale_running(
+            conn, stale_timeout_seconds=14400, signal_fn=lambda _p, _s: None,
+        ) == []
+        assert conn.execute(
+            "SELECT count(*) FROM tasks WHERE created_by = 'kanban-stall-escalation'"
+        ).fetchone()[0] == 1
+
+
 def test_detect_stale_returns_task_with_stale_heartbeat(kanban_home, monkeypatch):
     """A task running > timeout with a heartbeat older than 1h gets reclaimed."""
     import hermes_cli.kanban_db as _kb

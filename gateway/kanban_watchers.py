@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+import uuid
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -27,8 +28,10 @@ logger = logging.getLogger("gateway.run")
 
 
 def _format_completed_message(title: str, summary: str = "") -> str:
-    """Render a short human completion, without internal task or commit ids."""
-    first = f"{title[:120]} fertig."
+    """Render at most two short lines without internal task/commit identifiers."""
+    clean_title = re.sub(r"\b(?:t_[0-9a-f]{8,}|[0-9a-f]{7,40})\b", "", title, flags=re.IGNORECASE)
+    clean_title = re.sub(r"\s+", " ", clean_title).strip(" -–—:,.\t\r\n") or "Aufgabe"
+    first = f"{clean_title[:120].rstrip()} fertig."
     pr = re.search(r"PR\s*#(\d+)", summary, re.IGNORECASE)
     merged = bool(re.search(r"\b(?:gemerged|merged)\b", summary, re.IGNORECASE))
     production = bool(re.search(r"\bproduction\b", summary, re.IGNORECASE))
@@ -388,7 +391,12 @@ class GatewayKanbanWatchersMixin:
                             # internal transition. They are also excluded from
                             # _WAKE_KINDS below, so they never wake the creator.
                             continue
-                        metadata: dict[str, Any] = {}
+                        metadata: dict[str, Any] = {
+                            "client_msg_id": str(uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                f"hermes-kanban:{board_slug}:{sub['task_id']}:{ev.id}:{sub['platform']}:{sub['chat_id']}",
+                            )),
+                        }
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         sub_key = (
@@ -396,9 +404,11 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            if getattr(send_result, "success", True) is False:
+                                raise RuntimeError(getattr(send_result, "error", None) or "notification send failed")
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,

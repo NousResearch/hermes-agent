@@ -1260,6 +1260,9 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     notifier_profile TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
+    pending_event_id INTEGER,
+    pending_previous_event_id INTEGER,
+    pending_claimed_at INTEGER,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -2026,6 +2029,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        for column in ("pending_event_id", "pending_previous_event_id", "pending_claimed_at"):
+            if column not in notify_cols:
+                _add_column_if_missing(
+                    conn, "kanban_notify_subs", column, f"{column} INTEGER"
+                )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2151,6 +2159,8 @@ _REBUILD_SPECS = {
         " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
         " notifier_profile TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
+        " pending_event_id INTEGER, pending_previous_event_id INTEGER,"
+        " pending_claimed_at INTEGER,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),
@@ -6240,7 +6250,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.assignee, t.current_run_id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -6277,6 +6287,43 @@ def detect_stale_running(
                 conn, tid, lock, now, termination,
                 reason="heartbeat_stale_worker_alive",
             )
+            continue
+
+        prior_stalls = int(conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id = ? AND kind = 'stale'",
+            (tid,),
+        ).fetchone()[0])
+        if prior_stalls >= 1:
+            reason = (
+                "orchestrator-escalation: worker stalled again after automatic recovery; "
+                "Hermes must recover or choose an alternative before asking Mika"
+            )
+            block_task(
+                conn, tid, reason=reason, kind="capability",
+                expected_run_id=(int(row["current_run_id"]) if row["current_run_id"] else None),
+            )
+            recovery_task_id = None
+            if (row["assignee"] or "") != "default":
+                recovery_task_id = create_task(
+                    conn,
+                    title=f"Recover stalled Kanban task {tid}",
+                    body=(
+                        f"Source task {tid} stalled twice. Inspect its run/events, attempt technical "
+                        "recovery or an alternative, then unblock it. Only block for Mika if Hermes "
+                        "cannot resolve the technical blocker."
+                    ),
+                    assignee="default",
+                    created_by="kanban-stall-escalation",
+                    priority=100,
+                    idempotency_key=f"stall-recovery:{tid}",
+                )
+            with write_txn(conn):
+                _append_event(
+                    conn, tid, "escalated",
+                    {"reason": reason, "recovery_task_id": recovery_task_id, "stall_count": prior_stalls + 1},
+                    run_id=(int(row["current_run_id"]) if row["current_run_id"] else None),
+                )
+            reclaimed.append(tid)
             continue
 
         with write_txn(conn):
@@ -8396,13 +8443,32 @@ def claim_unseen_events_for_sub(
     """
     with write_txn(conn):
         row = conn.execute(
-            "SELECT last_event_id FROM kanban_notify_subs "
+            "SELECT last_event_id, pending_event_id, pending_previous_event_id, pending_claimed_at "
+            "FROM kanban_notify_subs "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
             (task_id, platform, chat_id, thread_id or ""),
         ).fetchone()
         if row is None:
             return 0, 0, []
         old_cursor = int(row["last_event_id"])
+        pending_cursor = row["pending_event_id"]
+        if pending_cursor is not None:
+            claimed_at = int(row["pending_claimed_at"] or 0)
+            if int(time.time()) - claimed_at < 60:
+                return old_cursor, old_cursor, []
+            previous = int(row["pending_previous_event_id"] or 0)
+            allowed = set(kinds or ())
+            events = [
+                event for event in list_events(conn, task_id)
+                if previous < event.id <= int(pending_cursor)
+                and (not allowed or event.kind in allowed)
+            ]
+            conn.execute(
+                "UPDATE kanban_notify_subs SET pending_claimed_at = ? "
+                "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+                (int(time.time()), task_id, platform, chat_id, thread_id or ""),
+            )
+            return previous, int(pending_cursor), events
         new_cursor, events = unseen_events_for_sub(
             conn,
             task_id=task_id,
@@ -8414,10 +8480,14 @@ def claim_unseen_events_for_sub(
         if not events:
             return old_cursor, old_cursor, []
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "UPDATE kanban_notify_subs SET last_event_id = ?, "
+            "pending_event_id = ?, pending_previous_event_id = ?, pending_claimed_at = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
-            "AND last_event_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+            "AND last_event_id = ? AND pending_event_id IS NULL",
+            (
+                int(new_cursor), int(new_cursor), int(old_cursor), int(time.time()),
+                task_id, platform, chat_id, thread_id or "", int(old_cursor),
+            ),
         )
         return old_cursor, new_cursor, events
 
@@ -8433,9 +8503,11 @@ def advance_notify_cursor(
 ) -> None:
     with write_txn(conn):
         conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? "
-            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
+            "UPDATE kanban_notify_subs SET last_event_id = ?, "
+            "pending_event_id = NULL, pending_previous_event_id = NULL, pending_claimed_at = NULL "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND (pending_event_id IS NULL OR pending_event_id = ?)",
+            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(new_cursor)),
         )
 
 
@@ -8457,12 +8529,13 @@ def rewind_notify_cursor(
     """
     with write_txn(conn):
         cur = conn.execute(
-            "UPDATE kanban_notify_subs SET last_event_id = ? "
+            "UPDATE kanban_notify_subs SET last_event_id = ?, "
+            "pending_event_id = NULL, pending_previous_event_id = NULL, pending_claimed_at = NULL "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
-            "AND last_event_id = ?",
+            "AND last_event_id = ? AND pending_event_id = ?",
             (
                 int(old_cursor), task_id, platform, chat_id, thread_id or "",
-                int(claimed_cursor),
+                int(claimed_cursor), int(claimed_cursor),
             ),
         )
     return cur.rowcount > 0

@@ -103,6 +103,13 @@ class TestAllowlist:
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 
+    def test_matrix_base_feature_excludes_python_olm(self):
+        assert all(
+            ld._pkg_name_from_spec(spec) != "python-olm"
+            for spec in ld.LAZY_DEPS["platform.matrix"]
+        )
+        assert ld.LAZY_DEPS["platform.matrix.e2ee"] == ("python-olm==3.2.16",)
+
 
 # ---------------------------------------------------------------------------
 # allow_lazy_installs gating

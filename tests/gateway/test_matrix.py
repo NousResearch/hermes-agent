@@ -1255,7 +1255,8 @@ class TestMatrixRequirements:
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
-             patch("tools.lazy_deps.feature_missing", return_value=()):
+             patch("tools.lazy_deps.feature_missing", return_value=()), \
+             patch("tools.lazy_deps.ensure", side_effect=RuntimeError("blocked")):
             assert matrix_mod.check_matrix_requirements() is False
 
     def test_check_requirements_e2ee_optional_no_deps_ok(self, monkeypatch):
@@ -1266,10 +1267,12 @@ class TestMatrixRequirements:
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
 
         import plugins.platforms.matrix.adapter as matrix_mod
-        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+        with patch.object(matrix_mod, "_check_e2ee_deps", side_effect=[False, True]), \
              patch("tools.lazy_deps.feature_missing", return_value=()), \
-             patch("tools.lazy_deps.ensure_and_bind", return_value=True):
+             patch("tools.lazy_deps.ensure_and_bind", return_value=True), \
+             patch("tools.lazy_deps.ensure", return_value=None) as ensure:
             assert matrix_mod.check_matrix_requirements() is True
+        ensure.assert_called_once_with("platform.matrix.e2ee", prompt=False)
 
     def test_check_requirements_encryption_false_no_e2ee_deps_ok(self, monkeypatch):
         """Without encryption, missing E2EE deps should not block startup."""
@@ -1292,6 +1295,19 @@ class TestMatrixRequirements:
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
              patch("tools.lazy_deps.feature_missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
+
+    def test_check_requirements_encryption_true_lazy_installs_e2ee(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", side_effect=[False, True]), \
+             patch("tools.lazy_deps.feature_missing", return_value=()), \
+             patch("tools.lazy_deps.ensure", return_value=None) as ensure:
+            assert matrix_mod.check_matrix_requirements() is True
+
+        ensure.assert_called_once_with("platform.matrix.e2ee", prompt=False)
 
     def test_check_e2ee_deps_requires_asyncpg(self, monkeypatch):
         """E2EE deps check must reject when asyncpg is missing — even if olm is present.

@@ -18,12 +18,19 @@ export function PullRequestList({ items, selected, onSelect, onOpen }: Props) {
         const status = item.isDraft ? 'DRAFT' : item.state
 
         return (
-          <button
+          <div
             aria-selected={selected === item.id}
-            className="group flex w-full min-w-0 items-start gap-3 px-4 py-3 text-left hover:bg-(--chrome-action-hover) aria-selected:bg-(--ui-bg-quaternary)"
+            className="group flex w-full min-w-0 cursor-pointer items-start gap-3 px-4 py-3 text-left hover:bg-(--chrome-action-hover) aria-selected:bg-(--ui-bg-quaternary)"
             key={item.id}
             onClick={() => onSelect(item)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelect(item)
+              }
+            }}
             role="option"
+            tabIndex={0}
           >
             <Codicon className="mt-0.5 shrink-0 text-(--ui-text-tertiary)" name="git-pull-request" />
             <span className="min-w-0 flex-1">
@@ -58,7 +65,7 @@ export function PullRequestList({ items, selected, onSelect, onOpen }: Props) {
             >
               <Codicon name="link-external" />
             </Button>
-          </button>
+          </div>
         )
       })}
     </div>

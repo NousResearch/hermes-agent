@@ -108,6 +108,15 @@ export function PullRequestsView() {
             </Button>
           </div>
         </div>
+      ) : list.isError ? (
+        <div className="grid h-full place-items-center">
+          <div className="text-center">
+            <EmptyState description={list.error?.message ?? copy.loadFailed} title={copy.loadFailed} />
+            <Button onClick={() => void list.refetch()} size="sm" variant="secondary">
+              {copy.retry}
+            </Button>
+          </div>
+        </div>
       ) : (
         <div className="grid h-full min-w-0 md:grid-cols-[minmax(20rem,42%)_minmax(0,1fr)]">
           <div

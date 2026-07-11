@@ -499,7 +499,12 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     if not msg:
-        return False
+        # Issue #62212: empty exception message is ambiguous. Could be pipe
+        # closure (real failure) or a server that doesn't implement ping
+        # (returns nothing). Treat as "method not found" so the caller falls
+        # back to list_tools instead of triggering an immediate reconnect.
+        # If list_tools ALSO fails with empty message, that triggers reconnect.
+        return True
     return (
         str(_JSONRPC_METHOD_NOT_FOUND) in msg
         or "method not found" in msg

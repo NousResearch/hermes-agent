@@ -1,4 +1,4 @@
-import { asText } from '@/lib/text'
+import { asText, normalize } from '@/lib/text'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
@@ -166,13 +166,119 @@ function personalityOptions(config: HermesConfigRecord): string[] {
   return [...new Set(['', ...BUILTIN_PERSONALITIES, ...customNames])]
 }
 
+// Built-in provider names, mirroring `tts_tool.py:BUILTIN_TTS_PROVIDERS` and
+// `transcription_tools.py:BUILTIN_STT_PROVIDERS`. The runtime rejects a built-in
+// name as a command provider before any config lookup
+// (`_resolve_command_provider_config`: `key = provider.lower().strip()`, then
+// `if key in BUILTIN_*_PROVIDERS: return None`), so a ``providers.edge`` block
+// declaring ``type: command`` still dispatches to native Edge.
+//
+// These are deliberately NOT derived from `ENUM_OPTIONS`, which is a *display*
+// list and already drifts from the runtime sets: it omits `deepinfra` (TTS) and
+// `deepinfra`/`local_command` (STT). Filtering on the display list would offer
+// those names as command providers that the runtime would never honour.
+const BUILTIN_TTS_PROVIDERS = new Set([
+  'edge',
+  'elevenlabs',
+  'openai',
+  'minimax',
+  'xai',
+  'mistral',
+  'gemini',
+  'neutts',
+  'kittentts',
+  'piper',
+  'deepinfra'
+])
+
+const BUILTIN_STT_PROVIDERS = new Set([
+  'local',
+  'local_command',
+  'groq',
+  'openai',
+  'mistral',
+  'xai',
+  'elevenlabs',
+  'deepinfra'
+])
+
+// A user-declared command provider, mirroring the runtime discriminator
+// (`tts_tool.py:_is_command_provider_config` / `transcription_tools.py`): `type`
+// is OPTIONAL and case/space-insensitive (absent or normalizing to "command"),
+// and `command` MUST be a non-empty string. So a canonical block written as just
+// ``{ command: "curl …" }`` with no ``type:`` — a fully valid runtime provider
+// under ``providers.*`` — qualifies too, while built-in blocks (which carry
+// ``voice``/``model`` and no ``command``) and the ``providers`` container itself
+// (no ``command``) are skipped.
+function isCommandProvider(value: unknown): boolean {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+  const type = normalize(record.type)
+
+  if (type !== '' && type !== 'command') {
+    return false
+  }
+
+  return typeof record.command === 'string' && record.command.trim() !== ''
+}
+
+// Names of user-defined command providers, so the settings dropdown can offer
+// them alongside the built-ins instead of only whichever one is currently active
+// (otherwise, once you switch away from a custom provider it drops off the list
+// and can only be reselected by hand-editing config.yaml).
+//
+// Mirrors the runtime's dual resolution (`tts_tool.py:_get_named_provider_config`,
+// `transcription_tools.py`): the CANONICAL location is nested —
+// ``tts.providers.<name>`` / ``stt.providers.<name>`` — with a back-compat
+// fallback to a top-level ``tts.<name>`` / ``stt.<name>`` block. We enumerate
+// both (deduped), keeping only sections that satisfy isCommandProvider and whose
+// name the runtime would actually resolve as a command provider — built-ins are
+// excluded case-insensitively, matching the runtime's `provider.lower().strip()`
+// guard, so a ``providers.EDGE`` command block is not offered.
+function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'): string[] {
+  const builtins = section === 'tts' ? BUILTIN_TTS_PROVIDERS : BUILTIN_STT_PROVIDERS
+  const names = new Set<string>()
+
+  for (const path of [`${section}.providers`, section]) {
+    const block = getNested(config, path)
+
+    if (!block || typeof block !== 'object' || Array.isArray(block)) {
+      continue
+    }
+
+    for (const [name, value] of Object.entries(block as Record<string, unknown>)) {
+      if (isCommandProvider(value) && !builtins.has(normalize(name))) {
+        names.add(name)
+      }
+    }
+  }
+
+  return [...names]
+}
+
 export function enumOptionsFor(
   key: string,
   value: unknown,
   config: HermesConfigRecord,
   dynamicOptions?: string[]
 ): string[] | undefined {
-  const opts = dynamicOptions ?? (key === 'display.personality' ? personalityOptions(config) : ENUM_OPTIONS[key])
+  let opts = dynamicOptions ?? (key === 'display.personality' ? personalityOptions(config) : ENUM_OPTIONS[key])
+
+  // Merge in user-defined command-type providers so custom local TTS/STT
+  // backends declared in config.yaml are selectable, not just the built-ins.
+  // The `includes` guard keeps the list duplicate-free should the display list
+  // ever carry a name we also enumerate.
+  if (!dynamicOptions && opts && (key === 'tts.provider' || key === 'stt.provider')) {
+    const section = key.slice(0, 3) as 'tts' | 'stt'
+    const custom = commandProviderNames(config, section).filter(name => !opts!.includes(name))
+
+    if (custom.length > 0) {
+      opts = [...opts, ...custom]
+    }
+  }
 
   if (!opts) {
     return undefined

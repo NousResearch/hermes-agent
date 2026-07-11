@@ -15678,6 +15678,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "codex_app_server_auto"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        # This controls whether compaction rotates to a child session or keeps
+        # the durable session id. The agent reads it only at construction, so a
+        # config toggle must rebuild a cached agent before its next turn.
+        ("compression", "in_place"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
     )

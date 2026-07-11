@@ -32,6 +32,7 @@ interface InsertRefsDetail {
 }
 
 const FOCUS_EVENT = 'hermes:composer-focus'
+const CLEAR_EVENT = 'hermes:composer-clear'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
@@ -94,6 +95,12 @@ export const requestComposerInsert = (
 
 export const onComposerFocusRequest = (handler: (target: ComposerTarget) => void) =>
   subscribe<FocusDetail>(FOCUS_EVENT, ({ target }) => handler(target))
+
+/** Clear an explicitly discarded new-session draft after its route/state swap. */
+export const requestComposerClear = (target: ComposerTarget = 'main') => dispatch<FocusDetail>(CLEAR_EVENT, { target })
+
+export const onComposerClearRequest = (handler: (target: ComposerTarget) => void) =>
+  subscribe<FocusDetail>(CLEAR_EVENT, ({ target }) => handler(target))
 
 export const onComposerInsertRequest = (handler: (detail: InsertDetail) => void) =>
   subscribe<InsertDetail>(INSERT_EVENT, handler)

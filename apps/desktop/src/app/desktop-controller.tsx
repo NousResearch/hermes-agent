@@ -631,7 +631,7 @@ export function DesktopController() {
   // Single global listener for every rebindable hotkey (incl. profile switching)
   // plus the on-screen keybind editor's capture mode.
   useKeybinds({
-    startFreshSession: startFreshSessionDraft,
+    startFreshSession: () => startFreshSessionDraft(false, true),
     toggleCommandCenter,
     toggleSelectedPin
   })
@@ -647,7 +647,7 @@ export function DesktopController() {
     }
 
     lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
+    startFreshSessionDraft(false, true)
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
@@ -735,7 +735,7 @@ export function DesktopController() {
 
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
-      startFreshSessionDraft()
+      startFreshSessionDraft(false, true)
 
       // A worktree lane carries its own path; the trunk "+" can be path-less (the
       // main checkout is implicit), so fall back to the active project's root

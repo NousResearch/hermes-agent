@@ -733,18 +733,14 @@ class HandoffResult:
             "summary": self.summary,
             "api_calls": self.api_calls,
             "duration_seconds": self.duration_seconds,
+            "model": self.model,
             "exit_reason": self.exit_reason,
+            "tokens": self.tokens,
+            "tool_trace": self.tool_trace,
+            "diagnostic_path": self.diagnostic_path,
         }
         if self.error is not None:
             payload["error"] = self.error
-        if self.model is not None:
-            payload["model"] = self.model
-        if self.tokens:
-            payload["tokens"] = self.tokens
-        if self.tool_trace:
-            payload["tool_trace"] = self.tool_trace
-        if self.diagnostic_path:
-            payload["diagnostic_path"] = self.diagnostic_path
         if self.stale_paths:
             payload["stale_paths"] = self.stale_paths
         if self.summary_truncated:

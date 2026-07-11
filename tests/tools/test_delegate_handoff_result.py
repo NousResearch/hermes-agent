@@ -89,8 +89,25 @@ def test_handoff_error_uses_formal_schema_and_exit_reason():
     assert frame["summary"] is None
     assert frame["error"] == "stuck"
     assert frame["exit_reason"] == "timeout"
+    assert frame["model"] is None
+    assert frame["tokens"] == {}
+    assert frame["tool_trace"] == []
     assert frame["diagnostic_path"] == "/tmp/diag.txt"
     assert frame["_child_role"] == "orchestrator"
+
+
+def test_handoff_result_preserves_legacy_empty_and_null_keys():
+    frame = HandoffResult.from_child_run(
+        task_index=1,
+        status="completed",
+        summary="done",
+        exit_reason="completed",
+    ).to_dict()
+
+    assert frame["model"] is None
+    assert frame["tokens"] == {}
+    assert frame["tool_trace"] == []
+    assert frame["diagnostic_path"] is None
 
 
 def test_run_single_child_returns_formal_handoff_result():

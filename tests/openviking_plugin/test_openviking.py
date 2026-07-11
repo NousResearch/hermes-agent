@@ -1,6 +1,7 @@
 """Tests for plugins/memory/openviking/__init__.py — URI normalization and payload handling."""
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
@@ -365,6 +366,93 @@ class TestOpenVikingConfigSchema:
             "prefer_abstract": False,
             "resources": False,
         }
+
+    def test_recall_config_reads_from_config_yaml(self, monkeypatch, tmp_path):
+        """_recall_config() reads memory.openviking values from config.yaml when
+        the corresponding OPENVIKING_RECALL_* env vars are not set."""
+        # Populate config.yaml in the temp HERMES_HOME
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        config_yaml = hermes_home / "config.yaml"
+        config_yaml.write_text("""\
+memory:
+  provider: openviking
+  openviking:
+    recall_limit: 12
+    recall_score_threshold: 0.42
+    recall_max_injected_chars: 8000
+    recall_timeout_seconds: 2.0
+    recall_request_timeout_seconds: 1.5
+    recall_full_read_limit: 5
+    recall_prefer_abstract: true
+    recall_resources: true
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Clear any OPENVIKING_RECALL_* env vars so config.yaml prevails
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_"):
+                monkeypatch.delenv(key, raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 12
+        assert cfg["score_threshold"] == 0.42
+        assert cfg["max_injected_chars"] == 8000
+        assert cfg["timeout_seconds"] == 2.0
+        assert cfg["request_timeout_seconds"] == 1.5
+        assert cfg["full_read_limit"] == 5
+        assert cfg["prefer_abstract"] is True
+        assert cfg["resources"] is True
+
+    def test_recall_config_env_overrides_config_yaml(self, monkeypatch, tmp_path):
+        """Env vars OPENVIKING_RECALL_* take precedence over config.yaml values
+        when both are present."""
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        config_yaml = hermes_home / "config.yaml"
+        config_yaml.write_text("""\
+memory:
+  provider: openviking
+  openviking:
+    recall_limit: 12
+    recall_resources: true
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Override config.yaml via env
+        monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "6")
+        monkeypatch.setenv("OPENVIKING_RECALL_RESOURCES", "false")
+
+        provider = OpenVikingMemoryProvider()
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 6, "env var should override config.yaml"
+        assert cfg["resources"] is False, "env var false should override config.yaml true"
+
+    def test_recall_config_partial_config_yaml(self, monkeypatch, tmp_path):
+        """Partially populated config.yaml falls back to defaults for omitted keys
+        and env vars can override individual fields."""
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        config_yaml = hermes_home / "config.yaml"
+        config_yaml.write_text("""\
+memory:
+  provider: openviking
+  openviking:
+    recall_limit: 3
+    # No recall_resources set — should use default (False)
+""")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_"):
+                monkeypatch.delenv(key, raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 3, "config.yaml value should be picked up"
+        assert cfg["resources"] is False, "omitted key should use default"
+        assert cfg["timeout_seconds"] == 4.0, "omitted key should use built-in default"
 
 
 class TestOpenVikingTurnConversion:

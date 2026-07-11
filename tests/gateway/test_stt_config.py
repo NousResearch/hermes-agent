@@ -455,8 +455,16 @@ async def test_observed_audio_context_clears_prior_turn_marker_without_audio_req
     assert _observed_audio_transcripts_from_history(enriched) == []
 
 
+@pytest.mark.parametrize(
+    "channel_prompt",
+    [None, "observed Matrix room context"],
+    ids=["no-observed-prompt", "matrix-observed-context"],
+)
 @pytest.mark.asyncio
-async def test_observed_audio_context_only_runs_for_telegram_observe_prompt(tmp_path):
+async def test_observed_audio_context_only_runs_for_telegram_observe_prompt(
+    tmp_path,
+    channel_prompt,
+):
     from gateway.run import GatewayRunner
 
     audio_path = tmp_path / "audio_123.ogg"
@@ -478,7 +486,7 @@ async def test_observed_audio_context_only_runs_for_telegram_observe_prompt(tmp_
     ):
         enriched = await runner._enrich_observed_audio_context(
             history,
-            channel_prompt=None,
+            channel_prompt=channel_prompt,
             current_message="[Bob|222]\nconsegue acessar esse audio?",
         )
 

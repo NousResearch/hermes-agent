@@ -4311,8 +4311,9 @@ This compaction should PRIORITISE preserving all information related to the focu
     @property
     def _effective_max_tail_message_floor(self) -> int:
         """Resolved tail-floor cap: config override or module default."""
-        if self.max_tail_message_floor > 0:
-            return self.max_tail_message_floor
+        _floor = getattr(self, "max_tail_message_floor", 0) or 0
+        if _floor > 0:
+            return _floor
         return _DEFAULT_MAX_TAIL_MESSAGE_FLOOR
 
     def _protect_head_size(self, messages: List[Dict[str, Any]]) -> int:

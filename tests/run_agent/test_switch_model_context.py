@@ -1,4 +1,4 @@
-"""Tests that switch_model does not inherit stale context_length overrides."""
+"""Tests that switch_model preserves config-level context_length overrides."""
 
 from unittest.mock import MagicMock, patch
 
@@ -149,39 +149,45 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     return agent
 
 
+@patch("hermes_cli.config.load_config")
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
-    """Switching models must not reuse the previous model.context_length override."""
+def test_switch_model_preserves_config_context_length(mock_ctx_len, mock_load_cfg):
+    """Switching models must retain the configured endpoint context window."""
+    mock_load_cfg.return_value = {"model": {"context_length": 32_768}}
     agent = _make_agent_with_compressor(config_context_length=32_768)
 
     assert agent.context_compressor.model == "primary-model"
-    assert agent.context_compressor.context_length == 32_768  # From config override
+    assert agent.context_compressor.context_length == 32_768
 
-    # Switch model
-    agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+    agent.switch_model(
+        "new-model",
+        "openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+    )
 
-    # Verify the old config override is not passed to the new model.
     mock_ctx_len.assert_called_once()
-    call_kwargs = mock_ctx_len.call_args.kwargs
-    assert call_kwargs.get("config_context_length") is None
-
-    # Verify compressor was updated from the newly resolved model metadata.
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] == 32_768
     assert agent.context_compressor.model == "new-model"
     assert agent.context_compressor.context_length == 131_072
 
 
-def test_switch_model_without_config_context_length():
-    """When switching models without config override, config_context_length should be None."""
+@patch("hermes_cli.config.load_config")
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+def test_switch_model_without_config_context_length(mock_ctx_len, mock_load_cfg):
+    """A switch without a configured context override resolves normally."""
+    mock_load_cfg.return_value = {"model": {}}
     agent = _make_agent_with_compressor(config_context_length=None)
 
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len:
-        # Switch model
-        agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+    agent.switch_model(
+        "new-model",
+        "openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+    )
 
-        # Verify get_model_context_length was called with None
-        mock_ctx_len.assert_called_once()
-        call_kwargs = mock_ctx_len.call_args.kwargs
-        assert call_kwargs.get("config_context_length") is None
+    mock_ctx_len.assert_called_once()
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] is None
 
 
 def test_direct_start_model_override_does_not_inherit_profile_context_length():

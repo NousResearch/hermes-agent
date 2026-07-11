@@ -2363,3 +2363,35 @@ class TestStripOrphanCloseTags:
             assert tag not in consumer._accumulated
         assert "trailing prose" in consumer._accumulated
         assert "more" in consumer._accumulated
+
+
+# ── UTF-16 chunk-split regression ────────────────────────────────────────
+
+
+class TestSplitTextChunksUtf16:
+    """Regression: _split_text_chunks must respect a UTF-16 code-unit limit.
+
+    Emoji (U+1F600 and similar) encode as two UTF-16 code units (surrogate
+    pairs) but count as a single Python character.  A naive ``len()``-based
+    split therefore underestimates the encoded size and can produce chunks
+    that exceed the platform limit.  The fix (071ba19) passes a ``len_fn``
+    that counts UTF-16 code units, and this test pins that contract.
+    """
+
+    def test_emoji_chunks_respect_utf16_limit(self):
+        from gateway.platforms.base import utf16_len
+
+        text = "😀" * 100  # 100 emoji × 2 UTF-16 units = 200 UTF-16 code units
+        limit = 50  # UTF-16 code-unit budget per chunk
+
+        chunks = GatewayStreamConsumer._split_text_chunks(text, limit, len_fn=utf16_len)
+
+        for chunk in chunks:
+            assert utf16_len(chunk) <= limit, (
+                f"Chunk exceeds UTF-16 limit ({limit}): "
+                f"utf16_len={utf16_len(chunk)!r}, chunk={chunk!r}"
+            )
+
+        assert "".join(chunks) == text, (
+            "Reassembled chunks do not equal the original input"
+        )

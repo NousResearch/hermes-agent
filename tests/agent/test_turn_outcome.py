@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from agent.turn_outcome import TURN_OUTCOMES, classify_turn_outcome
 
 
@@ -40,6 +42,27 @@ def test_provider_failure_with_response_text_is_failed():
     )
 
     assert result["outcome"] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("exit_reason", "expected_outcome"),
+    [
+        ("guardrail_halt", "blocked"),
+        ("error_near_max_iterations(repeated failure)", "failed"),
+        ("all_retries_exhausted_no_response", "failed"),
+        ("ollama_runtime_context_too_small", "failed"),
+        ("partial_stream_recovery", "partial"),
+        ("fallback_prior_turn_content", "partial"),
+        ("empty_response_exhausted", "partial"),
+        ("pending_tool_result", "partial"),
+    ],
+)
+def test_known_non_success_exit_reason_overrides_response_text(
+    exit_reason, expected_outcome
+):
+    result = _classify(_turn_exit_reason=exit_reason)
+
+    assert result["outcome"] == expected_outcome
 
 
 def test_interrupt_with_response_text_is_interrupted():

@@ -67,6 +67,17 @@ def classify_turn_outcome(
         return {"outcome": "blocked", "reason": "approval blocked"}
     if cancelled or exit_reason in {"cancelled", "canceled"}:
         return {"outcome": "cancelled", "reason": "turn cancelled"}
+    if exit_reason == "guardrail_halt":
+        return {"outcome": "blocked", "reason": "guardrail halted"}
+    if (
+        exit_reason.startswith("error_near_max_iterations")
+        or exit_reason in {
+            "all_retries_exhausted_no_response",
+            "ollama_runtime_context_too_small",
+            "provider_failure",
+        }
+    ):
+        return {"outcome": "failed", "reason": "turn failed"}
     if (
         exit_reason == "budget_exhausted"
         or exit_reason.startswith("max_iterations_reached")
@@ -75,6 +86,7 @@ def classify_turn_outcome(
             "partial_stream_recovery",
             "fallback_prior_turn_content",
             "empty_response_exhausted",
+            "pending_tool_result",
         }
     ):
         return {"outcome": "partial", "reason": "iteration budget or turn completion was partial"}

@@ -176,29 +176,25 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
        Keeps the agent's job-scoped toolset override intact — #6130. Enabled
        MCP servers are layered on per ``_merge_mcp_into_per_job_toolsets`` so a
        native-toolset allowlist does not silently strip MCP tools.
-    2. Per-platform ``hermes tools`` config for the ``cron`` platform.
-       Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
-       so users can gate cron toolsets globally without recreating every job.
-    3. ``None`` on any lookup failure — AIAgent loads the full default set
-       (legacy behavior before this change, preserved as the safety net).
-
-    _DEFAULT_OFF_TOOLSETS ({moa, homeassistant, rl}) are removed by
-    ``_get_platform_tools`` for unconfigured platforms, so fresh installs
-    get cron WITHOUT ``moa`` by default (issue reported by Norbert —
-    surprise $4.63 run).
+    2. Explicit per-platform ``hermes tools`` config for ``cron``.
+    3. Lean ``web, terminal, file`` defaults. Cron jobs are unattended and
+       should opt into browser, delegation, media, and other large surfaces.
     """
     per_job = job.get("enabled_toolsets")
     if per_job:
         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+    platform_toolsets = (cfg or {}).get("platform_toolsets") or {}
+    if not isinstance(platform_toolsets.get("cron"), list):
+        return ["web", "terminal", "file"]
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
         logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
+            "Cron toolset resolution failed, falling back to lean default toolset: %s",
             exc,
         )
-        return None
+        return ["web", "terminal", "file"]
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.

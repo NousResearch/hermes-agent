@@ -415,6 +415,39 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_guidance_loads_only_directly_triggered_skills_router_first(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "coding" / "router"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: router\ndescription: Route explicit coding-agent tasks\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "smallest directly triggered set" in result
+        assert "router first" in result
+        assert "topical overlap" in result
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
+
+    def test_omits_skill_index_when_skill_view_is_unavailable(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "coding" / "python-debug"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        assert build_skills_system_prompt(available_tools={"web_search"}) == ""
+        assert "python-debug" in build_skills_system_prompt(
+            available_tools={"skill_view"}
+        )
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

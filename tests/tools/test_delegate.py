@@ -413,6 +413,43 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_delegate_uses_lean_default_toolsets(self):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = [
+            "web", "terminal", "file", "browser", "skills", "vision"
+        ]
+        credentials = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "request_overrides": None,
+            "max_output_tokens": None,
+            "command": None,
+            "args": None,
+        }
+
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials",
+                   return_value=credentials), \
+             patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = child
+            delegate_task(goal="Inspect the repository", parent_agent=parent)
+
+        self.assertEqual(
+            MockAgent.call_args[1]["enabled_toolsets"],
+            ["terminal", "file", "web"],
+        )
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()

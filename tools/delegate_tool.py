@@ -2516,9 +2516,14 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # The model cannot choose toolsets. Operators may override the
+                # lean default in delegation.enabled_toolsets; _build_child_agent
+                # still intersects the result with the parent's capabilities.
+                toolsets=(
+                    list(cfg["enabled_toolsets"])
+                    if isinstance(cfg.get("enabled_toolsets"), list)
+                    else list(DEFAULT_TOOLSETS)
+                ),
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,

@@ -2211,11 +2211,12 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
-        # When delegate_task narrows child toolsets explicitly, preserve any
-        # MCP toolsets the parent already has enabled. On by default so
-        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
-        # extras" without silently stripping MCP tools the parent already has.
-        # Set to false for strict intersection.
+        # Child toolsets are operator-controlled and always intersected with
+        # the parent's capabilities. Keep the default surface lean; add browser,
+        # vision, skills, or delegation here only for recurring child workloads.
+        "enabled_toolsets": ["terminal", "file", "web"],
+        # Preserve parent MCP toolsets when narrowing the native set. Set false
+        # when children should receive exactly enabled_toolsets.
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)

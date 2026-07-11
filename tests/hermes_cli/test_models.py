@@ -1,5 +1,6 @@
 """Tests for the hermes_cli models module."""
 
+import json
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
@@ -17,6 +18,73 @@ LIVE_OPENROUTER_MODELS = [
     ("qwen/qwen3.7-max", ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
 ]
+
+
+class TestProviderModelsCache:
+    def setup_method(self):
+        _models_mod._provider_models_cache_snapshot = None
+
+    def teardown_method(self):
+        _models_mod._provider_models_cache_snapshot = None
+
+    def test_load_reuses_in_memory_snapshot(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "provider_models_cache.json"
+        cache_path.write_text(
+            json.dumps({"openai": {"models": ["gpt-5.5"], "fp": "fp", "at": 1}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_models_mod, "_provider_models_cache_path", lambda: cache_path)
+
+        with patch("builtins.open", wraps=open) as mock_open:
+            first = _models_mod._load_provider_models_cache()
+            second = _models_mod._load_provider_models_cache()
+
+        assert first == second
+        assert first["openai"]["models"] == ["gpt-5.5"]
+        assert mock_open.call_count == 1
+
+    def test_load_refreshes_snapshot_when_file_changes(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "provider_models_cache.json"
+        cache_path.write_text(
+            json.dumps({"openai": {"models": ["old"], "fp": "fp", "at": 1}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_models_mod, "_provider_models_cache_path", lambda: cache_path)
+
+        assert _models_mod._load_provider_models_cache()["openai"]["models"] == ["old"]
+        cache_path.write_text(
+            json.dumps({"openai": {"models": ["newer"], "fp": "fp", "at": 2}}),
+            encoding="utf-8",
+        )
+
+        assert _models_mod._load_provider_models_cache()["openai"]["models"] == ["newer"]
+
+    def test_save_updates_in_memory_snapshot(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "provider_models_cache.json"
+        monkeypatch.setattr(_models_mod, "_provider_models_cache_path", lambda: cache_path)
+
+        _models_mod._save_provider_models_cache(
+            {"anthropic": {"models": ["claude-sonnet-4.6"], "fp": "fp", "at": 1}}
+        )
+
+        with patch("builtins.open", side_effect=AssertionError("cache should be in memory")):
+            data = _models_mod._load_provider_models_cache()
+
+        assert data["anthropic"]["models"] == ["claude-sonnet-4.6"]
+
+    def test_clear_all_invalidates_in_memory_snapshot(self, tmp_path, monkeypatch):
+        cache_path = tmp_path / "provider_models_cache.json"
+        cache_path.write_text(
+            json.dumps({"openai": {"models": ["gpt-5.5"], "fp": "fp", "at": 1}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_models_mod, "_provider_models_cache_path", lambda: cache_path)
+
+        assert _models_mod._load_provider_models_cache()
+        _models_mod.clear_provider_models_cache()
+
+        assert not cache_path.exists()
+        assert _models_mod._load_provider_models_cache() == {}
 
 
 

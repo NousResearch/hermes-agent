@@ -2534,6 +2534,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #     to a live fetch — the picker keeps working.
 
 _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
+_provider_models_cache_snapshot: tuple[Path, int, int, dict] | None = None
 
 
 def _provider_models_cache_path() -> Path:
@@ -2614,25 +2615,45 @@ def _credential_fingerprint(provider: str) -> str:
 
 def _load_provider_models_cache() -> dict:
     """Return the full cache dict, or {} on any error."""
+    global _provider_models_cache_snapshot
     try:
         path = _provider_models_cache_path()
-        if not path.exists():
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            _provider_models_cache_snapshot = None
             return {}
+        if (
+            _provider_models_cache_snapshot is not None
+            and _provider_models_cache_snapshot[0] == path
+            and _provider_models_cache_snapshot[1] == stat.st_mtime_ns
+            and _provider_models_cache_snapshot[2] == stat.st_size
+        ):
+            return dict(_provider_models_cache_snapshot[3])
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            _provider_models_cache_snapshot = None
+            return {}
+        _provider_models_cache_snapshot = (path, stat.st_mtime_ns, stat.st_size, dict(data))
+        return data
     except Exception:
+        _provider_models_cache_snapshot = None
         return {}
 
 
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
+    global _provider_models_cache_snapshot
     try:
         from utils import atomic_json_write
         path = _provider_models_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
+        stat = path.stat()
+        _provider_models_cache_snapshot = (path, stat.st_mtime_ns, stat.st_size, dict(data))
     except Exception:
+        _provider_models_cache_snapshot = None
         pass
 
 
@@ -2697,11 +2718,13 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     entry is removed. Used by ``/model --refresh`` and
     ``hermes model --refresh``.
     """
+    global _provider_models_cache_snapshot
     try:
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
                 path.unlink()
+            _provider_models_cache_snapshot = None
             return
         cache = _load_provider_models_cache()
         normalized = normalize_provider(provider) or provider or ""
@@ -2709,6 +2732,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
             del cache[normalized]
             _save_provider_models_cache(cache)
     except Exception:
+        _provider_models_cache_snapshot = None
         pass
 
 

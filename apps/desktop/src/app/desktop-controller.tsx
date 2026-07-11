@@ -780,6 +780,7 @@ export function DesktopController() {
     branchCurrentSession: branchInNewChat,
     busyRef,
     createBackendSessionForSend,
+    getRouteToken,
     handleSkinCommand,
     openMemoryGraph: openStarmap,
     refreshSessions,

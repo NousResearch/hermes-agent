@@ -157,6 +157,7 @@ interface PromptActionsOptions {
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  getRouteToken: () => string
   handleSkinCommand: (arg: string) => string
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -184,6 +185,7 @@ export function usePromptActions({
   busyRef,
   branchCurrentSession,
   createBackendSessionForSend,
+  getRouteToken,
   handleSkinCommand,
   refreshSessions,
   requestGateway,
@@ -351,6 +353,7 @@ export function usePromptActions({
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRouteToken,
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,

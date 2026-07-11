@@ -1,0 +1,128 @@
+{
+  "draft": {
+    "summary": "Review a repo's README against current code, summarize the diff, and update the README when drift is detected.",
+    "assumptions": [
+      "Repository path is supplied at run start via the manual trigger input.",
+      "The README is named README.md at the repo root unless the user names a different file.",
+      "Updates are applied via a focused patch that preserves unrelated README content."
+    ],
+    "questions": [],
+    "warnings": [
+      "Auto-bumping the workflow version on every accepted refinement can produce a noisy history; publish deliberately."
+    ],
+    "unsupported_requests": [],
+    "spec": {
+      "id": "readme_drift_guard",
+      "name": "README Drift Guard",
+      "version": 1,
+      "triggers": [
+        {
+          "type": "manual",
+          "id": "manual",
+          "input_schema": {
+            "repo_path": {"kind": "repo_path", "required": true},
+            "readme_path": {"kind": "text", "required": false}
+          }
+        }
+      ],
+      "nodes": {
+        "fetch_readme": {
+          "type": "agent_task",
+          "profile": "implementer",
+          "title": "Read README and current code",
+          "prompt": "Read ${ input.repo_path }/${ input.readme_path } and the surrounding code. Return JSON only with keys: summary (string), drift (boolean), evidence (string).",
+          "result_contract": {"summary": "string", "drift": "boolean", "evidence": "string"}
+        },
+        "decide": {
+          "type": "switch",
+          "cases": [{"name": "needs_update"}, {"name": "no_update"}],
+          "default": "report"
+        },
+        "apply": {
+          "type": "agent_task",
+          "profile": "implementer",
+          "title": "Apply README patch",
+          "prompt": "Edit ${ input.repo_path }/${ input.readme_path } so it matches the current code. Return JSON only with keys: summary (string), patch (string).",
+          "result_contract": {"summary": "string", "patch": "string"}
+        },
+        "report": {
+          "type": "pass",
+          "output": {"status": "ok"}
+        }
+      },
+      "edges": [
+        {"from": "fetch_readme", "to": "decide"},
+        {"from": "decide.needs_update", "to": "apply"},
+        {"from": "decide.no_update", "to": "report"},
+        {"from": "apply", "to": "report"}
+      ]
+    }
+  },
+  "refine": {
+    "summary": "Added a reviewer step and a retry policy on the README fetch.",
+    "assumptions": [
+      "A reviewer profile is available in the active Hermes profile list.",
+      "Retry is bounded so we surface persistent drift instead of looping."
+    ],
+    "questions": [],
+    "warnings": [
+      "Adding retry can mask persistent read errors; watch the run history the first few times this workflow executes."
+    ],
+    "unsupported_requests": [],
+    "spec": {
+      "id": "readme_drift_guard",
+      "name": "README Drift Guard",
+      "version": 2,
+      "triggers": [
+        {
+          "type": "manual",
+          "id": "manual",
+          "input_schema": {
+            "repo_path": {"kind": "repo_path", "required": true},
+            "readme_path": {"kind": "text", "required": false}
+          }
+        }
+      ],
+      "nodes": {
+        "fetch_readme": {
+          "type": "agent_task",
+          "profile": "implementer",
+          "title": "Read README and current code",
+          "prompt": "Read ${ input.repo_path }/${ input.readme_path } and the surrounding code. Return JSON only with keys: summary (string), drift (boolean), evidence (string).",
+          "result_contract": {"summary": "string", "drift": "boolean", "evidence": "string"},
+          "retry": {"max_attempts": 2, "delay_seconds": 5}
+        },
+        "review": {
+          "type": "agent_task",
+          "profile": "reviewer",
+          "title": "Review README diff",
+          "prompt": "Review the proposed README changes against the current code. Return JSON only with keys: approved (boolean), feedback (string).",
+          "result_contract": {"approved": "boolean", "feedback": "string"}
+        },
+        "decide": {
+          "type": "switch",
+          "cases": [{"name": "needs_update"}, {"name": "no_update"}],
+          "default": "report"
+        },
+        "apply": {
+          "type": "agent_task",
+          "profile": "implementer",
+          "title": "Apply README patch",
+          "prompt": "Edit ${ input.repo_path }/${ input.readme_path } so it matches the current code. Return JSON only with keys: summary (string), patch (string).",
+          "result_contract": {"summary": "string", "patch": "string"}
+        },
+        "report": {
+          "type": "pass",
+          "output": {"status": "ok"}
+        }
+      },
+      "edges": [
+        {"from": "fetch_readme", "to": "decide"},
+        {"from": "decide.needs_update", "to": "review"},
+        {"from": "decide.no_update", "to": "report"},
+        {"from": "review", "to": "apply"},
+        {"from": "apply", "to": "report"}
+      ]
+    }
+  }
+}

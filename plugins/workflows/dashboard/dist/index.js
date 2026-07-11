@@ -48,6 +48,185 @@
 		};
 	}
 	//#endregion
+	//#region ../plugins/workflows/dashboard/src/build.js
+	var META_KEYS = [
+		"id",
+		"name",
+		"version",
+		"enabled"
+	];
+	function sectionsEqual(a, b) {
+		return JSON.stringify(a) === JSON.stringify(b);
+	}
+	function triggerKey(t) {
+		return t && t.id ? t.id : "";
+	}
+	function nodeIdPairs(nodes) {
+		return Object.keys(nodes || {}).sort().map(function(id) {
+			return {
+				id,
+				node: nodes[id]
+			};
+		});
+	}
+	function triggerHasInput(trigger) {
+		if (!trigger || !trigger.input_schema) return false;
+		return Object.keys(trigger.input_schema).length > 0;
+	}
+	function edgesEqual(a, b) {
+		function norm(list) {
+			return (list || []).map(function(e) {
+				return (e.from || "") + "->" + (e.to || "");
+			}).sort();
+		}
+		return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+	}
+	function semanticWorkflowDiff(before, after) {
+		var sections = [];
+		var b = before || {};
+		var a = after || {};
+		var metaItems = [];
+		META_KEYS.forEach(function(key) {
+			if (JSON.stringify(b[key]) !== JSON.stringify(a[key])) metaItems.push(key + " changed");
+		});
+		if (metaItems.length) sections.push({
+			kind: "metadata",
+			summary: "Metadata changed",
+			items: metaItems
+		});
+		var bTriggers = (b.triggers || []).map(triggerKey).sort();
+		var aTriggers = (a.triggers || []).map(triggerKey).sort();
+		var triggerItems = [];
+		if (JSON.stringify(bTriggers) !== JSON.stringify(aTriggers)) triggerItems.push("trigger list changed");
+		var allTriggerIds = {};
+		(b.triggers || []).concat(a.triggers || []).forEach(function(t) {
+			allTriggerIds[triggerKey(t)] = true;
+		});
+		Object.keys(allTriggerIds).forEach(function(tid) {
+			var bt = (b.triggers || []).find(function(t) {
+				return triggerKey(t) === tid;
+			});
+			var at = (a.triggers || []).find(function(t) {
+				return triggerKey(t) === tid;
+			});
+			if (bt && at && !sectionsEqual(bt, at)) {
+				if (triggerHasInput(at) && !triggerHasInput(bt)) triggerItems.push(tid + " gained input schema");
+				else if (JSON.stringify(bt.input_schema) !== JSON.stringify(at.input_schema)) triggerItems.push(tid + " input schema changed");
+			}
+		});
+		if (triggerItems.length) sections.push({
+			kind: "triggers",
+			summary: "Triggers changed",
+			items: triggerItems
+		});
+		var bNodes = nodeIdPairs(b.nodes);
+		var aNodes = nodeIdPairs(a.nodes);
+		var nodeItems = [];
+		var bNodeIds = bNodes.map(function(p) {
+			return p.id;
+		});
+		var aNodeIds = aNodes.map(function(p) {
+			return p.id;
+		});
+		aNodeIds.forEach(function(id) {
+			if (bNodeIds.indexOf(id) === -1) nodeItems.push("added node " + id);
+		});
+		bNodeIds.forEach(function(id) {
+			if (aNodeIds.indexOf(id) === -1) nodeItems.push("removed node " + id);
+		});
+		var sharedIds = aNodeIds.filter(function(id) {
+			return bNodeIds.indexOf(id) !== -1;
+		});
+		sharedIds.forEach(function(id) {
+			var bn = (b.nodes || {})[id];
+			var an = (a.nodes || {})[id];
+			if (JSON.stringify(bn) !== JSON.stringify(an)) if (bn.type !== an.type) nodeItems.push(id + " type " + (bn.type || "?") + " -> " + (an.type || "?"));
+			else nodeItems.push(id + " changed");
+		});
+		if (nodeItems.length) sections.push({
+			kind: "nodes",
+			summary: "Nodes changed",
+			items: nodeItems
+		});
+		if (!edgesEqual(b.edges, a.edges)) {
+			var routingItems = [];
+			var bEdgeSet = {};
+			(b.edges || []).forEach(function(e) {
+				bEdgeSet[e.from + "->" + e.to] = true;
+			});
+			(a.edges || []).forEach(function(e) {
+				if (!bEdgeSet[e.from + "->" + e.to]) routingItems.push("added " + e.from + " -> " + e.to);
+			});
+			var aEdgeSet = {};
+			(a.edges || []).forEach(function(e) {
+				aEdgeSet[e.from + "->" + e.to] = true;
+			});
+			(b.edges || []).forEach(function(e) {
+				if (!aEdgeSet[e.from + "->" + e.to]) routingItems.push("removed " + e.from + " -> " + e.to);
+			});
+			sections.push({
+				kind: "routing",
+				summary: "Routing changed",
+				items: routingItems
+			});
+		}
+		var runtimeItems = [];
+		sharedIds.forEach(function(id) {
+			var bn = (b.nodes || {})[id];
+			var an = (a.nodes || {})[id];
+			if (!bn || !an) return;
+			var bRuntime = {
+				retry: bn.retry,
+				catch: bn.catch
+			};
+			var aRuntime = {
+				retry: an.retry,
+				catch: an.catch
+			};
+			if (JSON.stringify(bRuntime) !== JSON.stringify(aRuntime)) {
+				if (an.retry && !bn.retry) runtimeItems.push(id + " added retry");
+				if (an.catch && !bn.catch) runtimeItems.push(id + " added catch");
+				if (bn.catch && !an.catch) runtimeItems.push(id + " removed catch");
+				if (bn.retry && !an.retry) runtimeItems.push(id + " removed retry");
+				if (an.retry && bn.retry && JSON.stringify(an.retry) !== JSON.stringify(bn.retry)) runtimeItems.push(id + " retry policy changed");
+				if (an.catch && bn.catch && an.catch !== bn.catch) runtimeItems.push(id + " catch target changed");
+			}
+		});
+		if (runtimeItems.length) sections.push({
+			kind: "runtime",
+			summary: "Runtime settings changed",
+			items: runtimeItems
+		});
+		return sections;
+	}
+	function isDraftDirty(state) {
+		return JSON.stringify(state.savedDraft) !== JSON.stringify(state.workingDraft);
+	}
+	function buildApiHelpers(api) {
+		return {
+			putDraft: function(workflowId, body) {
+				return api("/definitions/" + encodeURIComponent(workflowId) + "/draft", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body)
+				});
+			},
+			getDraft: function(workflowId) {
+				return api("/definitions/" + encodeURIComponent(workflowId) + "/draft", { method: "GET" });
+			},
+			deleteDraft: function(workflowId) {
+				return api("/definitions/" + encodeURIComponent(workflowId) + "/draft", { method: "DELETE" });
+			},
+			publish: function(workflowId, body) {
+				return api("/definitions/" + encodeURIComponent(workflowId) + "/publish", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body)
+				});
+			}
+		};
+	}
+	//#endregion
 	//#region ../plugins/workflows/dashboard/src/workspace.js
 	var WORKSPACE_MODES = [
 		"build",
@@ -1281,7 +1460,7 @@
 			const goalText = stateGoalText[0];
 			const setGoalText = stateGoalText[1];
 			const stateDraftResult = useState(null);
-			stateDraftResult[0];
+			const draftResult = stateDraftResult[0];
 			const setDraftResult = stateDraftResult[1];
 			const stateDrafting = useState(false);
 			const drafting = stateDrafting[0];
@@ -1292,6 +1471,16 @@
 			const stateRefining = useState(false);
 			const refining = stateRefining[0];
 			const setRefining = stateRefining[1];
+			const stateSavedDraft = useState(null);
+			const savedDraft = stateSavedDraft[0];
+			const setSavedDraft = stateSavedDraft[1];
+			const stateCandidateSource = useState(null);
+			const candidateSource = stateCandidateSource[0];
+			const setCandidateSource = stateCandidateSource[1];
+			const stateUndoStack = useState([]);
+			stateUndoStack[0];
+			const setUndoStack = stateUndoStack[1];
+			const draftApi = buildApiHelpers(api);
 			const stateShowAdvancedYaml = useState(false);
 			const showAdvancedYaml = stateShowAdvancedYaml[0];
 			const setShowAdvancedYaml = stateShowAdvancedYaml[1];
@@ -1637,16 +1826,23 @@
 				return api("/definitions/" + encodeURIComponent(workflowId) + versionQuery(version)).then(function(res) {
 					const definition = res.definition || null;
 					const nextSelectionKey = definitionSelectionKey(definition);
+					const nextSpec = definition && definition.spec ? definition.spec : null;
 					setSelectedDefinition(definition);
-					setDraftSpec(definition && definition.spec ? definition.spec : null);
+					const dirty = isDraftDirty({
+						savedDraft,
+						workingDraft: draftSpec
+					});
+					setSavedDraft(nextSpec);
+					if (!dirty) setDraftSpec(nextSpec);
 					if (nextSelectionKey !== previousSelectionKey) {
 						setInputFieldValues({});
 						setShowAdvancedInputJson(false);
 						setRunInputText("{}");
 					}
 					setDraftResult(null);
+					setCandidateSource(null);
 					setRefineText("");
-					if (definition && definition.spec) updateEditorText(specToEditorText(definition.spec));
+					if (!dirty && nextSpec) updateEditorText(specToEditorText(nextSpec));
 					setSelectedNode(null);
 					if (definition) {
 						setRunWorkflowId(definition.workflow_id || definition.id || workflowId);
@@ -1978,20 +2174,9 @@
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ goal })
 				}).then(function(res) {
-					const draft = res.draft || res;
-					setDraftResult(draft);
-					if (draft.spec) {
-						setSelectedDefinition(null);
-						setSelectedNode(null);
-						setNodeJson("");
-						setNodeMessage("");
-						setDraftSpec(draft.spec);
-						setInputFieldValues({});
-						setShowAdvancedInputJson(false);
-						setRunInputText("{}");
-						updateEditorText(specToEditorText(draft.spec));
-					}
-					setStatus("Drafted workflow from goal. Review the plan before deploy.");
+					setDraftResult(res.draft || res);
+					setCandidateSource("generate");
+					setStatus("AI drafted a workflow. Review and Accept or Reject.");
 				}).catch(fail).finally(function() {
 					setDrafting(false);
 				});
@@ -2019,20 +2204,46 @@
 					const draft = res && res.draft || res || {};
 					if (!draft.spec) throw new Error("Refine response did not include a workflow spec.");
 					setDraftResult(draft);
-					setSelectedDefinition(null);
-					setSelectedNode(null);
-					setNodeJson("");
-					setNodeMessage("");
-					setDraftSpec(draft.spec);
-					setInputFieldValues({});
-					setShowAdvancedInputJson(false);
-					setRunInputText("{}");
-					updateEditorText(specToEditorText(draft.spec));
-					setRefineText("");
-					setStatus("Refined workflow draft.");
+					setCandidateSource("refine");
+					setStatus("Refinement proposed. Review changes and Accept or Reject.");
 				}).catch(fail).finally(function() {
 					setRefining(false);
 				});
+			}
+			function acceptDraftCandidate() {
+				const draft = draftResult;
+				if (!draft || !draft.spec) return;
+				setUndoStack(function(prev) {
+					return prev.concat([draftSpec]).slice(-20);
+				});
+				setDraftSpec(draft.spec);
+				setSelectedDefinition(null);
+				setSelectedNode(null);
+				setNodeJson("");
+				setNodeMessage("");
+				setInputFieldValues({});
+				setShowAdvancedInputJson(false);
+				setRunInputText("{}");
+				updateEditorText(specToEditorText(draft.spec));
+				setCandidateSource(null);
+				setDraftResult(null);
+				const workflowId = draft.spec.id || draft.spec.workflow_id || "";
+				if (workflowId) draftApi.putDraft(workflowId, {
+					spec: draft.spec,
+					base_version: null
+				}).then(function(res) {
+					setSavedDraft(draft.spec);
+					setStatus("Draft accepted and saved.");
+				}).catch(fail);
+				else {
+					setSavedDraft(draft.spec);
+					setStatus("Draft accepted.");
+				}
+			}
+			function rejectDraftCandidate() {
+				setDraftResult(null);
+				setCandidateSource(null);
+				setStatus("Draft rejected. Working draft unchanged.");
 			}
 			function importDefinitionFile(event) {
 				const file = event.target.files && event.target.files[0];
@@ -3192,7 +3403,58 @@
 					type: "submit",
 					disabled: refining,
 					style: { fontSize: "0.78rem" }
-				}, refining ? "Refining…" : "Refine")) : null), h("div", {
+				}, refining ? "Refining…" : "Refine")) : null, draftResult ? h("div", {
+					className: "hermes-workflows-stack",
+					style: { marginTop: "0.5rem" }
+				}, draftResult.summary ? h("p", {
+					className: "hermes-workflows-muted",
+					style: {
+						fontSize: "0.76rem",
+						margin: 0
+					}
+				}, draftResult.summary) : null, (draftResult.assumptions || []).length ? h("div", { style: {
+					fontSize: "0.74rem",
+					marginTop: "0.2rem"
+				} }, h("strong", null, "Assumptions:"), h("ul", { style: {
+					margin: "0.1rem 0 0 1rem",
+					padding: 0
+				} }, draftResult.assumptions.map(function(a, i) {
+					return h("li", { key: i }, a);
+				}))) : null, (draftResult.warnings || []).length ? h("div", { style: {
+					fontSize: "0.74rem",
+					marginTop: "0.2rem",
+					color: "#b45309"
+				} }, h("strong", null, "Warnings:"), h("ul", { style: {
+					margin: "0.1rem 0 0 1rem",
+					padding: 0
+				} }, draftResult.warnings.map(function(w, i) {
+					return h("li", { key: i }, w);
+				}))) : null, candidateSource === "refine" && draftSpec ? h("div", { style: {
+					fontSize: "0.74rem",
+					marginTop: "0.2rem"
+				} }, semanticWorkflowDiff(draftSpec, draftResult.spec || {}).map(function(section) {
+					return h("div", {
+						key: section.kind,
+						style: { marginBottom: "0.2rem" }
+					}, h("strong", null, section.summary + ":"), h("ul", { style: {
+						margin: "0.1rem 0 0 1rem",
+						padding: 0
+					} }, section.items.slice(0, 5).map(function(item, i) {
+						return h("li", { key: i }, item);
+					})));
+				})) : null, h("div", {
+					className: "hermes-workflows-row",
+					style: { marginTop: "0.3rem" }
+				}, h("button", {
+					type: "button",
+					onClick: acceptDraftCandidate,
+					className: "hermes-workflows-primary",
+					style: { fontSize: "0.78rem" }
+				}, candidateSource === "generate" ? "Accept Draft" : "Accept Changes"), h("button", {
+					type: "button",
+					onClick: rejectDraftCandidate,
+					style: { fontSize: "0.78rem" }
+				}, "Reject"))) : null), h("div", {
 					className: "hermes-workflows-sidebar-section" + (wfCollapsed ? " hermes-workflows-sidebar-collapsible is-collapsed" : " hermes-workflows-sidebar-collapsible"),
 					onClick: function() {
 						toggleSection("workflows");

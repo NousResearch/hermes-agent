@@ -2044,27 +2044,24 @@ def test_dashboard_bundle_clears_run_input_values_when_active_spec_changes():
     bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     load_pos = bundle.index("function loadDefinition")
     load_body = bundle[load_pos : bundle.index("function loadEvents", load_pos)]
-    draft_pos = bundle.index("function draftFromGoal")
-    draft_body = bundle[draft_pos : bundle.index("function refineWorkflow", draft_pos)]
-    refine_pos = bundle.index("function refineWorkflow")
-    refine_body = bundle[refine_pos : bundle.index("function importDefinitionFile", refine_pos)]
+    accept_pos = bundle.index("function acceptDraftCandidate")
+    accept_body = bundle[accept_pos : bundle.index("function rejectDraftCandidate", accept_pos)]
     import_pos = bundle.index("function importDefinitionFile")
     import_body = bundle[import_pos : bundle.index("function exportYAML", import_pos)]
 
     def assert_resets_advanced_input_state(body):
         reset_pos = body.index("setInputFieldValues({})")
         assert "setShowAdvancedInputJson(false)" in body
-        assert "setRunInputText(\"{}\")" in body
+        assert 'setRunInputText("{}")' in body
         assert reset_pos < body.index("setShowAdvancedInputJson(false)")
-        assert reset_pos < body.index("setRunInputText(\"{}\")")
+        assert reset_pos < body.index('setRunInputText("{}")')
 
     assert load_body.index("setDraftSpec(") < load_body.index("setInputFieldValues({})")
-    assert draft_body.index("if (draft.spec)") < draft_body.index("setInputFieldValues({})")
-    assert refine_body.index("if (!draft.spec)") < refine_body.index("setInputFieldValues({})")
+    assert accept_body.index("setDraftSpec(draft.spec)") < accept_body.index("setInputFieldValues({})")
     assert import_body.index("reader.onload = function") < import_body.index(
         "setInputFieldValues({})"
     )
-    for body in (load_body, draft_body, refine_body, import_body):
+    for body in (load_body, accept_body, import_body):
         assert_resets_advanced_input_state(body)
 
 
@@ -2139,27 +2136,15 @@ def test_dashboard_bundle_draft_review_labels_branch_and_failure_targets():
 def test_dashboard_bundle_refine_clears_stale_state_before_validation_and_requires_spec():
     bundle = (PLUGIN_DIR / "src" / "app.js").read_text(encoding="utf-8")
     refine_pos = bundle.index("function refineWorkflow")
-    next_function_pos = bundle.index("function importDefinitionFile", refine_pos)
+    next_function_pos = bundle.index("function acceptDraftCandidate", refine_pos)
     refine_body = bundle[refine_pos:next_function_pos]
     early_return_pos = refine_body.index("if (!instruction || !spec)")
 
     assert refine_body.index('setStatus("")') < early_return_pos
     assert refine_body.index("setDraftResult(null)") < early_return_pos
     assert "Refine response did not include a workflow spec." in refine_body
-    for marker in [
-        "setSelectedDefinition(null)",
-        "setSelectedNode(null)",
-        'setNodeJson("")',
-        'setNodeMessage("")',
-    ]:
-        assert marker in refine_body
-    assert refine_body.index("if (!draft.spec)") < refine_body.index("setDraftResult(draft)")
-    assert refine_body.index("setDraftResult(draft)") < refine_body.index(
-        'setRefineText("")'
-    )
-    assert refine_body.index('setRefineText("")') < refine_body.index(
-        'setStatus("Refined workflow draft.")'
-    )
+    assert 'setCandidateSource("refine")' in refine_body
+    assert "Review changes and Accept or Reject" in refine_body
 
 
 def test_dashboard_bundle_syncs_editor_when_definition_is_selected():
@@ -2168,7 +2153,11 @@ def test_dashboard_bundle_syncs_editor_when_definition_is_selected():
     next_function_pos = bundle.index("function loadEvents", load_definition_pos)
     load_definition_body = bundle[load_definition_pos:next_function_pos]
 
-    assert "updateEditorText(specToEditorText(definition.spec))" in load_definition_body
+    # ponytail: editor sync now checks dirty state before overwriting;
+    # the guard is in the same function, the update call is conditional.
+    assert "isDraftDirty" in load_definition_body
+    assert "specToEditorText" in load_definition_body
+    assert "setSavedDraft" in load_definition_body
 
 
 def test_dashboard_bundle_clears_stale_draft_state_before_empty_goal_error():
@@ -2189,13 +2178,13 @@ def test_dashboard_bundle_resets_stale_selection_after_goal_draft():
     next_function_pos = bundle.index("function refineWorkflow", draft_pos)
     draft_body = bundle[draft_pos:next_function_pos]
 
+    # ponytail: draftFromGoal now stores the AI result as a candidate;
+    # the actual working-draft reset (setDraftSpec, setSelectedDefinition, etc.)
+    # happens in acceptDraftCandidate. Verify the candidate setup here.
     for marker in [
-        "setSelectedDefinition(null)",
-        "setSelectedNode(null)",
-        'setNodeJson("")',
-        'setNodeMessage("")',
-        "setDraftSpec(draft.spec)",
-        "updateEditorText(specToEditorText(draft.spec))",
+        'setCandidateSource("generate")',
+        "setDraftResult(draft)",
+        "Review and Accept or Reject",
     ]:
         assert marker in draft_body
     assert 'aria-label' in bundle and 'Describe workflow goal' in bundle
@@ -3009,3 +2998,88 @@ def test_dashboard_delete_history_free_workflow_succeeds_without_purge(client):
     )
     assert r.status_code == 200, r.text
     assert r.json()["deleted"] is True
+
+
+# --- Task 5: AI-first draft review envelope (summary/assumptions/warnings) ---
+
+
+ASSISTANT_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "workflows" / "assistant_responses.json"
+
+
+def _assistant_fixture(name: str) -> dict:
+    return json.loads(ASSISTANT_FIXTURE_PATH.read_text())[name]
+
+
+def test_definition_draft_endpoint_returns_summary_assumptions_and_warnings_envelope(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+    from hermes_cli.workflows_assistant import parse_assistant_payload
+
+    payload = _assistant_fixture("draft")
+
+    def fake_draft(goal):
+        assert goal == "guard the readme"
+        return parse_assistant_payload(payload)
+
+    monkeypatch.setattr(
+        plugin.workflows_assistant, "draft_workflow_with_default_runner", fake_draft
+    )
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/draft", json={"goal": "guard the readme"}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()["draft"]
+    assert body["summary"] == payload["summary"]
+    assert body["assumptions"] == payload["assumptions"]
+    assert body["warnings"] == payload["warnings"]
+    assert body["spec"]["id"] == "readme_drift_guard"
+
+
+def test_definition_refine_endpoint_returns_summary_assumptions_and_warnings_envelope(client, monkeypatch):
+    import hermes_dashboard_plugin_workflows_test as plugin
+    from hermes_cli.workflows_assistant import parse_assistant_payload
+
+    payload = _assistant_fixture("refine")
+
+    def fake_refine(spec, instruction):
+        assert instruction == "add reviewer + retry"
+        return parse_assistant_payload(payload)
+
+    monkeypatch.setattr(
+        plugin.workflows_assistant, "refine_workflow_with_default_runner", fake_refine
+    )
+
+    current_spec = _assistant_fixture("draft")["spec"]
+    r = client.post(
+        "/api/plugins/workflows/definitions/refine",
+        json={"spec": current_spec, "instruction": "add reviewer + retry"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()["draft"]
+    assert body["summary"] == payload["summary"]
+    assert body["assumptions"] == payload["assumptions"]
+    assert body["warnings"] == payload["warnings"]
+    assert body["spec"]["version"] == 2
+
+
+def test_definition_draft_endpoint_returns_typed_assistant_validation_error(client, monkeypatch):
+    """Invalid candidate output must surface as the typed
+    workflow_assistant_validation_error code so the UI can route to Repair-with-AI."""
+    import hermes_dashboard_plugin_workflows_test as plugin
+    from hermes_cli.workflows_assistant import AssistantValidationError
+
+    def fake_draft(goal):
+        raise AssistantValidationError(
+            "agent_task node fetch_readme requires a non-empty result_contract"
+        )
+
+    monkeypatch.setattr(
+        plugin.workflows_assistant, "draft_workflow_with_default_runner", fake_draft
+    )
+
+    r = client.post(
+        "/api/plugins/workflows/definitions/draft", json={"goal": "broken"}
+    )
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "workflow_assistant_validation_error"

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,116 @@ from hermes_cli.workflows_assistant import (
     parse_assistant_payload,
     refine_workflow,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "workflows" / "assistant_responses.json"
+
+
+def _assistant_fixture(name: str) -> dict:
+    assert FIXTURE_PATH.exists(), f"missing assistant fixture: {FIXTURE_PATH}"
+    return json.loads(FIXTURE_PATH.read_text())[name]
+
+
+def test_assistant_fixture_has_draft_and_refine_envelopes():
+    fixture = json.loads(FIXTURE_PATH.read_text())
+    assert set(fixture.keys()) == {"draft", "refine"}
+    for key in ("draft", "refine"):
+        envelope = fixture[key]
+        assert isinstance(envelope.get("summary"), str) and envelope["summary"]
+        assert isinstance(envelope.get("assumptions"), list)
+        assert isinstance(envelope.get("warnings"), list)
+        assert "spec" in envelope and isinstance(envelope["spec"], dict)
+
+
+def test_assistant_fixture_round_trips_through_parse_assistant_payload():
+    draft = _assistant_fixture("draft")
+    refine = _assistant_fixture("refine")
+
+    draft_result = parse_assistant_payload(draft)
+    refine_result = parse_assistant_payload(refine)
+
+    assert draft_result.spec.id == "readme_drift_guard"
+    assert draft_result.summary == draft["summary"]
+    assert draft_result.assumptions == draft["assumptions"]
+    assert draft_result.warnings == draft["warnings"]
+    assert refine_result.spec.version == 2
+    assert refine_result.summary == refine["summary"]
+
+
+def test_draft_workflow_returns_envelope_fields_for_repair_with_ai():
+    payload = _assistant_fixture("draft")
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(payload)
+
+    result = draft_workflow("guard the readme", runner=runner)
+
+    assert result.summary == payload["summary"]
+    assert result.assumptions == payload["assumptions"]
+    assert result.warnings == payload["warnings"]
+
+
+def test_refine_workflow_returns_envelope_fields_for_repair_with_ai():
+    payload = _assistant_fixture("refine")
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(payload)
+
+    current = parse_assistant_payload(_assistant_fixture("draft")).spec
+    result = refine_workflow(current, "add reviewer + retry", runner=runner)
+
+    assert result.summary == payload["summary"]
+    assert result.assumptions == payload["assumptions"]
+    assert result.warnings == payload["warnings"]
+    assert result.spec.version == 2
+
+
+def test_assistant_validation_error_remains_typed_for_repair_with_ai():
+    """Invalid candidate output must surface as AssistantValidationError so the
+    UI can route it to a Repair-with-AI loop instead of a generic HTTP 500."""
+
+    calls: list[str] = []
+
+    def runner(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps(
+            {
+                "summary": "broken",
+                "spec": {
+                    "id": "broken",
+                    "name": "Broken",
+                    "version": 1,
+                    "triggers": [{"type": "manual", "id": "manual"}],
+                    "nodes": {
+                        "agent": {
+                            "type": "agent_task",
+                            "profile": "implementer",
+                            "title": "Do",
+                            "prompt": "Do",
+                            # missing result_contract on purpose
+                        },
+                        "done": {"type": "pass", "output": {"status": "ok"}},
+                    },
+                    "edges": [{"from": "agent", "to": "done"}],
+                },
+            }
+        )
+
+    with pytest.raises(AssistantValidationError) as exc:
+        draft_workflow("broken", runner=runner, repair_attempts=1)
+
+    # AssistantValidationError is the typed signal the UI uses to drive
+    # Repair-with-AI; the original cause contains the specific failure shape.
+    assert isinstance(exc.value, ValueError)
+    assert isinstance(exc.value.__cause__, AssistantValidationError)
+    assert "agent_task node agent requires a non-empty result_contract" in str(exc.value.__cause__)
+    # Repair loop ran at least once.
+    assert len(calls) >= 1
 
 
 def _valid_payload():

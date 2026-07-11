@@ -1,5 +1,6 @@
 import { graphItems as buildGraphItems, decorateGraphItems as decorateGraph } from "./graph.js";
 import { formatApiError as importedFormatApiError, createApi as buildApi } from "./api.js";
+import { semanticWorkflowDiff, isDraftDirty, buildApiHelpers } from "./build.js";
 import {
   WORKSPACE_MODES,
   locationForMode,
@@ -1171,6 +1172,17 @@ import {
     const stateRefining = useState(false);
     const refining = stateRefining[0];
     const setRefining = stateRefining[1];
+    // ponytail: candidate draft state — exactly four fields per the spec.
+    const stateSavedDraft = useState(null);
+    const savedDraft = stateSavedDraft[0];
+    const setSavedDraft = stateSavedDraft[1];
+    const stateCandidateSource = useState(null);
+    const candidateSource = stateCandidateSource[0];
+    const setCandidateSource = stateCandidateSource[1];
+    const stateUndoStack = useState([]);
+    const undoStack = stateUndoStack[0];
+    const setUndoStack = stateUndoStack[1];
+    const draftApi = buildApiHelpers(api);
     const stateShowAdvancedYaml = useState(false);
     const showAdvancedYaml = stateShowAdvancedYaml[0];
     const setShowAdvancedYaml = stateShowAdvancedYaml[1];
@@ -1528,16 +1540,22 @@ import {
       return api("/definitions/" + encodeURIComponent(workflowId) + versionQuery(version)).then(function (res) {
         const definition = res.definition || null;
         const nextSelectionKey = definitionSelectionKey(definition);
+        const nextSpec = definition && definition.spec ? definition.spec : null;
         setSelectedDefinition(definition);
-        setDraftSpec(definition && definition.spec ? definition.spec : null);
+        // ponytail: dirty = working draft diverges from the last server-saved state.
+        // Refresh never overwrites a dirty working draft per the spec contract.
+        const dirty = isDraftDirty({ savedDraft, workingDraft: draftSpec });
+        setSavedDraft(nextSpec);
+        if (!dirty) setDraftSpec(nextSpec);
         if (nextSelectionKey !== previousSelectionKey) {
           setInputFieldValues({});
           setShowAdvancedInputJson(false);
           setRunInputText("{}");
         }
         setDraftResult(null);
+        setCandidateSource(null);
         setRefineText("");
-        if (definition && definition.spec) updateEditorText(specToEditorText(definition.spec));
+        if (!dirty && nextSpec) updateEditorText(specToEditorText(nextSpec));
         setSelectedNode(null);
         if (definition) {
           setRunWorkflowId(definition.workflow_id || definition.id || workflowId);
@@ -1876,18 +1894,8 @@ import {
       }).then(function (res) {
         const draft = res.draft || res;
         setDraftResult(draft);
-        if (draft.spec) {
-          setSelectedDefinition(null);
-          setSelectedNode(null);
-          setNodeJson("");
-          setNodeMessage("");
-          setDraftSpec(draft.spec);
-          setInputFieldValues({});
-          setShowAdvancedInputJson(false);
-          setRunInputText("{}");
-          updateEditorText(specToEditorText(draft.spec));
-        }
-        setStatus("Drafted workflow from goal. Review the plan before deploy.");
+        setCandidateSource("generate");
+        setStatus("AI drafted a workflow. Review and Accept or Reject.");
       }).catch(fail).finally(function () { setDrafting(false); });
     }
 
@@ -1911,18 +1919,47 @@ import {
         const draft = (res && res.draft) || res || {};
         if (!draft.spec) throw new Error("Refine response did not include a workflow spec.");
         setDraftResult(draft);
-        setSelectedDefinition(null);
-        setSelectedNode(null);
-        setNodeJson("");
-        setNodeMessage("");
-        setDraftSpec(draft.spec);
-        setInputFieldValues({});
-        setShowAdvancedInputJson(false);
-        setRunInputText("{}");
-        updateEditorText(specToEditorText(draft.spec));
-        setRefineText("");
-        setStatus("Refined workflow draft.");
+        setCandidateSource("refine");
+        setStatus("Refinement proposed. Review changes and Accept or Reject.");
       }).catch(fail).finally(function () { setRefining(false); });
+    }
+
+    // ponytail: Accept candidate → set working draft + save + push undo.
+    // Reject clears candidate only — working draft stays untouched.
+    function acceptDraftCandidate() {
+      const draft = draftResult;
+      if (!draft || !draft.spec) return;
+      setUndoStack(function (prev) {
+        const next = prev.concat([draftSpec]).slice(-20);
+        return next;
+      });
+      setDraftSpec(draft.spec);
+      setSelectedDefinition(null);
+      setSelectedNode(null);
+      setNodeJson("");
+      setNodeMessage("");
+      setInputFieldValues({});
+      setShowAdvancedInputJson(false);
+      setRunInputText("{}");
+      updateEditorText(specToEditorText(draft.spec));
+      setCandidateSource(null);
+      setDraftResult(null);
+      const workflowId = draft.spec.id || draft.spec.workflow_id || "";
+      if (workflowId) {
+        draftApi.putDraft(workflowId, { spec: draft.spec, base_version: null }).then(function (res) {
+          setSavedDraft(draft.spec);
+          setStatus("Draft accepted and saved.");
+        }).catch(fail);
+      } else {
+        setSavedDraft(draft.spec);
+        setStatus("Draft accepted.");
+      }
+    }
+
+    function rejectDraftCandidate() {
+      setDraftResult(null);
+      setCandidateSource(null);
+      setStatus("Draft rejected. Working draft unchanged.");
     }
 
     function importDefinitionFile(event) {
@@ -2995,6 +3032,35 @@ import {
               style: { fontSize: "0.78rem", minHeight: "40px", resize: "vertical" }
             }),
             h("button", { type: "submit", disabled: refining, style: {fontSize: "0.78rem"} }, refining ? "Refining…" : "Refine")
+          ) : null,
+          draftResult ? h("div", { className: "hermes-workflows-stack", style: {marginTop: "0.5rem"} },
+            draftResult.summary ? h("p", { className: "hermes-workflows-muted", style: {fontSize: "0.76rem", margin: 0} }, draftResult.summary) : null,
+            (draftResult.assumptions || []).length ? h("div", { style: {fontSize: "0.74rem", marginTop: "0.2rem"} },
+              h("strong", null, "Assumptions:"),
+              h("ul", { style: {margin: "0.1rem 0 0 1rem", padding: 0} },
+                draftResult.assumptions.map(function (a, i) { return h("li", { key: i }, a); })
+              )
+            ) : null,
+            (draftResult.warnings || []).length ? h("div", { style: {fontSize: "0.74rem", marginTop: "0.2rem", color: "#b45309"} },
+              h("strong", null, "Warnings:"),
+              h("ul", { style: {margin: "0.1rem 0 0 1rem", padding: 0} },
+                draftResult.warnings.map(function (w, i) { return h("li", { key: i }, w); })
+              )
+            ) : null,
+            candidateSource === "refine" && draftSpec ? h("div", { style: {fontSize: "0.74rem", marginTop: "0.2rem"} },
+              semanticWorkflowDiff(draftSpec, draftResult.spec || {}).map(function (section) {
+                return h("div", { key: section.kind, style: {marginBottom: "0.2rem"} },
+                  h("strong", null, section.summary + ":"),
+                  h("ul", { style: {margin: "0.1rem 0 0 1rem", padding: 0} },
+                    section.items.slice(0, 5).map(function (item, i) { return h("li", { key: i }, item); })
+                  )
+                );
+              })
+            ) : null,
+            h("div", { className: "hermes-workflows-row", style: {marginTop: "0.3rem"} },
+              h("button", { type: "button", onClick: acceptDraftCandidate, className: "hermes-workflows-primary", style: {fontSize: "0.78rem"} }, candidateSource === "generate" ? "Accept Draft" : "Accept Changes"),
+              h("button", { type: "button", onClick: rejectDraftCandidate, style: {fontSize: "0.78rem"} }, "Reject")
+            )
           ) : null
         ),
         h("div", { className: "hermes-workflows-sidebar-section" + (wfCollapsed ? " hermes-workflows-sidebar-collapsible is-collapsed" : " hermes-workflows-sidebar-collapsible"), onClick: function() { toggleSection("workflows"); } },

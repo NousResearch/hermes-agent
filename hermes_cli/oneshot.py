@@ -305,6 +305,7 @@ def _run_agent(
     run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
+    from hermes_cli.auth import AuthError
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -366,11 +367,46 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
-    )
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url_from_alias,
+        )
+    except AuthError as auth_exc:
+        # Primary provider has no usable credentials (missing, revoked, or
+        # quota-exhausted). Interactive CLI (_ensure_runtime_credentials) and
+        # the cron scheduler both fall through to fallback_providers here —
+        # oneshot must match, otherwise `hermes -z` dies at bootstrap before
+        # the agent's own mid-session fallback chain ever gets a chance.
+        runtime = None
+        for _entry in _fb:
+            _fb_kwargs = {"requested": _entry["provider"]}
+            if _entry.get("base_url"):
+                _fb_kwargs["explicit_base_url"] = _entry["base_url"]
+            if _entry.get("api_key"):
+                _fb_kwargs["explicit_api_key"] = _entry["api_key"]
+            try:
+                runtime = resolve_runtime_provider(**_fb_kwargs)
+            except Exception as _fb_exc:
+                logging.debug(
+                    "oneshot: fallback %s failed: %s", _entry["provider"], _fb_exc
+                )
+                continue
+            logging.warning(
+                "oneshot: primary provider auth failed (%s); using fallback %s/%s",
+                auth_exc, _entry["provider"], _entry["model"],
+            )
+            # The primary model can't run on the fallback provider — use the
+            # fallback entry's own model.
+            effective_model = _entry["model"]
+            break
+        if runtime is None:
+            raise auth_exc
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -380,9 +416,6 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read the effective fallback chain from profile config so oneshot workers
-    # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

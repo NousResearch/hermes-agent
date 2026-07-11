@@ -319,6 +319,16 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
+    # Let plugins propose a route only after the complete, copied turn input is
+    # available, but before selecting/restoring the model-specific prompt.
+    from agent.model_routing import apply_pre_model_route
+    apply_pre_model_route(
+        agent,
+        user_message=original_user_message,
+        messages=messages,
+        is_first_turn=not bool(conversation_history),
+    )
+
     # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
     # and notify the host so it can play hearts. Token-free, never touches the
     # conversation, and never fatal — a purely optional UI beat.

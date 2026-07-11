@@ -613,6 +613,30 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
                 return {"action": "continue", "message": message.strip()}
         return None
 
+    if event == "pre_model_route":
+        contract_fields = ("model", "new_model", "provider", "target_provider", "reason")
+        if any(key in data and not isinstance(data[key], str) for key in contract_fields):
+            return None
+
+        def _first_nonempty(*keys: str) -> str:
+            for key in keys:
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+
+        model = _first_nonempty("model", "new_model")
+        if not model:
+            return None
+        result = {"model": model}
+        provider = _first_nonempty("provider", "target_provider")
+        if provider:
+            result["provider"] = provider
+        reason = _first_nonempty("reason")
+        if reason:
+            result["reason"] = reason
+        return result
+
     context = data.get("context")
     if isinstance(context, str) and context.strip():
         return {"context": context}

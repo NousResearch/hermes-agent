@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** a tool, [`pre_model_route`](#pre_model_route) can **propose a model/provider route**, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -381,6 +381,7 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_model_route`](#pre_model_route) | Once per turn, before system-prompt selection and the first provider request | `{"model": str, "provider"?: str, "reason"?: str}` to propose a route |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -510,7 +511,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. Its return value can inject context into the current turn's user message.
 
 **Callback signature:**
 
@@ -587,6 +588,38 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+---
+
+### `pre_model_route`
+
+Fires **once per turn** after Hermes has appended the user's message to a copied history, but before it restores or builds the model-specific system prompt and before the first provider request. When the route changes, Hermes intentionally invalidates and rebuilds the cached prompt so the selected model never receives a stale prompt from the previous route.
+
+Feature-detect the contract with `hermes_cli.plugins.PRE_MODEL_ROUTE_HOOK_VERSION` (currently `1`).
+
+**Callback signature:**
+
+```python
+def my_router(session_id: str, user_message: object, conversation_history: list,
+              is_first_turn: bool, model: str, provider: str, **kwargs):
+```
+
+`user_message`, `conversation_history`, and `messages` are independently deep-copied before plugin callbacks run. The payload also includes `platform`, `sender_id`, `chat_id`, `chat_name`, `chat_type`, `thread_id`, `gateway_session_key`, and `has_images`. Hermes does not add configured API keys or credential fields, but conversation content is passed verbatim and may itself contain sensitive user or tool data. Enable routing hooks only from plugins you trust with the conversation.
+
+**Return value:** Return a route proposal with a non-empty `model`; `provider` and `reason` are optional. `new_model` and `target_provider` are accepted aliases. Hermes takes the first valid proposal in plugin discovery order, resolves credentials/base URL/API mode through its normal model-switch pipeline, and preserves the configured fallback chain.
+
+```python
+def route_coding_turn(user_message, **kwargs):
+    if "review this code" in user_message.lower():
+        return {"model": "gpt-5.4", "provider": "openai-codex", "reason": "coding"}
+    return None
+
+
+def register(ctx):
+    ctx.register_hook("pre_model_route", route_coding_turn)
+```
+
+Malformed Python-plugin proposal dictionaries, unresolved routes, and callback exceptions are logged and ignored; malformed shell-hook output is discarded during shell response parsing. In every case, the turn continues on its current route.
 
 ---
 

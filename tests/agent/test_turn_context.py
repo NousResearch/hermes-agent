@@ -245,6 +245,27 @@ def test_ensure_db_session_runs_after_system_prompt_restore():
     assert agent._cached_system_prompt == "REBUILT-SYSTEM"
 
 
+def test_route_applies_before_prompt_build_and_rebuilds_invalidated_cache():
+    agent = _FakeAgent()
+    seen = []
+
+    def route(a, **_kwargs):
+        seen.append("route")
+        a.model = "routed-model"
+        a.provider = "routed-provider"
+        a._cached_system_prompt = None
+
+    def restore(a, _system_message, _history):
+        seen.append(("prompt", a.model, a.provider))
+        a._cached_system_prompt = f"SYSTEM:{a.model}"
+
+    with patch("agent.model_routing.apply_pre_model_route", side_effect=route):
+        ctx = _build(agent, restore_or_build_system_prompt=restore)
+
+    assert seen == ["route", ("prompt", "routed-model", "routed-provider")]
+    assert ctx.active_system_prompt == "SYSTEM:routed-model"
+
+
 # ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────
 #
 # A slow MCP server that connects after the agent's build-time tool snapshot

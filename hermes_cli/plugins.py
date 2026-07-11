@@ -132,6 +132,10 @@ _install_plugin_debug_handler()
 # Constants
 # ---------------------------------------------------------------------------
 
+# Machine-readable contract for plugins that propose a route before a turn's
+# system prompt is selected. Bump only for incompatible payload/result changes.
+PRE_MODEL_ROUTE_HOOK_VERSION = 1
+
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
@@ -142,6 +146,7 @@ VALID_HOOKS: Set[str] = {
     # First non-None string wins. Useful for vocabulary/personality transformation.
     "transform_llm_output",
     "pre_llm_call",
+    "pre_model_route",
     "post_llm_call",
     # Verification-loop gate. Fired once per turn when the agent has edited code
     # and is about to verify/finish (after the verify-on-stop guard). A callback

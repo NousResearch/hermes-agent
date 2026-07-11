@@ -520,15 +520,26 @@ class CredentialPool:
 
     def has_available(self) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown."""
-        return bool(self._available_entries())
+        # ``_available_entries`` is not read-only: it prunes aged-out DEAD
+        # manual entries (rebinding ``self._entries``) and persists.  It must
+        # run under ``self._lock`` like every other caller (``select`` etc.),
+        # otherwise a status probe here can race a concurrent ``select`` /
+        # rotation and tear ``self._entries`` or double-write auth.json.
+        with self._lock:
+            return bool(self._available_entries())
 
     def entries(self) -> List[PooledCredential]:
-        return list(self._entries)
+        with self._lock:
+            return list(self._entries)
 
-    def current(self) -> Optional[PooledCredential]:
+    def _current_unlocked(self) -> Optional[PooledCredential]:
         if not self._current_id:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
+
+    def current(self) -> Optional[PooledCredential]:
+        with self._lock:
+            return self._current_unlocked()
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
@@ -1507,18 +1518,21 @@ class CredentialPool:
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
             self._current_id = entry.id
-            return self.current() or entry
+            return self._current_unlocked() or entry
 
         entry = available[0]
         self._current_id = entry.id
         return entry
 
     def peek(self) -> Optional[PooledCredential]:
-        current = self.current()
-        if current is not None:
-            return current
-        available = self._available_entries()
-        return available[0] if available else None
+        # Single lock acquisition for the whole read; call the unlocked
+        # helpers so we don't re-enter the non-reentrant ``self._lock``.
+        with self._lock:
+            current = self._current_unlocked()
+            if current is not None:
+                return current
+            available = self._available_entries()
+            return available[0] if available else None
 
     def mark_exhausted_and_rotate(
         self,
@@ -1539,7 +1553,7 @@ class CredentialPool:
                     None,
                 )
             if entry is None:
-                entry = self.current() or self._select_unlocked()
+                entry = self._current_unlocked() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1611,7 +1625,7 @@ class CredentialPool:
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
-        entry = self.current()
+        entry = self._current_unlocked()
         if entry is None:
             return None
         refreshed = self._refresh_entry(entry, force=True)

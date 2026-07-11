@@ -3282,3 +3282,83 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reason is None
     assert synced.last_error_message is None
     assert synced.last_error_reset_at is None
+
+
+def _load_two_ok_pool(tmp_path, monkeypatch):
+    """A pool with two OK anthropic entries, current = cred-1."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1", "label": "primary", "auth_type": "api_key",
+                        "priority": 0, "source": "manual", "access_token": "***",
+                        "last_status": "ok", "last_status_at": None, "last_error_code": None,
+                    },
+                    {
+                        "id": "cred-2", "label": "secondary", "auth_type": "api_key",
+                        "priority": 1, "source": "manual", "access_token": "***",
+                        "last_status": "ok", "last_status_at": None, "last_error_code": None,
+                    },
+                ]
+            },
+        },
+    )
+    from agent.credential_pool import load_pool
+
+    return load_pool("anthropic")
+
+
+class TestCredentialPoolQueryLocking:
+    """Read/status methods must run under ``self._lock``.
+
+    ``has_available``/``peek``/``current``/``entries`` all touch
+    ``self._entries`` (and ``_available_entries`` even prunes + persists),
+    so they must hold the same lock every mutating entry point uses.  A
+    naive fix would deadlock because the lock is non-reentrant and ``peek``
+    calls ``current`` + ``_available_entries``; these tests guard both the
+    no-deadlock and the actually-locked properties.
+    """
+
+    def test_query_methods_do_not_deadlock(self, tmp_path, monkeypatch):
+        pool = _load_two_ok_pool(tmp_path, monkeypatch)
+        pool.select()  # set a current entry
+
+        # peek() internally calls current() + _available_entries(); if any of
+        # these re-acquired the non-reentrant lock we'd hang here forever.
+        assert pool.current() is not None
+        assert pool.peek() is not None
+        assert pool.has_available() is True
+        # (env may seed extra singleton entries; just assert ours are present)
+        assert {"cred-1", "cred-2"} <= {e.id for e in pool.entries()}
+
+    @pytest.mark.parametrize("method", ["has_available", "peek", "current", "entries"])
+    def test_query_method_acquires_lock(self, tmp_path, monkeypatch, method):
+        import threading
+
+        pool = _load_two_ok_pool(tmp_path, monkeypatch)
+        pool.select()
+
+        done = threading.Event()
+
+        def _call():
+            getattr(pool, method)()
+            done.set()
+
+        # Hold the pool lock, then fire the query on another thread. If the
+        # method acquires self._lock (as it must), it blocks until we release.
+        pool._lock.acquire()
+        try:
+            worker = threading.Thread(target=_call, daemon=True)
+            worker.start()
+            assert not done.wait(timeout=0.5), (
+                f"{method}() returned while the pool lock was held — it is not "
+                f"acquiring self._lock"
+            )
+        finally:
+            pool._lock.release()
+
+        assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"

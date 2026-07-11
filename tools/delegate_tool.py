@@ -606,7 +606,7 @@ def _build_child_system_prompt(
         )
     parts.append(
         "\nComplete this task using the tools available to you. "
-        "When finished, provide a clear, concise summary of:\n"
+        "When finished, provide a verified summary with evidence of:\n"
         "- What you did\n"
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"

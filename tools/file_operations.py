@@ -461,7 +461,12 @@ class FileOperations(ABC):
 
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
-        """Apply a V4A format patch."""
+        """Apply a V4A format patch.
+
+        Keep this historical signature stable for third-party backends. A
+        backend that can consume tool-layer-resolved identities may additionally
+        implement ``patch_v4a_resolved(patch_content, resolved_paths)``.
+        """
         ...
 
     @abstractmethod
@@ -787,6 +792,37 @@ def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str
         "lines, or escape as `\\\\n` when searching for a literal backslash+n."
     )
     return result
+
+
+class _ResolvedPathFileOperations:
+    """Translate V4A operation paths while preserving raw paths in its diff."""
+
+    def __init__(self, delegate: "ShellFileOperations", resolved_paths: Dict[str, str]):
+        self._delegate = delegate
+        self._resolved_paths = resolved_paths
+
+    def _path(self, path: str) -> str:
+        try:
+            return self._resolved_paths[path]
+        except KeyError as exc:
+            raise ValueError(
+                f"No captured resolved identity for V4A path: {path}"
+            ) from exc
+
+    def read_file_raw(self, path: str):
+        return self._delegate.read_file_raw(self._path(path))
+
+    def write_file(self, path: str, content: str):
+        return self._delegate.write_file(self._path(path), content)
+
+    def delete_file(self, path: str):
+        return self._delegate.delete_file(self._path(path))
+
+    def move_file(self, src: str, dst: str):
+        return self._delegate.move_file(self._path(src), self._path(dst))
+
+    def _check_lint(self, path: str, content: Optional[str] = None):
+        return self._delegate._check_lint(self._path(path), content)
 
 
 class ShellFileOperations(FileOperations):
@@ -1660,8 +1696,17 @@ class ShellFileOperations(FileOperations):
         )
     
     def patch_v4a(self, patch_content: str) -> PatchResult:
+        """Apply V4A using the historical backend interface."""
+
+        return self.patch_v4a_resolved(patch_content, resolved_paths=None)
+
+    def patch_v4a_resolved(
+        self,
+        patch_content: str,
+        resolved_paths: Optional[Dict[str, str]],
+    ) -> PatchResult:
         """
-        Apply a V4A format patch.
+        Apply a V4A format patch, optionally using tool-resolved identities.
         
         V4A format:
             *** Begin Patch
@@ -1685,8 +1730,15 @@ class ShellFileOperations(FileOperations):
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
         
-        # Apply operations
-        result = apply_v4a_operations(operations, self)
+        # Apply through the identities resolved by file_tools when provided.
+        # The proxy translates only backend calls, so user-facing diffs retain
+        # the original V4A path spelling.
+        file_ops = (
+            _ResolvedPathFileOperations(self, resolved_paths)
+            if resolved_paths is not None
+            else self
+        )
+        result = apply_v4a_operations(operations, file_ops)
         return result
     
     def _check_lint(self, path: str, content: Optional[str] = None) -> LintResult:

@@ -44,6 +44,7 @@ import sys
 import tempfile
 import time
 import threading
+import unicodedata
 import uuid
 from typing import List, Dict, Any, Optional, Callable
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
@@ -190,8 +191,11 @@ from agent.tool_guardrails import (
     toolguard_synthetic_result,
 )
 from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
-    file_mutation_result_landed,
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,  # noqa: F401  # re-exported for verifier tests
+)
+from agent.file_mutation_verifier import (
+    prepare_file_mutation_verifier_call as _prepare_file_mutation_verifier_call,
+    record_file_mutation_verifier_result as _record_file_mutation_verifier_result,
 )
 from agent.trajectory import (
     convert_scratchpad_to_think,
@@ -205,9 +209,9 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
-    _extract_file_mutation_targets,
-    _extract_landed_file_mutation_paths,
-    _extract_error_preview,
+    _extract_file_mutation_targets,  # noqa: F401  # re-exported for verifier tests
+    _extract_landed_file_mutation_paths,  # noqa: F401  # re-exported for verifier tests
+    _extract_error_preview,  # noqa: F401  # re-exported for verifier tests
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
@@ -2818,41 +2822,39 @@ class AIAgent:
         result: Any,
         is_error: bool,
     ) -> None:
-        """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
+        """Record mutation/fallback completion for the turn-end verifier."""
 
-        On failure, store ``{path: {error_preview, tool}}`` entries.  On
-        success, remove any prior failure entries for the same paths (the
-        model recovered within the turn).  Silently no-ops if the per-turn
-        state dict hasn't been initialised yet (e.g. a tool dispatched
-        outside ``run_conversation``).
-        """
-        if tool_name not in _FILE_MUTATING_TOOLS:
-            return
-        state = getattr(self, "_turn_failed_file_mutations", None)
-        if state is None:
-            return
-        targets = _extract_file_mutation_targets(tool_name, args)
-        if not targets:
-            return
-        landed = file_mutation_result_landed(tool_name, result)
-        if landed:
-            changed = getattr(self, "_turn_file_mutation_paths", None)
-            if changed is not None:
-                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
-        if is_error and not landed:
-            preview = _extract_error_preview(result)
-            for path in targets:
-                # Keep the FIRST error we saw for a given path unless we
-                # later see success.  A repeated failure with a different
-                # message shouldn't silently overwrite the original.
-                if path not in state:
-                    state[path] = {
-                        "tool": tool_name,
-                        "error_preview": preview,
-                    }
-        else:
-            for path in targets:
-                state.pop(path, None)
+        _record_file_mutation_verifier_result(
+            self,
+            tool_name,
+            args,
+            result,
+            is_error,
+        )
+
+    def _prepare_file_mutation_verifier_call(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        effective_task_id: str,
+        *,
+        active_event: threading.Event | None = None,
+        deadline: float | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+        defer_probe_activation: bool = False,
+    ) -> threading.Event:
+        """Capture exact pre-call evidence for mutation/fallback verification."""
+
+        return _prepare_file_mutation_verifier_call(
+            self,
+            tool_name,
+            args,
+            effective_task_id,
+            active_event=active_event,
+            deadline=deadline,
+            cancel_check=cancel_check,
+            defer_probe_activation=defer_probe_activation,
+        )
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
@@ -2910,6 +2912,33 @@ class AIAgent:
             return text
         return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
 
+    @staticmethod
+    def _sanitize_footer_fragment(value: Any) -> str:
+        """Render untrusted path/error text as a single safe Markdown line."""
+
+        text = str(value)
+        escaped: List[str] = []
+        for char in text:
+            if char == "`":
+                escaped.append("ˋ")
+            elif char == "\n":
+                escaped.append("\\n")
+            elif char == "\r":
+                escaped.append("\\r")
+            elif char == "\t":
+                escaped.append("\\t")
+            elif unicodedata.category(char) in {"Cc", "Zl", "Zp"}:
+                codepoint = ord(char)
+                if codepoint <= 0xFF:
+                    escaped.append(f"\\x{codepoint:02x}")
+                elif codepoint <= 0xFFFF:
+                    escaped.append(f"\\u{codepoint:04x}")
+                else:
+                    escaped.append(f"\\U{codepoint:08x}")
+            else:
+                escaped.append(char)
+        return "".join(escaped)
+
     @classmethod
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
@@ -2936,12 +2965,17 @@ class AIAgent:
         for path, info in failed.items():
             if shown >= 10:
                 break
-            preview = (info.get("error_preview") or "").strip()
-            tool = info.get("tool") or "patch"
+            display_path = cls._sanitize_footer_fragment(
+                info.get("display_path") or path
+            )
+            preview = cls._sanitize_footer_fragment(
+                (info.get("error_preview") or "").strip()
+            )
+            tool = cls._sanitize_footer_fragment(info.get("tool") or "patch")
             if preview:
-                lines.append(f"  • `{path}` — [{tool}] {preview}")
+                lines.append(f"  • `{display_path}` — [{tool}] {preview}")
             else:
-                lines.append(f"  • `{path}` — [{tool}] failed")
+                lines.append(f"  • `{display_path}` — [{tool}] failed")
             shown += 1
         remaining = len(failed) - shown
         if remaining > 0:

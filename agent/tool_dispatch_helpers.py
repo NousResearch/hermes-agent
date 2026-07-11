@@ -260,7 +260,7 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
             return []
         paths: List[str] = []
         for _m in re.finditer(
-            r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$',
+            r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$',
             body,
             re.MULTILINE,
         ):
@@ -268,7 +268,7 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
             if p:
                 paths.append(p)
         for _m in re.finditer(
-            r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$',
+            r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$',
             body,
             re.MULTILINE,
         ):

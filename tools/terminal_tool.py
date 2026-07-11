@@ -2330,6 +2330,21 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+        # The command has passed its own approval and workdir gates. Only now
+        # may a deferred file-mutation verifier read policy-denied target content
+        # to establish a causal baseline for this foreground fallback.
+        try:
+            from agent.file_mutation_verifier import (
+                activate_pending_file_mutation_verifier_call,
+            )
+
+            activate_pending_file_mutation_verifier_call()
+        except Exception as verifier_error:
+            logger.debug(
+                "file-mutation verifier activation failed: %s",
+                verifier_error,
+            )
+
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty

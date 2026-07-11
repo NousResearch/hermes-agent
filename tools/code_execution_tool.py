@@ -1176,6 +1176,20 @@ def execute_code(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
 
+    # Approval succeeded. Deferred verifier probes may now read their captured
+    # targets immediately before this foreground script begins.
+    try:
+        from agent.file_mutation_verifier import (
+            activate_pending_file_mutation_verifier_call,
+        )
+
+        activate_pending_file_mutation_verifier_call()
+    except Exception as verifier_error:
+        logger.debug(
+            "file-mutation verifier activation failed: %s",
+            verifier_error,
+        )
+
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 

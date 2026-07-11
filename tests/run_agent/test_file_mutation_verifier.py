@@ -20,6 +20,7 @@ list of files that did NOT change.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -118,6 +119,25 @@ class TestExtractErrorPreview:
 # ---------------------------------------------------------------------------
 
 
+class _BareAgent(AIAgent):
+    """Test shell that mirrors the dispatcher's required pre-call seam."""
+
+    def _record_file_mutation_result(
+        self,
+        tool_name,
+        args,
+        result,
+        is_error,
+    ):
+        self._prepare_file_mutation_verifier_call(tool_name, args, "default")
+        return super()._record_file_mutation_result(
+            tool_name,
+            args,
+            result,
+            is_error,
+        )
+
+
 def _bare_agent() -> AIAgent:
     """Skip __init__ and only attach the per-turn state dict.
 
@@ -127,9 +147,12 @@ def _bare_agent() -> AIAgent:
     Using ``object.__new__`` mirrors the gateway-test pattern documented in
     the agent pitfalls list.
     """
-    agent = object.__new__(AIAgent)
+    agent = object.__new__(_BareAgent)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+    agent._turn_file_mutation_lock = threading.Lock()
+    agent._turn_file_mutation_generation = 0
+    agent._turn_file_mutation_epoch = object()
     return agent
 
 
@@ -313,6 +336,38 @@ class TestFormatFooter:
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
+
+    def test_internal_task_scoped_key_uses_display_path(self):
+        out = AIAgent._format_file_mutation_failure_footer(
+            {
+                "task-a\0/workspace/a.md": {
+                    "tool": "patch",
+                    "error_preview": "not found",
+                    "display_path": "/workspace/a.md",
+                }
+            }
+        )
+
+        assert "/workspace/a.md" in out
+        assert "task-a" not in out
+
+    def test_footer_neutralizes_control_characters_and_embedded_backticks(self):
+        display_path = "/tmp/report.md`\n\x85\u2028\u2029  • forged-path"
+        preview = "failed`\r\n\x85\u2028\u2029  • forged-preview"
+        out = AIAgent._format_file_mutation_failure_footer(
+            {
+                "internal": {
+                    "tool": "patch",
+                    "error_preview": preview,
+                    "display_path": display_path,
+                }
+            }
+        )
+
+        assert "/tmp/report.mdˋ\\n\\x85\\u2028\\u2029  • forged-path" in out
+        assert "failedˋ\\r\\n\\x85\\u2028\\u2029  • forged-preview" in out
+        bullet_lines = [line for line in out.splitlines() if line.lstrip().startswith("•")]
+        assert len(bullet_lines) == 1
 
     def test_truncation_at_10_entries(self):
         failed = {

@@ -555,16 +555,28 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
+    verifier_active_events: list[threading.Event | None] = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
+        else:
+            active_event = threading.Event()
+            active_event.set()
+            verifier_active_events[i] = active_event
 
     # Touch activity before launching workers so the gateway knows
     # we're executing tools (not stuck).
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
 
-    def _run_tool(index, tool_call, function_name, function_args, middleware_trace):
+    def _run_tool(
+        index,
+        tool_call,
+        function_name,
+        function_args,
+        middleware_trace,
+        verifier_active_event,
+    ):
         """Worker function executed in a thread."""
         # Register this worker tid so the agent can fan out an interrupt
         # to it — see AIAgent.interrupt().  Must happen first thing, and
@@ -596,6 +608,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         start = time.time()
         try:
             try:
+                try:
+                    agent._prepare_file_mutation_verifier_call(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        active_event=verifier_active_event,
+                        deadline=deadline,
+                        cancel_check=lambda: bool(agent._interrupt_requested),
+                        defer_probe_activation=True,
+                    )
+                except Exception as verifier_error:
+                    logger.debug(
+                        "file-mutation verifier pre-call failed: %s",
+                        verifier_error,
+                    )
                 result = agent._invoke_tool(
                     function_name,
                     function_args,
@@ -629,11 +656,34 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
+            # Publish the real tool result before verifier bookkeeping. If the
+            # deadline expires during a slow backend fingerprint, post-processing
+            # can still prefer this completed result while revoking late evidence.
+            results[index] = (
+                function_name,
+                function_args,
+                result,
+                duration,
+                is_error,
+                False,
+                middleware_trace,
+            )
+            try:
+                agent._record_file_mutation_result(
+                    function_name,
+                    function_args,
+                    result,
+                    is_error,
+                )
+            except Exception as verifier_error:
+                logger.debug(
+                    "file-mutation verifier completion record failed: %s",
+                    verifier_error,
+                )
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-            results[index] = (function_name, function_args, result, duration, is_error, False, middleware_trace)
         finally:
             # Tear down worker-tid tracking.  Clear any interrupt bit we may
             # have set so the next task scheduled onto this recycled tid
@@ -647,6 +697,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _ra()._set_interrupt(False, _worker_tid)
             except Exception:
                 pass
+
+    def _revoke_verifier_evidence(indices: set[int]) -> None:
+        """Atomically prevent unfinished workers from publishing late evidence."""
+
+        lock = getattr(agent, "_turn_file_mutation_lock", None)
+
+        def revoke() -> None:
+            for index in indices:
+                active_event = verifier_active_events[index]
+                if active_event is not None:
+                    active_event.clear()
+
+        if lock is None:
+            revoke()
+        else:
+            with lock:
+                revoke()
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)
     spinner = None
@@ -683,7 +750,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     # callbacks into the worker thread; clears callbacks on exit.
                     try:
                         f = executor.submit(
-                            propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
+                            propagate_context_to_thread(_run_tool),
+                            i,
+                            tc,
+                            name,
+                            args,
+                            parsed_calls[i][3],
+                            verifier_active_events[i],
                         )
                     except RuntimeError as submit_error:
                         if not _is_interpreter_shutdown_submit_error(submit_error):
@@ -748,6 +821,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             for f in not_done
                             if f in future_to_index
                         }
+                        _revoke_verifier_evidence(timed_out_indices)
                         _still_running = [
                             parsed_calls[i][1]
                             for i in timed_out_indices
@@ -784,6 +858,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                 f"{len(not_done)} pending concurrent tool(s)",
                                 force=True,
                             )
+                        _revoke_verifier_evidence(
+                            {
+                                future_to_index[f]
+                                for f in not_done
+                                if f in future_to_index
+                            }
+                        )
                         for f in not_done:
                             f.cancel()
                         # Give already-running tools a moment to notice the
@@ -894,17 +975,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _err_text = _multimodal_text_summary(function_result)
                 result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
-
-            # Track file-mutation outcome for the turn-end verifier.
-            # `blocked` calls never actually ran — don't let a guardrail
-            # block count as either a failure or a success.
-            if not blocked:
-                try:
-                    agent._record_file_mutation_result(
-                        function_name, function_args, function_result, is_error,
-                    )
-                except Exception as _ver_err:
-                    logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
             if not blocked and agent.tool_progress_callback:
                 try:
@@ -1197,6 +1267,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     )
             except Exception:
                 pass  # never block tool execution
+
+        if not _execution_blocked:
+            try:
+                agent._prepare_file_mutation_verifier_call(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    cancel_check=lambda: bool(agent._interrupt_requested),
+                    defer_probe_activation=True,
+                )
+            except Exception as verifier_error:
+                logger.debug(
+                    "file-mutation verifier pre-call failed: %s",
+                    verifier_error,
+                )
 
         tool_start_time = time.time()
 
@@ -1560,6 +1645,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        # Record the original structured result before guardrail observations or
+        # persistence wrappers can decorate it and invalidate success contracts.
+        if not _execution_blocked:
+            try:
+                agent._record_file_mutation_result(
+                    function_name,
+                    function_args,
+                    function_result,
+                    _is_error_result,
+                )
+            except Exception as verifier_error:
+                logging.debug(
+                    "file-mutation verifier record failed: %s",
+                    verifier_error,
+                )
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -1596,18 +1696,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
-
-        # Track file-mutation outcome for the turn-end verifier.  See
-        # the concurrent path for the rationale; both paths must feed
-        # the same state so the footer reflects every tool call in the
-        # turn, not just the parallel ones.
-        if not _execution_blocked:
-            try:
-                agent._record_file_mutation_result(
-                    function_name, function_args, function_result, _is_error_result,
-                )
-            except Exception as _ver_err:
-                logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:

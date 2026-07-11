@@ -299,6 +299,9 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        server._notify_gateway_observers_nowait(
+            "on_ws_transport_change", action="connect", transport=transport
+        )
 
         # The desktop app and dashboard chat reach the agent through this WS
         # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
@@ -427,6 +430,9 @@ async def handle_ws(ws: Any) -> None:
         detached_sessions = 0
         if transport is not None:
             transport.close()
+            server._notify_gateway_observers_nowait(
+                "on_ws_transport_change", action="disconnect", transport=transport
+            )
 
             # Reap sessions this transport owned (close_on_disconnect sidecar
             # sessions) or detach the rest to the drop sentinel so later emits

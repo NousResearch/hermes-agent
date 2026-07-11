@@ -608,6 +608,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| `post_emit_event` | tui-gateway emitted an event frame to a session's transport | `event: str, session_id: str, payload: dict` | ignored |
+| `post_frame_write` | tui-gateway wrote a session-owned event frame (fires after the transport write; the write result is not altered) | `frame: dict, session_id: str` | ignored |
+| `on_ws_transport_change` | A WS client connected/disconnected (dispatched off the event loop on a single-worker pool; connect→disconnect order preserved) | `action: "connect" \| "disconnect", transport` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 

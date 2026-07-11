@@ -395,6 +395,9 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+| `post_emit_event` | tui-gateway emitted an event frame to a session's transport | ignored |
+| `post_frame_write` | tui-gateway wrote a session-owned event frame (after the transport write) | ignored |
+| `on_ws_transport_change` | A WS client connected to / disconnected from the tui-gateway sidecar | ignored |
 
 ---
 

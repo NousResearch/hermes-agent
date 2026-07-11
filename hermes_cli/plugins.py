@@ -210,6 +210,32 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # TUI-gateway observer hooks. Fired by tui_gateway (the JSON-RPC backend
+    # behind `hermes --tui`, `hermes serve`, the dashboard, and the desktop
+    # app) so plugins can observe gateway traffic without patching core.
+    # Observers only: return values are ignored, and every callback is
+    # isolated — a raising plugin can never break the emit/write/WS paths.
+    # All three are strict no-ops when no plugin registers them.
+    #
+    #   post_emit_event        -> after every emitted gateway event
+    #                             (turn lifecycle, approvals, session info).
+    #                             Kwargs: event: str, session_id: str,
+    #                             payload: dict | None.
+    #                             Use cases: push notifications, metrics,
+    #                             activity logging.
+    #   post_frame_write       -> after a session-scoped event frame is
+    #                             routed to the transport that owns the
+    #                             session. Kwargs: frame: dict,
+    #                             session_id: str, owner_transport: Any.
+    #                             Use cases: multi-client mirroring, audit.
+    #   on_ws_transport_change -> when a WS client attaches/detaches.
+    #                             Kwargs: action: "connect" | "disconnect",
+    #                             transport: Any.
+    #                             Use cases: live-client registries,
+    #                             presence.
+    "post_emit_event",
+    "post_frame_write",
+    "on_ws_transport_change",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

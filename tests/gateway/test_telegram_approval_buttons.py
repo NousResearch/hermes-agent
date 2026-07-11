@@ -359,6 +359,85 @@ class TestTelegramApprovalCallback:
         assert "Alice\\_Bob" in edit_kwargs["text"]
         assert "Approved once" in edit_kwargs["text"]
 
+
+class TestTelegramWorldProposalCallback:
+    """The wp1 bridge delegates domain state to the ops runtime public API."""
+
+    @staticmethod
+    def _query(data: str):
+        query = AsyncMock()
+        query.id = "interaction-1"
+        query.data = data
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.message_id = 99
+        query.message.message_thread_id = 1981
+        query.message.text = "World proposal · P-abc123\n\nAI demand is broadening."
+        query.message.chat.type = "supergroup"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Operator"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        return query
+
+    @pytest.mark.asyncio
+    async def test_confirm_callback_passes_binding_context_and_updates_card(self):
+        adapter = _make_adapter()
+        query = self._query("wp1:confirm:P-abc123")
+        update = MagicMock(callback_query=query)
+        context = MagicMock()
+
+        with patch.object(adapter, "_is_callback_user_authorized", return_value=True), patch.object(
+            adapter,
+            "_ingest_world_proposal_decision",
+            return_value={"accepted": True, "interaction_id": "interaction-1"},
+        ) as ingest, patch.object(adapter, "_acknowledge_world_proposal_decision", return_value=True) as acknowledge:
+            await adapter._handle_callback_query(update, context)
+
+        command = ingest.call_args.args[0]
+        assert command["decision"] == "confirm"
+        assert command["short_ref"] == "P-abc123"
+        assert command["actor_id"] == "777"
+        assert command["chat_id"] == "12345"
+        assert command["thread_id"] == "1981"
+        assert command["message_id"] == "99"
+        assert command["route"] == "12345:1981"
+        assert len(command["snapshot_hash"]) == 64
+        query.answer.assert_awaited_once_with(text="Recorded — processing.")
+        query.edit_message_text.assert_awaited_once()
+        assert "Status: Pending confirmation" in query.edit_message_text.call_args.kwargs["text"]
+        assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
+        acknowledge.assert_called_once_with("interaction-1")
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_world_proposal_callback_never_reaches_ops_runtime(self):
+        adapter = _make_adapter()
+        query = self._query("wp1:reject:P-abc123")
+        update = MagicMock(callback_query=query)
+        with patch.object(adapter, "_is_callback_user_authorized", return_value=False), patch.object(
+            adapter, "_ingest_world_proposal_decision"
+        ) as ingest:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        ingest.assert_not_called()
+        query.answer.assert_awaited_once_with(text="⛔ You are not authorized to review proposals.")
+        query.edit_message_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_malformed_world_proposal_callback_is_rejected_without_auth_or_domain_call(self):
+        adapter = _make_adapter()
+        query = self._query("wp1:confirm:not-a-proposal-ref")
+        update = MagicMock(callback_query=query)
+        with patch.object(adapter, "_is_callback_user_authorized") as auth, patch.object(
+            adapter, "_ingest_world_proposal_decision"
+        ) as ingest:
+            await adapter._handle_callback_query(update, MagicMock())
+
+        auth.assert_not_called()
+        ingest.assert_not_called()
+        query.answer.assert_awaited_once_with(text="Invalid proposal action.")
+
     @pytest.mark.asyncio
     async def test_deny_button(self):
         adapter = _make_adapter()

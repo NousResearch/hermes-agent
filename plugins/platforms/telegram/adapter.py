@@ -9,6 +9,7 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -240,6 +241,19 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+_WORLD_PROPOSAL_CALLBACK_RE = re.compile(r"^wp1:(confirm|reject):(P-[A-Za-z0-9]+)$")
+
+
+def _world_proposal_snapshot_hash(short_ref: str, text: str) -> str:
+    """Match the ops notifier's immutable wp1 snapshot hash without DB access."""
+    payload = json.dumps(
+        {"callback_version": "wp1", "short_ref": str(short_ref), "text": str(text)},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def check_telegram_requirements() -> bool:
@@ -5313,6 +5327,115 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    async def _handle_world_proposal_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Bridge wp1 callbacks to the ops runtime's public intake API.
+
+        The adapter owns Telegram authentication/context and UI acknowledgement;
+        the ops runtime owns SQLite state, proposal binding, and retries. This
+        deliberately does not query or mutate world-model tables here.
+        """
+        match = _WORLD_PROPOSAL_CALLBACK_RE.fullmatch(data)
+        if match is None:
+            await query.answer(text="Invalid proposal action.")
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to review proposals.")
+            return
+
+        message = getattr(query, "message", None)
+        chat_id = str(getattr(message, "chat_id", "") or "")
+        message_id = str(getattr(message, "message_id", "") or "")
+        thread_id = str(query_thread_id) if query_thread_id is not None else ""
+        message_text = str(getattr(message, "text", "") or "")
+        if not chat_id or not message_id or not message_text:
+            await query.answer(text="This proposal card is missing binding context.")
+            return
+
+        decision, short_ref = match.groups()
+        route = f"{chat_id}:{thread_id}" if thread_id else chat_id
+        command = {
+            "authorized": True,
+            "actor_id": caller_id,
+            "interaction_id": str(getattr(query, "id", "") or ""),
+            "callback_data": data,
+            "short_ref": short_ref,
+            "decision": decision,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "route": route,
+            "snapshot_hash": _world_proposal_snapshot_hash(short_ref, message_text),
+        }
+        try:
+            result = await asyncio.to_thread(self._ingest_world_proposal_decision, command)
+        except Exception:
+            logger.error("[%s] world proposal callback intake failed", self.name, exc_info=True)
+            await query.answer(text="Proposal action unavailable — retry shortly.")
+            return
+
+        if result.get("accepted"):
+            await query.answer(text="Recorded — processing.")
+            try:
+                await asyncio.to_thread(
+                    self._acknowledge_world_proposal_decision,
+                    str(result.get("interaction_id") or command["interaction_id"]),
+                )
+            except Exception:
+                logger.warning("[%s] world proposal callback acknowledgement audit failed", self.name, exc_info=True)
+            try:
+                pending_label = "confirmation" if decision == "confirm" else "rejection"
+                await query.edit_message_text(
+                    text=f"{message_text}\n\nStatus: Pending {pending_label}",
+                    reply_markup=None,
+                )
+            except Exception:
+                logger.debug("[%s] world proposal pending-card edit failed", self.name, exc_info=True)
+            return
+
+        outcome = str(result.get("outcome") or "rejected")
+        if outcome in {"duplicate", "conflict"}:
+            await query.answer(text="Already decided or processing.")
+        else:
+            await query.answer(text="Proposal action was rejected.")
+
+    @staticmethod
+    def _ingest_world_proposal_decision(command: Dict[str, Any]) -> Dict[str, Any]:
+        """Invoke the deployed ops runtime without importing its internals at module load."""
+        from hermes_runtime.config import load_config
+        from hermes_runtime.evidence import EvidenceRepository
+        from hermes_runtime.proposals.decisions import ingest_decision
+
+        config = load_config()
+        repo = EvidenceRepository(config.db_path, config.raw_dir)
+        return ingest_decision(repo, command)
+
+    @staticmethod
+    def _acknowledge_world_proposal_decision(interaction_id: str) -> bool:
+        from hermes_runtime.config import load_config
+        from hermes_runtime.evidence import EvidenceRepository
+        from hermes_runtime.proposals.decisions import acknowledge_decision
+
+        config = load_config()
+        repo = EvidenceRepository(config.db_path, config.raw_dir)
+        return acknowledge_decision(repo, interaction_id)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -5327,6 +5450,18 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- World-model proposal callbacks (wp1:decision:P-ref) ---
+        if data.startswith("wp1:"):
+            await self._handle_world_proposal_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):

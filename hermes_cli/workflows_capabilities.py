@@ -85,3 +85,25 @@ def require_implemented_primitives(spec: Any) -> None:
     errors = implemented_primitive_errors(spec)
     if errors:
         raise ValueError("; ".join(errors))
+
+
+def profile_availability_errors(spec: Any, available_names: set[str]) -> list[str]:
+    """Return errors for agent_task nodes referencing profiles not in available_names."""
+    errors: list[str] = []
+    nodes = getattr(spec, "nodes", {}) or {}
+    for node_id, node in nodes.items():
+        if getattr(node, "type", None) == "agent_task":
+            profile = getattr(node, "profile", None)
+            if profile and profile not in available_names:
+                errors.append(
+                    f"workflow_profile_not_found: profile {profile!r} on node {node_id!r} "
+                    f"is not in available profiles"
+                )
+    return errors
+
+
+def require_available_profiles(spec: Any, available_names: set[str]) -> None:
+    """Raise ValueError when agent_task nodes reference missing profiles."""
+    errors = profile_availability_errors(spec, available_names)
+    if errors:
+        raise ValueError("; ".join(errors))

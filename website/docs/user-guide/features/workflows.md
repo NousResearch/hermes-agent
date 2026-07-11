@@ -63,6 +63,14 @@ The bundled `workflows` dashboard plugin mounts at `/workflows`, after Kanban in
 
 The screen also provides definition list, import/export/copy controls, a visual graph view with an HTML fallback, and Advanced JSON/YAML panels for debugging or manual edits.
 
+### Dashboard modes
+
+The Workflows tab has three modes:
+
+- **Build** — draft, refine, validate, and deploy workflow definitions. Use the structured cell editor for common fields (profile, prompt, output contract) or switch to Advanced YAML for full control. The structured editor covers `pass`, `switch`, `agent_task`, `wait`, `parallel`, `join`, and `fail` nodes; `send_message` and `subworkflow` are not available until their runtimes ship.
+- **Run** — start a workflow execution with structured input. The run form is generated from the workflow's `input_schema`. Fill required and optional fields, then start the run. The execution enters the queue and, if the dispatcher is ticking, advances automatically.
+- **History** — browse, filter, and drill into past executions. Filter by workflow id, status, and version. Open any execution to see the event timeline, per-node runs, linked Kanban tasks, inputs, outputs, and errors. Cancel non-terminal executions or rerun a workflow with the same or different input.
+
 ## Review and refine the draft
 
 Treat the generated spec as a draft. Review:
@@ -95,6 +103,7 @@ Always validate before deploy. The validation surface checks deployable workflow
 - switch and parallel edges use dotted ports where required
 - the graph is acyclic
 - each `agent_task` has `profile` and `prompt`
+- every `agent_task` profile is available on this machine (not a typo or uninstall)
 - only currently implemented primitives are used (`manual`/`schedule` triggers and `pass`, `switch`, `agent_task`, `wait`, `parallel`, `join`, `fail` nodes)
 - optional `result_contract` entries use enforced flat types (`string`, `number`, `boolean`, `array`, `object`) or enum strings such as `approved|rejected`
 - switch-case `when` and trigger `intake.ready_when` condition trees use the supported condition DSL shape at deploy time
@@ -294,7 +303,8 @@ The dashboard trigger inspector exposes scalar input-schema fields, `intake.mode
 Continuous feed lifecycle:
 
 - `open` feeds accept new items.
-- `paused` and `closed` feeds do not accept new items until resumed.
+- `paused` feeds do not accept new items; resume returns them to `open`.
+- `closed` feeds are **terminal** — no further transitions or writes are accepted. To continue receiving items, open a new feed for the same workflow and trigger.
 - Items start as `queued` or `needs_input`; the dispatcher claims ready queued items fairly after already queued executions.
 - Linked items become terminal when their execution reaches `succeeded`, `failed`, `cancelled`, or `blocked`.
 

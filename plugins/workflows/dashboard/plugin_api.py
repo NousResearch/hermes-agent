@@ -20,6 +20,7 @@ from hermes_cli import workflows_db as wfdb
 from hermes_cli import workflows_dispatcher
 from hermes_cli.config import load_config
 from hermes_cli.workflows_capabilities import (
+    require_available_profiles,
     require_implemented_primitives,
     workflow_capabilities,
 )
@@ -212,6 +213,8 @@ def _load_spec_from_payload(payload: Any) -> WorkflowSpec:
     spec = WorkflowSpec.model_validate(raw)
     validate_graph(spec)
     require_implemented_primitives(spec)
+    available = {p.name for p in profiles_mod.list_profiles()}
+    require_available_profiles(spec, available)
     return spec
 
 

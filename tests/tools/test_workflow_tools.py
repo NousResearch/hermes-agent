@@ -817,3 +817,110 @@ def test_workflow_validate_rejects_unknown_fields_with_suggestion(_isolated_work
     assert "error" in payload
     assert "unknown field 'result_contarct' on node 'work'" in payload["error"]
     assert "result_contract" in payload["error"]
+
+
+def test_workflow_validate_rejects_missing_profile(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    payload = json.loads(
+        registry.dispatch(
+            "workflow_validate",
+            {
+                "definition": {
+                    "id": "ghost_profile_tool",
+                    "name": "Ghost Profile Tool",
+                    "version": 1,
+                    "triggers": [{"type": "manual", "id": "manual"}],
+                    "nodes": {
+                        "task": {
+                            "type": "agent_task",
+                            "profile": "nonexistent_ghost",
+                            "prompt": "Do work.",
+                        }
+                    },
+                }
+            },
+        )
+    )
+
+    assert "error" in payload
+    assert "workflow_profile_not_found" in payload["error"]
+    assert "nonexistent_ghost" in payload["error"]
+
+
+def test_workflow_deploy_rejects_missing_profile(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    payload = json.loads(
+        registry.dispatch(
+            "workflow_deploy",
+            {
+                "definition": {
+                    "id": "ghost_deploy_tool",
+                    "name": "Ghost Deploy Tool",
+                    "version": 1,
+                    "nodes": {
+                        "task": {
+                            "type": "agent_task",
+                            "profile": "nonexistent_ghost",
+                            "prompt": "Do work.",
+                        }
+                    },
+                }
+            },
+        )
+    )
+
+    assert "error" in payload
+    assert "workflow_profile_not_found" in payload["error"]
+
+
+def test_workflow_tool_deploy_never_mutates_existing_version(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from hermes_cli import workflows_db as wfdb
+    from tools.registry import registry
+
+    definition = {
+        "id": "immutability_demo",
+        "name": "Immutability Demo",
+        "version": 1,
+        "nodes": {"start": {"type": "pass", "output": {"ok": True}}},
+    }
+    first = json.loads(registry.dispatch("workflow_deploy", {"definition": definition}))
+    assert "error" not in first
+    original_name = first["name"]
+
+    changed = {**definition, "name": "Immutability Demo CHANGED"}
+    result = json.loads(registry.dispatch("workflow_deploy", {"definition": changed}))
+    assert "error" in result
+    assert "different checksum" in result["error"]
+
+    with wfdb.connect() as conn:
+        record = wfdb.get_definition_record(conn, "immutability_demo", 1)
+    assert record.name == original_name
+
+
+def test_workflow_tool_execution_detail_is_redacted(_isolated_workflow_home):
+    _enable_workflow_toolset(_isolated_workflow_home)
+    from tools.registry import registry
+
+    spec = _deploy_demo_workflow()
+    run_result = json.loads(
+        registry.dispatch(
+            "workflow_run",
+            {"workflow_id": spec.id, "input": {"api_key": "sk-secret-123", "safe": "visible"}},
+        )
+    )
+    assert "error" not in run_result
+
+    show_result = json.loads(
+        registry.dispatch(
+            "workflow_execution_show",
+            {"execution_id": run_result["execution_id"], "include_node_runs": True},
+        )
+    )
+    assert "error" not in show_result
+    assert "sk-secret-123" not in json.dumps(show_result)
+    assert "[REDACTED]" in json.dumps(show_result)

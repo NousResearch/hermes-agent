@@ -3236,3 +3236,45 @@ def test_executions_list_supports_version_filter(client):
 def test_detail_returns_404_for_missing_execution(client):
     r = client.get("/api/plugins/workflows/executions/wfexec_missing/detail")
     assert r.status_code == 404
+
+
+def test_validate_rejects_missing_profile(client):
+    spec = {
+        "id": "ghost_profile_dashboard",
+        "name": "Ghost Profile Dashboard",
+        "version": 1,
+        "triggers": [{"type": "manual", "id": "manual"}],
+        "nodes": {
+            "task": {
+                "type": "agent_task",
+                "profile": "nonexistent_ghost",
+                "prompt": "Do work.",
+            }
+        },
+    }
+
+    r = client.post("/api/plugins/workflows/definitions/validate", json={"spec": spec})
+
+    assert r.status_code == 400
+    assert "workflow_profile_not_found" in r.text
+    assert "nonexistent_ghost" in r.text
+
+
+def test_deploy_rejects_missing_profile(client):
+    spec = {
+        "id": "ghost_deploy_dashboard",
+        "name": "Ghost Deploy Dashboard",
+        "version": 1,
+        "nodes": {
+            "task": {
+                "type": "agent_task",
+                "profile": "nonexistent_ghost",
+                "prompt": "Do work.",
+            }
+        },
+    }
+
+    r = client.post("/api/plugins/workflows/definitions/deploy", json={"spec": spec})
+
+    assert r.status_code == 400
+    assert "workflow_profile_not_found" in r.text

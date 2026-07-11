@@ -639,6 +639,7 @@ Named, versioned workflow graphs with branching, waits, fan-out, and Kanban-back
 | `executions show <execution_id>` | Show one execution's status, input, and context. `--json` for machine output. |
 | `executions cancel <execution_id>` | Cancel a non-terminal execution and block any linked Kanban agent tasks. |
 | `tick` | Advance queued workflow executions locally. `--limit N` (default `10`). `--json` prints `{"processed": N}`. |
+| `status` | Show dispatcher config and execution counts. `--json` for machine output. |
 
 Examples:
 

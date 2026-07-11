@@ -179,6 +179,9 @@ def test_deploy_then_list_and_show_json(workflow_home, tmp_path, capsys):
 def test_deploy_show_preserves_agent_provider_model_fields(
     workflow_home, tmp_path, capsys
 ):
+    # Ensure "reviewer" profile is available for the profile validation check
+    (workflow_home / "profiles" / "reviewer").mkdir(parents=True)
+
     spec_path = tmp_path / "routed.yaml"
     spec_path.write_text(
         """
@@ -555,3 +558,85 @@ def test_run_slash_help_status_and_errors(workflow_home, tmp_path, capsys):
     spec_path = _write_workflow(tmp_path / "workflow.yaml")
     assert "Deployed workflow" in wc.run_slash(f"deploy {spec_path}")
     assert "code-change-review v1 enabled" in wc.run_slash("list")
+
+
+def test_validate_rejects_missing_profile(workflow_home, tmp_path, capsys):
+    spec_path = tmp_path / "ghost_profile.yaml"
+    spec_path.write_text(
+        """
+id: ghost-profile
+name: Ghost Profile
+version: 1
+triggers:
+  - type: manual
+    id: manual
+nodes:
+  start:
+    type: pass
+    output:
+      ok: true
+  review:
+    type: agent_task
+    profile: nonexistent_ghost
+    prompt: "Review this."
+edges:
+  - from: start
+    to: review
+""".strip(),
+        encoding="utf-8",
+    )
+
+    rc, out, err = _run(["validate", str(spec_path)], capsys)
+
+    assert rc == 1
+    assert out == ""
+    assert "workflow_profile_not_found" in err
+    assert "nonexistent_ghost" in err
+
+
+def test_deploy_rejects_missing_profile(workflow_home, tmp_path, capsys):
+    spec_path = tmp_path / "ghost_profile.yaml"
+    spec_path.write_text(
+        """
+id: ghost-deploy
+name: Ghost Deploy
+version: 1
+triggers:
+  - type: manual
+    id: manual
+nodes:
+  task:
+    type: agent_task
+    profile: nonexistent_ghost
+    prompt: "Do work."
+""".strip(),
+        encoding="utf-8",
+    )
+
+    rc, out, err = _run(["deploy", str(spec_path)], capsys)
+
+    assert rc == 1
+    assert "workflow_profile_not_found" in err
+
+
+def test_cli_deploy_never_mutates_existing_version(workflow_home, tmp_path, capsys):
+    spec_path = _write_workflow(tmp_path / "workflow.yaml")
+    assert _run(["deploy", str(spec_path)], capsys)[0] == 0
+
+    changed = tmp_path / "changed.yaml"
+    changed.write_text(
+        spec_path.read_text(encoding="utf-8").replace(
+            "name: Code Change Review", "name: Code Change Review CHANGED"
+        ),
+        encoding="utf-8",
+    )
+
+    rc, out, err = _run(["deploy", str(changed)], capsys)
+
+    assert rc == 1
+    assert "different checksum" in err
+
+    rc, out, err = _run(["show", "code-change-review", "--json"], capsys)
+    assert rc == 0
+    payload = json.loads(out)
+    assert payload["name"] == "Code Change Review"

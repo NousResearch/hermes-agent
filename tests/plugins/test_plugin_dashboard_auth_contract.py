@@ -93,3 +93,56 @@ def test_plugin_bundle_does_not_read_session_token(bundle: Path) -> None:
         f"SDK.fetchJSON (JSON), SDK.authedFetch (uploads/downloads), or "
         f"SDK.buildWsUrl (WebSockets). Offending lines:\n" + "\n".join(offending)
     )
+
+
+# ── Backend auth contract: mounted plugin behind dashboard auth ──────────────
+
+
+def _workflows_plugin_router():
+    """Load the workflows plugin router without hitting the full dashboard."""
+    import importlib.util
+    import sys
+
+    plugin_file = _REPO_ROOT / "plugins" / "workflows" / "dashboard" / "plugin_api.py"
+    assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
+    spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_workflows_auth_test", plugin_file
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod.router
+
+
+def test_mounted_workflows_plugin_rejects_unauthenticated_definitions():
+    """Unauthenticated GET /api/plugins/workflows/definitions returns 401
+    when the plugin is mounted behind the dashboard's auth layer."""
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    _TEST_TOKEN = "test-session-token-for-auth-contract"
+
+    class SessionAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            token = request.headers.get("X-Hermes-Session-Token")
+            if token != _TEST_TOKEN:
+                return JSONResponse(status_code=401, content={"detail": "unauthenticated"})
+            return await call_next(request)
+
+    app = FastAPI()
+    app.add_middleware(SessionAuthMiddleware)
+    app.include_router(_workflows_plugin_router(), prefix="/api/plugins/workflows")
+
+    with TestClient(app) as client:
+        r = client.get("/api/plugins/workflows/definitions")
+        assert r.status_code == 401
+
+        r = client.get(
+            "/api/plugins/workflows/definitions",
+            headers={"X-Hermes-Session-Token": _TEST_TOKEN},
+        )
+        assert r.status_code == 200
+        assert "definitions" in r.json()

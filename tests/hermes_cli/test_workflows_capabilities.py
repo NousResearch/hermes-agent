@@ -79,6 +79,89 @@ def test_require_implemented_primitives_raises_actionable_error():
         require_implemented_primitives(spec)
 
 
+def _agent_task_spec(profile: str = "reviewer") -> WorkflowSpec:
+    return WorkflowSpec.model_validate(
+        {
+            "id": "profile_check",
+            "name": "Profile Check",
+            "version": 1,
+            "triggers": [{"type": "manual"}],
+            "nodes": {
+                "task": {
+                    "type": "agent_task",
+                    "profile": profile,
+                    "prompt": "Review this.",
+                }
+            },
+        }
+    )
+
+
+def test_require_available_profiles_passes_for_existing_profile():
+    from hermes_cli.workflows_capabilities import require_available_profiles
+
+    spec = _agent_task_spec("reviewer")
+    require_available_profiles(spec, {"default", "reviewer"})
+
+
+def test_require_available_profiles_fails_for_missing_profile():
+    from hermes_cli.workflows_capabilities import require_available_profiles
+
+    spec = _agent_task_spec("ghost")
+    with pytest.raises(ValueError, match="workflow_profile_not_found"):
+        require_available_profiles(spec, {"default", "reviewer"})
+
+
+def test_profile_availability_errors_lists_all_missing_profiles():
+    from hermes_cli.workflows_capabilities import profile_availability_errors
+
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "multi_profile",
+            "name": "Multi Profile",
+            "version": 1,
+            "triggers": [{"type": "manual"}],
+            "nodes": {
+                "a": {
+                    "type": "agent_task",
+                    "profile": "ghost_a",
+                    "prompt": "A",
+                },
+                "b": {
+                    "type": "agent_task",
+                    "profile": "reviewer",
+                    "prompt": "B",
+                },
+                "c": {
+                    "type": "agent_task",
+                    "profile": "ghost_b",
+                    "prompt": "C",
+                },
+            },
+        }
+    )
+    errors = profile_availability_errors(spec, {"default", "reviewer"})
+    assert len(errors) == 2
+    assert all("workflow_profile_not_found" in e for e in errors)
+    assert any("ghost_a" in e for e in errors)
+    assert any("ghost_b" in e for e in errors)
+
+
+def test_require_available_profiles_passes_for_pass_only_spec():
+    from hermes_cli.workflows_capabilities import require_available_profiles
+
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "no_profiles",
+            "name": "No Profiles",
+            "version": 1,
+            "triggers": [{"type": "manual"}],
+            "nodes": {"start": {"type": "pass", "output": {}}},
+        }
+    )
+    require_available_profiles(spec, {"default"})
+
+
 def test_workspace_node_field_rejected_as_unimplemented():
     spec = WorkflowSpec.model_validate(
         {

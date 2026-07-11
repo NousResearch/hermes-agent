@@ -2512,6 +2512,22 @@ def create_task(
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
 
+    # REQ-026: even without a project link, isolate cards on a repo-backed board.
+    # When the board's default_workdir resolves to a git repo, a dispatched card
+    # should run in a per-task git worktree, not the live checkout. Leaving
+    # workspace_path unset lets _resolve_worktree_workspace anchor the worktree on
+    # that same board repo (<repo>/.worktrees/<task-id>) at dispatch time. Boards
+    # with no repo-backed default_workdir stay scratch (unchanged).
+    if workspace_kind == "scratch" and workspace_path is None:
+        _board_slug = board if board else get_current_board()
+        _board_default = (
+            read_board_metadata(_board_slug).get("default_workdir") or ""
+        ).strip()
+        if _board_default:
+            _anchor = Path(_board_default).expanduser()
+            if _anchor.is_absolute() and _git_toplevel(_anchor) is not None:
+                workspace_kind = "worktree"
+
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe

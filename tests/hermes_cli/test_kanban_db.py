@@ -2205,6 +2205,39 @@ def test_worktree_no_path_no_board_default_raises(kanban_home, tmp_path, monkeyp
             kb.resolve_workspace(task)
 
 
+def test_repo_backed_board_defaults_scratch_card_to_worktree(kanban_home, tmp_path):
+    """REQ-026: a card created on a repo-backed board with no explicit project
+    and no explicit workspace_kind auto-upgrades scratch -> worktree, so a
+    dispatched card is isolated in a per-task worktree instead of running in
+    the board's live checkout."""
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    kb.create_board("req026-repo-board", default_workdir=str(repo))
+    with kb.connect(board="req026-repo-board") as conn:
+        # NOTE: no workspace_kind arg (defaults to "scratch") and no project.
+        t = kb.create_task(conn, title="edit the repo", board="req026-repo-board")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.workspace_kind == "worktree"
+        # ...and it provisions under the board repo, not the live checkout.
+        ws = kb.resolve_workspace(task, board="req026-repo-board")
+        assert ws == repo / ".worktrees" / t
+        assert ws != repo
+
+
+def test_non_git_board_default_leaves_card_scratch(kanban_home, tmp_path):
+    """REQ-026 control: a board whose default_workdir is NOT a git repo must not
+    upgrade — the card stays scratch (no spurious worktrees for non-repo work)."""
+    plain = tmp_path / "plain"
+    plain.mkdir()  # a directory, deliberately not a git repo
+    kb.create_board("req026-plain-board", default_workdir=str(plain))
+    with kb.connect(board="req026-plain-board") as conn:
+        t = kb.create_task(conn, title="just a note", board="req026-plain-board")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.workspace_kind == "scratch"
+
+
 def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_home, tmp_path):
     repo = tmp_path / "repo"
     _init_git_repo(repo)

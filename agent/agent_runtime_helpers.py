@@ -2453,7 +2453,7 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
        Claude-style models sometimes tack on (TodoTool_tool ->
        TodoTool -> Todo -> todo). Applied twice so double-tacked
        suffixes like ``TodoTool_tool`` reduce all the way.
-    5. Fuzzy match (difflib, cutoff=0.7).
+    5. Fuzzy match (difflib, cutoff=0.7) for non-MCP tools.
 
     See #14784 for the original reports (TodoTool_tool, Patch_tool,
     BrowserClick_tool were all returning "Unknown tool" before).
@@ -2524,6 +2524,15 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     for c in cands:
         if c and c in agent.valid_tool_names:
             return c
+
+    # MCP tool names encode both the server and the tool. A fuzzy fallback can
+    # silently change the requested operation inside the same MCP namespace
+    # (for example, a hallucinated ghidra ``disassemble_function`` becoming
+    # ``decompile_function``). That is a semantic substitution, not a safe
+    # spelling repair, so leave unmatched MCP calls invalid and let the normal
+    # unknown-tool correction path show the model the available tools.
+    if normalized.startswith("mcp__"):
+        return None
 
     # Fuzzy match as last resort.
     matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)

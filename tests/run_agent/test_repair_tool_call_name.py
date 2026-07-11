@@ -30,6 +30,12 @@ VALID = {
 }
 
 
+def _bind_repair(valid_tool_names):
+    from run_agent import AIAgent
+    stub = SimpleNamespace(valid_tool_names=set(valid_tool_names))
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
 @pytest.fixture
 def repair():
     """Return a bound _repair_tool_call built on a minimal shell agent.
@@ -39,9 +45,7 @@ def repair():
     reads self.valid_tool_names. A SimpleNamespace stub is enough to
     bind the unbound function.
     """
-    from run_agent import AIAgent
-    stub = SimpleNamespace(valid_tool_names=VALID)
-    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+    return _bind_repair(VALID)
 
 
 class TestExistingBehaviorStillWorks:
@@ -186,3 +190,34 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+class TestMcpToolNameRepair:
+    """MCP names are namespaced; fuzzy repair must not swap tool semantics."""
+
+    MCP_VALID = {
+        "mcp__ghidra_mcp__decompile_function",
+        "mcp__ghidra_mcp__rename_function",
+        "mcp__ghidra_mcp__set_function_prototype",
+        "mcp__ghidra_mcp__read_bytes",
+    }
+
+    def test_mcp_tool_names_do_not_fuzzy_match_to_different_operation(self):
+        repair = _bind_repair(self.MCP_VALID)
+
+        assert repair("mcp__ghidra_mcp__disassemble_function") is None
+
+    def test_mcp_exact_normalization_still_works(self):
+        repair = _bind_repair(self.MCP_VALID)
+
+        assert (
+            repair("MCP__GHIDRA_MCP__DECOMPILE_FUNCTION")
+            == "mcp__ghidra_mcp__decompile_function"
+        )
+
+    def test_mcp_tool_suffix_strip_still_allows_exact_match(self):
+        repair = _bind_repair(self.MCP_VALID)
+
+        assert (
+            repair("mcp__ghidra_mcp__read_bytes_tool")
+            == "mcp__ghidra_mcp__read_bytes"
+        )

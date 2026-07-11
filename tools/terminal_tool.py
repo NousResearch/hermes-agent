@@ -2295,6 +2295,11 @@ def terminal_tool(
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
+                        **{
+                            key: approval[key]
+                            for key in ("request_id", "argument_hash", "operation", "tool_name")
+                            if key in approval
+                        },
                     }, ensure_ascii=False)
                 # Command was blocked
                 desc = approval.get("description", "command flagged")

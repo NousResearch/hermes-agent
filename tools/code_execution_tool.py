@@ -1164,6 +1164,11 @@ def execute_code(
             "error": _guard.get("message") or "execute_code blocked by approval guard.",
             "tool_calls_made": 0,
             "duration_seconds": 0,
+            **{
+                key: _guard[key]
+                for key in ("request_id", "argument_hash", "operation", "tool_name")
+                if key in _guard
+            },
         }, ensure_ascii=False)
 
     # Clean interrupt slate for a user-approved script before EITHER dispatch

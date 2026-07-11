@@ -1682,7 +1682,7 @@ def consume_pending_approval(
         request = _pending.get(request_id)
         if not request or request.get("session_key") != session_key:
             return None
-        if request.get("status") != "resolved" or request.get("resolution") in {None, "deny"}:
+        if request.get("status") != "resolved" or request.get("resolution") is None:
             return None
         try:
             if time.time() >= float(request["expires_at"]):
@@ -1819,6 +1819,36 @@ def _stale_pending_approval_result(operation: str, description: str) -> dict:
             f"the current arguments ({description}). Do NOT retry with changed "
             "arguments; request a new approval."
         ),
+    }
+
+
+def _consumed_pending_approval_result(
+    operation: str, description: str, request: dict,
+) -> dict:
+    """Return the result for an exact resolved fallback retry."""
+    reason = request.get("resolution_reason")
+    if request.get("resolution") == "deny":
+        reason_addendum = f' Reason given by the user: "{reason}".' if reason else ""
+        return {
+            "approved": False,
+            "status": "blocked",
+            "outcome": "denied",
+            "user_consent": False,
+            "deny_reason": reason,
+            "resolution_reason": reason,
+            "description": description,
+            "message": (
+                f"BLOCKED: {operation} approval was denied by the user."
+                f"{reason_addendum} The user has NOT consented to this action."
+                " Do NOT retry it, rephrase it, or attempt the same outcome via"
+                " a different path."
+            ),
+        }
+    return {
+        "approved": True,
+        "message": None,
+        "user_approved": True,
+        "description": description,
     }
 
 
@@ -2384,12 +2414,9 @@ def _run_approval_gate(
     )
     if consumed is not None:
         _apply_consumed_approval_scope(session_key, consumed)
-        return {
-            "approved": True,
-            "message": None,
-            "user_approved": True,
-            "description": description,
-        }
+        return _consumed_pending_approval_result(
+            pending_operation, description, consumed,
+        )
     if stale:
         return _stale_pending_approval_result(pending_operation, description)
 
@@ -2523,7 +2550,7 @@ def _run_approval_gate(
         pending_request = submit_pending(session_key, pending)
         pending_fields = {
             key: pending_request[key]
-            for key in ("request_id", "created_at", "expires_at")
+            for key in ("request_id", "argument_hash", "operation", "tool_name", "created_at", "expires_at")
             if key in pending_request
         } if isinstance(pending_request, dict) else {}
         return {
@@ -3104,12 +3131,9 @@ def check_all_command_guards(command: str, env_type: str,
     )
     if consumed is not None:
         _apply_consumed_approval_scope(session_key, consumed)
-        return {
-            "approved": True,
-            "message": None,
-            "user_approved": True,
-            "description": "; ".join(desc for _, desc, _ in warnings),
-        }
+        return _consumed_pending_approval_result(
+            "terminal", "; ".join(desc for _, desc, _ in warnings), consumed,
+        )
     if stale:
         return _stale_pending_approval_result("terminal", "; ".join(
             desc for _, desc, _ in warnings
@@ -3257,7 +3281,6 @@ def check_all_command_guards(command: str, env_type: str,
             "operation": "terminal",
             "tool_name": "terminal",
             "arguments": {"command": command},
-            "argument_hash": _approval_argument_hash({"arguments": {"command": command}}),
             "command": _disp_command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
@@ -3266,7 +3289,7 @@ def check_all_command_guards(command: str, env_type: str,
         })
         pending_fields = {
             key: pending_request[key]
-            for key in ("request_id", "created_at", "expires_at")
+            for key in ("request_id", "argument_hash", "operation", "tool_name", "created_at", "expires_at")
             if key in pending_request
         }
         return {
@@ -3436,12 +3459,9 @@ def check_execute_code_guard(code: str, env_type: str,
     )
     if consumed is not None:
         _apply_consumed_approval_scope(session_key, consumed)
-        return {
-            "approved": True,
-            "message": None,
-            "user_approved": True,
-            "description": description,
-        }
+        return _consumed_pending_approval_result(
+            "execute_code", description, consumed,
+        )
     if stale:
         return _stale_pending_approval_result("execute_code", description)
     if is_approved(session_key, pattern_key):
@@ -3482,7 +3502,6 @@ def check_execute_code_guard(code: str, env_type: str,
             "operation": "execute_code",
             "tool_name": "execute_code",
             "arguments": {"command": command, "code": code},
-            "argument_hash": _approval_argument_hash({"arguments": {"command": command, "code": code}}),
             "command": display_command,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
@@ -3491,7 +3510,7 @@ def check_execute_code_guard(code: str, env_type: str,
         })
         pending_fields = {
             key: pending_request[key]
-            for key in ("request_id", "created_at", "expires_at")
+            for key in ("request_id", "argument_hash", "operation", "tool_name", "created_at", "expires_at")
             if key in pending_request
         }
         return {

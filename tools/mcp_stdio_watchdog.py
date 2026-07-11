@@ -68,8 +68,17 @@ def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getpp
 
     True once the process that spawned us is gone. Never trusts a bare
     ``getppid() == 1`` check (Linux reparents orphans to a subreaper, not
-    always PID 1), and guards against PID reuse via the recorded creation
-    time of the original parent.
+    always PID 1).
+
+    The original implementation additionally guarded PID reuse by comparing a
+    freshly read ``psutil.Process(original_ppid).create_time()`` against the
+    recorded value. That comparison is UNSAFE: the public ``create_time()``
+    epoch is not a stable process-identity contract when the system clock or
+    Linux boot-time basis changes (psutil issue #2526 / PR #2527). On WSL2 the
+    value drifts, producing a false "orphan" verdict that SIGTERMs a live MCP
+    server (issue #62505). For a direct POSIX child the kernel-maintained
+    parent/child relationship is sufficient: if ``getppid()`` still points at
+    the original parent and that PID still exists, the process is not orphaned.
     """
     if getppid() != original_ppid:
         return True
@@ -78,9 +87,7 @@ def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getpp
         # comparison alone (still catches the common case).
         return False
     try:
-        if not psutil.pid_exists(original_ppid):
-            return True
-        return psutil.Process(original_ppid).create_time() != parent_create_time
+        return not psutil.pid_exists(original_ppid)
     except psutil.Error:
         return True
 

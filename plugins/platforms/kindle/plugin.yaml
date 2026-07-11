@@ -30,3 +30,7 @@ optional_env:
     description: "Port the ingest server binds (default 8793)"
     prompt: "Ingest port"
     password: false
+  - name: KINDLE_REPLY_TIMEOUT
+    description: "Seconds to wait for a completed agent reply (default 360)"
+    prompt: "Reply timeout seconds"
+    password: false

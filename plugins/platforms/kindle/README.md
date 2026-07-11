@@ -51,6 +51,33 @@ platform_toolsets:
 Then start the Gateway and verify `http://127.0.0.1:8793/health` before starting
 the companion bridge.
 
+For MoA or tool-heavy notebook turns, raise the synchronous reply window instead
+of letting the Kindle surface fail early:
+
+```powershell
+$env:KINDLE_REPLY_TIMEOUT = '360'
+```
+
+## Companion payload hints
+
+The ingest body must include `text`, `user`, and `chat_id`. The companion bridge
+may also send optional metadata that this adapter converts into agent-visible
+context:
+
+- `intent`: one of `summarize`, `tasks`, `email`, or `workpaper`.
+- `tags`: an array or comma-separated list such as `["client", "todo"]`.
+- `source` / `artifact_type`: use `source: "live-page"` or
+  `artifact_type: "html"` when the Kindle user is annotating rendered HTML.
+- `ocr_raw` and `ocr_cleaned`: raw and cleaned handwriting transcriptions when
+  ambiguity matters.
+
+These hints support notebook QoL without making the adapter own UI behavior:
+the bridge can show one-tap intents, progress heartbeats, and short-first
+responses while the agent still performs tool work. When the bridge marks a note
+as live-page or HTML work, the adapter reminds the agent to update the configured
+live-page/artifact display so newly generated HTML replaces the old visible
+page.
+
 ## Remote-access security boundary
 
 Do not expose port `8793`. Remote browser access terminates at the companion

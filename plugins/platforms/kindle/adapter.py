@@ -23,7 +23,7 @@ Env:
   KINDLE_ALLOWED_USERS    comma-separated user ids allowed (e.g. "jeff")
   KINDLE_ALLOW_ALL_USERS  (true/false)
   KINDLE_HOME_CHANNEL     chat id for cron/home delivery
-  KINDLE_REPLY_TIMEOUT    seconds to wait for the agent (default 240)
+  KINDLE_REPLY_TIMEOUT    seconds to wait for the agent (default 360)
 
 STATUS: non-streaming v1 (one request -> one reply). Streaming via send_draft is a
 documented TODO below; the diary already streams to the Kindle, so we can add it
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_INGEST_HOST = "127.0.0.1"
 DEFAULT_INGEST_PORT = 8793
-DEFAULT_REPLY_TIMEOUT = 240
+DEFAULT_REPLY_TIMEOUT = 360
 MAX_KINDLE_LENGTH = 8000  # e-ink page; plenty for a notebook reply
 
 KINDLE_HOST_CONTEXT = (
@@ -57,6 +57,88 @@ KINDLE_HOST_CONTEXT = (
     "with an available tool and verify its result before claiming success. Never invent a path "
     "or claim a resource was accessed or changed without a successful tool result.]"
 )
+
+KINDLE_INTENTS = {
+    "summarize": (
+        "Summarize the current page or note. Start with the answer in one short "
+        "paragraph, then add only the most useful detail."
+    ),
+    "tasks": (
+        "Extract tasks. Group them by owner, due date, and uncertainty. If a task "
+        "is inferred from handwriting, label it inferred."
+    ),
+    "email": (
+        "Draft a concise email from the note or marked page. Do not send it. Put "
+        "the draft first, then a short note about assumptions."
+    ),
+    "workpaper": (
+        "Create a workpaper-ready note: facts, evidence, open items, risks, and "
+        "next action. Keep amounts, dates, and names exact."
+    ),
+}
+
+
+def _clean_tag(value: Any) -> str:
+    tag = str(value or "").strip().lstrip("#").lower()
+    if not tag or len(tag) > 32:
+        return ""
+    return tag if all(ch.isalnum() or ch in "-_" for ch in tag) else ""
+
+
+def _bridge_context(body: Dict[str, Any]) -> str:
+    """Convert optional companion-bridge metadata into model-visible context.
+
+    The adapter remains transport-only: the bridge owns OCR/UI/progress, and the
+    agent owns tools. These hints make the contract explicit when the bridge has
+    already classified the note or the visible artifact being annotated.
+    """
+
+    lines: list[str] = []
+    intent = str(body.get("intent") or "").strip().lower()
+    if intent in KINDLE_INTENTS:
+        lines.append(f"Intent: {intent}. {KINDLE_INTENTS[intent]}")
+
+    raw_tags = body.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [item.strip() for item in raw_tags.split(",")]
+    if isinstance(raw_tags, list):
+        tags = []
+        seen = set()
+        for raw in raw_tags:
+            tag = _clean_tag(raw)
+            if tag and tag not in seen:
+                tags.append(tag)
+                seen.add(tag)
+        if tags:
+            lines.append("Notebook tags: " + ", ".join(f"#{tag}" for tag in tags[:12]) + ".")
+
+    source = str(body.get("source") or "").strip().lower()
+    artifact_type = str(body.get("artifact_type") or "").strip().lower()
+    if source in {"live-page", "artifact", "html"} or artifact_type == "html":
+        lines.append(
+            "Artifact display: the Kindle user is looking at a rendered HTML artifact. "
+            "If you create or revise HTML, use the configured live-page/artifact tools "
+            "so the visible HTML replaces the old page instead of merely describing the change."
+        )
+
+    raw_ocr = str(body.get("ocr_raw") or body.get("raw_transcription") or "").strip()
+    cleaned_ocr = str(body.get("ocr_cleaned") or body.get("cleaned_transcription") or "").strip()
+    if raw_ocr and cleaned_ocr and raw_ocr != cleaned_ocr:
+        lines.append(
+            "OCR uncertainty: raw handwriting transcription was "
+            f"{raw_ocr!r}; cleaned transcription was {cleaned_ocr!r}. If a name, date, "
+            "dollar amount, or command depends on the difference, state the uncertainty "
+            "and likely alternatives."
+        )
+    elif raw_ocr:
+        lines.append(
+            "OCR uncertainty: handwriting may still contain ambiguous names, dates, "
+            "dollar amounts, or arrows. Preserve uncertainty instead of over-committing."
+        )
+
+    if not lines:
+        return ""
+    return "[Kindle bridge context]\n" + "\n".join(lines) + "\n[/Kindle bridge context]"
 
 
 def check_kindle_requirements() -> bool:
@@ -210,8 +292,14 @@ class KindleAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_id,
         )
+        bridge_context = _bridge_context(body)
+        context_parts = [KINDLE_HOST_CONTEXT]
+        if bridge_context:
+            context_parts.append(bridge_context)
+        context_text = "\n\n".join(context_parts)
+
         event = MessageEvent(
-            text=f"{KINDLE_HOST_CONTEXT}\n\n{text}",
+            text=f"{context_text}\n\n{text}",
             message_type=MessageType.TEXT,
             source=source,
             raw_message=body,

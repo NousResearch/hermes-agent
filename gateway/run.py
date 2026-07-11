@@ -1131,17 +1131,10 @@ def _is_slack_ignored_channel(config: Any, chat_id: Any) -> bool:
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
-    """True when gateway.message_timestamps.enabled is opted in (default OFF: changes what the model sees)."""
-    if not isinstance(user_config, dict):
-        return False
-    gw = user_config.get("gateway")
-    if not isinstance(gw, dict):
-        return False
-    mt = gw.get("message_timestamps")
-    if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
-    # Allow a bare ``message_timestamps: true`` shorthand.
-    return bool(mt)
+    """Compatibility wrapper for the shared cross-surface config resolver."""
+    from agent.message_timestamps import message_timestamps_enabled
+
+    return message_timestamps_enabled(user_config)
 
 
 def _build_gateway_agent_history(

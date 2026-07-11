@@ -813,6 +813,31 @@ def build_turn_context(
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
 
+    # Preserve clean input for transcripts before adding timestamp context.
+    original_user_message = (
+        persist_user_message if persist_user_message is not None else user_message
+    )
+    try:
+        from agent.message_timestamps import render_turn_with_message_timestamps
+        from hermes_cli.config import load_config
+        from hermes_time import get_timezone
+
+        conversation_history, user_message, rendered_timestamp = (
+            render_turn_with_message_timestamps(
+                conversation_history,
+                user_message,
+                config=load_config(),
+                current_timestamp=persist_user_timestamp,
+                tz=get_timezone(),
+            )
+        )
+        if rendered_timestamp is not None:
+            if persist_user_message is None:
+                persist_user_message = original_user_message
+            persist_user_timestamp = rendered_timestamp
+    except Exception:
+        logger.debug("message timestamp rendering skipped", exc_info=True)
+
     effective_task_id, turn_id = _bind_turn_identity(
         agent, task_id, stream_callback, persist_user_message,
         persist_user_timestamp, persist_user_platform_id,

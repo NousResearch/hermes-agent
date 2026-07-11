@@ -13,6 +13,7 @@ import threading
 import types
 
 from tui_gateway import server
+from tui_gateway.prompt_intents import PromptIntentLedger
 
 
 def _session(agent=None, **extra):
@@ -44,6 +45,63 @@ def test_enqueue_merges_second_arrival_losslessly():
     assert session["queued_prompt"]["text"] == "first\n\nsecond"
     # Latest transport wins so the drain streams to the most recent client.
     assert session["queued_prompt"]["transport"] == "ws-2"
+
+
+def test_duplicate_retry_rebinds_matching_queued_prompt_transport(monkeypatch):
+    monkeypatch.setattr(server, "_prompt_intents", PromptIntentLedger())
+    session = _session(running=True, transport="ws-old")
+    params = {
+        "session_id": "runtime-a",
+        "expected_stored_session_id": "session-key",
+        "client_request_id": "intent-queued-1",
+        "text": "run this next",
+    }
+
+    assert server._claim_prompt_submit_intent(params, "rpc-1", session) is None
+    server._enqueue_prompt(
+        session,
+        params["text"],
+        session["transport"],
+        params["client_request_id"],
+    )
+
+    session["transport"] = "ws-reconnected"
+    session["running"] = False
+    retry = server._claim_prompt_submit_intent(params, "rpc-2", session)
+
+    assert retry["result"] == {"duplicate": True, "status": "queued"}
+    assert session["queued_prompt"]["transport"] == "ws-reconnected"
+
+
+def test_busy_rewind_is_retried_instead_of_queued_without_truncation(monkeypatch):
+    ledger = PromptIntentLedger()
+    monkeypatch.setattr(server, "_prompt_intents", ledger)
+    session = _session(
+        running=True,
+        history=[{"role": "user", "content": "original"}],
+    )
+    server._sessions["runtime-rewind"] = session
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "rewind-busy",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "runtime-rewind",
+                    "expected_stored_session_id": "session-key",
+                    "client_request_id": "intent-rewind-1",
+                    "text": "edited",
+                    "truncate_before_user_ordinal": 0,
+                },
+            }
+        )
+
+        assert response["error"]["code"] == 4009
+        assert session.get("queued_prompt") is None
+        assert len(ledger) == 0
+    finally:
+        server._sessions.pop("runtime-rewind", None)
 
 
 # ── _handle_busy_submit (policy) ───────────────────────────────────────────

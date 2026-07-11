@@ -546,7 +546,7 @@ def test_cost_router_profile_env_overrides_preserve_deepseek_key(tmp_path, monke
     hermes_home = tmp_path / ".hermes"
     profile_dir = hermes_home / "profiles" / "worker-luna-economy"
     profile_dir.mkdir(parents=True)
-    key = "sk-4c0268038ea44861aaaf2684c9873da4"
+    key = "test-deepseek-fixture-" + ("x" * 40)
     (profile_dir / "config.yaml").write_text(
         "model:\n"
         "  provider: deepseek\n"

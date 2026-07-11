@@ -1368,7 +1368,10 @@ export const zhHant = defineLocale({
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表達式，或類似「每小時」「工作日上午 9 點」的短語。',
     optional: '選填',
+    promptRequired: '提示詞為必填項目。',
     promptScheduleRequired: '提示詞和排程為必填項目。',
+    scheduleRequired: '排程為必填項目。',
+    scriptOnlyEditHint: '僅腳本任務（無 AI 提示詞）。任務 ID：',
     saveChanges: '儲存變更',
     createAction: '建立排程工作'
   },

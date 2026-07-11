@@ -2585,45 +2585,46 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return max(minimum, min(maximum, value))
 
     def _recall_config(self) -> Dict[str, Any]:
+        # Read from config.yaml → memory.openviking as primary source, env vars
+        # as override. Behavioural settings belong in config.yaml (AGENTS.md).
+        provider_config = _load_hermes_openviking_config()
+        cfg = provider_config
+
         return {
             "limit": self._env_int(
                 "OPENVIKING_RECALL_LIMIT",
-                _DEFAULT_RECALL_LIMIT,
-                minimum=1,
-                maximum=100,
+                cfg.get("recall_limit", _DEFAULT_RECALL_LIMIT),
+                minimum=1, maximum=100,
             ),
             "score_threshold": self._env_float(
                 "OPENVIKING_RECALL_SCORE_THRESHOLD",
-                _DEFAULT_RECALL_SCORE_THRESHOLD,
-                minimum=0.0,
-                maximum=1.0,
+                cfg.get("recall_score_threshold", _DEFAULT_RECALL_SCORE_THRESHOLD),
+                minimum=0.0, maximum=1.0,
             ),
             "max_injected_chars": self._env_int(
                 "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
-                _DEFAULT_RECALL_MAX_INJECTED_CHARS,
-                minimum=100,
-                maximum=50000,
+                cfg.get("recall_max_injected_chars", _DEFAULT_RECALL_MAX_INJECTED_CHARS),
+                minimum=100, maximum=50000,
             ),
             "timeout_seconds": self._env_float(
                 "OPENVIKING_RECALL_TIMEOUT_SECONDS",
-                _DEFAULT_RECALL_TIMEOUT_SECONDS,
-                minimum=0.25,
-                maximum=60.0,
+                cfg.get("recall_timeout_seconds", _DEFAULT_RECALL_TIMEOUT_SECONDS),
+                minimum=0.25, maximum=60.0,
             ),
             "request_timeout_seconds": self._env_float(
                 "OPENVIKING_RECALL_REQUEST_TIMEOUT_SECONDS",
-                _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS,
-                minimum=0.25,
-                maximum=60.0,
+                cfg.get("recall_request_timeout_seconds", _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS),
+                minimum=0.25, maximum=60.0,
             ),
             "full_read_limit": self._env_int(
                 "OPENVIKING_RECALL_FULL_READ_LIMIT",
-                _DEFAULT_RECALL_FULL_READ_LIMIT,
-                minimum=0,
-                maximum=100,
+                cfg.get("recall_full_read_limit", _DEFAULT_RECALL_FULL_READ_LIMIT),
+                minimum=0, maximum=100,
             ),
-            "prefer_abstract": self._env_bool("OPENVIKING_RECALL_PREFER_ABSTRACT", False),
-            "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES", False),
+            "prefer_abstract": self._env_bool("OPENVIKING_RECALL_PREFER_ABSTRACT",
+                cfg.get("recall_prefer_abstract", False)),
+            "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES",
+                cfg.get("recall_resources", False)),
         }
 
     @staticmethod

@@ -588,11 +588,130 @@ class TestConcurrencyCap:
         adapter._active_run_tasks = {}
         assert adapter._concurrency_limited_response() is None
 
+    def test_cancelled_wrapper_keeps_capacity_until_worker_thread_finishes(self):
+        import threading
+
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        worker_done = threading.Event()
+        adapter._run_worker_done["run-still-working"] = worker_done
+
+        response = adapter._concurrency_limited_response()
+        assert response is not None
+        assert response.status == 429
+
+        worker_done.set()
+        assert adapter._concurrency_limited_response() is None
+
     def test_zero_disables_cap(self):
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 0
         adapter._inflight_agent_runs = 9999
         assert adapter._concurrency_limited_response() is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "handler_name",
+        ["_handle_chat_completions", "_handle_responses"],
+    )
+    async def test_slow_agent_route_body_reserves_capacity(self, handler_name):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        body_started = asyncio.Event()
+        release_body = asyncio.Event()
+        first_request = MagicMock()
+        first_request.headers = {}
+
+        async def slow_json():
+            body_started.set()
+            await release_body.wait()
+            return {}
+
+        first_request.json = slow_json
+        handler = getattr(adapter, handler_name)
+        first_task = asyncio.create_task(handler(first_request))
+        await body_started.wait()
+
+        second_request = MagicMock()
+        second_request.headers = {}
+        second_response = await handler(second_request)
+        assert second_response.status == 429
+        assert adapter._pending_agent_admissions == 1
+
+        release_body.set()
+        first_response = await first_task
+        assert first_response.status == 400
+        assert adapter._pending_agent_admissions == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "handler_name",
+        ["_handle_chat_completions", "_handle_responses"],
+    )
+    async def test_agent_route_body_is_rejected_after_drain_starts(self, handler_name):
+        adapter = _make_adapter()
+        body_started = asyncio.Event()
+        release_body = asyncio.Event()
+        request = MagicMock()
+        request.headers = {}
+
+        async def slow_json():
+            body_started.set()
+            await release_body.wait()
+            return {}
+
+        request.json = slow_json
+        task = asyncio.create_task(getattr(adapter, handler_name)(request))
+        await body_started.wait()
+        await adapter.disconnect()
+        adapter._accepting_agent_requests = True  # simulate a quick reconnect
+        release_body.set()
+
+        response = await task
+        assert response.status == 503
+        assert adapter._pending_agent_admissions == 0
+
+    @pytest.mark.asyncio
+    async def test_admission_transfers_to_worker_lifetime_without_double_counting(self):
+        import threading
+
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        started = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**_kwargs):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return {"final_response": "done"}
+
+        mock_agent.run_conversation.side_effect = blocked_run
+        first_request = MagicMock()
+        first_request.headers = {}
+        first_request.json = AsyncMock(
+            return_value={"messages": [{"role": "user", "content": "hold"}]}
+        )
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            first_task = asyncio.create_task(adapter._handle_chat_completions(first_request))
+            assert await asyncio.to_thread(started.wait, 3.0)
+            assert adapter._pending_agent_admissions == 0
+            assert adapter._inflight_agent_runs == 1
+
+            second_request = MagicMock()
+            second_request.headers = {}
+            second_response = await adapter._handle_chat_completions(second_request)
+            assert second_response.status == 429
+
+            release.set()
+            first_response = await first_task
+            assert first_response.status == 200
+            await asyncio.sleep(0)
+            assert adapter._inflight_agent_runs == 0
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +765,118 @@ def auth_adapter():
 
 
 class TestAgentExecution:
+    @pytest.mark.asyncio
+    async def test_cancelled_queued_worker_releases_capacity_without_starting(self, adapter):
+        import threading
+
+        adapter._max_concurrent_runs = 1
+        occupied = threading.Event()
+        release = threading.Event()
+
+        def occupy_only_worker():
+            occupied.set()
+            assert release.wait(timeout=10.0)
+
+        blocker = adapter._get_request_executor().submit(occupy_only_worker)
+        assert await asyncio.to_thread(occupied.wait, 3.0)
+
+        with patch.object(adapter, "_create_agent") as create_agent:
+            task = asyncio.create_task(
+                adapter._run_agent(
+                    user_message="never starts",
+                    conversation_history=[],
+                    session_id="queued-cancel",
+                )
+            )
+            for _ in range(100):
+                if adapter._inflight_agent_runs == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert adapter._inflight_agent_runs == 1
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert adapter._inflight_agent_runs == 0
+            create_agent.assert_not_called()
+
+        release.set()
+        await asyncio.wrap_future(blocker)
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_interrupts_nonstructured_agent_worker(self, adapter):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**_kwargs):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return {"final_response": "stopped"}
+
+        mock_agent.run_conversation.side_effect = blocked_run
+        mock_agent.interrupt.side_effect = lambda _reason: release.set()
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            task = asyncio.create_task(
+                adapter._run_agent(
+                    user_message="hold",
+                    conversation_history=[],
+                    session_id="disconnect-worker",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 3.0)
+            await adapter.disconnect()
+            result, _usage = await task
+
+        assert result["final_response"] == "stopped"
+        mock_agent.interrupt.assert_called_once_with("API server disconnecting")
+        assert adapter._inflight_agent_runs == 0
+        assert adapter._active_request_agents == {}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_wrapper_holds_capacity_until_agent_thread_exits(self, adapter):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**_kwargs):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return {"final_response": "done"}
+
+        mock_agent.run_conversation.side_effect = blocked_run
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            task = asyncio.create_task(
+                adapter._run_agent(
+                    user_message="hold",
+                    conversation_history=[],
+                    session_id="cancelled-wrapper",
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 3.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert adapter._inflight_agent_runs == 1
+
+            release.set()
+            for _ in range(100):
+                if adapter._inflight_agent_runs == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert adapter._inflight_agent_runs == 0
+
     @pytest.mark.asyncio
     async def test_run_agent_uses_session_id_as_task_id(self, adapter):
         mock_agent = MagicMock()

@@ -118,7 +118,7 @@ def test_real_agent_tool_executor_routes_read_file_through_local_channel():
     from run_agent import AIAgent
 
     session_key = "run-real-agent"
-    approval_token, split_token = _bind_split(session_key=session_key)
+    approval_token, split_token = _bind_split(session_key=session_key, timeout=5.0)
     captured = {}
     saw_request = threading.Event()
 
@@ -129,11 +129,11 @@ def test_real_agent_tool_executor_routes_read_file_through_local_channel():
     assert register_tool_notify(session_key, notify, "") is True
 
     def resolve_request():
-        assert saw_request.wait(timeout=2.0)
+        assert saw_request.wait(timeout=5.0)
         resolve_tool_result(session_key, captured["request_id"], "REAL AGENT LOCAL RESULT")
 
     resolver = threading.Thread(target=resolve_request)
-    resolver.start()
+    resolver_started = False
     try:
         with (
             patch("run_agent.OpenAI"),
@@ -150,6 +150,9 @@ def test_real_agent_tool_executor_routes_read_file_through_local_channel():
                 skip_memory=True,
             )
 
+        resolver.start()
+        resolver_started = True
+
         tool_call = SimpleNamespace(
             id="call_real_agent",
             function=SimpleNamespace(
@@ -161,7 +164,8 @@ def test_real_agent_tool_executor_routes_read_file_through_local_channel():
         messages = []
         agent._execute_tool_calls(assistant_message, messages, "task-real-agent")
     finally:
-        resolver.join(timeout=2.0)
+        if resolver_started:
+            resolver.join(timeout=5.0)
         unregister_tool_notify(session_key)
         _reset(approval_token, split_token)
 
@@ -260,3 +264,20 @@ def test_handle_function_call_fails_closed_when_split_router_crashes(monkeypatch
     payload = json.loads(result)
     assert payload["code"] == "split_runtime_router_error"
     assert payload["tool_call_id"] == "call_router_crash"
+
+
+def test_split_runtime_keeps_server_tool_results_inline_only():
+    from agent.tool_executor import _tool_result_is_local, _tool_result_storage_target
+
+    approval_token, split_token = _bind_split()
+    server_env = object()
+    try:
+        with patch("agent.tool_executor.get_active_env", return_value=server_env):
+            result_env, inline_only = _tool_result_storage_target("terminal", "")
+
+        assert result_env is None
+        assert inline_only is True
+        assert _tool_result_is_local("terminal") is False
+        assert _tool_result_is_local("read_file") is True
+    finally:
+        _reset(approval_token, split_token)

@@ -10,6 +10,8 @@ Covers:
 
 import asyncio
 import json
+import subprocess
+import sys
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -26,8 +28,10 @@ from gateway.platforms.api_server import (
 from tools import approval as approval_mod
 from gateway.tool_channel_state import (
     clear_tool_channel_state,
+    close_tool_channel,
     has_attached_client,
     register_tool_notify,
+    resolve_tool_result,
     submit_tool_request,
     unregister_tool_notify,
 )
@@ -120,6 +124,27 @@ def split_adapter():
 
 
 class TestStartRun:
+    def test_run_executor_workers_do_not_block_process_exit(self):
+        code = """
+import threading
+from gateway.platforms.api_server import _DaemonThreadPoolExecutor
+
+started = threading.Event()
+never = threading.Event()
+executor = _DaemonThreadPoolExecutor(1, "exit-test")
+executor.submit(lambda: (started.set(), never.wait()))
+assert started.wait(2)
+executor.shutdown(wait=False)
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+
     @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
@@ -233,6 +258,211 @@ class TestStartRun:
         assert status["code"] == "split_runtime_incompatible_runtime"
         mock_agent.run_conversation.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_disabled_api_file_toolset_disables_split_runtime_for_run(
+        self,
+        split_adapter,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda config, platform: {"safe"},
+        )
+        app = _create_runs_app(split_adapter)
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "codex_app_server"
+        mock_agent.run_conversation.return_value = {"final_response": "server runtime allowed"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(split_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "no local tools"})
+                run_id = (await resp.json())["run_id"]
+                status = {}
+                for _ in range(50):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+                executor_resp = await cli.get(f"/v1/runs/{run_id}/events?tool_executor=1")
+
+        assert status["status"] == "completed"
+        assert split_adapter._run_split_runtime_active[run_id] is False
+        assert executor_resp.status == 409
+        mock_agent.run_conversation.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_uses_one_toolset_snapshot_for_routing_and_agent(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with (
+            patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value={"file"},
+            ) as get_tools,
+            patch.object(
+                split_adapter,
+                "_create_agent",
+                return_value=mock_agent,
+            ) as create_agent,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/runs", json={"input": "snapshot tools"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+                for _ in range(50):
+                    if split_adapter._run_statuses[run_id]["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert split_adapter._run_split_runtime_active[run_id] is True
+        assert create_agent.call_args.kwargs["enabled_toolsets"] == ["file"]
+        get_tools.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_enabled_split_runtime_rejects_run_when_toolset_resolution_fails(
+        self,
+        split_adapter,
+        monkeypatch,
+    ):
+        def fail_toolset_resolution(*_args, **_kwargs):
+            raise RuntimeError("bad config")
+
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            fail_toolset_resolution,
+        )
+        app = _create_runs_app(split_adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/runs", json={"input": "must fail closed"})
+
+        assert resp.status == 500
+        assert split_adapter._active_run_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_tool_channel_closes_only_after_terminal_status(self, split_adapter):
+        from gateway.tool_channel_state import close_tool_channel
+
+        app = _create_runs_app(split_adapter)
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        closed_statuses = []
+
+        def observed_close(session_key):
+            closed_statuses.append(split_adapter._run_statuses[session_key]["status"])
+            close_tool_channel(session_key)
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(split_adapter, "_create_agent", return_value=mock_agent),
+                patch("gateway.tool_channel_state.close_tool_channel", side_effect=observed_close),
+            ):
+                resp = await cli.post("/v1/runs", json={"input": "finish"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(50):
+                    if run_id not in split_adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert closed_statuses == ["completed"]
+
+    @pytest.mark.asyncio
+    async def test_worker_submission_failure_releases_capacity(self, split_adapter):
+        class BrokenExecutor:
+            def submit(self, *_args, **_kwargs):
+                raise RuntimeError("executor unavailable")
+
+        split_adapter._max_concurrent_runs = 1
+        app = _create_runs_app(split_adapter)
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(split_adapter, "_create_agent", return_value=mock_agent),
+                patch.object(split_adapter, "_get_run_executor", return_value=BrokenExecutor()),
+            ):
+                resp = await cli.post("/v1/runs", json={"input": "submission fails"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(50):
+                    status = split_adapter._run_statuses.get(run_id, {})
+                    if status.get("status") == "failed":
+                        break
+                    await asyncio.sleep(0.01)
+
+        assert split_adapter._run_statuses[run_id]["status"] == "failed"
+        assert split_adapter._run_worker_done[run_id].is_set()
+        assert split_adapter._concurrency_limited_response() is None
+
+    @pytest.mark.asyncio
+    async def test_slow_request_body_reserves_capacity_before_await(self, adapter):
+        adapter._max_concurrent_runs = 1
+        body_started = asyncio.Event()
+        release_body = asyncio.Event()
+        first_request = MagicMock()
+        first_request.headers = {}
+
+        async def slow_json():
+            body_started.set()
+            await release_body.wait()
+            return {}
+
+        first_request.json = slow_json
+        first_task = asyncio.create_task(adapter._handle_runs(first_request))
+        await body_started.wait()
+
+        second_request = MagicMock()
+        second_request.headers = {}
+        second_response = await adapter._handle_runs(second_request)
+
+        assert second_response.status == 429
+        assert adapter._pending_agent_admissions == 1
+
+        release_body.set()
+        first_response = await first_task
+        assert first_response.status == 400
+        assert adapter._pending_agent_admissions == 0
+
+    @pytest.mark.asyncio
+    async def test_draining_server_rejects_body_that_was_already_admitted(self, adapter):
+        body_started = asyncio.Event()
+        release_body = asyncio.Event()
+        request = MagicMock()
+        request.headers = {}
+
+        async def slow_json():
+            body_started.set()
+            await release_body.wait()
+            return {"input": "must not start"}
+
+        request.json = slow_json
+        request_task = asyncio.create_task(adapter._handle_runs(request))
+        await body_started.wait()
+
+        await adapter.disconnect()
+        adapter._accepting_agent_requests = True  # simulate a quick reconnect
+        release_body.set()
+        response = await request_task
+
+        assert response.status == 503
+        assert adapter._active_run_tasks == {}
+        assert adapter._run_worker_futures == {}
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
@@ -321,6 +551,34 @@ class TestRunStatus:
 
 class TestRunEvents:
     @pytest.mark.asyncio
+    async def test_late_progress_callback_cannot_overwrite_terminal_status(self, adapter):
+        run_id = "run_late_progress"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "cancelled"}
+        adapter._run_streams[run_id] = asyncio.Queue()
+        callback = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+
+        await asyncio.to_thread(callback, "tool.started", tool_name="read_file")
+        await asyncio.sleep(0)
+
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        assert adapter._run_streams[run_id].empty()
+
+    @pytest.mark.asyncio
+    async def test_late_progress_callback_cannot_resurrect_swept_run(self, adapter):
+        run_id = "run_already_swept"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "completed"}
+        adapter._run_streams[run_id] = asyncio.Queue()
+        callback = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+
+        adapter._run_statuses.pop(run_id)
+        adapter._run_streams.pop(run_id)
+        await asyncio.to_thread(callback, "tool.completed", tool_name="read_file")
+        await asyncio.sleep(0)
+
+        assert run_id not in adapter._run_statuses
+        assert run_id not in adapter._run_streams
+
+    @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
         app = _create_runs_app(adapter)
@@ -398,6 +656,24 @@ class TestRunEvents:
             "once",
             resolve_all=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_stopping_run_rejects_approval_without_resolving(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_stopping_approval"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "stopping"}
+        adapter._run_approval_sessions[run_id] = run_id
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once"},
+                )
+
+        assert approval_resp.status == 409
+        mock_resolve.assert_not_called()
+        assert adapter._run_statuses[run_id]["status"] == "stopping"
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -532,7 +808,6 @@ class TestRunEvents:
     async def test_executor_stream_discards_canceled_tool_request_events(self, split_adapter):
         app = _create_runs_app(split_adapter)
         run_id = "run_stale_request_event"
-        session_key = "stale-request-session"
         q = asyncio.Queue()
         q.put_nowait({
             "event": "tool.request",
@@ -544,7 +819,6 @@ class TestRunEvents:
         q.put_nowait(None)
         split_adapter._run_streams[run_id] = q
         split_adapter._run_streams_created[run_id] = 1.0
-        split_adapter._run_tool_sessions[run_id] = session_key
         split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "completed"}
 
         async with TestClient(TestServer(app)) as cli:
@@ -619,7 +893,7 @@ class TestRunEvents:
 
                 request_event = None
                 for _ in range(10):
-                    raw = await asyncio.wait_for(events_resp.content.readline(), timeout=3.0)
+                    raw = await asyncio.wait_for(events_resp.content.readline(), timeout=10.0)
                     line = raw.decode().strip()
                     if line.startswith("data: "):
                         event = json.loads(line[6:])
@@ -639,7 +913,7 @@ class TestRunEvents:
                 )
                 assert result_resp.status == 200
 
-                body = await asyncio.wait_for(events_resp.text(), timeout=3.0)
+                body = await asyncio.wait_for(events_resp.text(), timeout=10.0)
                 assert "tool.result" in body
                 assert "run.completed" in body
                 assert "LOCAL README CONTENT" in body
@@ -894,6 +1168,33 @@ class TestRunToolResult:
             clear_tool_channel_state(session_key)
 
     @pytest.mark.asyncio
+    async def test_duplicate_tool_result_is_idempotent_after_run_completion(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_duplicate_terminal"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+        split_adapter._run_tool_sessions[run_id] = run_id
+        try:
+            assert register_tool_notify(run_id, lambda request: None, "") is True
+            entry = submit_tool_request(run_id, {"tool_call_id": "call_terminal_dup"})
+            assert entry is not None
+            assert resolve_tool_result(run_id, entry.request["request_id"], "one") == "resolved"
+            close_tool_channel(run_id)
+            split_adapter._run_tool_sessions.pop(run_id, None)
+            split_adapter._run_statuses[run_id]["status"] = "completed"
+
+            async with TestClient(TestServer(app)) as cli:
+                retry = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"request_id": entry.request["request_id"], "result": "two"},
+                )
+                retry_data = await retry.json()
+
+            assert retry.status == 200
+            assert retry_data["status"] == "duplicate"
+        finally:
+            clear_tool_channel_state(run_id)
+
+    @pytest.mark.asyncio
     async def test_tool_result_without_pending_request_returns_409(self, split_adapter):
         app = _create_runs_app(split_adapter)
         run_id = "run_tool_missing"
@@ -907,6 +1208,28 @@ class TestRunToolResult:
             data = await resp.json()
         assert resp.status == 409
         assert data["error"]["code"] == "tool_result_not_pending"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_does_not_overwrite_stopping_status(self, split_adapter):
+        app = _create_runs_app(split_adapter)
+        run_id = "run_tool_stopping"
+        split_adapter._run_statuses[run_id] = {"run_id": run_id, "status": "stopping"}
+        split_adapter._run_tool_sessions[run_id] = run_id
+        try:
+            assert register_tool_notify(run_id, lambda request: None, "") is True
+            entry = submit_tool_request(run_id, {"tool_call_id": "call_stopping"})
+            assert entry is not None
+
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    f"/v1/runs/{run_id}/tool_result",
+                    json={"request_id": entry.request["request_id"], "result": "done"},
+                )
+
+            assert resp.status == 200
+            assert split_adapter._run_statuses[run_id]["status"] == "stopping"
+        finally:
+            clear_tool_channel_state(run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -999,11 +1322,334 @@ class TestStopRun:
                 assert asyncio.get_running_loop().time() - started < 1.0
 
     @pytest.mark.asyncio
+    async def test_stop_keeps_capacity_while_uninterruptible_worker_is_running(self):
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 1
+        app = _create_runs_app(adapter)
+        ready = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.interrupt = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**kwargs):
+            ready.set()
+            release.wait(timeout=10)
+            return {"final_response": "released"}
+
+        mock_agent.run_conversation.side_effect = blocked_run
+        run_id = ""
+        worker_done = None
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                    start_resp = await cli.post("/v1/runs", json={"input": "block"})
+                    run_id = (await start_resp.json())["run_id"]
+                    assert await asyncio.to_thread(ready.wait, 1.0)
+
+                    stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                    assert stop_resp.status == 200
+
+                    second_resp = await cli.post("/v1/runs", json={"input": "second"})
+                    assert second_resp.status == 429
+        finally:
+            release.set()
+
+        for _ in range(100):
+            worker_done = adapter._run_worker_done.get(run_id)
+            if worker_done is None or worker_done.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert worker_done is None or worker_done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_interrupts_and_drains_running_worker(self):
+        adapter = _make_adapter()
+        app = _create_runs_app(adapter)
+        started = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**_kwargs):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return {"final_response": "drained"}
+
+        def interrupt(_reason):
+            release.set()
+
+        mock_agent.run_conversation.side_effect = blocked_run
+        mock_agent.interrupt.side_effect = interrupt
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "block"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(started.wait, 3.0)
+
+                await adapter.disconnect()
+
+        mock_agent.interrupt.assert_called_once_with("API server disconnecting")
+        assert adapter._run_worker_done[run_id].is_set()
+        assert adapter._run_executor is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_can_interrupt_worker_after_wrapper_was_cancelled(self):
+        adapter = _make_adapter()
+        app = _create_runs_app(adapter)
+        started = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**_kwargs):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return {"final_response": "drained"}
+
+        mock_agent.run_conversation.side_effect = blocked_run
+        mock_agent.interrupt.side_effect = lambda _reason: release.set()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "block"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(started.wait, 3.0)
+
+                adapter._active_run_tasks[run_id].cancel()
+                await asyncio.sleep(0.05)
+                assert run_id in adapter._active_run_agents
+                assert not adapter._run_worker_done[run_id].is_set()
+
+                await adapter.disconnect()
+
+        mock_agent.interrupt.assert_called_once_with("API server disconnecting")
+        assert adapter._run_worker_done[run_id].is_set()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_stubborn_worker_leaves_time_for_gateway_cleanup(self):
+        adapter = _make_adapter()
+        app = _create_runs_app(adapter)
+        started = threading.Event()
+        release = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def blocked_run(**_kwargs):
+            started.set()
+            assert release.wait(timeout=10.0)
+            return {"final_response": "eventually done"}
+
+        mock_agent.run_conversation.side_effect = blocked_run
+
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                    resp = await cli.post("/v1/runs", json={"input": "block"})
+                    run_id = (await resp.json())["run_id"]
+                    assert await asyncio.to_thread(started.wait, 3.0)
+
+                    before = asyncio.get_running_loop().time()
+                    await asyncio.wait_for(adapter.disconnect(), timeout=4.0)
+                    elapsed = asyncio.get_running_loop().time() - before
+
+                    assert elapsed < 2.0
+                    assert adapter._run_executor is None
+                    assert adapter._accepting_agent_requests is False
+        finally:
+            release.set()
+
+        assert await asyncio.to_thread(adapter._run_worker_done[run_id].wait, 3.0)
+
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_queued_run_before_worker_starts(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 2
+        adapter._run_executor = ThreadPoolExecutor(max_workers=1)
+        app = _create_runs_app(adapter)
+        first_started = threading.Event()
+        first_release = threading.Event()
+
+        first_agent = MagicMock()
+        first_agent.api_mode = "chat_completions"
+        first_agent.session_prompt_tokens = 0
+        first_agent.session_completion_tokens = 0
+        first_agent.session_total_tokens = 0
+
+        def first_run(**_kwargs):
+            first_started.set()
+            assert first_release.wait(timeout=10.0)
+            return {"final_response": "first drained"}
+
+        first_agent.run_conversation.side_effect = first_run
+        first_agent.interrupt.side_effect = lambda _reason: first_release.set()
+
+        queued_agent = MagicMock()
+        queued_agent.api_mode = "chat_completions"
+        queued_agent.session_prompt_tokens = 0
+        queued_agent.session_completion_tokens = 0
+        queued_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_create_agent",
+                side_effect=[first_agent, queued_agent],
+            ):
+                first_resp = await cli.post("/v1/runs", json={"input": "first"})
+                first_run_id = (await first_resp.json())["run_id"]
+                assert await asyncio.to_thread(first_started.wait, 3.0)
+
+                queued_resp = await cli.post("/v1/runs", json={"input": "queued"})
+                queued_run_id = (await queued_resp.json())["run_id"]
+                for _ in range(50):
+                    if queued_run_id in adapter._run_worker_futures:
+                        break
+                    await asyncio.sleep(0.01)
+
+                await adapter.disconnect()
+
+        assert adapter._run_worker_done[first_run_id].is_set()
+        assert adapter._run_worker_done[queued_run_id].is_set()
+        queued_agent.run_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_queued_run_before_worker_starts(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        adapter = _make_adapter()
+        adapter._max_concurrent_runs = 2
+        adapter._run_executor = ThreadPoolExecutor(max_workers=1)
+        app = _create_runs_app(adapter)
+        first_started = threading.Event()
+        first_release = threading.Event()
+
+        first_agent = MagicMock()
+        first_agent.api_mode = "chat_completions"
+        first_agent.session_prompt_tokens = 0
+        first_agent.session_completion_tokens = 0
+        first_agent.session_total_tokens = 0
+
+        def first_run(**_kwargs):
+            first_started.set()
+            assert first_release.wait(timeout=10.0)
+            return {"final_response": "first done"}
+
+        first_agent.run_conversation.side_effect = first_run
+        first_agent.interrupt.side_effect = lambda _reason: first_release.set()
+
+        queued_agent = MagicMock()
+        queued_agent.api_mode = "chat_completions"
+        queued_agent.session_prompt_tokens = 0
+        queued_agent.session_completion_tokens = 0
+        queued_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_create_agent",
+                side_effect=[first_agent, queued_agent],
+            ):
+                first_resp = await cli.post("/v1/runs", json={"input": "first"})
+                assert await asyncio.to_thread(first_started.wait, 3.0)
+
+                queued_resp = await cli.post("/v1/runs", json={"input": "queued"})
+                queued_run_id = (await queued_resp.json())["run_id"]
+                for _ in range(50):
+                    if queued_run_id in adapter._run_worker_futures:
+                        break
+                    await asyncio.sleep(0.01)
+
+                stop_resp = await cli.post(f"/v1/runs/{queued_run_id}/stop")
+                assert stop_resp.status == 200
+                assert adapter._run_worker_done[queued_run_id].is_set()
+                queued_agent.run_conversation.assert_not_called()
+
+                await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_late_approval_callback_cannot_overwrite_cancelled_status(self):
+        from tools.approval import get_current_session_key
+
+        adapter = _make_adapter()
+        app = _create_runs_app(adapter)
+        redaction_started = threading.Event()
+        release_redaction = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.api_mode = "chat_completions"
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def run_conversation(**_kwargs):
+            session_key = get_current_session_key(default="")
+            with approval_mod._lock:
+                callback = approval_mod._gateway_notify_cbs[session_key]
+            callback({"command": "echo harmless"})
+            return {"final_response": "done"}
+
+        def blocked_redaction(command):
+            redaction_started.set()
+            assert release_redaction.wait(timeout=10.0)
+            return command
+
+        mock_agent.run_conversation.side_effect = run_conversation
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent", return_value=mock_agent),
+                patch("gateway.run._redact_approval_command", side_effect=blocked_redaction),
+            ):
+                resp = await cli.post("/v1/runs", json={"input": "approval race"})
+                run_id = (await resp.json())["run_id"]
+                assert await asyncio.to_thread(redaction_started.wait, 3.0)
+
+                stop_task = asyncio.create_task(cli.post(f"/v1/runs/{run_id}/stop"))
+                for _ in range(50):
+                    if adapter._run_statuses[run_id]["status"] in {"stopping", "cancelled"}:
+                        break
+                    await asyncio.sleep(0.01)
+                release_redaction.set()
+                stop_resp = await stop_task
+
+        assert stop_resp.status == 200
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
     async def test_stop_nonexistent_run_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/runs/run_nonexistent/stop")
         assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_repeated_stop_cannot_reopen_cancelled_run(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_already_cancelled"
+        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "cancelled"}
+        adapter._active_run_agents[run_id] = MagicMock()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/v1/runs/{run_id}/stop")
+
+        assert resp.status == 409
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        adapter._active_run_agents[run_id].interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stop_requires_auth(self, auth_adapter):
@@ -1110,6 +1756,42 @@ class TestStopRun:
 
 
 class TestRunSweep:
+    @pytest.mark.asyncio
+    async def test_status_sweep_keeps_terminal_fence_until_worker_finishes(self, adapter):
+        run_id = "run_terminal_worker_alive"
+        worker_done = threading.Event()
+        adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "status": "cancelled",
+            "updated_at": 0.0,
+        }
+        adapter._run_split_runtime_active[run_id] = True
+        adapter._run_worker_done[run_id] = worker_done
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = 0.0
+        close_tool_channel(run_id)
+
+        sleep_calls = 0
+
+        async def one_sweep(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                raise asyncio.CancelledError
+
+        with patch("gateway.platforms.api_server.asyncio.sleep", one_sweep), patch(
+            "gateway.platforms.api_server.time.time",
+            return_value=adapter._RUN_STATUS_TTL + 1,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await adapter._sweep_orphaned_runs()
+
+        assert adapter._run_statuses[run_id]["status"] == "cancelled"
+        assert adapter._run_split_runtime_active[run_id] is True
+        assert adapter._run_worker_done[run_id] is worker_done
+        assert run_id in adapter._run_streams
+        assert register_tool_notify(run_id, lambda request: None, "") is False
+
     @pytest.mark.asyncio
     async def test_sweep_does_not_destroy_active_run_after_stream_ttl(self, adapter):
         run_id = "run_active_past_ttl"

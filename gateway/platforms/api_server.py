@@ -33,15 +33,19 @@ Requires:
 """
 
 import asyncio
+import concurrent.futures
+from contextvars import ContextVar
 import hashlib
 import hmac
 import json
 import logging
 import math
 import os
+import queue
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -65,6 +69,82 @@ from gateway.platforms.base import (
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+_ACTIVE_API_RUN_WORKERS: Dict[str, threading.Event] = {}
+_ACTIVE_API_RUN_WORKERS_LOCK = threading.Lock()
+_RUN_STATUS_FENCES = frozenset({"stopping", "completed", "failed", "cancelled"})
+
+
+class _AgentAdmissionReservation:
+    __slots__ = ("generation", "pending")
+
+    def __init__(self, generation: int):
+        self.generation = generation
+        self.pending = True
+
+
+class _DaemonThreadPoolExecutor(concurrent.futures.Executor):
+    """Small daemon-worker executor for bounded, externally interruptible runs."""
+
+    def __init__(self, max_workers: int, thread_name_prefix: str):
+        self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue()
+        self._shutdown = False
+        self._lock = threading.Lock()
+        self._threads = [
+            threading.Thread(
+                target=self._worker,
+                name=f"{thread_name_prefix}_{index}",
+                daemon=True,
+            )
+            for index in range(max_workers)
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def _worker(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            future, fn, args, kwargs = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:
+                future.set_exception(exc)
+
+    def submit(self, fn, /, *args, **kwargs):
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            future = concurrent.futures.Future()
+            self._queue.put((future, fn, args, kwargs))
+            return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        with self._lock:
+            if not self._shutdown:
+                self._shutdown = True
+                if cancel_futures:
+                    while True:
+                        try:
+                            item = self._queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        if item is not None:
+                            item[0].cancel()
+                for _thread in self._threads:
+                    self._queue.put(None)
+        if wait:
+            for thread in self._threads:
+                thread.join()
+
+
+_API_CAPACITY_RESERVED: ContextVar[Optional[_AgentAdmissionReservation]] = ContextVar(
+    "api_server_capacity_reserved",
+    default=None,
+)
 
 
 def _hermes_version() -> str:
@@ -902,6 +982,14 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active split-runtime tool session key for each run_id. Shares the
         # per-run isolation namespace used by approvals, never caller session_id.
         self._run_tool_sessions: Dict[str, str] = {}
+        self._run_split_runtime_active: Dict[str, bool] = {}
+        # Tracks the actual executor thread separately from its cancellable
+        # asyncio wrapper so /stop cannot release capacity while Python work
+        # is still running.
+        self._run_worker_done: Dict[str, threading.Event] = {}
+        self._run_worker_futures: Dict[str, "concurrent.futures.Future"] = {}
+        self._run_executor: Optional[_DaemonThreadPoolExecutor] = None
+        self._request_executor: Optional[_DaemonThreadPoolExecutor] = None
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
@@ -915,6 +1003,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Number of in-flight runs on the non-streaming chat/responses paths
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
+        self._active_request_agents: Dict[str, Any] = {}
+        self._active_request_agents_lock = threading.Lock()
+        self._pending_agent_admissions: int = 0
+        self._accepting_agent_requests: bool = True
+        self._agent_admission_generation: int = 0
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1003,6 +1096,35 @@ class APIServerAdapter(BasePlatformAdapter):
         if not math.isfinite(timeout):
             timeout = 300.0
         return enabled and bool(routed_toolsets), routed_toolsets, max(0.1, timeout)
+
+    def _split_runtime_is_effective(
+        self,
+        enabled_toolsets: Optional[List[str]] = None,
+    ) -> bool:
+        """Return whether this server can expose the configured local tools."""
+
+        if not self._split_runtime_enabled:
+            return False
+        if enabled_toolsets is not None:
+            return "file" in enabled_toolsets
+        try:
+            from gateway.run import _load_gateway_config
+            from hermes_cli.tools_config import _get_platform_tools
+
+            return "file" in _get_platform_tools(_load_gateway_config(), "api_server")
+        except Exception as exc:
+            logger.error("Failed to resolve API-server toolsets for split runtime", exc_info=True)
+            raise RuntimeError(
+                "Split runtime is enabled, but the API-server toolset configuration "
+                "could not be resolved"
+            ) from exc
+
+    def _run_uses_split_runtime(self, run_id: str) -> bool:
+        """Return the run snapshot, resolving live config only before it exists."""
+
+        if run_id in self._run_split_runtime_active:
+            return self._run_split_runtime_active[run_id]
+        return self._split_runtime_is_effective()
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -1305,6 +1427,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1397,8 +1520,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 gateway_session_key or session_id,
             )
 
-        user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets is None:
+            user_config = _load_gateway_config()
+            enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        else:
+            enabled_toolsets = list(enabled_toolsets)
 
         max_iterations = _current_max_iterations()
 
@@ -1529,12 +1655,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        from gateway.run import _load_gateway_config
-        from hermes_cli.tools_config import _get_platform_tools
         from tools.execution_target import LOCAL_ROUTABLE_TOOLS
 
-        enabled_toolsets = _get_platform_tools(_load_gateway_config(), "api_server")
-        split_runtime_active = self._split_runtime_enabled and "file" in enabled_toolsets
+        split_runtime_active = self._split_runtime_is_effective()
         split_runtime_tools = sorted(LOCAL_ROUTABLE_TOOLS) if split_runtime_active else []
 
         return web.json_response({
@@ -1964,6 +2087,18 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        rejected, token = self._reserve_agent_admission()
+        if rejected is not None:
+            return rejected
+        try:
+            return await self._handle_session_chat_admitted(request)
+        finally:
+            self._release_agent_admission(token)
+
+    async def _handle_session_chat_admitted(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
         auth_err = self._check_auth(request)
         if auth_err:
@@ -1978,6 +2113,11 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        if not self._agent_admission_is_current():
+            return web.json_response(
+                _openai_error("API server is draining", code="server_draining"),
+                status=503,
+            )
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return err
@@ -2008,6 +2148,21 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        rejected, token = self._reserve_agent_admission()
+        if rejected is not None:
+            return rejected
+        try:
+            return await self._handle_session_chat_stream_admitted(request)
+        finally:
+            self._release_agent_admission(token)
+
+    async def _handle_session_chat_stream_admitted(
+        self,
+        request: "web.Request",
+    ) -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
         auth_err = self._check_auth(request)
         if auth_err:
@@ -2022,6 +2177,11 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        if not self._agent_admission_is_current():
+            return web.json_response(
+                _openai_error("API server is draining", code="server_draining"),
+                status=503,
+            )
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return err
@@ -2149,21 +2309,36 @@ class APIServerAdapter(BasePlatformAdapter):
         return response
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        rejected, token = self._reserve_agent_admission()
+        if rejected is not None:
+            return rejected
+        try:
+            return await self._handle_chat_completions_admitted(request)
+        finally:
+            self._release_agent_admission(token)
+
+    async def _handle_chat_completions_admitted(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
-
-        # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
 
         # Parse request body
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if not self._agent_admission_is_current():
+            return web.json_response(
+                _openai_error("API server is draining", code="server_draining"),
+                status=503,
+            )
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -3285,15 +3460,22 @@ class APIServerAdapter(BasePlatformAdapter):
         return response
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        rejected, token = self._reserve_agent_admission()
+        if rejected is not None:
+            return rejected
+        try:
+            return await self._handle_responses_admitted(request)
+        finally:
+            self._release_agent_admission(token)
+
+    async def _handle_responses_admitted(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
-
-        # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -3307,6 +3489,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(
                 {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
                 status=400,
+            )
+        if not self._agent_admission_is_current():
+            return web.json_response(
+                _openai_error("API server is draining", code="server_draining"),
+                status=503,
             )
 
         raw_input = body.get("input")
@@ -4064,8 +4251,26 @@ class APIServerAdapter(BasePlatformAdapter):
         limit = self._max_concurrent_runs
         if limit <= 0:
             return None
-        inflight = self._inflight_agent_runs + sum(
-            1 for task in self._active_run_tasks.values() if not task.done()
+        active_run_ids = {
+            run_id
+            for run_id, task in self._active_run_tasks.items()
+            if not task.done()
+        }
+        active_run_ids.update(
+            run_id
+            for run_id, done in self._run_worker_done.items()
+            if not done.is_set()
+        )
+        with _ACTIVE_API_RUN_WORKERS_LOCK:
+            active_run_ids.update(
+                run_id
+                for run_id, done in _ACTIVE_API_RUN_WORKERS.items()
+                if not done.is_set()
+            )
+        inflight = (
+            self._inflight_agent_runs
+            + self._pending_agent_admissions
+            + len(active_run_ids)
         )
         if inflight >= limit:
             return web.json_response(
@@ -4078,6 +4283,62 @@ class APIServerAdapter(BasePlatformAdapter):
                 headers={"Retry-After": "1"},
             )
         return None
+
+    def _reserve_agent_admission(self):
+        """Reserve capacity before an agent-serving route awaits its body."""
+        if not self._accepting_agent_requests:
+            return (
+                web.json_response(
+                    _openai_error("API server is draining", code="server_draining"),
+                    status=503,
+                ),
+                None,
+            )
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited, None
+        self._pending_agent_admissions += 1
+        reservation = _AgentAdmissionReservation(self._agent_admission_generation)
+        return None, (_API_CAPACITY_RESERVED.set(reservation), reservation)
+
+    def _release_agent_admission(self, token) -> None:
+        if token is None:
+            return
+        context_token, reservation = token
+        _API_CAPACITY_RESERVED.reset(context_token)
+        if reservation.pending:
+            reservation.pending = False
+            self._pending_agent_admissions = max(0, self._pending_agent_admissions - 1)
+
+    def _agent_admission_is_current(self) -> bool:
+        reservation = _API_CAPACITY_RESERVED.get()
+        return (
+            self._accepting_agent_requests
+            and reservation is not None
+            and reservation.generation == self._agent_admission_generation
+        )
+
+    def _get_run_executor(self) -> _DaemonThreadPoolExecutor:
+        """Return the adapter-owned executor for structured `/v1/runs` work."""
+
+        if self._run_executor is None:
+            max_workers = self._max_concurrent_runs if self._max_concurrent_runs > 0 else 10
+            self._run_executor = _DaemonThreadPoolExecutor(
+                max_workers=max(1, max_workers),
+                thread_name_prefix="hermes-api-run",
+            )
+        return self._run_executor
+
+    def _get_request_executor(self) -> _DaemonThreadPoolExecutor:
+        """Return the executor for non-structured agent-serving routes."""
+
+        if self._request_executor is None:
+            max_workers = self._max_concurrent_runs if self._max_concurrent_runs > 0 else 10
+            self._request_executor = _DaemonThreadPoolExecutor(
+                max_workers=max(1, max_workers),
+                thread_name_prefix="hermes-api-request",
+            )
+        return self._request_executor
 
     @staticmethod
     def _bind_api_server_session(
@@ -4141,6 +4402,13 @@ class APIServerAdapter(BasePlatformAdapter):
         another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_running_loop()
+        request_worker_id = f"request_{uuid.uuid4().hex}"
+        reservation = _API_CAPACITY_RESERVED.get()
+        admission_generation = (
+            reservation.generation
+            if reservation is not None
+            else self._agent_admission_generation
+        )
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -4150,6 +4418,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
             )
+            agent = None
             try:
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
@@ -4161,6 +4430,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     gateway_session_key=gateway_session_key,
                     route=route,
                 )
+                with self._active_request_agents_lock:
+                    self._active_request_agents[request_worker_id] = agent
+                if (
+                    not self._accepting_agent_requests
+                    or admission_generation != self._agent_admission_generation
+                ):
+                    try:
+                        agent.interrupt("API server disconnecting")
+                    except Exception:
+                        pass
+                    raise RuntimeError("API server is draining")
                 if agent_ref is not None:
                     agent_ref[0] = agent
                 effective_task_id = session_id or str(uuid.uuid4())
@@ -4182,13 +4462,40 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
+                with self._active_request_agents_lock:
+                    if self._active_request_agents.get(request_worker_id) is agent:
+                        self._active_request_agents.pop(request_worker_id, None)
                 clear_session_vars(tokens)
 
+        if self._agent_admission_is_current() and reservation is not None and reservation.pending:
+            reservation.pending = False
+            self._pending_agent_admissions = max(0, self._pending_agent_admissions - 1)
         self._inflight_agent_runs += 1
+
+        def _release_capacity() -> None:
+            self._inflight_agent_runs = max(0, self._inflight_agent_runs - 1)
+
+        def _run_tracked():
+            try:
+                return _run()
+            finally:
+                try:
+                    loop.call_soon_threadsafe(_release_capacity)
+                except RuntimeError:
+                    _release_capacity()
+
         try:
-            return await loop.run_in_executor(None, _run)
-        finally:
-            self._inflight_agent_runs -= 1
+            worker_future = self._get_request_executor().submit(_run_tracked)
+            future = asyncio.wrap_future(worker_future, loop=loop)
+        except Exception:
+            _release_capacity()
+            raise
+        try:
+            return await future
+        except asyncio.CancelledError:
+            if worker_future.cancel():
+                _release_capacity()
+            raise
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -4215,16 +4522,24 @@ class APIServerAdapter(BasePlatformAdapter):
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
+            def _emit() -> None:
+                status_entry = self._run_statuses.get(run_id)
+                if status_entry is None:
+                    return
+                current_status = status_entry.get("status", "running")
+                if current_status in _RUN_STATUS_FENCES:
+                    return
+                self._set_run_status(
+                    run_id,
+                    current_status,
+                    last_event=event.get("event"),
+                )
+                q = self._run_streams.get(run_id)
+                if q is not None:
+                    q.put_nowait(event)
+
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                loop.call_soon_threadsafe(_emit)
             except Exception:
                 pass
 
@@ -4259,6 +4574,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return _callback
 
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
+        """Reserve capacity before any request-body await, then start a run."""
+
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        rejected, token = self._reserve_agent_admission()
+        if rejected is not None:
+            return rejected
+        try:
+            return await self._handle_runs_admitted(request)
+        finally:
+            self._release_agent_admission(token)
+
+    async def _handle_runs_admitted(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         auth_err = self._check_auth(request)
         if auth_err:
@@ -4269,16 +4598,15 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-
         try:
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if not self._agent_admission_is_current():
+            return web.json_response(
+                _openai_error("API server is draining", code="server_draining"),
+                status=503,
+            )
 
         raw_input = body.get("input")
         if not raw_input:
@@ -4343,6 +4671,23 @@ class APIServerAdapter(BasePlatformAdapter):
         # concurrent runs can intentionally share them, and resolving an
         # approval for one run must not unblock another run's dangerous command.
         approval_session_key = run_id
+        try:
+            from gateway.run import _load_gateway_config
+            from hermes_cli.tools_config import _get_platform_tools
+
+            run_enabled_toolsets = sorted(
+                _get_platform_tools(_load_gateway_config(), "api_server")
+            )
+        except Exception:
+            logger.exception("Failed to snapshot API-server toolsets for run admission")
+            return web.json_response(
+                _openai_error(
+                    "API-server toolset configuration could not be resolved",
+                    code="toolset_resolution_failed",
+                ),
+                status=500,
+            )
+        split_runtime_active = self._split_runtime_is_effective(run_enabled_toolsets)
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
@@ -4350,7 +4695,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
-        self._run_tool_sessions[run_id] = approval_session_key
+        self._run_split_runtime_active[run_id] = split_runtime_active
+        if split_runtime_active:
+            self._run_tool_sessions[run_id] = approval_session_key
+        worker_done = threading.Event()
+        worker_done.set()
+        self._run_worker_done[run_id] = worker_done
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -4389,8 +4739,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    enabled_toolsets=run_enabled_toolsets,
                 )
-                if self._split_runtime_enabled and getattr(agent, "api_mode", "") == "codex_app_server":
+                if split_runtime_active and getattr(agent, "api_mode", "") == "codex_app_server":
                     error_msg = (
                         "Split runtime is not supported by the codex_app_server runtime; "
                         "that runtime executes file operations inside the server-side Codex process."
@@ -4413,6 +4764,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
+                    if self._run_statuses.get(run_id, {}).get("status") in _RUN_STATUS_FENCES:
+                        return
                     event = dict(approval_data or {})
                     # Redact credentials from the command before it enters the
                     # SSE/API event stream — same egress bug as #48456, second
@@ -4421,20 +4774,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     if "command" in event:
                         from gateway.run import _redact_approval_command
 
-                        event["command"] = _redact_approval_command(event.get("command"))
+                        event["command"] = _redact_approval_command(str(event["command"]))
                     event.update({
                         "event": "approval.request",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "choices": ["once", "session", "always", "deny"],
                     })
-                    self._set_run_status(
-                        run_id,
-                        "waiting_for_approval",
-                        last_event="approval.request",
-                    )
+
+                    def _emit() -> None:
+                        status_entry = self._run_statuses.get(run_id)
+                        if status_entry is None or status_entry.get("status") in _RUN_STATUS_FENCES:
+                            return
+                        self._set_run_status(
+                            run_id,
+                            "waiting_for_approval",
+                            last_event="approval.request",
+                        )
+                        q.put_nowait(event)
+
                     try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
+                        loop.call_soon_threadsafe(_emit)
                     except Exception:
                         pass
 
@@ -4442,8 +4802,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     def _update() -> None:
                         from gateway.tool_channel_state import pending_tool_request_count
 
-                        current = self._run_statuses.get(run_id, {}).get("status")
-                        if current in {"completed", "failed", "cancelled"}:
+                        status_entry = self._run_statuses.get(run_id)
+                        if status_entry is None:
+                            return
+                        current = status_entry.get("status")
+                        if current in _RUN_STATUS_FENCES:
                             return
                         status = (
                             "waiting_for_tool_result"
@@ -4460,10 +4823,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
                     loop.call_soon_threadsafe(_update)
 
-                def _run_sync():
+                def _run_sync_inner():
                     from gateway.session_context import clear_session_vars
                     from gateway.tool_channel_state import (
-                        close_tool_channel,
                         reset_current_split_runtime,
                         set_current_split_runtime,
                     )
@@ -4488,7 +4850,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         split_runtime_token = set_current_split_runtime({
-                            "enabled": self._split_runtime_enabled,
+                            "enabled": split_runtime_active,
                             "routed_toolsets": self._split_runtime_toolsets,
                             "request_timeout_seconds": self._split_runtime_request_timeout,
                             "_request_state_callback": _request_state_callback,
@@ -4501,7 +4863,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     finally:
                         try:
                             unregister_gateway_notify(approval_session_key)
-                            close_tool_channel(approval_session_key)
                         finally:
                             if split_runtime_token is not None:
                                 try:
@@ -4525,7 +4886,31 @@ class APIServerAdapter(BasePlatformAdapter):
                     }
                     return r, u
 
-                result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                def _run_sync():
+                    try:
+                        return _run_sync_inner()
+                    finally:
+                        worker_done.set()
+                        self._active_run_agents.pop(run_id, None)
+                        with _ACTIVE_API_RUN_WORKERS_LOCK:
+                            if _ACTIVE_API_RUN_WORKERS.get(run_id) is worker_done:
+                                _ACTIVE_API_RUN_WORKERS.pop(run_id, None)
+
+                worker_done.clear()
+                with _ACTIVE_API_RUN_WORKERS_LOCK:
+                    _ACTIVE_API_RUN_WORKERS[run_id] = worker_done
+                try:
+                    worker_future = self._get_run_executor().submit(_run_sync)
+                except BaseException:
+                    worker_done.set()
+                    with _ACTIVE_API_RUN_WORKERS_LOCK:
+                        if _ACTIVE_API_RUN_WORKERS.get(run_id) is worker_done:
+                            _ACTIVE_API_RUN_WORKERS.pop(run_id, None)
+                    raise
+                self._run_worker_futures[run_id] = worker_future
+                # Keep queued/running Python work alive after the asyncio
+                # wrapper is cancelled so worker_done remains authoritative.
+                result, usage = await asyncio.shield(asyncio.wrap_future(worker_future))
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
@@ -4595,8 +4980,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those
-                # waits immediately; the in-thread unregister is harmlessly
-                # idempotent on normal completion.
+                # waits immediately. Channel closure occurs only after the
+                # terminal run status above has been published.
                 try:
                     from gateway.tool_channel_state import close_tool_channel
                     from tools.approval import unregister_gateway_notify
@@ -4610,7 +4995,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     q.put_nowait(None)
                 except Exception:
                     pass
-                self._active_run_agents.pop(run_id, None)
+                if worker_done.is_set():
+                    self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._run_tool_sessions.pop(run_id, None)
@@ -4655,6 +5041,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        run_split_runtime_active = self._run_uses_split_runtime(run_id)
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
@@ -4675,7 +5062,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         stream_kind = "tool_executor" if wants_executor else "events"
 
-        if wants_executor and not self._split_runtime_enabled:
+        if wants_executor and not run_split_runtime_active:
             return web.json_response(
                 _openai_error(
                     "Split runtime is not enabled for this API server.",
@@ -4703,7 +5090,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
 
         consumer_lease: Optional[tuple[str, str]] = None
-        if wants_executor or self._split_runtime_enabled:
+        if wants_executor or run_split_runtime_active:
             existing_consumer = self._run_event_consumers.get(run_id)
             if existing_consumer is not None:
                 existing_kind = (
@@ -4740,7 +5127,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     if not is_tool_request_pending(executor_session_key or "", request_id):
                         return
                     current = self._run_statuses.get(run_id, {}).get("status")
-                    if current in {"completed", "failed", "cancelled"}:
+                    if current in _RUN_STATUS_FENCES:
                         return
                     self._set_run_status(
                         run_id,
@@ -4800,11 +5187,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         timeout=write_timeout,
                     )
                     break
-                if event.get("event") == "tool.request" and executor_session_key:
+                if event.get("event") == "tool.request":
                     from gateway.tool_channel_state import is_tool_request_pending
 
+                    channel_session_key = executor_session_key or run_id
                     if not is_tool_request_pending(
-                        executor_session_key,
+                        channel_session_key,
                         str(event.get("request_id") or ""),
                     ):
                         continue
@@ -4851,6 +5239,14 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if self._run_statuses.get(run_id, {}).get("status") in _RUN_STATUS_FENCES:
+            return web.json_response(
+                _openai_error(
+                    f"Run is no longer accepting approvals: {run_id}",
+                    code="approval_not_active",
+                ),
+                status=409,
+            )
 
         raw_choice = str(body.get("choice", "")).strip().lower()
         aliases = {"approve": "once", "approved": "once", "allow": "once"}
@@ -4928,7 +5324,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        if not self._split_runtime_enabled:
+        if not self._run_uses_split_runtime(run_id):
             return web.json_response(
                 _openai_error(
                     "Split runtime is not enabled for this API server.",
@@ -4968,6 +5364,11 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         session_key = self._run_tool_sessions.get(run_id)
+        if not session_key and status.get("status") in _RUN_STATUS_FENCES:
+            # Terminal close removes the active mapping but retains resolved
+            # request IDs until the bounded status-TTL sweep, so a client may
+            # safely retry after losing the original HTTP response.
+            session_key = run_id
         if not session_key:
             return web.json_response(
                 _openai_error(
@@ -5021,7 +5422,7 @@ class APIServerAdapter(BasePlatformAdapter):
         response_status = "duplicate" if outcome == "duplicate" else "resolved"
         if outcome == "resolved":
             current_status = self._run_statuses.get(run_id, {}).get("status")
-            if current_status not in {"completed", "failed", "cancelled"}:
+            if current_status not in _RUN_STATUS_FENCES:
                 run_status = (
                     "waiting_for_tool_result"
                     if pending_tool_request_count(session_key) > 0
@@ -5057,9 +5458,20 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = request.match_info["run_id"]
         agent = self._active_run_agents.get(run_id)
         task = self._active_run_tasks.get(run_id)
+        current_status = self._run_statuses.get(run_id, {}).get("status")
 
         if agent is None and task is None:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+        if current_status == "stopping":
+            return web.json_response({"run_id": run_id, "status": "stopping"})
+        if current_status in {"completed", "failed", "cancelled"}:
+            return web.json_response(
+                _openai_error(
+                    f"Run is already terminal: {run_id}",
+                    code="run_not_active",
+                ),
+                status=409,
+            )
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
 
@@ -5068,6 +5480,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent.interrupt("Stop requested via API")
             except Exception:
                 pass
+
+        worker_future = self._run_worker_futures.get(run_id)
+        if worker_future is not None and worker_future.cancel():
+            worker_done = self._run_worker_done.get(run_id)
+            if worker_done is not None:
+                worker_done.set()
+            with _ACTIVE_API_RUN_WORKERS_LOCK:
+                if _ACTIVE_API_RUN_WORKERS.get(run_id) is worker_done:
+                    _ACTIVE_API_RUN_WORKERS.pop(run_id, None)
 
         if task is not None and not task.done():
             task.cancel()
@@ -5102,6 +5523,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     run_id not in self._active_run_tasks
                     or self._active_run_tasks[run_id].done()
                 )
+                and (
+                    run_id not in self._run_worker_done
+                    or self._run_worker_done[run_id].is_set()
+                )
             ]
             for run_id in stale:
                 logger.debug("[api_server] sweeping orphaned run %s", run_id)
@@ -5128,15 +5553,29 @@ class APIServerAdapter(BasePlatformAdapter):
                 for run_id, status in list(self._run_statuses.items())
                 if status.get("status") in {"completed", "failed", "cancelled"}
                 and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL
+                and (
+                    run_id not in self._run_worker_done
+                    or self._run_worker_done[run_id].is_set()
+                )
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                self._run_split_runtime_active.pop(run_id, None)
+                worker_done = self._run_worker_done.get(run_id)
+                if worker_done is None or worker_done.is_set():
+                    self._run_worker_done.pop(run_id, None)
+                    self._run_worker_futures.pop(run_id, None)
                 try:
                     from gateway.tool_channel_state import clear_tool_channel_state
 
                     clear_tool_channel_state(run_id)
                 except Exception:
                     pass
+
+            for run_id, worker_done in list(self._run_worker_done.items()):
+                if worker_done.is_set() and run_id not in self._active_run_tasks:
+                    self._run_worker_done.pop(run_id, None)
+                    self._run_worker_futures.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
@@ -5186,6 +5625,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""
+        self._accepting_agent_requests = True
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
@@ -5313,7 +5753,81 @@ class APIServerAdapter(BasePlatformAdapter):
         and turns the whole gateway into a zombie
         (OSError: [Errno 24] Too many open files, #37011).
         """
+        self._accepting_agent_requests = False
+        self._agent_admission_generation += 1
         self._mark_disconnected()
+        with self._active_request_agents_lock:
+            request_agents = list(self._active_request_agents.values())
+        for agent in request_agents:
+            try:
+                agent.interrupt("API server disconnecting")
+            except Exception:
+                pass
+        active_run_ids = set(self._active_run_tasks) | set(self._run_worker_futures)
+        for run_id in active_run_ids:
+            agent = self._active_run_agents.get(run_id)
+            if agent is not None:
+                try:
+                    agent.interrupt("API server disconnecting")
+                except Exception:
+                    pass
+            try:
+                from gateway.tool_channel_state import close_tool_channel
+                from tools.approval import unregister_gateway_notify
+
+                session_key = self._run_approval_sessions.get(run_id, run_id)
+                unregister_gateway_notify(session_key)
+                close_tool_channel(session_key)
+            except Exception:
+                pass
+            task = self._active_run_tasks.get(run_id)
+            if task is not None and not task.done():
+                task.cancel()
+            worker_future = self._run_worker_futures.get(run_id)
+            if worker_future is not None and worker_future.cancel():
+                worker_done = self._run_worker_done.get(run_id)
+                if worker_done is not None:
+                    worker_done.set()
+                with _ACTIVE_API_RUN_WORKERS_LOCK:
+                    _ACTIVE_API_RUN_WORKERS.pop(run_id, None)
+
+        # Gateway teardown wraps disconnect() in a 5s outer timeout. Keep the
+        # worker-drain grace well inside that budget so listener/runner cleanup
+        # always gets a chance to run even when a Python worker is stubborn.
+        deadline = asyncio.get_running_loop().time() + 0.5
+        while (
+            any(
+                not done.is_set()
+                for run_id, done in self._run_worker_done.items()
+                if run_id in active_run_ids
+            )
+            or self._inflight_agent_runs > 0
+        ) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        still_running = [
+            run_id
+            for run_id, done in self._run_worker_done.items()
+            if run_id in active_run_ids and not done.is_set()
+        ]
+        if still_running:
+            logger.warning(
+                "[%s] %d API run worker(s) still draining after disconnect: %s",
+                self.name,
+                len(still_running),
+                ", ".join(still_running),
+            )
+        if self._inflight_agent_runs > 0:
+            logger.warning(
+                "[%s] %d request worker(s) still draining after disconnect",
+                self.name,
+                self._inflight_agent_runs,
+            )
+        if self._run_executor is not None:
+            self._run_executor.shutdown(wait=False, cancel_futures=True)
+            self._run_executor = None
+        if self._request_executor is not None:
+            self._request_executor.shutdown(wait=False, cancel_futures=True)
+            self._request_executor = None
         if self._response_store is not None:
             try:
                 self._response_store.close()

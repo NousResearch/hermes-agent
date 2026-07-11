@@ -28,6 +28,7 @@ import os
 import re
 import shlex
 import uuid
+from typing import Optional
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -204,6 +205,7 @@ def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
+    inline_only_tool_call_ids: Optional[set[str]] = None,
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
@@ -213,6 +215,7 @@ def enforce_turn_budget(
 
     Mutates the list in-place and returns it.
     """
+    inline_only_ids = inline_only_tool_call_ids or set()
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):
@@ -234,11 +237,12 @@ def enforce_turn_budget(
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
+        message_env = None if tool_use_id in inline_only_ids else env
         replacement = maybe_persist_tool_result(
             content=content,
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
-            env=env,
+            env=message_env,
             config=config,
             threshold=0,
         )

@@ -310,7 +310,6 @@ def close_tool_channel(session_key: str) -> None:
         _closed_channels.add(session_key)
         _tool_notify.pop(session_key, None)
         _attached_clients.pop(session_key, None)
-        _seen_results.pop(session_key, None)
         entries = _tool_queues.pop(session_key, [])
         _attached_condition.notify_all()
     for entry in entries:

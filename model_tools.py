@@ -1265,9 +1265,7 @@ def handle_function_call(
                 try:
                     from agent.split_runtime_router import (
                         _NOT_ROUTED,
-                        _tool_error,
                         route_tool_locally,
-                        should_route_tool_locally,
                     )
 
                     routed = route_tool_locally(

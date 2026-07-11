@@ -111,6 +111,19 @@ def test_completed_request_id_remains_idempotent_across_executor_reconnect():
     assert resolve_tool_result(session_key, request_id, "retry") == "duplicate"
 
 
+def test_completed_request_id_remains_idempotent_after_terminal_close():
+    session_key = "run-terminal-idempotency"
+    assert register_tool_notify(session_key, lambda request: None, "token-a") is True
+    entry = submit_tool_request(session_key, {"tool_call_id": "call_once"})
+    assert entry is not None
+    request_id = entry.request["request_id"]
+    assert resolve_tool_result(session_key, request_id, "done") == "resolved"
+
+    close_tool_channel(session_key)
+
+    assert resolve_tool_result(session_key, request_id, "retry") == "duplicate"
+
+
 def test_unicode_executor_tokens_compare_without_type_error():
     session_key = "run-unicode-token"
     token = "executor-🔐"

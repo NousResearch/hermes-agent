@@ -1,0 +1,45 @@
+# .github/workflows/nix-build.yml
+#
+# Offline Nix builds of the flake outputs (.#web, .#tui, .#desktop). Guards two
+# classes of regression that merge green under the networked Docker/`npm ci`
+# paths but break downstream Nix consumers:
+#
+#   1. Pruned lockfile. `.#web` and `.#tui` build via `importNpmLock`, which
+#      vendors *only* what package-lock.json enumerates — with no network during
+#      the build. So a lockfile missing a platform-specific optional package
+#      (e.g. an incremental `npm install` on macOS pruning the
+#      `@esbuild/<platform>` natives) fails here, even though the Docker image
+#      build and `npm ci` (both networked) succeed by fetching it at build time.
+#
+#   2. Stale Electron-headers hash. `.#desktop`'s renderer compiles node-pty
+#      against Electron's node headers. Those now come from nixpkgs'
+#      `electron.headers` (version-locked to `electron`); this job builds
+#      `.#desktop` so that if anyone reintroduces a hand-pinned headers fetch,
+#      the fixed-output hash it desyncs on the next nixpkgs `electron` bump is
+#      caught here — at build time — instead of only in downstream consumers.
+#
+# No workflow built the flake offline before this job (the `nix-setup` composite
+# existed but nothing called it), so both classes could merge green.
+#
+# Scope: `.#web` / `.#tui` are the lightweight npm bundles; both vendor from the
+# root package-lock.json via importNpmLock, so building them exercises the exact
+# offline path a prune breaks. `.#desktop` is heavier — its wrapper pulls the
+# full uv2nix Python venv — but Cachix keeps that cheap on cache-hit while the
+# renderer's native compile reliably exercises class (2).
+name: Nix build
+
+on:
+  workflow_call:
+
+jobs:
+  nix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/nix-setup
+      # retry covers transient registry blips while importNpmLock fetches the
+      # npm tarballs as fixed-output derivations (same rationale as the npm ci
+      # retry in typecheck.yml).
+      - uses: ./.github/actions/retry
+        with:
+          command: nix build -L --no-link .#web .#tui .#desktop

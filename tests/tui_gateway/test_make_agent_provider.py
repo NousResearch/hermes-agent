@@ -264,6 +264,96 @@ def test_probe_config_health_flags_null_personalities_with_active_personality():
     assert "agent.personalities" in msg
 
 
+def test_make_agent_discovers_profile_mcp_before_tool_snapshot():
+    """Dashboard profile sessions must discover that profile's MCP tools before
+    constructing AIAgent.
+
+    The dashboard process can be launched from one HERMES_HOME while the user
+    opens a Desktop chat under another profile. Startup MCP discovery only covers
+    the launch profile; without this per-session discovery, AIAgent snapshots an
+    empty/non-MCP registry for the selected profile and the model never receives
+    those MCP tool schemas.
+    """
+
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "glm-5"},
+        "mcp_servers": {"profile-mcp": {"enabled": True, "url": "http://localhost/mcp"}},
+    }
+
+    call_order = []
+
+    def record_discover():
+        call_order.append("discover")
+        return ["mcp_profile_mcp_ping"]
+
+    def record_agent(*args, **kwargs):
+        call_order.append("agent")
+        return MagicMock()
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=["profile-mcp"]),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("tools.mcp_tool.discover_mcp_tools", side_effect=record_discover) as mock_discover,
+        patch("run_agent.AIAgent", side_effect=record_agent) as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-profile-mcp", "key-profile-mcp")
+
+    mock_discover.assert_called_once()
+    assert call_order == ["discover", "agent"]
+    assert mock_agent.call_args.kwargs["enabled_toolsets"] == ["profile-mcp"]
+
+
+def test_make_agent_skips_profile_mcp_discovery_when_unconfigured():
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "glm-5"}}
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("tools.mcp_tool.discover_mcp_tools") as mock_discover,
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-no-mcp", "key-no-mcp")
+
+    mock_discover.assert_not_called()
+    assert mock_agent.called
+
+
 def test_make_agent_tolerates_null_config_sections():
     """Bare `agent:` / `display:` keys in ~/.hermes/config.yaml parse as
     None. cfg.get("agent", {}) returns None (default only fires on missing

@@ -4504,6 +4504,27 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+
+    # Desktop dashboard sessions can be created for a profile that is different
+    # from the dashboard process' launch HERMES_HOME. The dashboard startup MCP
+    # discovery thread only sees the launch profile, so a newly-created profile
+    # session (for example `epam`) can reach AIAgent construction before that
+    # profile's MCP servers have ever been discovered in this process. AIAgent
+    # snapshots tools once in __init__, so waiting for the launch-profile thread
+    # is not sufficient: discover the *currently bound* profile's MCP servers
+    # here, while the caller's profile HERMES_HOME override is active, before the
+    # tool snapshot is built.
+    try:
+        raw_mcp = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+        if isinstance(raw_mcp, dict) and raw_mcp:
+            from tools.mcp_tool import discover_mcp_tools
+
+            discover_mcp_tools()
+    except Exception:
+        logger.warning(
+            "Profile MCP tool discovery failed before agent snapshot",
+            exc_info=True,
+        )
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()

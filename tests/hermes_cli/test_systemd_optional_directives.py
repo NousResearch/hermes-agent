@@ -261,11 +261,26 @@ class TestSystemdUnitPathNormalization:
     treated as current — otherwise every restart rewrites it + daemon-reloads.
     """
 
-    def test_masks_path_value(self):
+    def test_masks_only_volatile_mnt_segments(self):
         from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        # Same deterministic entry (/a/bin), differing volatile /mnt/* payloads.
         a = 'Environment="PATH=/a/bin:/mnt/c/WINDOWS/system32"'
         b = 'Environment="PATH=/a/bin:/mnt/c/Users/user/AppData/Local/Microsoft/WindowsApps"'
         assert _normalize_systemd_unit_for_comparison(a) == _normalize_systemd_unit_for_comparison(b)
+
+    def test_non_mnt_path_difference_survives_normalization(self):
+        """A change to a deterministic (non-/mnt) PATH entry must NOT be masked
+        away — otherwise real service-PATH updates (Node dir, service bins) would
+        be silently treated as current. This is the case the reviewer flagged."""
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        a = 'Environment="PATH=/opt/node-v20/bin:/mnt/c/WINDOWS/system32"'
+        b = 'Environment="PATH=/opt/node-v22/bin:/mnt/c/WINDOWS/system32"'
+        assert _normalize_systemd_unit_for_comparison(a) != _normalize_systemd_unit_for_comparison(b)
+
+    def test_mask_helper_drops_mnt_keeps_service_entries(self):
+        from hermes_cli.gateway import _mask_volatile_wsl_interop_path
+        value = "/home/a/venv/bin:/mnt/c/WINDOWS/system32:/usr/bin:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/"
+        assert _mask_volatile_wsl_interop_path(value) == "/home/a/venv/bin:/usr/bin"
 
     def test_non_path_differences_still_visible(self):
         from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
@@ -319,6 +334,48 @@ WantedBy=default.target
         )
 
         assert gw.systemd_unit_is_current(system=False) is True
+
+    def test_unit_differing_only_by_non_mnt_path_is_outdated(self, tmp_path, monkeypatch):
+        """Regression for the reviewer's concern: when the ONLY difference is a
+        deterministic (non-/mnt) PATH entry — everything else, including all
+        other directives, identical — the unit must still be flagged stale so
+        refresh_systemd_unit_if_needed() rewrites and daemon-reloads it."""
+        from hermes_cli import gateway as gw
+
+        base = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/home/a/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run
+WorkingDirectory=/home/a/.hermes
+Environment="PATH={path}"
+Environment="VIRTUAL_ENV=/home/a/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=/home/a/.hermes"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        # Identical volatile /mnt/* payload; only the deterministic Node dir moved.
+        installed = base.format(
+            path="/opt/node-v20/bin:/mnt/c/WINDOWS/system32:/usr/bin:/bin"
+        )
+        regenerated = base.format(
+            path="/opt/node-v22/bin:/mnt/c/WINDOWS/system32:/usr/bin:/bin"
+        )
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: regenerated,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is False
 
     def test_unit_differing_by_hermes_home_still_outdated(self, tmp_path, monkeypatch):
         """PATH masking must not hide a genuinely changed non-PATH directive."""

@@ -2230,7 +2230,7 @@ class TestWebServerEndpoints:
 
         assert data["name"] == "backup"
         assert captured["name"] == "backup"
-        assert captured["args"] == ["backup", str(archive)]
+        assert captured["args"] == ["backup", "--output", str(archive)]
         assert archive.parent == get_hermes_home() / "backups"
         assert archive.name.startswith("hermes-backup-")
         assert archive.suffix == ".zip"
@@ -2257,8 +2257,35 @@ class TestWebServerEndpoints:
         archive = Path(resp.json()["archive"])
 
         assert archive.parent == hosted_home / "backups"
-        assert captured["args"] == ["backup", str(archive)]
+        assert captured["args"] == ["backup", "--output", str(archive)]
         assert archive.parent.is_dir()
+
+    def test_ops_backup_passes_requested_archive_as_output_option(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        captured = {}
+
+        def fake_spawn(subcommand, name):
+            captured["args"] = subcommand
+            captured["name"] = name
+            from types import SimpleNamespace as NS
+            return NS(pid=12345)
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post(
+            "/api/ops/backup",
+            json={"output": "/tmp/requested-backup.zip"},
+        )
+
+        assert resp.status_code == 200
+        assert captured["name"] == "backup"
+        assert captured["args"] == [
+            "backup",
+            "--output",
+            "/tmp/requested-backup.zip",
+        ]
+        assert "archive" not in resp.json()
 
     def test_ops_backup_download_streams_dashboard_backup(self, tmp_path):
         import hermes_cli.web_server as ws

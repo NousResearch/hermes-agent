@@ -23,6 +23,7 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.route_depth_bar import apply_route_depth_bar
@@ -65,6 +66,27 @@ def _runtime_turn_fact_dicts(agent):
             yield value
 
 
+def _client_coordination_turn_fact_dicts(agent):
+    client = getattr(agent, "client", None)
+    method = getattr(client, "coordination_turn_facts", None)
+    if not callable(method):
+        return
+    try:
+        facts = method()
+    except Exception:
+        return
+    if isinstance(facts, Mapping):
+        yield facts
+
+
+def _apply_turn_fact_dicts(receipt: TurnReceipt, fact_dicts) -> None:
+    for facts in fact_dicts or []:
+        try:
+            apply_turn_facts(receipt, facts)
+        except Exception:
+            continue
+
+
 def _apply_runtime_route_depth_bar(
     agent,
     *,
@@ -103,8 +125,8 @@ def _apply_runtime_route_depth_bar(
         messages=current_turn_messages,
         agent=agent,
     )
-    for facts in _runtime_turn_fact_dicts(agent):
-        apply_turn_facts(receipt, facts)
+    _apply_turn_fact_dicts(receipt, _runtime_turn_fact_dicts(agent))
+    _apply_turn_fact_dicts(receipt, _client_coordination_turn_fact_dicts(agent))
     if isinstance(user_message, str) and user_message.startswith(("说人话", "用人话")):
         receipt.human_language_state = "seen"
     agent._current_turn_receipt = receipt

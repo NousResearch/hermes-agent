@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,6 +45,7 @@ class FakeAgent:
             model="test-model",
             platform="cli",
         )
+        self.client: Any = None
         self.persisted: list[dict[str, Any]] = []
 
     def _handle_max_iterations(self, messages, api_call_count):
@@ -83,6 +85,24 @@ class FakeAgent:
         pass
 
 
+def _finalize(agent: FakeAgent, *, final_response: str, messages: list[dict[str, Any]], user_message: str = "do it"):
+    return finalize_turn(
+        agent,
+        final_response=final_response,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn-test",
+        user_message=user_message,
+        original_user_message=user_message,
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+
 def test_finalizer_replaces_model_bar_and_persists_canonical_final(monkeypatch) -> None:
     agent = FakeAgent()
     post_seen: dict[str, str] = {}
@@ -99,21 +119,7 @@ def test_finalizer_replaces_model_bar_and_persists_canonical_final(monkeypatch) 
         {"role": "assistant", "content": raw, "finish_reason": "stop"},
     ]
 
-    result = finalize_turn(
-        agent,
-        final_response=raw,
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
-        messages=messages,
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn-test",
-        user_message="do it",
-        original_user_message="do it",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
-    )
+    result = _finalize(agent, final_response=raw, messages=messages)
 
     first = result["final_response"].splitlines()[0]
     assert result["response_transformed"] is True
@@ -142,20 +148,11 @@ def test_finalizer_counts_only_tools_from_current_turn(monkeypatch) -> None:
     ]
     agent._persist_user_message_idx = 3
 
-    result = finalize_turn(
+    result = _finalize(
         agent,
         final_response="Current answer",
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
         messages=messages,
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn-test",
         user_message="current turn",
-        original_user_message="current turn",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
     )
 
     first = result["final_response"].splitlines()[0]
@@ -171,20 +168,11 @@ def test_literal_human_language_prefix_is_runtime_fact(monkeypatch) -> None:
         {"role": "assistant", "content": "Plain answer", "finish_reason": "stop"},
     ]
 
-    result = finalize_turn(
+    result = _finalize(
         agent,
         final_response="Plain answer",
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
         messages=messages,
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn-test",
         user_message="用人话解释这个结果",
-        original_user_message="用人话解释这个结果",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
     )
 
     assert "人话 ✓" in result["final_response"].splitlines()[0]
@@ -201,22 +189,119 @@ def test_non_cli_leading_path_text_is_not_rewritten(monkeypatch) -> None:
         {"role": "assistant", "content": original, "finish_reason": "stop"},
     ]
 
-    result = finalize_turn(
-        agent,
-        final_response=original,
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
-        messages=messages,
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn-test",
-        user_message="explain",
-        original_user_message="explain",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
-    )
+    result = _finalize(agent, final_response=original, messages=messages, user_message="explain")
 
     assert result["final_response"] == original
     assert result["response_transformed"] is False
     assert agent.persisted[-1]["content"] == original
+
+
+def test_finalizer_applies_moa_client_mechanism_facts(monkeypatch) -> None:
+    agent = FakeAgent()
+    agent.provider = "moa"
+    agent.model = "review"
+    agent.client = SimpleNamespace(
+        coordination_turn_facts=lambda: {
+            "moa": {
+                "observed": True,
+                "reference_models": ["ref-a", "ref-b", "ref-c", "ref-d"],
+                "reference_count": 4,
+                "aggregator_model": "agg-model",
+                "aggregator_count": 1,
+            }
+        }
+    )
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+    messages = [
+        {"role": "user", "content": "review"},
+        {"role": "assistant", "content": "MoA answer", "finish_reason": "stop"},
+    ]
+
+    result = _finalize(agent, final_response="MoA answer", messages=messages, user_message="review")
+
+    first = result["final_response"].splitlines()[0]
+    assert "路径：moa" in first
+    assert "MoA 4+1" in first
+    assert "subagents 0" in first
+
+
+def test_finalizer_does_not_trust_omo_schema_markers_in_tool_output_or_assistant_prose(monkeypatch) -> None:
+    agent = FakeAgent()
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+    old_schema_payload = {
+        "turn_facts_schema": "hermes.omo_turn_facts.v1",
+        "turn_facts": {
+            "route": {"actual": "omo", "reason": "tool_stdout"},
+            "omo": {
+                "parent_session_id": "parent-1",
+                "descendant_session_ids": ["child-1", "child-2"],
+                "session_created_events": 2,
+            },
+        },
+    }
+    assistant_prose = "Assistant prose mentions old marker only: " + json.dumps(old_schema_payload)
+    messages = [
+        {"role": "user", "content": "summarize unrelated tool output"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "tool-1", "function": {"name": "terminal", "arguments": "{}"}},
+                {"id": "tool-2", "function": {"name": "read_file", "arguments": "{}"}},
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "tool-1",
+            "name": "terminal",
+            "content": json.dumps({"output": json.dumps(old_schema_payload)}),
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "tool-2",
+            "name": "read_file",
+            "content": json.dumps(old_schema_payload),
+        },
+        {"role": "assistant", "content": assistant_prose, "finish_reason": "stop"},
+    ]
+
+    result = _finalize(
+        agent,
+        final_response=assistant_prose,
+        messages=messages,
+        user_message="summarize unrelated tool output",
+    )
+
+    first = result["final_response"].splitlines()[0]
+    assert first.startswith("路径：native｜原因：runtime_default")
+    assert "路径：omo" not in first
+    assert "OMO 1+2" not in first
+
+
+def test_finalizer_applies_runtime_owned_omo_turn_facts(monkeypatch) -> None:
+    agent = FakeAgent()
+    agent._turn_facts = {
+        "route": {"actual": "omo", "reason": "runtime_owned"},
+        "omo": {
+            "parent_session_id": "parent-1",
+            "descendant_session_ids": ["child-1", "child-2"],
+            "session_created_events": 2,
+        },
+    }
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+    messages = [
+        {"role": "user", "content": "run trusted omo"},
+        {"role": "assistant", "content": "OMO answer", "finish_reason": "stop"},
+    ]
+
+    result = _finalize(
+        agent,
+        final_response="OMO answer",
+        messages=messages,
+        user_message="run trusted omo",
+    )
+
+    first = result["final_response"].splitlines()[0]
+    assert "路径：omo" in first
+    assert "OMO 1+2" in first
+    assert "subagents 0" in first

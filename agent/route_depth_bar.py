@@ -11,18 +11,30 @@ _ROUTE_BAR_RE = re.compile(r"^\s*路径：[^\n\r]*(?:\r?\n)?", re.UNICODE)
 
 
 def _tool_field(receipt: TurnReceipt) -> str:
-    if receipt.tool_total <= 0 and not receipt.tool_names:
+    total = receipt.tool_total if receipt.tool_total > 0 else len(receipt.tool_names)
+    if total <= 0 and not receipt.tool_names:
         return "工具 none"
-    names = receipt.tool_names[:3]
-    if names:
-        joined = "+".join(names)
-        if receipt.tool_total > len(names):
-            joined += f"+{receipt.tool_total - len(names)}"
+
+    unique_names: list[str] = []
+    for name in receipt.tool_names:
+        cleaned = str(name or "").strip()
+        if cleaned and cleaned not in unique_names:
+            unique_names.append(cleaned)
+
+    visible_names = unique_names[:3]
+    if visible_names:
+        joined = "+".join(visible_names)
+        if len(unique_names) > len(visible_names):
+            joined += "+…"
     else:
-        joined = str(receipt.tool_total)
-    if receipt.tool_failed:
-        joined += f"({receipt.tool_failed} failed)"
-    return f"工具 {joined}"
+        joined = "unknown"
+
+    call_word = "call" if total == 1 else "calls"
+    return f"工具 {joined} ({total} {call_word}, {receipt.tool_failed} failed)"
+
+
+def _mechanism_fields(receipt: TurnReceipt) -> list[str]:
+    return [str(segment).strip() for segment in receipt.mechanism_segments if str(segment).strip()]
 
 
 def _count_field(label: str, value: int | None) -> str:
@@ -71,6 +83,7 @@ def format_route_depth_bar(receipt: TurnReceipt) -> str:
     fields = [
         f"路径：{receipt.route or 'native'}",
         f"原因：{receipt.reason or 'runtime_default'}",
+        *_mechanism_fields(receipt),
         _opencode_field(receipt.opencode_state),
         _tool_field(receipt),
         _count_field("agents", receipt.agents_count),

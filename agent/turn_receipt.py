@@ -26,6 +26,7 @@ class TurnReceipt:
     tool_names: list[str] = field(default_factory=list)
     tool_total: int = 0
     tool_failed: int = 0
+    mechanism_segments: list[str] = field(default_factory=list)
     agents_count: Optional[int] = 0
     subagents_count: Optional[int] = 0
     delegation_observed: bool = False
@@ -144,6 +145,25 @@ def _tool_result_failed(message: Any) -> bool:
     return isinstance(decoded, Mapping) and _failure_from_mapping(decoded)
 
 
+def _add_mechanism_segment(receipt: TurnReceipt, segment: str) -> None:
+    text = str(segment or "").strip()
+    if text and text not in receipt.mechanism_segments:
+        receipt.mechanism_segments.append(text)
+
+
+def _count_strings(value: Any) -> int:
+    if isinstance(value, (list, tuple)):
+        return len([item for item in value if str(item)])
+    return 0
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
 def update_turn_receipt_from_result(
     receipt: TurnReceipt,
     *,
@@ -245,6 +265,50 @@ def apply_turn_facts(receipt: TurnReceipt, facts: Mapping[str, Any] | None) -> T
                 receipt.tool_failed = int(tools.get("failed") or 0)
             except Exception:
                 pass
+
+    mechanisms = facts.get("mechanisms") or facts.get("mechanism_segments")
+    if isinstance(mechanisms, str):
+        _add_mechanism_segment(receipt, mechanisms)
+    elif isinstance(mechanisms, (list, tuple)):
+        for segment in mechanisms:
+            _add_mechanism_segment(receipt, str(segment))
+
+    moa = _as_mapping(facts.get("moa"))
+    if moa:
+        reference_count = _count_strings(moa.get("reference_models"))
+        aggregator_count = 1 if str(moa.get("aggregator_model") or "").strip() else 0
+        if "reference_count" in moa:
+            reference_count = _int_or_zero(moa.get("reference_count"))
+        if "aggregator_count" in moa:
+            aggregator_count = _int_or_zero(moa.get("aggregator_count"))
+        observed = bool(moa.get("observed")) or reference_count > 0 or aggregator_count > 0
+        if observed:
+            _add_mechanism_segment(receipt, f"MoA {reference_count}+{aggregator_count}")
+            if receipt.route == "native":
+                receipt.route = "moa"
+                receipt.reason = "provider_moa"
+
+    omo = _as_mapping(facts.get("omo"))
+    if omo:
+        parent_count = 1 if str(omo.get("parent_session_id") or "").strip() else 0
+        descendant_count = _count_strings(omo.get("descendant_session_ids") or [])
+        if "parent_count" in omo:
+            parent_count = _int_or_zero(omo.get("parent_count"))
+        if "descendant_count" in omo:
+            descendant_count = _int_or_zero(omo.get("descendant_count"))
+        observed = bool(omo.get("observed")) or parent_count > 0 or descendant_count > 0
+        if observed:
+            _add_mechanism_segment(receipt, f"OMO {parent_count}+{descendant_count}")
+
+    coordination = _as_mapping(facts.get("coordination"))
+    if coordination:
+        modes = coordination.get("modes") or []
+        breakdown = _as_mapping(coordination.get("breakdown"))
+        if isinstance(modes, (list, tuple)) and "omo" in {str(mode) for mode in modes}:
+            parent_count = _int_or_zero(breakdown.get("omo_parent"))
+            descendant_count = _int_or_zero(breakdown.get("omo_descendants"))
+            if parent_count or descendant_count:
+                _add_mechanism_segment(receipt, f"OMO {parent_count}+{descendant_count}")
 
     delegation = _as_mapping(facts.get("delegation")) or _as_mapping(facts.get("agents"))
     if delegation:

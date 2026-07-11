@@ -75,7 +75,7 @@ def test_runtime_facts_surface_tools_subagents_and_human_language() -> None:
     assert "路径：moa" in bar
     assert "原因：provider_moa" in bar
     assert "OpenCode 未调用" in bar
-    assert "工具 terminal+read_file" in bar
+    assert "工具 terminal+read_file (2 calls, 0 failed)" in bar
     assert "agents 1" in bar
     assert "subagents 3" in bar
     assert "人话 ✓" in bar
@@ -116,7 +116,7 @@ def test_success_tool_payloads_do_not_false_positive_as_failures() -> None:
     )
 
     assert receipt.tool_failed == 0
-    assert "failed)" not in format_route_depth_bar(receipt)
+    assert "工具 terminal+read_file (2 calls, 0 failed)" in format_route_depth_bar(receipt)
 
 
 def test_structured_failed_tool_payload_is_counted() -> None:
@@ -147,7 +147,7 @@ def test_structured_failed_tool_payload_is_counted() -> None:
     )
 
     assert receipt.tool_failed == 1
-    assert "terminal(1 failed)" in format_route_depth_bar(receipt)
+    assert "工具 terminal (1 call, 1 failed)" in format_route_depth_bar(receipt)
 
 
 def test_total_only_tool_fact_does_not_double_count() -> None:
@@ -156,5 +156,115 @@ def test_total_only_tool_fact_does_not_double_count() -> None:
 
     bar = format_route_depth_bar(receipt)
 
-    assert "工具 5" in bar
+    assert "工具 unknown (5 calls, 0 failed)" in bar
     assert "工具 5+5" not in bar
+
+
+def test_all_four_same_tool_keeps_name_and_explicit_counts() -> None:
+    receipt = _completed_receipt()
+    receipt.tool_names = ["terminal", "terminal", "terminal", "terminal"]
+    receipt.tool_total = 4
+    receipt.tool_failed = 0
+
+    bar = format_route_depth_bar(receipt)
+
+    assert "工具 terminal (4 calls, 0 failed)" in bar
+    assert "+3" not in bar
+
+
+def test_duplicate_tool_names_are_deduped_with_explicit_total_and_failures() -> None:
+    receipt = _completed_receipt()
+    receipt.tool_names = ["skill_view", "read_file", "read_file", "read_file"]
+    receipt.tool_total = 4
+    receipt.tool_failed = 1
+
+    bar = format_route_depth_bar(receipt)
+
+    assert "工具 skill_view+read_file (4 calls, 1 failed)" in bar
+    assert "read_file+read_file" not in bar
+    assert "read_file+2" not in bar
+
+
+def test_more_than_three_unique_tools_uses_ellipsis_and_keeps_counts() -> None:
+    receipt = _completed_receipt()
+    receipt.tool_names = ["skill_view", "read_file", "terminal", "patch", "python"]
+    receipt.tool_total = 5
+    receipt.tool_failed = 0
+
+    bar = format_route_depth_bar(receipt)
+
+    assert "工具 skill_view+read_file+terminal+… (5 calls, 0 failed)" in bar
+    tool_field = next(field for field in bar.split("｜") if field.startswith("工具 "))
+    assert "patch" not in tool_field
+
+
+def test_failed_duplicate_tool_keeps_explicit_failure_count() -> None:
+    receipt = _completed_receipt()
+    receipt.tool_names = ["terminal", "terminal", "read_file"]
+    receipt.tool_total = 3
+    receipt.tool_failed = 2
+
+    bar = format_route_depth_bar(receipt)
+
+    assert "工具 terminal+read_file (3 calls, 2 failed)" in bar
+    assert "terminal+terminal" not in bar
+
+
+def test_moa_facts_render_mechanism_without_counting_references_as_subagents() -> None:
+    receipt = _completed_receipt()
+    apply_turn_facts(
+        receipt,
+        {
+            "route": {"actual": "moa", "reason": "provider_moa"},
+            "moa": {
+                "observed": True,
+                "reference_models": ["ref-a", "ref-b", "ref-c", "ref-d"],
+                "aggregator_model": "agg-model",
+            },
+        },
+    )
+
+    bar = format_route_depth_bar(receipt)
+
+    assert "路径：moa" in bar
+    assert "MoA 4+1" in bar
+    assert "agents 0" in bar
+    assert "subagents 0" in bar
+
+
+def test_omo_facts_render_compact_mechanism_without_subagent_claims() -> None:
+    receipt = _completed_receipt()
+    apply_turn_facts(
+        receipt,
+        {
+            "omo": {
+                "parent_session_id": "parent-1",
+                "descendant_session_ids": ["child-1", "child-2"],
+                "session_created_events": 2,
+            },
+        },
+    )
+
+    bar = format_route_depth_bar(receipt)
+
+    assert "OMO 1+2" in bar
+    assert "subagents 0" in bar
+
+
+def test_deep_fact_dict_is_ignored() -> None:
+    receipt = _completed_receipt()
+    apply_turn_facts(
+        receipt,
+        {
+            "deep": {
+                "observed": True,
+                "protocol_key": "review",
+                "child_session_ids": ["deep-a", "deep-b"],
+            },
+        },
+    )
+
+    bar = format_route_depth_bar(receipt)
+
+    assert bar.startswith("路径：native｜原因：runtime_default")
+    assert "Deep" not in bar

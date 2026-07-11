@@ -480,6 +480,58 @@ class TestSessionLifecycle:
         ).fetchone()
         assert rows["n"] == 0
 
+    def test_per_model_usage_keeps_distinct_billing_routes(self, db):
+        """The same model through distinct billing routes must not collapse."""
+        db.create_session(session_id="routes", source="cli", model="shared-model")
+        db.update_token_counts(
+            "routes", input_tokens=10, model="shared-model",
+            billing_provider="custom", billing_base_url="https://one.example/v1",
+            billing_mode="api_key", estimated_cost_usd=0.01, api_call_count=1,
+        )
+        db.update_token_counts(
+            "routes", input_tokens=20, model="shared-model",
+            billing_provider="custom", billing_base_url="https://two.example/v1",
+            billing_mode="subscription_included", estimated_cost_usd=0.0,
+            cost_status="included", api_call_count=1,
+        )
+
+        rows = db._conn.execute(
+            "SELECT billing_base_url, billing_mode, input_tokens "
+            "FROM session_model_usage WHERE session_id = 'routes' "
+            "ORDER BY billing_base_url"
+        ).fetchall()
+        assert [(r["billing_base_url"], r["billing_mode"], r["input_tokens"])
+                for r in rows] == [
+            ("https://one.example/v1", "api_key", 10),
+            ("https://two.example/v1", "subscription_included", 20),
+        ]
+
+    def test_metadata_only_update_does_not_replace_requested_route(self, db):
+        db.create_session(session_id="metadata", source="cli", model="primary")
+        db.update_token_counts(
+            "metadata", model="fallback", billing_provider="fallback-provider",
+            api_call_count=0,
+        )
+        row = db.get_session("metadata")
+        assert row["model"] == "primary"
+        assert row["billing_provider"] is None
+
+    def test_first_accounted_route_replaces_all_route_fields_atomically(self, db):
+        db.create_session(session_id="route", source="cli", model="primary")
+        db.update_session_billing_route(
+            "route", provider="primary-provider",
+            base_url="https://primary.example/v1", billing_mode="api_key",
+        )
+        db.update_token_counts(
+            "route", model="fallback", billing_provider="fallback-provider",
+            billing_base_url=None, billing_mode=None, api_call_count=1,
+        )
+        row = db.get_session("route")
+        assert row["model"] == "fallback"
+        assert row["billing_provider"] == "fallback-provider"
+        assert row["billing_base_url"] is None
+        assert row["billing_mode"] is None
+
     def test_v17_backfill_seeds_existing_session_usage(self, tmp_path):
         """A DB upgraded from <17 seeds one usage row per historical session
         from its aggregate totals, so insights read uniformly from the table.
@@ -2053,6 +2105,18 @@ class TestDeleteAndExport:
         assert db.delete_session("s1") is True
         assert db.get_session("s1") is None
         assert db.message_count(session_id="s1") == 0
+
+    def test_delete_session_cascades_per_model_usage(self, db):
+        db.create_session(session_id="usage", source="cli", model="gpt-5")
+        db.update_token_counts(
+            "usage", input_tokens=10, model="gpt-5",
+            billing_provider="openai", api_call_count=1,
+        )
+        assert db.delete_session("usage") is True
+        count = db._conn.execute(
+            "SELECT COUNT(*) FROM session_model_usage WHERE session_id = 'usage'"
+        ).fetchone()[0]
+        assert count == 0
 
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False

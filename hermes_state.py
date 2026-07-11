@@ -769,10 +769,11 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
-    session_id TEXT NOT NULL REFERENCES sessions(id),
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     model TEXT NOT NULL,
     billing_provider TEXT NOT NULL DEFAULT '',
-    billing_base_url TEXT,
+    billing_base_url TEXT NOT NULL DEFAULT '',
+    billing_mode TEXT NOT NULL DEFAULT '',
     api_call_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -780,9 +781,12 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0,
+    cost_status TEXT,
+    cost_source TEXT,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1587,14 +1591,17 @@ class SessionDB:
                     cursor.execute(
                         """INSERT OR IGNORE INTO session_model_usage (
                                session_id, model, billing_provider,
-                               billing_base_url, api_call_count, input_tokens,
+                               billing_base_url, billing_mode,
+                               api_call_count, input_tokens,
                                output_tokens, cache_read_tokens,
                                cache_write_tokens, reasoning_tokens,
-                               estimated_cost_usd, first_seen, last_seen
+                               estimated_cost_usd, actual_cost_usd,
+                               cost_status, cost_source, first_seen, last_seen
                            )
                            SELECT id, COALESCE(model, 'unknown'),
                                   COALESCE(billing_provider, ''),
-                                  billing_base_url,
+                                  COALESCE(billing_base_url, ''),
+                                  COALESCE(billing_mode, ''),
                                   COALESCE(api_call_count, 0),
                                   COALESCE(input_tokens, 0),
                                   COALESCE(output_tokens, 0),
@@ -1602,6 +1609,8 @@ class SessionDB:
                                   COALESCE(cache_write_tokens, 0),
                                   COALESCE(reasoning_tokens, 0),
                                   COALESCE(estimated_cost_usd, 0),
+                                  COALESCE(actual_cost_usd, 0),
+                                  cost_status, cost_source,
                                   started_at, COALESCE(ended_at, started_at)
                            FROM sessions
                            WHERE COALESCE(input_tokens, 0)
@@ -2539,6 +2548,11 @@ class SessionDB:
                    model = COALESCE(model, ?),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
+        has_accounted_usage = bool(
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd or actual_cost_usd
+        )
         params = (
             input_tokens,
             output_tokens,
@@ -2551,10 +2565,10 @@ class SessionDB:
             cost_status,
             cost_source,
             pricing_version,
-            billing_provider,
-            billing_base_url,
-            billing_mode,
-            model,
+            billing_provider if has_accounted_usage else None,
+            billing_base_url if has_accounted_usage else None,
+            billing_mode if has_accounted_usage else None,
+            model if has_accounted_usage else None,
             api_call_count,
             session_id,
         )
@@ -2568,10 +2582,9 @@ class SessionDB:
         # session_model_usage keyed by the live model preserves an accurate
         # per-model breakdown regardless of how many times the user switches.
         #
-        # Only the incremental path records here: the gateway also issues an
-        # ``absolute=True`` call that overwrites the sessions summary totals
-        # with the cached agent's cumulative figures — folding those in would
-        # double-count, and cumulative totals can't be split back per model.
+        # Only the incremental path records here. Absolute cumulative updates
+        # cannot be split back into routes; Insights reconciles any positive
+        # residual against the aggregate session row instead.
         record_model_usage = (not absolute) and (
             input_tokens or output_tokens or cache_read_tokens
             or cache_write_tokens or reasoning_tokens or api_call_count
@@ -2593,6 +2606,7 @@ class SessionDB:
             # legacy row: one row cannot represent mixed-provider usage.
             first_accounted_route = (
                 existing_api_calls == 0
+                and has_accounted_usage
                 and bool(model)
                 and bool(billing_provider)
                 and (existing_model != model or existing_provider != billing_provider)
@@ -2601,8 +2615,7 @@ class SessionDB:
                 conn.execute(
                     """UPDATE sessions
                        SET model = ?, billing_provider = ?,
-                           billing_base_url = COALESCE(?, billing_base_url),
-                           billing_mode = COALESCE(?, billing_mode)
+                       billing_base_url = ?, billing_mode = ?
                        WHERE id = ?""",
                     (model, billing_provider, billing_base_url, billing_mode, session_id),
                 )
@@ -2614,12 +2627,16 @@ class SessionDB:
                     model=model,
                     billing_provider=billing_provider,
                     billing_base_url=billing_base_url,
+                    billing_mode=billing_mode,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
                     cache_write_tokens=cache_write_tokens,
                     reasoning_tokens=reasoning_tokens,
                     estimated_cost_usd=estimated_cost_usd,
+                    actual_cost_usd=actual_cost_usd,
+                    cost_status=cost_status,
+                    cost_source=cost_source,
                     api_call_count=api_call_count,
                 )
         self._execute_write(_do)
@@ -2632,12 +2649,16 @@ class SessionDB:
         model: Optional[str],
         billing_provider: Optional[str],
         billing_base_url: Optional[str],
+        billing_mode: Optional[str],
         input_tokens: int,
         output_tokens: int,
         cache_read_tokens: int,
         cache_write_tokens: int,
         reasoning_tokens: int,
         estimated_cost_usd: Optional[float],
+        actual_cost_usd: Optional[float],
+        cost_status: Optional[str],
+        cost_source: Optional[str],
         api_call_count: int,
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage.
@@ -2649,26 +2670,30 @@ class SessionDB:
         the same COALESCE-from-session behaviour the summary update uses.
         """
         row = conn.execute(
-            "SELECT model, billing_provider, billing_base_url "
+            "SELECT model, billing_provider, billing_base_url, billing_mode "
             "FROM sessions WHERE id = ?",
             (session_id,),
         ).fetchone()
         sess_model = row["model"] if row is not None else None
         sess_provider = row["billing_provider"] if row is not None else None
         sess_base_url = row["billing_base_url"] if row is not None else None
+        sess_billing_mode = row["billing_mode"] if row is not None else None
 
         eff_model = model or sess_model or "unknown"
         eff_provider = billing_provider or sess_provider or ""
-        eff_base_url = billing_base_url or sess_base_url
+        eff_base_url = billing_base_url or sess_base_url or ""
+        eff_billing_mode = billing_mode or sess_billing_mode or ""
         now = time.time()
         conn.execute(
             """INSERT INTO session_model_usage (
-                   session_id, model, billing_provider, billing_base_url,
+                   session_id, model, billing_provider, billing_base_url, billing_mode,
                    api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
-                   estimated_cost_usd, first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider) DO UPDATE SET
+                   estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                   first_seen, last_seen
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode)
+               DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
                    output_tokens = output_tokens + excluded.output_tokens,
@@ -2676,13 +2701,16 @@ class SessionDB:
                    cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
                    reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
                    estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
-                   billing_base_url = COALESCE(excluded.billing_base_url, billing_base_url),
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   cost_status = COALESCE(excluded.cost_status, cost_status),
+                   cost_source = COALESCE(excluded.cost_source, cost_source),
                    last_seen = excluded.last_seen""",
             (
                 session_id,
                 eff_model,
                 eff_provider,
                 eff_base_url,
+                eff_billing_mode,
                 api_call_count or 0,
                 input_tokens or 0,
                 output_tokens or 0,
@@ -2690,6 +2718,9 @@ class SessionDB:
                 cache_write_tokens or 0,
                 reasoning_tokens or 0,
                 float(estimated_cost_usd or 0.0),
+                float(actual_cost_usd or 0.0),
+                cost_status,
+                cost_source,
                 now,
                 now,
             ),

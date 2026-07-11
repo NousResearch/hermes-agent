@@ -1,0 +1,82 @@
+from pathlib import Path
+
+import pytest
+
+from capabilities.video_library.config import (
+    load_library_configs,
+    resolve_library_config,
+    resolve_source_path,
+)
+
+
+def _config(root: Path, source: Path) -> dict:
+    return {
+        "video_libraries": [
+            {
+                "id": "beef-noodle",
+                "mode": "linked",
+                "name": "牛肉面资产库",
+                "root": str(root),
+                "source_roots": [str(source)],
+                "taxonomy": "beef-noodle-v1",
+            }
+        ]
+    }
+
+
+def test_loads_linked_obsidian_library(tmp_path: Path):
+    root = tmp_path / "牛肉面资产库"
+    source = root / "01_原始素材"
+    source.mkdir(parents=True)
+
+    libraries = load_library_configs(_config(root, source))
+
+    library = libraries["beef-noodle"]
+    assert library.database_path == root / ".hermes-assets" / "index.sqlite"
+    assert library.keyframes_dir == root / "03_关键帧"
+    assert library.selected_clips_dir == root / "02_精选镜头"
+    assert library.source_roots == (source.resolve(),)
+
+
+def test_resolve_library_config_rejects_unknown_id(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises(KeyError, match="unknown video library"):
+        resolve_library_config("other", config=_config(tmp_path / "vault", source))
+
+
+def test_rejects_source_outside_allowlist(tmp_path: Path):
+    source = tmp_path / "allowed"
+    source.mkdir()
+    library = load_library_configs(_config(tmp_path / "vault", source))["beef-noodle"]
+    outside = tmp_path / "private.mp4"
+    outside.write_bytes(b"video")
+
+    with pytest.raises(ValueError, match="outside configured source roots"):
+        resolve_source_path(library, outside)
+
+
+def test_rejects_symlink_escape_from_allowlist(tmp_path: Path):
+    source = tmp_path / "allowed"
+    source.mkdir()
+    outside = tmp_path / "private.mp4"
+    outside.write_bytes(b"video")
+    link = source / "linked.mp4"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+    library = load_library_configs(_config(tmp_path / "vault", source))["beef-noodle"]
+
+    with pytest.raises(ValueError, match="outside configured source roots"):
+        resolve_source_path(library, link)
+
+
+def test_rejects_duplicate_library_ids(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    entry = _config(tmp_path / "vault", source)["video_libraries"][0]
+
+    with pytest.raises(ValueError, match="unique"):
+        load_library_configs({"video_libraries": [entry, dict(entry)]})

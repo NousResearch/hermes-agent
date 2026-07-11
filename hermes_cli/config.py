@@ -1180,6 +1180,10 @@ DEFAULT_CONFIG = {
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 
+    # Named local video libraries. Behavioral configuration belongs here rather
+    # than in new HERMES_* environment variables; credentials stay in .env.
+    "video_libraries": [],
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)

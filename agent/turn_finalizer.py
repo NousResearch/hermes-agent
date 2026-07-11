@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.turn_outcome import classify_turn_outcome
 
 
 def finalize_turn(
@@ -421,6 +422,14 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
+    _turn_outcome = classify_turn_outcome(
+        final_response=final_response,
+        failed=failed,
+        interrupted=interrupted,
+        _turn_exit_reason=_turn_exit_reason,
+        verification_status=getattr(agent, "_turn_verification_status", None),
+    )
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
@@ -428,6 +437,8 @@ def finalize_turn(
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,
+        "outcome": _turn_outcome["outcome"],
+        "outcome_reason": _turn_outcome["reason"],
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls

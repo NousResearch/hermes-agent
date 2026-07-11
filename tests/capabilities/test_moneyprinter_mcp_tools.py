@@ -116,6 +116,7 @@ def test_mcp_tool_specs_cover_phase3_and_phase2_names():
         "moneyprinter_minimax_generate_lyrics",
         "moneyprinter_minimax_generate_music",
         "video_library_import_asset",
+        "video_library_get_status",
         "video_library_scan_library",
         "video_library_analyze_asset",
         "video_library_search_clips",
@@ -143,6 +144,87 @@ def test_mcp_video_library_import_uses_adapter(monkeypatch):
     payload = json.loads(mp_tools.video_library_import_asset("/tmp/source.mp4"))
 
     assert payload["data"]["asset"] == {"id": "asset-1", "source_path": "/tmp/source.mp4"}
+
+
+def test_mcp_video_library_named_import_forwards_library_id(monkeypatch):
+    from capabilities.video_library import adapter as video_library_adapter
+
+    seen = {}
+
+    def fake_import(body):
+        seen.update(body)
+        return 200, {"ok": True, "data": {"asset": {"id": "asset-1"}}, "error": None}
+
+    monkeypatch.setattr(video_library_adapter, "import_asset_data", fake_import)
+
+    payload = json.loads(mp_tools.video_library_import_asset("/tmp/source.mp4", library_id="beef-noodle"))
+
+    assert payload["ok"] is True
+    assert seen == {"sourcePath": "/tmp/source.mp4", "libraryId": "beef-noodle"}
+
+
+def test_mcp_video_library_named_analyze_forwards_library_id(monkeypatch):
+    from capabilities.video_library import adapter as video_library_adapter
+
+    seen = {}
+
+    def fake_analyze(asset_id, body):
+        seen.update({"asset_id": asset_id, **body})
+        return 200, {"ok": True, "data": {"clips": []}, "error": None}
+
+    monkeypatch.setattr(video_library_adapter, "analyze_asset_data", fake_analyze)
+
+    payload = json.loads(mp_tools.video_library_analyze_asset("asset-1", library_id="beef-noodle"))
+
+    assert payload["ok"] is True
+    assert seen["asset_id"] == "asset-1"
+    assert seen["libraryId"] == "beef-noodle"
+
+
+def test_mcp_video_library_status_uses_named_adapter(monkeypatch):
+    from capabilities.video_library import adapter as video_library_adapter
+
+    monkeypatch.setattr(
+        video_library_adapter,
+        "library_status_data",
+        lambda library_id: (
+            200,
+            {"ok": True, "data": {"library_id": library_id, "clips": 3}, "error": None},
+        ),
+    )
+
+    payload = json.loads(mp_tools.video_library_get_status("beef-noodle"))
+
+    assert payload["data"] == {"library_id": "beef-noodle", "clips": 3}
+
+
+def test_mcp_video_library_named_timeline_forwards_script(monkeypatch):
+    from capabilities.video_library import adapter as video_library_adapter
+
+    seen = {}
+
+    def fake_timeline(body):
+        seen.update(body)
+        return 200, {"ok": True, "data": {"id": "timeline-1"}, "error": None}
+
+    monkeypatch.setattr(video_library_adapter, "create_timeline_data", fake_timeline)
+    script = [{"id": "segment-1", "text": "顾客吃面"}]
+
+    payload = json.loads(
+        mp_tools.video_library_create_timeline(
+            ["clip-1"],
+            library_id="beef-noodle",
+            script=script,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert seen == {
+        "aspect": "9:16",
+        "clipIds": ["clip-1"],
+        "libraryId": "beef-noodle",
+        "script": script,
+    }
 
 
 def test_mcp_video_library_scan_uses_named_adapter(monkeypatch):

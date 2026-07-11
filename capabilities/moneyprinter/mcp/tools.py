@@ -372,11 +372,14 @@ def moneyprinter_minimax_generate_music(
     return _json_result(payload, status=status)
 
 
-def video_library_import_asset(source_path: str) -> str:
-    """Copy a local video into the managed shot library and return its asset id."""
+def video_library_import_asset(source_path: str, library_id: str = "") -> str:
+    """Import a local video into a shot library and return its asset id."""
     from capabilities.video_library import adapter
 
-    status, payload = adapter.import_asset_data({"sourcePath": source_path})
+    body = {"sourcePath": source_path}
+    if library_id:
+        body["libraryId"] = library_id
+    status, payload = adapter.import_asset_data(body)
     return _json_result(payload, status=status)
 
 
@@ -393,18 +396,27 @@ def video_library_analyze_asset(
     threshold: float = 0.32,
     min_clip_seconds: float = 1.0,
     fallback_clip_seconds: float = 5.0,
+    library_id: str = "",
 ) -> str:
     """Split one imported video into managed clips, keyframes, and technical tags."""
     from capabilities.video_library import adapter
 
-    status, payload = adapter.analyze_asset_data(
-        asset_id,
-        {
-            "fallbackClipSeconds": fallback_clip_seconds,
-            "minClipSeconds": min_clip_seconds,
-            "threshold": threshold,
-        },
-    )
+    body = {
+        "fallbackClipSeconds": fallback_clip_seconds,
+        "minClipSeconds": min_clip_seconds,
+        "threshold": threshold,
+    }
+    if library_id:
+        body["libraryId"] = library_id
+    status, payload = adapter.analyze_asset_data(asset_id, body)
+    return _json_result(payload, status=status)
+
+
+def video_library_get_status(library_id: str) -> str:
+    """Return asset, clip, and failure counts for one configured named library."""
+    from capabilities.video_library import adapter
+
+    status, payload = adapter.library_status_data(library_id)
     return _json_result(payload, status=status)
 
 
@@ -429,11 +441,16 @@ def video_library_search_clips(
 def video_library_create_timeline(
     clip_ids: list[str],
     aspect: str = "9:16",
+    library_id: str = "",
+    script: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Create a timeline.json from an ordered list of managed clip ids."""
     from capabilities.video_library import adapter
 
-    status, payload = adapter.create_timeline_data({"aspect": aspect, "clipIds": clip_ids})
+    body: dict[str, Any] = {"aspect": aspect, "clipIds": clip_ids, "script": script or []}
+    if library_id:
+        body["libraryId"] = library_id
+    status, payload = adapter.create_timeline_data(body)
     return _json_result(payload, status=status)
 
 
@@ -513,8 +530,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "video_library_import_asset",
-        "description": "Import a local video into the managed shot-level material library.",
+        "description": "Import a local video into a shot library. Pass library_id for named Obsidian libraries.",
         "fn": video_library_import_asset,
+    },
+    {
+        "name": "video_library_get_status",
+        "description": "Get asset, clip, and failure counts for one configured named video library.",
+        "fn": video_library_get_status,
     },
     {
         "name": "video_library_scan_library",
@@ -523,7 +545,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "video_library_analyze_asset",
-        "description": "Split an imported video into clips, keyframes, and technical tags.",
+        "description": "Split an imported video into clips, keyframes, and tags. Pass library_id for named libraries.",
         "fn": video_library_analyze_asset,
     },
     {
@@ -533,7 +555,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "video_library_create_timeline",
-        "description": "Create a renderer-neutral timeline.json from ordered clip ids.",
+        "description": "Create a renderer-neutral timeline.json from ordered clip ids in one named library.",
         "fn": video_library_create_timeline,
     },
 ]

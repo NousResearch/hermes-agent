@@ -431,13 +431,17 @@ async def test_marker_survives_sentinel_phase_fast_dispatch():
     runner._running_agents_ts[sk] = 0.0
 
     await runner._run_startup_resume_event(adapter, ev, sk)
-    # wrapper has fully returned; slot still sentinel (turn not registered yet)
+    # Wrapper has fully returned during the sentinel window.  The contract:
+    # the SLOT is handed back (the late-arrival drain's re-dispatch must be
+    # able to claim it — test_auto_resume_runs_agent_exactly_once_through_
+    # full_path), but the protection MARKER must stay armed for the incoming
+    # recovery turn.
     assert runner._session_in_startup_resume(sk) is True, (
         "wrapper finally discarded the marker during the SENTINEL phase — "
         "the AEGIS-RIG 2026-07-11 live failure"
     )
-    assert runner._running_agents.get(sk) is _AGENT_PENDING_SENTINEL, (
-        "wrapper must not release a pre-claimed slot after a successful dispatch"
+    assert runner._running_agents.get(sk) is not _AGENT_PENDING_SENTINEL, (
+        "pre-claimed slot must be handed back so the drain re-dispatch can claim it"
     )
 
     await asyncio.wait_for(turn_running.wait(), timeout=5)

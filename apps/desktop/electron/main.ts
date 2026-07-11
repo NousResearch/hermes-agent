@@ -805,6 +805,17 @@ let connectionPromise = null
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
+// The in-flight soft re-home promise, if any. Two connection-config:apply
+// calls for the global/primary scope can arrive back-to-back (e.g. the
+// Settings "Apply" button and the cloud-agent "Connect" button are two
+// independent UI triggers with independent pending-state guards, so nothing
+// stops both firing close together). Without this, a second call would start
+// its own teardownPrimaryBackendAndWait() while the first is still waiting on
+// the real process exit, race softRehomeInProgress back to false early
+// (surfacing a spurious "backend stopped" toast for the first's still-pending
+// teardown), and fire a second hermes:connection:applied the renderer has no
+// guard against. Concurrent callers instead await the one in-flight re-home.
+let primaryRehomeInFlight = null
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -7710,8 +7721,20 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     // Global / primary connection: soft re-home. Tear down the window backend
     // without resetting boot UI or reloading — the shell stays, the renderer
     // wipes session lists (skeletons) and re-dials on hermes:connection:applied.
-    await teardownPrimaryBackendAndWait({ soft: true })
-    sendConnectionApplied()
+    // A second call arriving while one is already in flight awaits the same
+    // re-home instead of racing its own teardown + notify (see
+    // primaryRehomeInFlight above).
+    if (!primaryRehomeInFlight) {
+      primaryRehomeInFlight = (async () => {
+        try {
+          await teardownPrimaryBackendAndWait({ soft: true })
+          sendConnectionApplied()
+        } finally {
+          primaryRehomeInFlight = null
+        }
+      })()
+    }
+    await primaryRehomeInFlight
   }
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)

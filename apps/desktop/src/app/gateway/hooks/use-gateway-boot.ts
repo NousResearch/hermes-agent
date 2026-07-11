@@ -253,7 +253,12 @@ export function useGatewayBoot({
     // Soft gateway-mode apply: main tore down the primary without reloading.
     // Wipe session lists so skeletons retrigger, then re-dial in place.
     const softSwitch = async () => {
-      if (cancelled) {
+      // Reentrancy guard: main dedupes concurrent connection-config:apply
+      // calls (see primaryRehomeInFlight in main.ts) so this should only ever
+      // fire once per soft re-home, but mirror previewGatewaySwitch()'s own
+      // guard here too — a second overlapping in-flight switch must not wipe
+      // the session lists / re-dial a second time out from under the first.
+      if (cancelled || $gatewaySwitching.get()) {
         return
       }
 

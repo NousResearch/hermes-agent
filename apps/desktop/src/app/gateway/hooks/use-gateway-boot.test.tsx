@@ -97,13 +97,24 @@ function fakeDesktop() {
     })),
     onBootProgress: vi.fn(() => () => undefined),
     onBackendExit: vi.fn(() => () => undefined),
-    onConnectionApplied: vi.fn(() => () => undefined),
+    // Real fakes (not a no-op stub) so tests can simulate main firing
+    // hermes:connection:applied — capture the handler the hook registers.
+    onConnectionApplied: vi.fn((cb: () => void) => {
+      connectionAppliedHandlers.push(cb)
+
+      return () => undefined
+    }),
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
     profile: { get: vi.fn(async () => ({ profile: 'default' })) }
   }
 }
+
+// Handlers useGatewayBoot registered via desktop.onConnectionApplied(). Tests
+// call these directly to simulate main.ts's hermes:connection:applied event
+// (the soft gateway-mode-apply notification) without going through real IPC.
+let connectionAppliedHandlers: Array<() => void> = []
 
 function Harness() {
   useGatewayBoot({
@@ -123,6 +134,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  connectionAppliedHandlers = []
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -266,5 +278,42 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+})
+
+describe('useGatewayBoot soft gateway-switch reentrancy', () => {
+  it('two hermes:connection:applied events firing back-to-back only run softSwitch once', async () => {
+    // Reproduces main.ts's connection-config:apply race: the Settings "Apply"
+    // button and the cloud-agent "Connect" button are two independent UI
+    // triggers with independent pending-state guards, so nothing stops both
+    // firing close together — main can (pre-fix) emit hermes:connection:applied
+    // twice for one user action. Without a reentrancy guard in softSwitch(),
+    // each event independently wipes the session lists and calls
+    // desktop.getConnection() again — the underlying gateway.connect() has its
+    // own 'connecting'-state dedup so a second literal WebSocket is never
+    // opened, but the second softSwitch() still races the first through
+    // getConnection()/publish()/adoptPrimaryProfile() and can finish (and flip
+    // $gatewaySwitching back to false) while the first is still completing.
+    const desktop = fakeDesktop()
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(connectionAppliedHandlers).toHaveLength(1)
+
+    const callsBeforeDoubleFire = desktop.getConnection.mock.calls.length
+
+    act(() => {
+      connectionAppliedHandlers[0]()
+      connectionAppliedHandlers[0]()
+    })
+    await flushAsync()
+
+    // Exactly one softSwitch() ran its body: one more getConnection() call,
+    // not two. (gateway.connect()'s own dedup keeps the socket count at 2
+    // either way, so it alone can't tell guarded and unguarded apart.)
+    expect(desktop.getConnection.mock.calls.length - callsBeforeDoubleFire).toBe(1)
+    expect($gatewayState.get()).toBe('open')
   })
 })

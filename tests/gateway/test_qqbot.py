@@ -2239,3 +2239,43 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+# ---------------------------------------------------------------------------
+# QQ_SANDBOX environment variable — API_BASE selection
+# ---------------------------------------------------------------------------
+
+class TestQQSandboxEnvVar:
+    """API_BASE selects sandbox or production URL based on QQ_SANDBOX."""
+
+    def _check(self, env_update, expected):
+        import importlib
+        from gateway.platforms.qqbot import constants as c
+        with mock.patch.dict(os.environ, env_update, clear=False):
+            if "QQ_SANDBOX" not in env_update:
+                os.environ.pop("QQ_SANDBOX", None)
+            importlib.reload(c)
+            try:
+                assert c.API_BASE == expected
+            finally:
+                os.environ.pop("QQ_SANDBOX", None)
+                importlib.reload(c)
+
+    def test_sandbox_true(self):
+        """QQ_SANDBOX=true  → sandbox API base."""
+        self._check({"QQ_SANDBOX": "true"}, "https://sandbox.api.sgroup.qq.com")
+
+    def test_sandbox_one(self):
+        """QQ_SANDBOX=1     → sandbox API base."""
+        self._check({"QQ_SANDBOX": "1"}, "https://sandbox.api.sgroup.qq.com")
+
+    def test_sandbox_yes(self):
+        """QQ_SANDBOX=yes   → sandbox API base."""
+        self._check({"QQ_SANDBOX": "yes"}, "https://sandbox.api.sgroup.qq.com")
+
+    def test_sandbox_false(self):
+        """QQ_SANDBOX=false → production API base."""
+        self._check({"QQ_SANDBOX": "false"}, "https://api.sgroup.qq.com")
+
+    def test_sandbox_unset(self):
+        """QQ_SANDBOX unset → production API base."""
+        self._check({}, "https://api.sgroup.qq.com")

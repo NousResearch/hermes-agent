@@ -254,6 +254,47 @@ def test_explicit_opener_factory_is_instrumentable_without_security_bypass():
     assert calls == [("https://models.example.test/models", 7)]
 
 
+def test_installed_custom_opener_policy_is_preserved(monkeypatch):
+    opened = []
+
+    class FooHandler(urllib.request.BaseHandler):
+        def foo_open(self, request):
+            opened.append(request.full_url)
+            return _Response(b"custom")
+
+    installed = urllib.request.build_opener(FooHandler())
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    request = urllib.request.Request(
+        "foo://models.example.test/catalog", headers={"Authorization": "secret"}
+    )
+    with open_credentialed_url(request, timeout=3) as response:
+        assert response.read() == b"custom"
+    assert opened == ["foo://models.example.test/catalog"]
+
+
+def test_installed_proxy_handler_is_preserved(monkeypatch):
+    installed = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"https": "http://proxy.example.test:8443"})
+    )
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    from hermes_cli.urllib_security import _secure_opener_from_installed_policy
+
+    secured = _secure_opener_from_installed_policy(
+        "https://models.example.test/catalog"
+    )
+    proxy_handlers = [
+        handler
+        for handler in getattr(secured, "handlers", ())
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+    assert proxy_handlers
+    assert getattr(proxy_handlers[0], "proxies", {}) == {
+        "https": "http://proxy.example.test:8443"
+    }
+
+
 def test_probe_api_models_drops_custom_credentials_on_wire():
     from hermes_cli.models import probe_api_models
 

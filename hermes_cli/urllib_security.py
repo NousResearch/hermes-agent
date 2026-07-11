@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
@@ -58,18 +59,38 @@ class SafeCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
+def _secure_opener_from_installed_policy(original_url: str):
+    """Clone the installed opener's handlers, replacing redirect policy only."""
+    installed = getattr(urllib.request, "_opener", None)
+    if installed is None:
+        installed = urllib.request.build_opener()
+
+    handlers = [
+        copy.copy(handler)
+        for handler in getattr(installed, "handlers", ())
+        if not isinstance(handler, urllib.request.HTTPRedirectHandler)
+    ]
+    handlers.append(SafeCredentialRedirectHandler(original_url))
+    return urllib.request.build_opener(*handlers)
+
+
 def open_credentialed_url(
     request: urllib.request.Request,
     *,
     timeout: float,
-    opener_factory: Callable[..., Any] = urllib.request.build_opener,
+    opener_factory: Callable[..., Any] | None = None,
 ):
     """Open a request without forwarding credentials across origins.
 
-    ``opener_factory`` is an explicit instrumentation/test seam. Security is
+    The default preserves an application-installed opener's proxy, TLS,
+    cookies, custom protocol handlers, and instrumentation while replacing its
+    redirect handler. ``opener_factory`` is an explicit test seam; security is
     never disabled based on global ``urlopen`` identity.
     """
-    opener = opener_factory(SafeCredentialRedirectHandler(request.full_url))
+    if opener_factory is None:
+        opener = _secure_opener_from_installed_policy(request.full_url)
+    else:
+        opener = opener_factory(SafeCredentialRedirectHandler(request.full_url))
     return opener.open(request, timeout=timeout)
 
 

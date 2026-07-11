@@ -256,11 +256,12 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Signal has no real edit API for already-sent messages. Mark it explicitly
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
     SUPPORTS_MESSAGE_EDITING = False
-    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIGNAL)
@@ -1062,6 +1063,8 @@ class SignalAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
 
         plain_text, text_styles = self._markdown_to_signal(content)
 

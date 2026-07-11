@@ -58,6 +58,35 @@ def test_dangling_side_effect_is_recovered_as_unknown_not_erased():
     assert "may have executed" in out[-1]["content"].lower()
 
 
+def test_dangling_session_mutation_is_recovered_as_unknown():
+    history = [_user("hi"), _assistant_tc("todo")]
+
+    out = strip_dangling_tool_call_tail(history)
+
+    assert out[:-1] == history
+    assert out[-1]["effect_disposition"] == "unknown"
+    assert "may have executed" in out[-1]["content"].lower()
+
+
+def test_mixed_dangling_batch_uses_truthful_per_call_wording():
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "read", "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "write", "function": {"name": "write_file", "arguments": "{}"}},
+        ],
+    }
+    out = strip_dangling_tool_call_tail([_user("hi"), assistant])
+
+    read_result, write_result = out[-2:]
+    assert read_result["effect_disposition"] == "none"
+    assert "no effect" in read_result["content"].lower()
+    assert "unknown" not in read_result["content"].lower()
+    assert write_result["effect_disposition"] == "unknown"
+    assert "unknown" in write_result["content"].lower()
+
+
 def test_strip_dangling_tool_call_tail_preserves_answered_pair():
     history = [_user("hi"), _assistant_tc("read_file"), _tool("contents")]
     out = strip_dangling_tool_call_tail(history)

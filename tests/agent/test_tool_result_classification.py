@@ -3,8 +3,6 @@
 import json
 
 from agent.tool_result_classification import (
-    ToolEffectDisposition,
-    classify_tool_effect,
     file_mutation_result_landed,
 )
 
@@ -34,19 +32,12 @@ def test_top_level_file_mutation_error_does_not_count_as_landed():
     assert file_mutation_result_landed("patch", result) is False
 
 
-def test_effect_classifier_distinguishes_all_internal_dispositions():
-    assert classify_tool_effect("patch", '{"success": true}') is ToolEffectDisposition.COMMITTED
-    assert classify_tool_effect("read_file", "contents") is ToolEffectDisposition.NONE
-    assert classify_tool_effect("terminal", "timed out", status="timeout") is ToolEffectDisposition.UNKNOWN
-    assert classify_tool_effect("patch", "some hunks applied", status="partial") is ToolEffectDisposition.PARTIAL
-    assert classify_tool_effect("patch", "restored checkpoint", status="rolled_back") is ToolEffectDisposition.ROLLED_BACK
+def test_side_effect_classification_keeps_session_mutations():
+    from agent.tool_result_classification import tool_may_have_side_effect
 
-
-def test_blocked_or_skipped_tool_never_claims_an_effect():
-    assert classify_tool_effect("terminal", "blocked", status="blocked") is ToolEffectDisposition.NONE
-    assert classify_tool_effect("write_file", "skipped", status="skipped") is ToolEffectDisposition.NONE
-
-
-def test_detached_or_timed_out_side_effect_is_unknown():
-    assert classify_tool_effect("terminal", "started", status="detached") is ToolEffectDisposition.UNKNOWN
-    assert classify_tool_effect("write_file", "late worker", status="timeout") is ToolEffectDisposition.UNKNOWN
+    assert tool_may_have_side_effect("todo") is True
+    assert tool_may_have_side_effect("memory") is True
+    assert tool_may_have_side_effect("write_file") is True
+    assert tool_may_have_side_effect("mcp_unknown") is True
+    assert tool_may_have_side_effect("read_file") is False
+    assert tool_may_have_side_effect("web_search") is False

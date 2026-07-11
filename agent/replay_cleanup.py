@@ -164,12 +164,14 @@ def strip_dangling_tool_call_tail(
             name = str(function.get("name") or "unknown")
             call_id = str(call.get("id") or call.get("call_id") or "")
             disposition = "unknown" if tool_may_have_side_effect(name) else "none"
-            recovered.append(make_tool_result_message(
-                name,
+            content = (
                 "[Orphan recovery: this tool may have executed before Hermes stopped; "
-                "its effect is UNKNOWN. Inspect current state before retrying.]",
-                call_id,
-                effect_disposition=disposition,
+                "its effect is UNKNOWN. Inspect current state before retrying.]"
+                if disposition == "unknown"
+                else "[Orphan recovery: this read-only tool did not complete and had no effect.]"
+            )
+            recovered.append(make_tool_result_message(
+                name, content, call_id, effect_disposition=disposition,
             ))
         logger.warning(
             "Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them"

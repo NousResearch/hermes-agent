@@ -4078,10 +4078,13 @@ def get_profiles_sessions(
         targets.append((name, home))
     else:
         try:
-            infos = profiles_mod.list_profiles()
-            targets = [(info.name, info.path) for info in infos]
+            # Lightweight (name, home) listing — the full list_profiles() parses
+            # every profile's config.yaml + probes gateway PIDs + rglobs skills
+            # on EVERY call, which py-spy measured at ~70% of a 10s sidebar
+            # refresh for fields this endpoint never returns.
+            targets = list(profiles_mod.list_profile_homes())
         except Exception:
-            _log.exception("GET /api/profiles/sessions: list_profiles failed")
+            _log.exception("GET /api/profiles/sessions: list_profile_homes failed")
             targets = []
         if not targets:
             targets.append(("default", profiles_mod.get_profile_dir("default")))
@@ -10204,9 +10207,25 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
     return result
 
 
+def _cron_profile_names() -> List[str]:
+    """Profile NAMES only, via the lightweight (name, home) listing.
+
+    The cron job aggregators only need names to route _call_cron_for_profile;
+    going through _cron_profile_dicts() -> list_profiles() paid the full
+    config.yaml-parse + gateway-PID-probe + skills-rglob cost per profile on
+    every /api/cron/jobs call (a boot-path RPC — py-spy showed it stacked on
+    top of the session-list refresh on every sidebar load).
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return [name for name, _home in profiles_mod.list_profile_homes()]
+    except Exception:
+        _log.exception("Failed to list profile homes for cron; falling back to full listing")
+        return [str(p.get("name") or "") for p in _cron_profile_dicts()]
+
+
 def _find_cron_job_profile(job_id: str) -> Optional[str]:
-    for profile in _cron_profile_dicts():
-        name = str(profile.get("name") or "")
+    for name in _cron_profile_names():
         if not name:
             continue
         jobs = _call_cron_for_profile(name, "list_jobs", True)
@@ -10221,8 +10240,7 @@ def _list_cron_jobs_sync(profile: str = "all"):
         return _call_cron_for_profile(requested, "list_jobs", True)
 
     jobs: List[Dict[str, Any]] = []
-    for item in _cron_profile_dicts():
-        name = str(item.get("name") or "")
+    for name in _cron_profile_names():
         if not name:
             continue
         try:

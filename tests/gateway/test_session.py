@@ -906,13 +906,19 @@ class TestWhatsAppSessionKeyConsistency:
         )
 
     def test_shared_helper_matches_build_session_key_group_thread(self):
-        """is_shared_multi_user_session must mirror build_session_key exactly.
+        """is_shared_multi_user_session must mirror build_session_key's
+        isolation precedence — not its full key string.
 
-        In the group_sessions_per_user=False + thread_sessions_per_user=True
-        combo, build_session_key emits a SHARED thread key (no participant_id),
-        so the helper must report the session shared. Regression: the old
-        thread branch dropped the group factor and wrongly reported isolated,
-        making the resume IDOR gate deny a legitimate co-member.
+        The helper tracks the isolation *decision* (whether build_session_key
+        would append a per-user participant_id), which stays configuration-
+        scoped: when no participant ID is present the key is shared by
+        construction, so the helper deliberately reports shared rather than
+        reconstructing the literal key. In the group_sessions_per_user=False +
+        thread_sessions_per_user=True combo, build_session_key emits a SHARED
+        thread key (no participant_id), so the helper must report the session
+        shared. Regression: the old thread branch dropped the group factor and
+        wrongly reported isolated, making the resume IDOR gate deny a
+        legitimate co-member.
         """
         source = SessionSource(
             platform=Platform.DISCORD,

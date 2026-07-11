@@ -122,23 +122,53 @@ class AcceptanceClient:
 
 
 def build_acceptance_plan(client: AcceptanceClient, library_id: str) -> dict[str, Any]:
-    used_assets: set[str] = set()
-    selections: list[dict[str, Any]] = []
+    candidates_by_query: dict[str, list[dict[str, Any]]] = {}
     for query in REQUIRED_INTENTS:
-        candidates = client.search(library_id, query, limit=5)
-        selected = next(
-            (
-                row
-                for row in candidates
-                if str(row.get("asset_id") or "")
-                and str(row.get("asset_id")) not in used_assets
+        candidates = client.search(library_id, query, limit=12)
+        if not candidates:
+            raise RuntimeError(f"no candidate for {query}")
+        candidates_by_query[query] = sorted(
+            candidates,
+            key=lambda row: (
+                float(row.get("score") or 0.0) * 100
+                + float(row.get("quality_score") or 0.0) * 10
+                + float(row.get("confidence") or 0.0)
             ),
-            None,
+            reverse=True,
         )
-        if selected is None:
-            raise RuntimeError(f"no distinct candidate for {query}")
-        used_assets.add(str(selected["asset_id"]))
-        selections.append({"query": query, **selected})
+
+    selections: list[dict[str, Any]] = []
+    used_assets: set[str] = set()
+    used_clips: set[str] = set()
+    round_index = 0
+    while True:
+        added = False
+        for query in REQUIRED_INTENTS:
+            remaining = [
+                row
+                for row in candidates_by_query[query]
+                if str(row.get("id") or "") not in used_clips
+            ]
+            selected = next(
+                (
+                    row
+                    for row in remaining
+                    if str(row.get("asset_id") or "") not in used_assets
+                ),
+                remaining[0] if remaining else None,
+            )
+            if selected is None:
+                continue
+            clip_id = str(selected.get("id") or "")
+            if not clip_id:
+                continue
+            selections.append({"query": query, "round": round_index, **selected})
+            used_clips.add(clip_id)
+            used_assets.add(str(selected.get("asset_id") or ""))
+            added = True
+        if not added:
+            break
+        round_index += 1
     return {"library_id": library_id, "selections": selections}
 
 

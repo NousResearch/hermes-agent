@@ -33,6 +33,55 @@ def test_acceptance_plan_selects_one_distinct_shot_per_required_intent():
     assert len({row["asset_id"] for row in plan["selections"]}) == 3
 
 
+class MultiRoundFakeClient:
+    def search(self, library_id: str, query: str, limit: int = 5):
+        slug = query.replace(" ", "-")
+        return [
+            {
+                "id": f"clip-{slug}-extra",
+                "asset_id": f"asset-{slug}-extra",
+                "description": f"{query} 补充镜头",
+                "quality_score": 0.8,
+                "confidence": 0.8,
+                "score": 0.7,
+                "source_file_path": f"/source/{slug}-extra.mp4",
+            },
+            {
+                "id": f"clip-{slug}-primary",
+                "asset_id": f"asset-{slug}-primary",
+                "description": f"{query} 主镜头",
+                "quality_score": 0.9,
+                "confidence": 0.9,
+                "score": 1.0,
+                "source_file_path": f"/source/{slug}-primary.mp4",
+            },
+        ][:limit]
+
+
+def test_acceptance_plan_exhausts_unique_candidates_in_narrative_rounds():
+    acceptance = importlib.import_module("scripts.video_library_acceptance")
+
+    plan = acceptance.build_acceptance_plan(MultiRoundFakeClient(), "beef-noodle")
+
+    assert [row["query"] for row in plan["selections"]] == [
+        "前厅顾客吃面",
+        "员工端碗上餐",
+        "成品牛肉面特写",
+        "前厅顾客吃面",
+        "员工端碗上餐",
+        "成品牛肉面特写",
+    ]
+    assert [row["id"].rsplit("-", 1)[-1] for row in plan["selections"]] == [
+        "primary",
+        "primary",
+        "primary",
+        "extra",
+        "extra",
+        "extra",
+    ]
+    assert len({row["id"] for row in plan["selections"]}) == 6
+
+
 def test_acceptance_script_runs_directly_from_repository_root():
     repository = Path(__file__).resolve().parents[2]
 
@@ -48,7 +97,7 @@ def test_acceptance_script_runs_directly_from_repository_root():
     assert "--library" in completed.stdout
 
 
-class FakeRenderClient(FakeClient):
+class FakeRenderClient(MultiRoundFakeClient):
     def __init__(self, final_path: Path):
         self.calls = []
         self.final_path = final_path
@@ -118,4 +167,5 @@ def test_execute_render_preserves_named_library_order_and_provenance(tmp_path):
     assert result["task_id"] == "task-local"
     assert result["timeline_path"] == "/library/timelines/test.json"
     assert result["final_video_path"] == str(final_path)
-    assert len(result["selected_sources"]) == 3
+    assert len(result["selected_sources"]) == len(plan["selections"])
+    assert len(result["selected_sources"]) == 6

@@ -1321,6 +1321,60 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
     expect(calls).not.toContain('session.resume')
   })
+
+  it('does not bounce the first prompt when createBackendSessionForSend updates the stored session ref (#62600)', async () => {
+    // Regression test: createBackendSessionForSend updates selectedStoredSessionIdRef
+    // and the route token to point at the newly created session. Without re-pinning
+    // the starting snapshots, sessionContextDrifted() false-positives and the prompt
+    // is silently bounced back to the composer.
+    const NEW_STORED = 'stored-new-session-62600'
+    const NEW_RUNTIME = 'rt-new-session-62600'
+
+    // Simulate the real createBackendSessionForSend: it updates the refs.
+    const selectedStoredRef: MutableRefObject<string | null> = { current: null }
+    const activeRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = 'initial-route'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      // Mimic what the real function does:
+      activeRef.current = NEW_RUNTIME
+      selectedStoredRef.current = NEW_STORED
+      routeToken = 'route-to-new-session'
+
+      return NEW_RUNTIME
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      expect(method).toBe('prompt.submit')
+
+      return { status: 'streaming' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeRef}
+        selectedStoredSessionIdRef={selectedStoredRef}
+        getRouteToken={() => routeToken}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('first prompt of new chat')
+
+    // The submit must succeed, not be bounced by a false drift detection.
+    expect(ok).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    const [method, params] = requestGateway.mock.calls[0]
+    expect(method).toBe('prompt.submit')
+    expect(params).toMatchObject({ session_id: NEW_RUNTIME })
+  })
 })
 
 describe('usePromptActions submit session-context isolation (#54527)', () => {

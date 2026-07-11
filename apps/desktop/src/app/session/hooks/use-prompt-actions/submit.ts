@@ -118,9 +118,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Pin the session context for the whole async submit pipeline. Without
       // this, a fast session switch during session.resume / file.attach can
       // redirect the user's text into a different chat (#54527).
-      const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      //
+      // These are `let` (not `const`) because createBackendSessionForSend
+      // legitimately updates the refs + route when it mints a new session.
+      // Without re-pinning, the drift check would false-positive on the very
+      // call that created the session, bouncing the first prompt of every new
+      // chat back to the composer (#62600).
+      let startingActiveSessionId = activeSessionIdRef.current
+      let startingStoredSessionId = selectedStoredSessionIdRef.current
+      let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
         selectedStoredSessionIdRef.current !== startingStoredSessionId ||
@@ -280,6 +286,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
+
+        // createBackendSessionForSend just minted a new session and updated
+        // activeSessionIdRef / selectedStoredSessionIdRef / the route token
+        // to point at it. Re-pin the starting snapshots so the drift check
+        // below doesn't treat the expected context change as a user-initiated
+        // session switch — otherwise the first prompt of every new chat is
+        // silently bounced back to the composer (#62600).
+        startingActiveSessionId = activeSessionIdRef.current
+        startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingRouteToken = getRouteToken()
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)

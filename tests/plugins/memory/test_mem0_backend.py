@@ -111,12 +111,13 @@ class TestPlatformBackend:
 class FakeOSSMemory:
     """Fake mem0.Memory for OSSBackend tests."""
 
-    def __init__(self):
+    def __init__(self, search_results=None):
         self.calls = []
+        self._search_results = search_results or [{"id": "m1", "memory": "fact1", "score": 0.8}]
 
     def search(self, query, **kwargs):
         self.calls.append(("search", query, kwargs))
-        return {"results": [{"id": "m1", "memory": "fact1", "score": 0.8}]}
+        return {"results": self._search_results}
 
     def get_all(self, **kwargs):
         self.calls.append(("get_all", kwargs))
@@ -190,6 +191,132 @@ class TestOSSBackend:
         backend, _ = self._make()
         result = backend.delete("m1")
         assert result == {"result": "Memory deleted.", "memory_id": "m1"}
+
+    # --- time-decay reranking ---------------------------------------------
+
+    def _make_with_results(self, results):
+        """Build OSSBackend with FakeOSSMemory preloaded with given search results."""
+        from plugins.memory.mem0._backend import OSSBackend
+
+        memory = FakeOSSMemory(search_results=results)
+        backend = OSSBackend.__new__(OSSBackend)
+        backend._memory = memory
+        return backend, memory
+
+    def test_time_decay_fresh_above_old(self):
+        """Fresh memory ranks above an old one with the same semantic score."""
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.now(timezone.utc)
+        results = [
+            {"id": "old", "memory": "old fact", "score": 0.8,
+             "created_at": (now - timedelta(days=60)).isoformat()},
+            {"id": "fresh", "memory": "fresh fact", "score": 0.8,
+             "created_at": now.isoformat()},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        assert sorted_results[0]["id"] == "fresh"
+        assert sorted_results[1]["id"] == "old"
+        # Fresh score (0.7 weight) > old score (0.175 weight)
+        assert sorted_results[0]["score"] > sorted_results[1]["score"]
+
+    def test_time_decay_half_life(self):
+        """Memory at exactly half_life_days gets time_weight ≈ 0.5."""
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.now(timezone.utc)
+        half_life_ago = now - timedelta(days=30)
+        results = [
+            {"id": "m1", "memory": "fact", "score": 0.8,
+             "created_at": half_life_ago.isoformat()},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        # At half-life, time_weight = 2^(-30*86400 / 30*86400) = 2^(-1) = 0.5
+        # new_score = 0.8 * 0.7 + 0.5 * 0.3 = 0.56 + 0.15 = 0.71
+        assert sorted_results[0]["score"] == pytest.approx(0.71, abs=0.01)
+
+    def test_time_decay_missing_created_at(self):
+        """Memories without created_at get time_weight=-1 and should NOT break."""
+        results = [
+            {"id": "m1", "memory": "fact", "score": 0.8},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        assert len(sorted_results) == 1
+        # Without time_weight, score stays same (lam retains 0.7,
+        # but _apply_time_decay skips entries without created_at — sets
+        # time_weight=-1 and continues without recalculating score)
+        assert sorted_results[0]["score"] == 0.8
+
+    def test_time_decay_malformed_timestamp(self):
+        """Malformed created_at is treated like missing (time_weight=-1)."""
+        results = [
+            {"id": "m1", "memory": "fact", "score": 0.5,
+             "created_at": "not-a-date"},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        assert len(sorted_results) == 1
+        assert sorted_results[0]["score"] == 0.5
+
+    def test_time_decay_z_timestamp(self):
+        """'Z' suffix in ISO timestamp is parsed correctly."""
+        from datetime import datetime, timezone
+
+        results = [
+            {"id": "m1", "memory": "fact", "score": 0.8,
+             "created_at": "2024-01-01T00:00:00Z"},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        assert len(sorted_results) == 1
+        # Should be parsed without error — score should be lowered
+        # since 2024-01-01 is well in the past
+        assert sorted_results[0]["score"] < 0.8
+
+    def test_time_decay_future_timestamp_clamped(self):
+        """Future created_at is clamped so time_weight ≤ 1.0 (no boost)."""
+        from datetime import datetime, timezone, timedelta
+
+        future = datetime.now(timezone.utc) + timedelta(days=30)
+        now_mem = datetime.now(timezone.utc)
+        results = [
+            {"id": "future", "memory": "future fact", "score": 0.8,
+             "created_at": future.isoformat()},
+            {"id": "now", "memory": "now fact", "score": 0.8,
+             "created_at": now_mem.isoformat()},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        # Future timestamp should NOT be boosted above current
+        # Both clamped to delta≈0, time_weight≈1.0, scores equal
+        assert sorted_results[0]["score"] == pytest.approx(sorted_results[1]["score"], abs=0.005)
+        # Both scores should be ≤ lam*0.8 + 1.0*(1-lam) = 0.86
+        assert sorted_results[0]["score"] <= 0.87
+
+    def test_time_decay_ordering_mixed_timestamps(self):
+        """Fresh/half-life/old/missing ordering within a single search."""
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.now(timezone.utc)
+        results = [
+            {"id": "old", "memory": "old", "score": 0.8,
+             "created_at": (now - timedelta(days=60)).isoformat()},
+            {"id": "half", "memory": "half", "score": 0.8,
+             "created_at": (now - timedelta(days=30)).isoformat()},
+            {"id": "missing", "memory": "no ts", "score": 0.8},  # keeps original score
+            {"id": "fresh", "memory": "fresh", "score": 0.8,
+             "created_at": now.isoformat()},
+        ]
+        backend, _ = self._make_with_results(results)
+        sorted_results = backend.search("q", filters={})
+        ids = [r["id"] for r in sorted_results]
+        # fresh (score ~0.86) → missing (score 0.80) → half (score ~0.71) → old (score ~0.64)
+        assert ids.index("fresh") < ids.index("missing")
+        assert ids.index("missing") < ids.index("half")
+        assert ids.index("half") < ids.index("old")
 
 
 httpx = pytest.importorskip("httpx")

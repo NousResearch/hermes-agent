@@ -36,7 +36,7 @@ def _apply_time_decay(
             continue
         try:
             created = datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
-            delta = (now - created).total_seconds()
+            delta = max(0.0, (now - created).total_seconds())
             time_weight = 2.0 ** (-delta / half_life_s)
             mem["_time_weight"] = round(time_weight, 8)
             mem["score"] = round(mem["score"] * lam + time_weight * (1.0 - lam), 8)

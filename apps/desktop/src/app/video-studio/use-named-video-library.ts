@@ -311,7 +311,7 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
           selectedLibraryId,
           clipIds,
           aspect,
-          confirmedSegments.map(segment => ({ text: segment.text }))
+          confirmedSegments.map(segment => ({ id: segment.id, text: segment.text }))
         )
         const result = requireData(response, '素材时间线创建失败')
         setTimeline(result)

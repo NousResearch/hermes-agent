@@ -161,7 +161,10 @@ describe('useNamedVideoLibrary', () => {
       'beef-noodle',
       ['clip-1', 'clip-1'],
       '9:16',
-      [{ text: '第一段。' }, { text: '第二段。' }]
+      [
+        { id: 'segment-1', text: '第一段。' },
+        { id: 'segment-2', text: '第二段。' }
+      ]
     )
   })
 

@@ -874,53 +874,152 @@ def _normalize_command_for_detection(command: str) -> str:
 def _inline_simple_var_assignments(command: str) -> str:
     """Best-effort inlining of simple `NAME=value` shell assignments into
     later `$NAME`/`${NAME}` references in the same command string. See the
-    call site in _normalize_command_for_detection() for the rationale."""
-    assignments: dict[str, str] = {}
-    # NAME=value at the start of the command or right after ; & | or a
-    # newline — command-position anchored, matching the style of other
-    # command-position patterns in this file. Value is a quoted string or
-    # a run of non-separator characters.
-    assign_re = re.compile(
-        r'(?:^|[;&|\n]\s*)(?:export\s+|local\s+|declare\s+(?:-[A-Za-z]+\s+)?)?'
-        r'([A-Za-z_][A-Za-z0-9_]*)='
-        r'''("[^"]*"|'[^']*'|[^\s;&|]*)'''
-    )
-    for m in assign_re.finditer(command):
-        name, value = m.group(1), m.group(2)
-        if name == "IFS":
+    call site in _normalize_command_for_detection() for the rationale.
+
+    Scope-aware: `NAME=value cmd args...` (a command-prefix assignment)
+    only applies to `cmd`'s own environment in real shell semantics and
+    does not persist afterward, unlike a standalone `NAME=value` statement.
+    Verified live: `unset H; H=~/.bashrc env true; sed -i s/a/b/ $H` leaves
+    `$H` unset at the final use, and `H=safe; H=~/.bashrc env true; sed -i
+    ... $H` resolves back to `safe`, not `~/.bashrc` — a naive command-wide
+    substitution map gets both wrong, in the unsafe direction for the
+    second case (silently missing a sensitive-path write that the scoped
+    override should not have suppressed). `unset NAME` clears tracked
+    state the same way. Position-aware: an assignment right after `$(`,
+    `(`, or `{` is recognized as a real command start via the same
+    quote-aware tokenizer (_iter_shell_command_starts) `_mark_command_starts`
+    already uses elsewhere in this file, rather than a flat regex that
+    cannot see into those contexts.
+    """
+    starts = sorted(s for s in _real_assignment_scan_starts(command) if s >= 0)
+    if not starts or starts[0] != 0:
+        starts = [0] + starts
+    ends = starts[1:] + [len(command)]
+
+    persisting: dict[str, str] = {}
+    out_parts: list[str] = []
+    prev_end = 0
+
+    for start, end in zip(starts, ends):
+        out_parts.append(command[prev_end:start])
+        chunk = command[start:end]
+
+        unset_match = _UNSET_RE.match(chunk)
+        if unset_match:
+            for name in unset_match.group(1).split():
+                persisting.pop(name, None)
+            out_parts.append(chunk)
+            prev_end = end
             continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        assignments[name] = value
-    if not assignments:
-        return command
 
-    var_ref_re = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+        pos = 0
+        local_overlay: dict[str, str] = {}
+        while True:
+            assign_match = _VAR_ASSIGN_TOKEN_RE.match(chunk[pos:])
+            if not assign_match:
+                break
+            name, raw_value = assign_match.group(1), assign_match.group(2)
+            value = _unquote_assignment_value(raw_value)
+            pos += assign_match.end()
+            while pos < len(chunk) and chunk[pos] == " ":
+                pos += 1
+            if value is None:
+                # Known, deliberately-unresolved form (quoted tilde — see
+                # _unquote_assignment_value) — do not let a stale value for
+                # this name leak forward from an earlier assignment either.
+                local_overlay.pop(name, None)
+                persisting.pop(name, None)
+                continue
+            # Resolve references INSIDE the value against what's already
+            # known (persisting state plus any earlier assignment on this
+            # same chunk) as soon as it's captured. This is what makes
+            # chained indirection (`H2=$H` after an earlier `H=...`)
+            # resolve without a separate multi-pass loop over the whole
+            # command.
+            lookup = {**persisting, **local_overlay}
 
-    def _resolve_ref(m: re.Match) -> str:
-        name = m.group(1) or m.group(2)
-        return assignments.get(name, m.group(0))
+            def _resolve_value_ref(m: re.Match, lookup=lookup) -> str:
+                ref_name = m.group(1) or m.group(2)
+                return lookup.get(ref_name, m.group(0))
 
-    # Resolve chained indirection (`H2=$H` referencing an earlier
-    # `H=...`) by repeatedly re-substituting assignment VALUES against
-    # the growing assignments table, not just the final command text —
-    # a single pass over the command alone would leave `$H2` pointing at
-    # the still-unresolved literal text "$H" instead of the real path.
-    # Bounded iteration count guards against a circular reference
-    # (`A=$B; B=$A`) looping forever — real shell scripts don't chain
-    # variables deeply, so a handful of passes covers any real command,
-    # and this is a best-effort detector, not a full resolver.
-    for _ in range(5):
-        changed = False
-        for name, value in list(assignments.items()):
-            resolved = var_ref_re.sub(_resolve_ref, value)
-            if resolved != value:
-                assignments[name] = resolved
-                changed = True
-        if not changed:
-            break
+            value = _VAR_REF_RE.sub(_resolve_value_ref, value)
+            if name != "IFS":
+                local_overlay[name] = value
 
-    return var_ref_re.sub(_resolve_ref, command)
+        rest = chunk[pos:]
+        # A chunk that is JUST assignment(s) followed by a separator (or
+        # end of string) is a standalone statement — it persists. One
+        # followed by anything else (a bare command word) is a
+        # command-prefix form — scoped to this chunk only.
+        is_standalone = rest.strip(" ") == "" or rest.lstrip(" ")[:1] in (";", "&", "|", "\n", "")
+        if local_overlay and is_standalone:
+            persisting.update(local_overlay)
+            effective = persisting
+        elif local_overlay:
+            effective = {**persisting, **local_overlay}
+        else:
+            effective = persisting
+
+        def _resolve_ref(m: re.Match, effective=effective) -> str:
+            ref_name = m.group(1) or m.group(2)
+            return effective.get(ref_name, m.group(0))
+
+        out_parts.append(chunk[:pos] + _VAR_REF_RE.sub(_resolve_ref, rest))
+        prev_end = end
+
+    out_parts.append(command[prev_end:])
+    return "".join(out_parts)
+
+
+# `NAME=value` at the start of a chunk, optionally prefixed by `export`/
+# `local`/`declare`. Value is a quoted string or a run of non-separator
+# characters; a value starting `$(` is deliberately excluded (kept as an
+# empty, unmatched capture boundary) so an assignment immediately
+# followed by real command substitution — `H=$(...)` — is left alone
+# rather than having "$(" captured as if it were a literal value.
+_VAR_ASSIGN_TOKEN_RE = re.compile(
+    r'^(?:export\s+|local\s+|declare\s+(?:-[A-Za-z]+\s+)?)?'
+    r'([A-Za-z_][A-Za-z0-9_]*)='
+    r'''("[^"]*"|'[^']*'|(?!\$\()[^\s;&|]*)'''
+)
+_VAR_REF_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+_UNSET_RE = re.compile(r'unset\s+(.+?)(?=[;&|\n]|$)')
+
+
+def _unquote_assignment_value(raw_value: str) -> str | None:
+    """Strip matching quotes from a captured assignment value.
+
+    Returns None when the value must NOT be inlined at all: a
+    double/single-quoted string starting with a literal `~`. Verified
+    live — `H="~/.bashrc"; ls $H` fails with "No such file or directory",
+    not a real home-relative access — because bash tilde-expansion only
+    fires for a `~` appearing directly in shell source text, never for
+    one arriving via variable substitution. Treating a quoted `~/...`
+    value as equivalent to the unquoted, genuinely-expanded form would be
+    a false positive, not just an imprecise test.
+    """
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "\"'":
+        inner = raw_value[1:-1]
+        if inner.startswith("~"):
+            return None
+        return inner
+    return raw_value
+
+
+def _real_assignment_scan_starts(command: str):
+    """Command-start positions for assignment scanning, reusing the same
+    quote-aware tokenizer `_mark_command_starts` uses elsewhere in this
+    file — NOT a separate parser. `_iter_shell_command_starts` treats a
+    bare `{` as a brace-group opener, which is correct for its own
+    callers, but doesn't distinguish that from the `{` in `${NAME}`
+    parameter expansion. Filter those specific false positions out here
+    rather than changing the shared tokenizer's behavior for its other
+    callers.
+    """
+    for start in _iter_shell_command_starts(command):
+        if start >= 2 and command[start - 2:start] == "${":
+            continue
+        yield start
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a filesystem

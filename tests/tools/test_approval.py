@@ -1352,8 +1352,29 @@ class TestVariableIndirectionBypass:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
 
-    def test_quoted_assignment_value_unquoted_before_substitution(self):
+    def test_unquoted_tilde_assignment_value_resolved(self):
+        """`H=~/.bashrc` (unquoted) undergoes real shell tilde-expansion
+        at assignment time, so the intended bypass form is unquoted."""
+        cmd = 'H=~/.bashrc; sed -i s/a/b/ $H'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_quoted_tilde_assignment_value_not_resolved(self):
+        """A tilde inside a quoted assignment value is literal in shell
+        syntax — bash never tilde-expands the result of a variable
+        substitution. Verified live: `H="~/.bashrc"; ls $H` fails with
+        "No such file or directory", not a real home-relative access.
+        Treating this the same as the unquoted, genuinely-expanded form
+        would be a false positive, not just an imprecise assumption."""
         cmd = 'H="~/.bashrc"; sed -i s/a/b/ $H'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_quoted_non_tilde_assignment_value_still_resolved(self):
+        """The quoted-tilde exclusion is narrow — a quoted value that
+        isn't tilde-prefixed (an absolute path, no expansion ambiguity
+        involved) still resolves normally."""
+        cmd = 'H="/etc/passwd"; echo x > $H'
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
 
@@ -1444,6 +1465,70 @@ class TestVariableIndirectionBypass:
 
     def test_declare_with_flag_prefixed_assignment_resolved(self):
         cmd = "declare -r H=~/.bashrc; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    # --- Scope-aware substitution: command-prefix assignments (`NAME=value
+    # cmd`) are scoped to that one command in real shell semantics and do
+    # not persist afterward, unlike a standalone `NAME=value` statement. A
+    # naive command-wide substitution map gets this wrong in both
+    # directions — flagging something real execution wouldn't touch, and
+    # (more seriously) missing a sensitive-path write that a scoped
+    # override should not have suppressed. ---
+
+    def test_command_prefix_assignment_does_not_persist(self):
+        """`H=~/.bashrc env true` only sets H for `env true`'s own
+        environment; H is unset again afterward (verified live). The
+        final `$H` must NOT resolve to the sensitive path."""
+        cmd = "unset H; H=~/.bashrc env true; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False, f"Scoped command-prefix assignment incorrectly persisted: {cmd!r}"
+
+    def test_command_prefix_assignment_does_not_shadow_earlier_persisting_value(self):
+        """A scoped command-prefix assignment must not overwrite an
+        earlier PERSISTING assignment for later references — this is the
+        security-relevant direction: naively letting the scoped value win
+        would silently miss a sensitive-path write that real shell
+        execution would still perform. Verified live: after `H=~/.bashrc;
+        H=safe env true`, $H is `~/.bashrc` again (reverted), not `safe`."""
+        cmd = "H=~/.bashrc; H=safe env true; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Scoped override incorrectly suppressed a real sensitive-path write: {cmd!r}"
+
+    def test_scoped_assignment_after_persisting_reassignment_resolves_to_persisting_value(self):
+        """The inverse ordering: a persisting reassignment (`H=safe`)
+        after an earlier scoped one must win, since only the persisting
+        form actually changes shell state going forward."""
+        cmd = "H=safe; H=~/.bashrc env true; sed -i s/a/b/ $H"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_assignment_immediately_after_subshell_open_resolved(self):
+        """An assignment right after `$(` is a real command start, not
+        something a flat regex anchored on `;`/`&`/`|`/newline can see —
+        recognized here via the same quote-aware tokenizer
+        (_iter_shell_command_starts) `_mark_command_starts` already uses
+        elsewhere in this file."""
+        cmd = "echo $(H=~/.bashrc; sed -i s/a/b/ $H)"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Assignment right after $( escaped detection: {cmd!r}"
+
+    def test_assignment_immediately_after_bare_subshell_open_resolved(self):
+        cmd = "(H=~/.bashrc; sed -i s/a/b/ $H)"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_assignment_immediately_after_brace_group_open_resolved(self):
+        cmd = "{ H=~/.bashrc; sed -i s/a/b/ $H; }"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_braced_reference_not_confused_with_brace_group_boundary(self):
+        """`${H}` must not be misread as a brace-group opener by the
+        command-start scanner reused for assignment recognition — that
+        would incorrectly split the reference away from the rest of its
+        own command."""
+        cmd = "H=~/.bashrc; sed -i s/a/b/ ${H}"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
 

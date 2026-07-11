@@ -38,10 +38,26 @@ class GeminiProfile(ProviderProfile):
         (#62259). Hit the native endpoint with query-param auth (the same auth
         the native inference client already uses) and strip the ``models/``
         prefix each entry's ``name`` carries so IDs match what inference expects.
+
+        Gemini's OpenAI-compatibility base URL (``.../openai``) *does* speak
+        Bearer + OpenAI-style ``data[].id``, so this native override is gated to
+        native endpoints only; the compat base URL delegates to the base
+        implementation.
         """
         effective_base = (base_url or self.base_url or "").rstrip("/")
         if not (effective_base and api_key):
             return None
+
+        # The OpenAI-compat endpoint speaks Bearer + data[].id — let the base
+        # ProviderProfile handle it rather than forcing native query-param auth.
+        from agent.transports.chat_completions import (
+            _is_gemini_openai_compat_base_url,
+        )
+
+        if _is_gemini_openai_compat_base_url(effective_base):
+            return super().fetch_models(
+                api_key=api_key, base_url=base_url, timeout=timeout
+            )
 
         import json
         import urllib.parse
@@ -65,7 +81,10 @@ class GeminiProfile(ProviderProfile):
             ]
             return ids or None
         except Exception as exc:
-            logger.debug("fetch_models(gemini): %s", exc)
+            # Never log the exception value: urllib errors embed the request
+            # URL, which carries the api_key in the ``?key=`` query param. Log
+            # the exception type only.
+            logger.debug("fetch_models(gemini) failed: %s", type(exc).__name__)
             return None
 
     def build_extra_body(

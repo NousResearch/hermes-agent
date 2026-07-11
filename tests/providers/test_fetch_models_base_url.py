@@ -246,6 +246,39 @@ class TestGeminiNativeFetchModels:
         )
         assert profile.fetch_models(api_key="") is None
 
+    def test_openai_compat_base_url_delegates_to_base(self):
+        """The OpenAI-compat ``/openai`` base URL speaks Bearer + data[].id, so
+        the native override must delegate to ProviderProfile.fetch_models rather
+        than force native ``?key=`` auth (which the compat endpoint rejects)."""
+        from plugins.model_providers.gemini import GeminiProfile
+        profile = GeminiProfile(
+            name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+        with patch(
+            "providers.base.ProviderProfile.fetch_models",
+            return_value=["gemini-compat-model"],
+        ) as base_fetch:
+            result = profile.fetch_models(api_key="test-key")
+        assert result == ["gemini-compat-model"]
+        base_fetch.assert_called_once()
+
+    def test_native_fetch_exception_does_not_log_key_bearing_url(self, caplog):
+        """urllib errors embed the request URL (which carries the ?key= api
+        key); the failure path must not log the exception value."""
+        import logging
+        from plugins.model_providers.gemini import GeminiProfile
+
+        profile = GeminiProfile(
+            name="gemini",
+            # Unroutable port → connection error carrying the URL in the exc.
+            base_url="http://127.0.0.1:1/v1beta",
+        )
+        with caplog.at_level(logging.DEBUG):
+            result = profile.fetch_models(api_key="super-secret-key")
+        assert result is None
+        assert "super-secret-key" not in caplog.text
+
 
 class TestModelPickerBaseUrlIntegration:
     """The /model picker path should pass model.base_url to fetch_models."""

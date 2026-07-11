@@ -5,6 +5,13 @@ from __future__ import annotations
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_kanban_writer: exercise the real single-writer boundary without unit-test owner",
+    )
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

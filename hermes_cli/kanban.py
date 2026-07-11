@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli import kanban_writer
 from hermes_cli.profiles import get_active_profile_name
 
 
@@ -867,6 +868,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 # Command dispatch
 # ---------------------------------------------------------------------------
 
+@kanban_writer.default_mutation_source("cli")
 def kanban_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes kanban …`` argparse dispatch.
 
@@ -2767,7 +2769,7 @@ Read-only commands are safe while an agent is running.\
 """
 
 
-def run_slash(rest: str) -> str:
+def run_slash(rest: str, *, source: str = "cli") -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
 
     ``rest`` is everything after ``/kanban`` (may be empty).  Used from
@@ -2832,7 +2834,8 @@ def run_slash(rest: str) -> str:
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:
-            kanban_command(args)
+            with kanban_writer.mutation_source(source):
+                kanban_command(args)
         except SystemExit:
             pass
         except Exception as exc:

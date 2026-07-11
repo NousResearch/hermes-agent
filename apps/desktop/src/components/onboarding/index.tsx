@@ -99,7 +99,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions())
+      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])

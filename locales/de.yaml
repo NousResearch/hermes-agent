@@ -107,6 +107,8 @@ gateway:
     no_pending:            "Kein ausstehender Befehl zum Ablehnen."
     denied_singular:       "❌ Befehl abgelehnt."
     denied_plural:         "❌ Befehle abgelehnt ({count} Befehle)."
+    denied_reason_singular: "❌ Befehl abgelehnt. Grund an den Agenten weitergeleitet: \"{reason}\""
+    denied_reason_plural:  "❌ Befehle abgelehnt ({count} Befehle). Grund an den Agenten weitergeleitet: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast ist nur für OpenAI-Modelle mit Priority Processing verfügbar."

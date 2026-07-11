@@ -1827,10 +1827,15 @@ class TestScheduleNoneSiblingCrashes:
     def test_claim_dispatch_does_not_crash(self, tmp_cron_dir):
         self._write_bad_job(enabled=False, state="paused")
         assert claim_dispatch("bad-sched") is True
+        # The in-place schedule repair must be persisted, not just avoid the
+        # crash in memory — otherwise jobs.json stays malformed on disk and
+        # every future call pays the same repair-without-persist cost.
+        assert load_jobs()[0]["schedule"] == {}
 
     def test_advance_next_run_does_not_crash(self, tmp_cron_dir):
         self._write_bad_job(enabled=False, state="paused")
         assert advance_next_run("bad-sched") is False
+        assert load_jobs()[0]["schedule"] == {}
 
     def test_update_job_does_not_crash_on_unrelated_field(self, tmp_cron_dir):
         """Updating a field other than 'schedule' must not crash just

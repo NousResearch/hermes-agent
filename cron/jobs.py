@@ -1542,7 +1542,13 @@ def claim_dispatch(job_id: str) -> bool:
         for i, job in enumerate(jobs):
             if job["id"] != job_id:
                 continue
+            schedule_was_malformed = not isinstance(job.get("schedule"), dict)
             if _job_schedule_dict(job).get("kind") != "once":
+                if schedule_was_malformed:
+                    # _job_schedule_dict() repaired job["schedule"] in place;
+                    # persist it now since this path returns before the
+                    # dispatch-claim save below would otherwise do it.
+                    save_jobs(jobs)
                 return True  # recurring jobs use advance_next_run(), not dispatch claims
             repeat = job.get("repeat")
             if not repeat:
@@ -1599,9 +1605,15 @@ def advance_next_run(job_id: str) -> bool:
         jobs = load_jobs()
         for job in jobs:
             if job["id"] == job_id:
+                schedule_was_malformed = not isinstance(job.get("schedule"), dict)
                 schedule = _job_schedule_dict(job)
                 kind = schedule.get("kind")
                 if kind not in {"cron", "interval"}:
+                    if schedule_was_malformed:
+                        # _job_schedule_dict() repaired job["schedule"] in
+                        # place; persist it now since this path returns
+                        # before the save below would otherwise do it.
+                        save_jobs(jobs)
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(schedule, now)

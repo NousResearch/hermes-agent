@@ -616,6 +616,23 @@ class _CuaDriverSession:
             self._startup_phase = "manifest-discovery"
             command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
             _t_manifest = _time.monotonic()
+
+            # Command allowlist (tasks-69t.4 C2, handoff from the 69t.9
+            # audit): validate before StdioServerParameters construction,
+            # same as the tools.mcp_tool stdio spawn path. Opt-in via
+            # security.mcp_stdio_command_allowlist_enabled (default off).
+            # cua-driver's command is normally fixed, but HERMES_CUA_DRIVER_CMD
+            # is env-overridable, so this is not merely defense in depth.
+            # cua-driver is a compiled native binary, not an interpreter,
+            # so it is allowed here (and only here) via extra_allowed
+            # rather than widening the general MCP stdio allowlist.
+            from tools.mcp_command_guard import is_enabled, validate_stdio_command
+            if is_enabled():
+                validate_stdio_command(
+                    command, server_name="cua-driver",
+                    extra_allowed=frozenset({"cua-driver"}),
+                )
+
             params = StdioServerParameters(
                 command=command,
                 args=args,

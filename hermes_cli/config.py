@@ -2631,6 +2631,15 @@ DEFAULT_CONFIG = {
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
         "allow_lazy_installs": True,
+        # Reject MCP stdio server commands that aren't one of a fixed set of
+        # interpreters/launchers (npx, uvx, python, python3, node, docker,
+        # deno) before spawning. Default False (opt-in): some operators run
+        # MCP servers launched via a custom compiled binary or wrapper script
+        # that isn't in this list, and this check would otherwise refuse to
+        # start those servers. Enable once you've confirmed every MCP server
+        # in your config launches through one of the allowed interpreters.
+        # See ``tools/mcp_command_guard.py``.
+        "mcp_stdio_command_allowlist_enabled": False,
     },
 
     "cron": {
@@ -7056,6 +7065,10 @@ _SECURITY_COMMENT = """
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+# mcp_stdio_command_allowlist_enabled is opt-in (default false): once on,
+# MCP stdio servers must launch through npx/uvx/python/python3/node/docker/
+# deno, or the connection is refused. Also settable via
+# HERMES_MCP_STDIO_COMMAND_ALLOWLIST_ENABLED.
 #
 # security:
 #   redact_secrets: true
@@ -7063,6 +7076,7 @@ _SECURITY_COMMENT = """
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
 #   tirith_fail_open: true
+#   mcp_stdio_command_allowlist_enabled: false
 """
 
 _FALLBACK_COMMENT = """

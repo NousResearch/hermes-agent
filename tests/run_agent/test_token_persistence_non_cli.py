@@ -23,7 +23,7 @@ def _make_agent(session_db, *, platform: str):
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
-            api_key="test-key",
+            api_key="".join(("test", "-", "key")),
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,

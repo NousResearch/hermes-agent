@@ -204,9 +204,9 @@ class TestBrowseShape:
         assert any("Modpack" in (t or "") for t in titles)
 
 
-# =========================================================================
+# ---------------------------------------------------------------------------
 # Gateway conversation scope
-# =========================================================================
+# ---------------------------------------------------------------------------
 
 class TestConversationScope:
     def test_gateway_browse_defaults_to_current_chat(self, db):

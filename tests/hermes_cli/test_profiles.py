@@ -1192,6 +1192,39 @@ class TestExportImport:
         assert imported.is_dir()
         assert (imported / "marker.txt").read_text() == "hello"
 
+    def test_export_import_round_trip_preserves_safe_relative_symlink(
+        self, profile_env, tmp_path
+    ):
+        if os.name == "nt":
+            probe = tmp_path / "symlink-probe"
+            try:
+                probe.symlink_to("symlink-target")
+            except OSError:
+                pytest.skip("Windows symlink creation requires optional privileges")
+            else:
+                probe.unlink()
+
+        create_profile("coder", no_alias=True)
+        profile_dir = get_profile_dir("coder")
+        data_dir = profile_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "target.txt").write_text("profile data")
+        (data_dir / "link.txt").symlink_to("target.txt")
+
+        archive_path = tmp_path / "export" / "coder.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("coder", str(archive_path))
+
+        import shutil
+
+        shutil.rmtree(profile_dir)
+        imported = import_profile(str(archive_path), name="coder")
+
+        link_path = imported / "data" / "link.txt"
+        assert link_path.is_symlink()
+        assert link_path.read_text() == "profile data"
+        assert os.readlink(link_path) == "target.txt"
+
     def test_import_to_existing_name_raises(self, profile_env, tmp_path):
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")

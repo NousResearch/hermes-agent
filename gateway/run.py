@@ -812,6 +812,10 @@ _LEGACY_OBSERVED_AUDIO_NOTE_RE = re.compile(
     r"\[Observed Telegram (?:voice message|audio)[^:\]]*:\s*'[^']*'\s+saved at:\s*(?P<path>[^\]\r\n]+)\]",
     re.IGNORECASE,
 )
+_REPLIED_TO_AUDIO_NOTE_RE = re.compile(
+    r"\[Replied-to\s+(?:audio|voice(?:\s+message)?)\s+'[^']*'\s+saved at:\s*(?P<path>[^\]\r\n]+)\]",
+    re.IGNORECASE,
+)
 _OBSERVED_AUDIO_TRANSCRIPT_PATH_RE = re.compile(
     rf"\[{re.escape(_OBSERVED_AUDIO_TRANSCRIPT_MARKER)}[^\]]*?\(path:\s*(?P<path>[^)\]\r\n]+)\)\]",
     re.IGNORECASE,
@@ -819,6 +823,11 @@ _OBSERVED_AUDIO_TRANSCRIPT_PATH_RE = re.compile(
 _OBSERVED_AUDIO_TRANSCRIPT_RE = re.compile(
     rf"\[{re.escape(_OBSERVED_AUDIO_TRANSCRIPT_MARKER)}:\s*\"(?P<transcript>.*?)\"\s*\(path:\s*(?P<path>[^)\]\r\n]+)\)\]",
     re.IGNORECASE | re.DOTALL,
+)
+_OBSERVED_AUDIO_REQUEST_RE = re.compile(
+    r"\b(?:audio|áudio|voice|voz|ouvir|ouve|escutar|escuta|transcrev\w*|transcri\w*|"
+    r"listen|hear|heard|transcript(?:ion)?)\b",
+    re.IGNORECASE,
 )
 
 
@@ -834,6 +843,22 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     """
 
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+
+
+def _observed_context_start_index(history: List[Dict[str, Any]]) -> int:
+    """Return the first row in the still-relevant observed-context window.
+
+    Observed group chatter is ephemeral context for the next addressed turn,
+    not durable conversation history. Once a normal user turn is recorded,
+    earlier observed rows must no longer be rendered or transcribed merely
+    because they remain in the session transcript.
+    """
+
+    start = 0
+    for index, msg in enumerate(history or []):
+        if msg.get("role") == "user" and not msg.get("observed"):
+            start = index + 1
+    return start
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
@@ -879,11 +904,48 @@ def _extract_observed_audio_paths(content: Any) -> List[str]:
     return paths
 
 
+def _message_text(message: Any) -> Optional[str]:
+    """Extract text content from a plain or multimodal inbound message."""
+
+    if isinstance(message, str):
+        return message
+    if isinstance(message, list):
+        parts = [
+            str(part.get("text") or "")
+            for part in message
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        return "\n".join(parts)
+    return None
+
+
+def _extract_explicit_audio_reference_paths(message: Any) -> List[str]:
+    """Return cache paths explicitly quoted by the current addressed turn."""
+
+    text = _message_text(message)
+    if not text:
+        return []
+
+    paths = _extract_observed_audio_paths(text)
+    seen = set(paths)
+    for match in _REPLIED_TO_AUDIO_NOTE_RE.finditer(text):
+        raw_path = match.group("path").strip().strip("\"'")
+        if (
+            raw_path
+            and Path(raw_path).suffix.lower() in _OBSERVED_AUDIO_EXTENSIONS
+            and raw_path not in seen
+        ):
+            seen.add(raw_path)
+            paths.append(raw_path)
+    return paths
+
+
 def _observed_audio_transcript_paths(history: List[Dict[str, Any]]) -> set[str]:
     """Return audio paths already represented by an observed transcript note."""
 
     paths: set[str] = set()
-    for msg in history or []:
+    context_start = _observed_context_start_index(history)
+    for msg in (history or [])[context_start:]:
         content = msg.get("content")
         if not isinstance(content, str):
             continue
@@ -934,17 +996,22 @@ def _strip_observed_audio_notes(content: Optional[str]) -> Optional[str]:
 
 
 def _observed_audio_transcripts_from_history(history: List[Dict[str, Any]]) -> List[str]:
-    """Return observed-audio transcripts carried by enriched history rows."""
+    """Return transcripts selected for the current addressed turn only.
+
+    An observed row can retain transcript annotations from an earlier turn.
+    Those annotations are context, not an instruction to expose every prior
+    voice message again.  ``_enrich_observed_audio_context`` marks the one
+    transcript selected for this turn with a runtime-only field.
+    """
 
     transcripts: List[str] = []
     seen: set[str] = set()
     for msg in history or []:
-        raw_items = msg.get("_observed_audio_transcripts")
+        raw_items = msg.get("_observed_audio_transcripts_for_current_turn")
         if isinstance(raw_items, list):
             items = [item for item in raw_items if isinstance(item, str)]
         else:
             items = []
-        items.extend(_extract_observed_audio_transcripts(msg.get("content")))
         for transcript in items:
             transcript = transcript.strip()
             if not transcript or transcript in seen:
@@ -954,43 +1021,89 @@ def _observed_audio_transcripts_from_history(history: List[Dict[str, Any]]) -> L
     return transcripts
 
 
-def _message_requests_observed_audio(message: Any) -> bool:
-    """Return True when the current turn plausibly asks about observed audio."""
+def _clear_observed_audio_current_turn_markers(
+    history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Drop runtime-only selected-audio markers without mutating transcript rows."""
 
-    if isinstance(message, str):
-        text = message
-    elif isinstance(message, list):
-        parts = []
-        for part in message:
-            if isinstance(part, dict) and part.get("type") == "text":
-                parts.append(str(part.get("text") or ""))
-        text = "\n".join(parts)
-    else:
+    cleaned_history: Optional[List[Dict[str, Any]]] = None
+    for index, msg in enumerate(history or []):
+        if "_observed_audio_transcripts_for_current_turn" not in msg:
+            continue
+        if cleaned_history is None:
+            cleaned_history = list(history)
+        cleaned_msg = dict(msg)
+        cleaned_msg.pop("_observed_audio_transcripts_for_current_turn", None)
+        cleaned_history[index] = cleaned_msg
+    return cleaned_history if cleaned_history is not None else history
+
+
+def _message_requests_observed_audio(message: Any) -> bool:
+    """Return True only for an unambiguous request about audio content."""
+
+    text = _message_text(message)
+    if not text:
         return False
 
-    text = text.lower()
-    return any(
-        marker in text
-        for marker in (
-            "audio",
-            "áudio",
-            "voice",
-            "voz",
-            "ouvir",
-            "ouve",
-            "escutar",
-            "escuta",
-            "transcrev",
-            "transcri",
-            "respondendo",
-            "respondi",
-            "reply",
-            "replied",
-            "said",
-            "disse",
-            "falou",
-        )
-    )
+    # Adapter-added media notes and prior transcript annotations are context,
+    # not user intent. In particular, replying directly to a voice message is
+    # already handled by the normal inbound STT path and must not also select
+    # an unrelated observed audio item.
+    for pattern in (
+        _OBSERVED_AUDIO_NOTE_RE,
+        _LEGACY_OBSERVED_AUDIO_NOTE_RE,
+        _REPLIED_TO_AUDIO_NOTE_RE,
+        _OBSERVED_AUDIO_TRANSCRIPT_RE,
+    ):
+        text = pattern.sub("", text)
+    return bool(_OBSERVED_AUDIO_REQUEST_RE.search(text))
+
+
+def _select_observed_audio_path(
+    history: List[Dict[str, Any]],
+    current_message: Any,
+    *,
+    already_transcribed: set[str],
+    explicit_audio_reference: Any = None,
+) -> Optional[str]:
+    """Choose at most one observed audio item for on-demand transcription.
+
+    A path explicitly quoted by the current turn wins.  Without that anchor,
+    only a clear audio request may use the most recent observed audio.  This
+    intentionally does not treat vague speech references such as "what did
+    they say?" as audio requests: those phrases otherwise fan out across
+    unrelated group voice notes and leak both latency and private context.
+    """
+
+    candidates: List[str] = []
+    seen: set[str] = set()
+    context_start = _observed_context_start_index(history)
+    for msg in (history or [])[context_start:]:
+        content = msg.get("content")
+        if not (
+            msg.get("observed")
+            and msg.get("role") == "user"
+            and isinstance(content, str)
+        ):
+            continue
+        for raw_path in _extract_observed_audio_paths(content):
+            if raw_path in already_transcribed or raw_path in seen:
+                continue
+            seen.add(raw_path)
+            candidates.append(raw_path)
+
+    if not candidates:
+        return None
+
+    candidate_paths = set(candidates)
+    for reference in (current_message, explicit_audio_reference):
+        for raw_path in _extract_explicit_audio_reference_paths(reference):
+            if raw_path in candidate_paths:
+                return raw_path
+
+    if _message_requests_observed_audio(current_message):
+        return candidates[-1]
+    return None
 
 
 def _resolve_observed_audio_cache_path(path: str) -> Optional[str]:
@@ -1088,7 +1201,8 @@ def _build_gateway_agent_history(
     observed_group_context: List[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
-    for msg in history or []:
+    observed_context_start = _observed_context_start_index(history) if separate_observed_context else 0
+    for index, msg in enumerate(history or []):
         role = msg.get("role")
         if not role:
             continue
@@ -1105,8 +1219,9 @@ def _build_gateway_agent_history(
         content = msg.get("content")
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+        if separate_observed_context and msg.get("observed") and role == "user":
+            if index >= observed_context_start and content:
+                observed_group_context.append(str(content).strip())
             continue
 
         # Rich agent messages (tool_calls, tool results) must be passed through
@@ -12302,6 +12417,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                # Select observed audio from the user's original text, not
+                # from STT output or adapter-added media notes in
+                # ``message_text``. The reply quote remains an explicit
+                # reference anchor when it contains a cached observed path.
+                observed_audio_request_message=event.text,
+                observed_audio_reference=event.reply_to_text,
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -16027,6 +16148,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         channel_prompt: Optional[str] = None,
         current_message: Any = None,
+        explicit_audio_reference: Any = None,
     ) -> List[Dict[str, Any]]:
         """Transcribe cached observed audio on the addressed follow-up turn.
 
@@ -16036,90 +16158,99 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         using the same configured STT stack as fresh voice messages.
         """
 
+        # The selected-transcript marker only controls the wrapper for one
+        # addressed turn. A queued follow-up can reuse ``result['messages']``,
+        # so clear its transient marker before deciding whether this turn
+        # selects a new audio item.
+        history = _clear_observed_audio_current_turn_markers(history)
         if not history or not _uses_telegram_observed_group_context(channel_prompt):
             return history
         if not getattr(self.config, "stt_enabled", True):
             return history
-        if not _message_requests_observed_audio(current_message):
-            return history
 
         already_transcribed = _observed_audio_transcript_paths(history)
+        selected_path = _select_observed_audio_path(
+            history,
+            current_message,
+            already_transcribed=already_transcribed,
+            explicit_audio_reference=explicit_audio_reference,
+        )
+        if not selected_path:
+            return history
+
         transcript_cache = getattr(self, "_observed_audio_transcript_cache", None)
         if transcript_cache is None:
             transcript_cache = {}
             self._observed_audio_transcript_cache = transcript_cache
 
-        changed = False
-        enriched_history: List[Dict[str, Any]] = []
-
-        for msg in history:
+        context_start = _observed_context_start_index(history)
+        for index in range(context_start, len(history)):
+            msg = history[index]
             content = msg.get("content")
             if not (
                 msg.get("observed")
                 and msg.get("role") == "user"
                 and isinstance(content, str)
             ):
-                enriched_history.append(msg)
+                continue
+            if selected_path not in _extract_observed_audio_paths(content):
                 continue
 
-            notes: List[str] = []
-            note_transcripts: List[str] = []
-            for raw_path in _extract_observed_audio_paths(content):
-                if raw_path in already_transcribed:
-                    continue
-                resolved = _resolve_observed_audio_cache_path(raw_path)
-                if not resolved:
-                    logger.debug("Skipping observed audio path outside Hermes audio cache: %s", raw_path)
-                    continue
+            resolved = _resolve_observed_audio_cache_path(selected_path)
+            if not resolved:
+                logger.debug("Skipping observed audio path outside Hermes audio cache: %s", selected_path)
+                return history
 
+            try:
+                stat = os.stat(resolved)
+                cache_key = (resolved, stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                return history
+
+            transcript = transcript_cache.get(cache_key)
+            if transcript is None:
                 try:
-                    stat = os.stat(resolved)
-                    cache_key = (resolved, stat.st_mtime_ns, stat.st_size)
-                except OSError:
-                    continue
+                    from tools.transcription_tools import transcribe_audio
 
-                transcript = transcript_cache.get(cache_key)
-                if transcript is None:
-                    try:
-                        from tools.transcription_tools import transcribe_audio
+                    logger.info("Transcribing selected observed audio context: %s", resolved)
+                    result = await asyncio.to_thread(transcribe_audio, resolved)
+                except Exception as exc:
+                    logger.warning("Observed audio transcription failed for %s: %s", resolved, exc)
+                    return history
 
-                        logger.info("Transcribing observed audio context: %s", resolved)
-                        result = await asyncio.to_thread(transcribe_audio, resolved)
-                    except Exception as exc:
-                        logger.warning("Observed audio transcription failed for %s: %s", resolved, exc)
-                        continue
+                if not result.get("success"):
+                    logger.info(
+                        "Observed audio transcription unavailable for %s: %s",
+                        resolved,
+                        result.get("error", "unknown error"),
+                    )
+                    return history
 
-                    if not result.get("success"):
-                        logger.info(
-                            "Observed audio transcription unavailable for %s: %s",
-                            resolved,
-                            result.get("error", "unknown error"),
-                        )
-                        continue
-
-                    transcript = str(result.get("transcript") or "").strip()
-                    if not transcript:
-                        continue
-                    transcript_cache[cache_key] = transcript
-
-                notes.append(_append_observed_audio_transcript_note("", raw_path, transcript))
-                note_transcripts.append(transcript)
-                already_transcribed.add(raw_path)
-
-            if not notes:
-                enriched_history.append(msg)
-                continue
+                transcript = str(result.get("transcript") or "").strip()
+                if not transcript:
+                    return history
+                transcript_cache[cache_key] = transcript
 
             updated = dict(msg)
-            updated["content"] = f"{content.rstrip()}\n\n" + "\n\n".join(notes)
+            updated["content"] = _append_observed_audio_transcript_note(
+                content,
+                selected_path,
+                transcript,
+            )
             updated["_observed_audio_transcripts"] = [
                 *updated.get("_observed_audio_transcripts", []),
-                *note_transcripts,
+                transcript,
             ]
-            enriched_history.append(updated)
-            changed = True
+            # This marker is deliberately runtime-only. It keeps the current
+            # prompt scoped to the one audio item the user selected instead of
+            # re-injecting transcripts from older observed turns.
+            updated["_observed_audio_transcripts_for_current_turn"] = [transcript]
 
-        return enriched_history if changed else history
+            enriched_history = list(history)
+            enriched_history[index] = updated
+            return enriched_history
+
+        return history
 
     async def _dequeue_pending_with_transcription(
         self,
@@ -17896,6 +18027,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        observed_audio_request_message: Any = None,
+        observed_audio_reference: Any = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -17914,7 +18047,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
+                channel_prompt=channel_prompt,
+                observed_audio_request_message=observed_audio_request_message,
+                observed_audio_reference=observed_audio_reference,
+                moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -17925,7 +18061,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
+                channel_prompt=channel_prompt,
+                observed_audio_request_message=observed_audio_request_message,
+                observed_audio_reference=observed_audio_reference,
+                moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -18046,6 +18185,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        observed_audio_request_message: Any = None,
+        observed_audio_reference: Any = None,
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -18916,7 +19057,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         history = await self._enrich_observed_audio_context(
             history,
             channel_prompt=channel_prompt,
-            current_message=message,
+            current_message=(
+                observed_audio_request_message
+                if observed_audio_request_message is not None
+                else message
+            ),
+            explicit_audio_reference=observed_audio_reference,
         )
         observed_audio_transcripts = _observed_audio_transcripts_from_history(history)
 
@@ -21095,6 +21241,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    observed_audio_request_message=(
+                        getattr(pending_event, "text", None)
+                        if pending_event is not None
+                        else None
+                    ),
+                    observed_audio_reference=(
+                        getattr(pending_event, "reply_to_text", None)
+                        if pending_event is not None
+                        else None
+                    ),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

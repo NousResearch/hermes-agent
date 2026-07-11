@@ -1721,7 +1721,6 @@ export const zh: Translations = {
       noColor: '无颜色',
       menuAddFolder: '添加文件夹',
       menuEditFolders: '编辑文件夹…',
-      menuEditFolders: '编辑文件夹…',
       menuSetActive: '设为活动',
       menuDelete: '删除',
       reveal: '在文件夹中显示',

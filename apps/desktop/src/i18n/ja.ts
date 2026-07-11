@@ -1521,7 +1521,6 @@ export const ja = defineLocale({
       noColor: '色なし',
       menuAddFolder: 'フォルダを追加',
       menuEditFolders: 'フォルダを編集…',
-      menuEditFolders: 'フォルダを編集…',
       menuSetActive: 'アクティブに設定',
       menuDelete: '削除',
       reveal: 'フォルダで表示',

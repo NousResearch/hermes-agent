@@ -1474,7 +1474,6 @@ export const zhHant = defineLocale({
       noColor: '無顏色',
       menuAddFolder: '新增資料夾',
       menuEditFolders: '編輯資料夾…',
-      menuEditFolders: '編輯資料夾…',
       menuSetActive: '設為使用中',
       menuDelete: '刪除',
       reveal: '在資料夾中顯示',

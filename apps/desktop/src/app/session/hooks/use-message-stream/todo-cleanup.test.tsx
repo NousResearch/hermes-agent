@@ -16,6 +16,7 @@ const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
+const hydrateFromStoredSession = vi.fn(async () => undefined)
 let latestState: ClientSessionState | null = null
 
 function Harness() {
@@ -25,7 +26,7 @@ function Harness() {
 
   const stream = useMessageStream({
     activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
+    hydrateFromStoredSession,
     queryClient: queryClientRef.current,
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
@@ -57,6 +58,8 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
     handleEvent = null
+    hydrateFromStoredSession.mockClear()
+    hydrateFromStoredSession.mockImplementation(async () => undefined)
     latestState = null
     clearSessionTodos(SID)
   })
@@ -109,6 +112,7 @@ describe('useMessageStream turn-end todo cleanup', () => {
     expect(assistant).toBeDefined()
     expect(chatMessageText(assistant!)).toBe('streamed answer')
     expect(assistant!.pending).toBe(false)
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
     expect(latestState?.busy).toBe(false)
   })
 })

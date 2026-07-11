@@ -40,6 +40,55 @@ def _import_audio():
     return sd, np
 
 
+def _import_numpy():
+    """Lazy-import numpy only (no sounddevice).  Returns the module.
+
+    Used where we need to synthesize/convert audio samples but must NOT
+    import sounddevice — see _sounddevice_output_allowed.
+    """
+    import numpy as np
+    return np
+
+
+def _sounddevice_output_allowed() -> bool:
+    """Whether sounddevice may be used for audio OUTPUT.
+
+    Returns False on macOS: importing/initializing sounddevice
+    (PortAudio/CoreAudio) for output triggers a kTCCServiceMediaLibrary
+    permission prompt, even though playback needs no media-library access.
+    On macOS all output is routed through ``afplay`` instead. This does NOT
+    affect audio *input* (recording), which legitimately needs microphone
+    permission. See PR #62601 / #13291.
+    """
+    return platform.system() != "Darwin"
+
+
+def _play_int16_via_tempfile(audio, sample_rate: int) -> None:
+    """Write int16 mono PCM to a temp WAV and play it via play_audio_file.
+
+    Used on macOS so tone/beep output goes through ``afplay`` instead of
+    sounddevice (avoids the TCC media-library prompt).
+    """
+    tmp_path = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_path = tmp.name
+        with wave.open(tmp, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio.tobytes())
+        play_audio_file(tmp_path)
+    except Exception as e:
+        logger.debug("Tone tempfile playback failed: %s", e)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 def _audio_available() -> bool:
     """Return True if audio libraries can be imported."""
     try:
@@ -296,9 +345,11 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         duration: Duration of each beep in seconds.
         count: Number of beeps to play (with short gap between).
     """
+    # Synthesize the tone with numpy only (no sounddevice import yet, so the
+    # macOS TCC prompt is not triggered on the synthesis step).
     try:
-        sd, np = _import_audio()
-    except (ImportError, OSError):
+        np = _import_numpy()
+    except ImportError:
         return
     try:
         gap = 0.06  # seconds between beeps
@@ -318,6 +369,16 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
                 parts.append(np.zeros(samples_per_gap, dtype=np.int16))
 
         audio = np.concatenate(parts)
+
+        # On macOS, route the tone through afplay instead of sounddevice.
+        if not _sounddevice_output_allowed():
+            _play_int16_via_tempfile(audio, SAMPLE_RATE)
+            return
+
+        try:
+            sd, _ = _import_audio()
+        except (ImportError, OSError):
+            return
         sd.play(audio, samplerate=SAMPLE_RATE)
         # sd.wait() calls Event.wait() without timeout — hangs forever if the
         # audio device stalls.  Poll with a 2s ceiling and force-stop.
@@ -1059,10 +1120,11 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # On macOS, skip sounddevice entirely — PortAudio/CoreAudio init triggers
-    # a kTCCServiceMediaLibrary permission prompt even though we don't need it.
-    # afplay handles all formats natively without touching the media stack.
-    if file_path.endswith(".wav") and platform.system() != "Darwin":
+    # Skip sounddevice for output where it is not allowed (macOS): PortAudio/
+    # CoreAudio init triggers a kTCCServiceMediaLibrary permission prompt even
+    # though playback needs no media-library access. afplay (added to the
+    # system-player list below) handles all formats natively instead.
+    if file_path.endswith(".wav") and _sounddevice_output_allowed():
         try:
             sd, np = _import_audio()
             with wave.open(file_path, "rb") as wf:

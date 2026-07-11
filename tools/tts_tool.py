@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import queue
+import platform
 import re
 import shlex
 import shutil
@@ -2645,7 +2646,13 @@ def stream_tts_to_speaker(
             # Open a single sounddevice output stream for the lifetime of
             # this function.  ElevenLabs pcm_24000 produces signed 16-bit
             # little-endian mono PCM at 24 kHz.
-            if client is not None:
+            #
+            # On macOS, skip the sounddevice OutputStream entirely: PortAudio/
+            # CoreAudio init triggers a kTCCServiceMediaLibrary permission
+            # prompt even though output needs no media-library access. Leaving
+            # output_stream=None routes each sentence through _play_via_tempfile
+            # -> play_audio_file -> afplay. See PR #62601 / #13291.
+            if client is not None and platform.system() != "Darwin":
                 try:
                     sd = _import_sounddevice()
                     output_stream = sd.OutputStream(

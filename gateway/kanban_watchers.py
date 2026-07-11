@@ -368,7 +368,11 @@ class GatewayKanbanWatchersMixin:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                # Block reasons often contain the human approval
+                                # contract: ticket URL plus exact response choices.
+                                # A 160-character preview can cut those choices in
+                                # half and turn the notification into a dead end.
+                                reason = f": {str(ev.payload['reason'])[:3000]}"
                             msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""

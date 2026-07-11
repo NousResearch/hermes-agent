@@ -145,6 +145,122 @@ failure, the next external runtime instead receives a continuation instruction
 to inspect durable workspace, board, and process state and not repeat completed
 actions.
 
+## Observability
+
+Hermes writes structured runtime events to a dedicated logger named
+`hermes.runtime_events`. Every event is logged as a single-line JSON object at
+the `INFO` level. Configure any standard Python logging handler to capture this
+logger (file sink, syslog, structured backend) independently of the main
+`hermes` logger.
+
+### Payload structure
+
+Every event includes the following base fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | Event name (see below). |
+| `ts` | float | Unix timestamp at emission time. |
+| `provider` | string | Active provider at the time of the event. |
+| `model` | string | Active model at the time of the event. |
+| `runtime` | string | Active runtime identifier (e.g. `claude_agent_sdk`, `hermes`). |
+
+Additional fields are appended per event type as documented below.
+
+### Events
+
+#### `runtime_attempt_start`
+
+Emitted immediately before each external-runtime attempt begins. No extra
+fields beyond the base payload. Use this event to correlate the start of an
+attempt with its eventual outcome.
+
+```json
+{"event": "runtime_attempt_start", "ts": 1783000000.0, "provider": "anthropic", "model": "claude-opus-4-6", "runtime": "claude_agent_sdk"}
+```
+
+#### `runtime_attempt_failure`
+
+Emitted when a runtime attempt ends in a classified failure. Extra fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reason` | string | Failover reason — one of `auth`, `auth_permanent`, `rate_limit`, `billing`, `overloaded`, `server_error`, `timeout`, `network`, or `unknown`. |
+| `replay_safe` | bool | Whether the original user turn can be replayed into the next runtime. `false` means a tool side effect was recorded and fallback was blocked to avoid repeating it. |
+
+```json
+{"event": "runtime_attempt_failure", "ts": 1783000001.2, "provider": "anthropic", "model": "claude-opus-4-6", "runtime": "claude_agent_sdk", "reason": "rate_limit", "replay_safe": true}
+```
+
+#### `runtime_circuit_open`
+
+Emitted when Hermes opens a subscription circuit after a quota, billing, auth,
+overload, or server-error failure. The circuit is persisted to
+`~/.hermes/state/runtime-circuits.json` (profile-aware) and is checked before
+each subsequent attempt — a newly created agent on the same profile skips the
+circuit-protected runtime until the reset window expires. Extra fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reset_at` | int | Unix timestamp when the circuit resets and the runtime is eligible for retry. |
+
+```json
+{"event": "runtime_circuit_open", "ts": 1783000001.3, "provider": "anthropic", "model": "claude-opus-4-6", "runtime": "claude_agent_sdk", "reset_at": 1783003600}
+```
+
+#### `runtime_fallback_activated`
+
+Emitted when Hermes successfully advances to a fallback route after a failure.
+Records both the outgoing and incoming route for end-to-end tracing. Extra fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reason` | string | Failover reason that triggered the fallback (same vocabulary as `runtime_attempt_failure`). |
+| `from_provider` | string | Provider that failed. |
+| `from_model` | string | Model that failed. |
+| `from_runtime` | string | Runtime that failed. |
+| `to_provider` | string | Provider of the activated fallback route. |
+| `to_model` | string | Model of the activated fallback route. |
+| `to_runtime` | string | Runtime of the activated fallback route. |
+
+```json
+{"event": "runtime_fallback_activated", "ts": 1783000001.4, "provider": "openai", "model": "gpt-5.4", "runtime": "hermes", "reason": "rate_limit", "from_provider": "anthropic", "from_model": "claude-opus-4-6", "from_runtime": "claude_agent_sdk", "to_provider": "openai", "to_model": "gpt-5.4", "to_runtime": "hermes"}
+```
+
+#### `runtime_billing_mode`
+
+Emitted after each Claude Agent SDK attempt, regardless of success or failure,
+when usage metadata is available. Indicates whether the usage was attested as
+subscription-included. Extra fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `billing_mode` | string | `subscription_included` if a valid Max attestation was present; `unattested` otherwise. |
+| `cost_status` | string | `included` (subscription-included) or `unknown` (unattested). |
+
+```json
+{"event": "runtime_billing_mode", "ts": 1783000002.1, "provider": "anthropic", "model": "claude-opus-4-6", "runtime": "claude_agent_sdk", "billing_mode": "subscription_included", "cost_status": "included"}
+```
+
+### Capturing the event stream
+
+Route the logger to a file with standard Python logging config, or to any
+structured backend by replacing the handler:
+
+```python
+import logging
+
+handler = logging.FileHandler("runtime-events.jsonl")
+handler.setFormatter(logging.Formatter("%(message)s"))
+logging.getLogger("hermes.runtime_events").addHandler(handler)
+```
+
+To grep the events from the main agent log in real time:
+
+```bash
+tail -f ~/.hermes/profiles/<profile>/logs/agent.log | grep '"event".*runtime_'
+```
+
 ## Supported surfaces
 
 The provider-neutral route is propagated consistently by the CLI, messaging

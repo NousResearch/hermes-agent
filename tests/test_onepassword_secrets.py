@@ -216,6 +216,31 @@ def test_fetch_child_env_is_allowlisted(monkeypatch, tmp_path):
     assert env.get("NO_COLOR") == "1"
 
 
+def test_fetch_child_env_passes_load_desktop_app_settings(monkeypatch, tmp_path):
+    """OP_LOAD_DESKTOP_APP_SETTINGS must reach the op child when the user sets it.
+
+    On a headless box with a valid service-account token but a wedged 1Password
+    desktop app, `op read` hangs on the desktop-settings probe unless
+    OP_LOAD_DESKTOP_APP_SETTINGS=false is passed through. It's an allowlisted
+    var, so a user who exports it should see it in the op child env.
+    """
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_tok")
+    monkeypatch.setenv("OP_LOAD_DESKTOP_APP_SETTINGS", "false")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _ok("v")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+    op.fetch_onepassword_secrets(
+        references={"K": "op://V/I/F"}, binary=fake_op, use_cache=False
+    )
+    assert captured["env"].get("OP_LOAD_DESKTOP_APP_SETTINGS") == "false"
+
+
 # ---------------------------------------------------------------------------
 # Caching
 # ---------------------------------------------------------------------------

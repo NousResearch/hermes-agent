@@ -3324,6 +3324,12 @@ class BasePlatformAdapter(ABC):
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
+        # Warn about MEDIA: directives with unrecognized extensions (not in whitelist)
+        unrecognized = re.findall(r'MEDIA:\s*\S+', cleaned)
+        for u in unrecognized:
+            logger.warning("Unrecognized MEDIA extension (not in whitelist): %s", u[:120])
+
+        
         return images, cleaned
     
     async def send_voice(
@@ -3672,6 +3678,12 @@ class BasePlatformAdapter(ABC):
                     del chars[start:end]
                 cleaned = "".join(chars)
                 cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        
+        # Warn about MEDIA: directives with unrecognized extensions (not in whitelist)
+        unrecognized = re.findall(r'MEDIA:\s*\S+', cleaned)
+        for u in unrecognized:
+            logger.warning("Unrecognized MEDIA extension (not in whitelist): %s", u[:120])
+
         
         return media, cleaned
 

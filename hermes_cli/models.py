@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.urllib_security import open_credentialed_url
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -29,43 +30,9 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
-_CREDENTIAL_REDIRECT_HEADERS = {
-    "authorization",
-    "x-api-key",
-    "api-key",
-    "x-goog-api-key",
-    "cookie",
-}
-
-_ORIGINAL_URLOPEN = urllib.request.urlopen
-
-
-class _StripCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Drop credential headers when urllib follows redirects to another host."""
-
-    def __init__(self, original_host: str):
-        self._original_host = original_host
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_host = (urllib.parse.urlparse(newurl).hostname or "").lower()
-        if new_host and new_host != self._original_host:
-            clean_headers = {
-                name: value
-                for name, value in req.header_items()
-                if name.lower() not in _CREDENTIAL_REDIRECT_HEADERS
-            }
-            return urllib.request.Request(newurl, headers=clean_headers, method="GET")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
-    if urllib.request.urlopen is not _ORIGINAL_URLOPEN:
-        return urllib.request.urlopen(req, timeout=timeout)
-    if not any(name.lower() in _CREDENTIAL_REDIRECT_HEADERS for name, _ in req.header_items()):
-        return urllib.request.urlopen(req, timeout=timeout)
-    original_host = (urllib.parse.urlparse(req.full_url).hostname or "").lower()
-    opener = urllib.request.build_opener(_StripCredentialRedirectHandler(original_host))
-    return opener.open(req, timeout=timeout)
+    """Open catalog requests without forwarding headers across origins."""
+    return open_credentialed_url(req, timeout=timeout)
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -3154,15 +3121,13 @@ def ensure_lmstudio_model_loaded(
     load_headers = dict(headers)
     load_headers["Content-Type"] = "application/json"
     try:
-        with urllib.request.urlopen(
-            urllib.request.Request(
-                server_root + "/api/v1/models/load",
-                data=body,
-                headers=load_headers,
-                method="POST",
-            ),
-            timeout=timeout,
-        ) as resp:
+        load_request = urllib.request.Request(
+            server_root + "/api/v1/models/load",
+            data=body,
+            headers=load_headers,
+            method="POST",
+        )
+        with _urlopen_model_catalog_request(load_request, timeout=timeout) as resp:
             resp.read()
     except Exception:
         return None

@@ -8091,6 +8091,56 @@ def _copilot_acp_status() -> Dict[str, Any]:
     }
 
 
+def _devin_acp_status() -> Dict[str, Any]:
+    """Status for devin-acp — CLI binary + local credentials file probe.
+
+    Unlike copilot-acp, Devin stores a credentials.toml we can detect without
+    spawning the binary or minting network tokens. Never expose secret values.
+    """
+    try:
+        from hermes_cli.auth import get_external_process_provider_status
+
+        raw = get_external_process_provider_status("devin-acp")
+    except Exception as exc:
+        return {
+            "logged_in": False,
+            "source": "devin_cli",
+            "source_label": "Managed by the Devin CLI",
+            "token_preview": None,
+            "expires_at": None,
+            "has_refresh_token": False,
+            "error": str(exc),
+        }
+
+    resolved = raw.get("resolved_command") or raw.get("command") or "devin"
+    parts = ["Managed by the Devin CLI"]
+    if raw.get("resolved_command"):
+        parts.append(str(raw["resolved_command"]))
+    elif raw.get("cli_installed") is False:
+        parts.append("CLI not found on PATH")
+    if raw.get("auth_present") is True:
+        parts.append("local credentials detected")
+    elif raw.get("auth_present") is False and raw.get("cli_installed"):
+        parts.append("not logged in — run: devin auth login")
+    if raw.get("hint"):
+        hint = str(raw["hint"])
+        if hint not in parts[-1]:
+            parts.append(hint)
+
+    return {
+        "logged_in": bool(raw.get("logged_in")),
+        "source": "devin_cli",
+        "source_label": " · ".join(parts),
+        "token_preview": None,
+        "expires_at": None,
+        "has_refresh_token": False,
+        "cli_installed": raw.get("cli_installed"),
+        "auth_present": raw.get("auth_present"),
+        "hint": raw.get("hint"),
+        "resolved_command": resolved,
+    }
+
+
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
 # can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
 # the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
@@ -8160,6 +8210,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "copilot /login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
+    },
+    {
+        "id": "devin-acp",
+        "name": "Devin CLI ACP",
+        "flow": "external",
+        "cli_command": "devin auth login",
+        "docs_url": "https://docs.devin.ai/cli",
+        "status_fn": _devin_acp_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
     # first, then the subscription OAuth path (which only works with extra

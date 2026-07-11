@@ -193,7 +193,9 @@ class TestCompress:
         assert "Summary generation was unavailable" in combined
         assert "removed to free context space but could not be summarized" not in combined
         assert c._last_summary_fallback_used is True
-        assert c._last_summary_dropped_count == 3
+        # The assistant immediately before the latest actionable user turn is
+        # retained as a role bridge, so only the two genuinely older rows drop.
+        assert c._last_summary_dropped_count == 2
 
     def test_fallback_summary_does_not_triplicate_latest_user_ask(self):
         """Regression for #49307: the deterministic fallback summary used to

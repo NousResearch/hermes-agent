@@ -2231,6 +2231,66 @@ This compaction should PRIORITISE preserving all information related to the focu
         return bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
 
     @classmethod
+    def _is_blank_user_turn(cls, message: Any) -> bool:
+        """Return whether *message* is an empty, non-summary user-role echo."""
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        if cls._has_compressed_summary_metadata(message):
+            return False
+        content = message.get("content")
+        if cls._is_context_summary_content(content):
+            return False
+        if content is None or (isinstance(content, str) and not content.strip()):
+            return True
+        if not isinstance(content, list):
+            return False
+        if not content:
+            return True
+        for part in content:
+            if isinstance(part, str):
+                if part.strip():
+                    return False
+                continue
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str) and not text.strip():
+                    continue
+            # Images, audio, and unknown structured blocks are user input.
+            return False
+        return True
+
+    @classmethod
+    def _is_actionable_user_turn(cls, message: Any) -> bool:
+        """Return whether *message* contains user input worth anchoring."""
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        if cls._has_compressed_summary_metadata(message):
+            return False
+        content = message.get("content")
+        if cls._is_context_summary_content(content):
+            return False
+        return not cls._is_blank_user_turn(message)
+
+    @classmethod
+    def _blank_echo_indices_after(
+        cls, messages: List[Dict[str, Any]], user_idx: int
+    ) -> set[int]:
+        """Return contiguous blank echoes safe to remove after a user event.
+
+        A blank user row is only a removable platform echo when an assistant turn
+        immediately follows it. Otherwise it may be an intentional alternation
+        placeholder for a transcript still being assembled.
+        """
+        indices: set[int] = set()
+        idx = user_idx + 1
+        while idx < len(messages) and cls._is_blank_user_turn(messages[idx]):
+            indices.add(idx)
+            idx += 1
+        if not indices or idx >= len(messages):
+            return set()
+        return indices if messages[idx].get("role") == "assistant" else set()
+
+    @classmethod
     def _derive_auto_focus_topic(
         cls,
         messages: List[Dict[str, Any]],
@@ -2449,21 +2509,14 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _find_last_user_message_idx(
         self, messages: List[Dict[str, Any]], head_end: int
     ) -> int:
-        """Return the index of the last user-role message at or after *head_end*, or -1.
+        """Return the latest actionable user turn at or after *head_end*, or -1.
 
-        A context-compaction handoff banner can be inserted as a ``role="user"``
-        message (see the summary-role selection in ``compress``). It is internal
-        continuity state, not a real user turn, so it must not be picked as the
-        tail anchor — otherwise ``_ensure_last_user_message_in_tail`` protects
-        the summary and rolls the genuine last user message into the next
-        compaction, re-triggering the active-task loss the anchor exists to
-        prevent.
+        Compaction handoffs and empty platform echoes are continuity artifacts;
+        neither may displace the request, correction, or completion that the tail
+        anchor exists to preserve.
         """
         for i in range(len(messages) - 1, head_end - 1, -1):
-            msg = messages[i]
-            if msg.get("role") == "user" and not self._is_context_summary_content(
-                msg.get("content")
-            ):
+            if self._is_actionable_user_turn(messages[i]):
                 return i
         return -1
 
@@ -2857,12 +2910,39 @@ This compaction should PRIORITISE preserving all information related to the focu
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
+        latest_actionable_idx = self._find_last_user_message_idx(messages, 0)
+        blank_echo_indices = self._blank_echo_indices_after(
+            messages, latest_actionable_idx
+        )
+        if blank_echo_indices:
+            messages = [
+                message
+                for idx, message in enumerate(messages)
+                if idx not in blank_echo_indices
+            ]
+            n_messages = len(messages)
+        latest_actionable_idx = self._find_last_user_message_idx(messages, 0)
+
         # Phase 2: Determine boundaries
         compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+
+        # A double role collision can merge the summary into the first tail
+        # row. Keep an actionable user event out of that position by retaining
+        # the genuinely older assistant/tool bridge when one exists.
+        if compress_end == latest_actionable_idx:
+            bridge_idx = latest_actionable_idx - 1
+            if bridge_idx >= 0 and messages[bridge_idx].get("role") == "tool":
+                bridge_idx = self._align_boundary_backward(
+                    messages, latest_actionable_idx
+                )
+            elif bridge_idx < 0 or messages[bridge_idx].get("role") != "assistant":
+                bridge_idx = -1
+            if bridge_idx > compress_start:
+                compress_end = bridge_idx
 
         if compress_start >= compress_end:
             # No compressable window — the entire transcript fits within

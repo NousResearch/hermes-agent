@@ -333,7 +333,17 @@ def _sanitize_tool_target(key: str, value: Any) -> Any:
         try:
             parsed = urlsplit(bounded)
             if parsed.scheme and parsed.netloc:
-                return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+                hostname = parsed.hostname
+                if not hostname:
+                    return None
+                # ``SplitResult.netloc`` includes ``user:password@``. Rebuild
+                # the authority from parsed host/port so hook-visible history
+                # cannot carry URL credentials. Bracket IPv6 literals before
+                # appending a validated port.
+                host = f"[{hostname}]" if ":" in hostname else hostname
+                port = parsed.port
+                netloc = f"{host}:{port}" if port is not None else host
+                return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
         except ValueError:
             return None
     return bounded

@@ -28,6 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -640,6 +641,147 @@ class DelegateEvent(str, enum.Enum):
     TASK_THINKING = "delegate.task_thinking"
     TASK_TOOL_STARTED = "delegate.tool_started"
     TASK_TOOL_COMPLETED = "delegate.tool_completed"
+
+
+@dataclass
+class HandoffResult:
+    """Typed handoff frame returned from a child agent to its parent.
+
+    ``delegate_task`` has historically returned plain dictionaries.  This
+    dataclass makes the parent/child boundary explicit while preserving the
+    public JSON shape: ``to_dict()`` emits the existing keys plus typed framing
+    metadata so downstream consumers can distinguish formal handoffs from
+    ad-hoc result dicts.
+    """
+
+    task_index: int
+    status: str
+    summary: Optional[str]
+    exit_reason: str
+    api_calls: int = 0
+    duration_seconds: float = 0.0
+    error: Optional[str] = None
+    model: Optional[str] = None
+    tokens: Dict[str, Any] = field(default_factory=dict)
+    tool_trace: List[Dict[str, Any]] = field(default_factory=list)
+    diagnostic_path: Optional[str] = None
+    stale_paths: List[str] = field(default_factory=list)
+    summary_truncated: bool = False
+    summary_full_path: Optional[str] = None
+    child_role: Optional[str] = None
+    child_cost_usd: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_child_run(
+        cls,
+        *,
+        task_index: int,
+        status: str,
+        summary: Optional[str],
+        exit_reason: str,
+        api_calls: Any = 0,
+        duration_seconds: Any = 0.0,
+        error: Optional[str] = None,
+        model: Optional[str] = None,
+        tokens: Optional[Dict[str, Any]] = None,
+        tool_trace: Optional[List[Dict[str, Any]]] = None,
+        diagnostic_path: Optional[str] = None,
+        stale_paths: Optional[List[str]] = None,
+        child_role: Optional[str] = None,
+        child_cost_usd: Any = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "HandoffResult":
+        """Build a validated handoff frame from raw child-agent values."""
+        try:
+            api_calls_i = int(api_calls or 0)
+        except (TypeError, ValueError):
+            api_calls_i = 0
+        try:
+            duration_f = float(duration_seconds or 0.0)
+        except (TypeError, ValueError):
+            duration_f = 0.0
+        try:
+            cost_f = float(child_cost_usd or 0.0)
+        except (TypeError, ValueError):
+            cost_f = 0.0
+        return cls(
+            task_index=int(task_index),
+            status=str(status),
+            summary=summary if summary is None or isinstance(summary, str) else str(summary),
+            exit_reason=str(exit_reason),
+            api_calls=api_calls_i,
+            duration_seconds=duration_f,
+            error=error if error is None or isinstance(error, str) else str(error),
+            model=model if isinstance(model, str) else None,
+            tokens=tokens or {},
+            tool_trace=tool_trace or [],
+            diagnostic_path=diagnostic_path,
+            stale_paths=stale_paths or [],
+            child_role=child_role,
+            child_cost_usd=cost_f,
+            metadata=metadata or {},
+        )
+
+    def to_dict(self, *, include_private: bool = True) -> Dict[str, Any]:
+        """Return the JSON-compatible parent-facing handoff payload."""
+        payload: Dict[str, Any] = {
+            "type": "handoff_result",
+            "handoff_schema": "delegate.handoff_result.v1",
+            "task_index": self.task_index,
+            "status": self.status,
+            "summary": self.summary,
+            "api_calls": self.api_calls,
+            "duration_seconds": self.duration_seconds,
+            "exit_reason": self.exit_reason,
+        }
+        if self.error is not None:
+            payload["error"] = self.error
+        if self.model is not None:
+            payload["model"] = self.model
+        if self.tokens:
+            payload["tokens"] = self.tokens
+        if self.tool_trace:
+            payload["tool_trace"] = self.tool_trace
+        if self.diagnostic_path:
+            payload["diagnostic_path"] = self.diagnostic_path
+        if self.stale_paths:
+            payload["stale_paths"] = self.stale_paths
+        if self.summary_truncated:
+            payload["summary_truncated"] = True
+        if self.summary_full_path:
+            payload["summary_full_path"] = self.summary_full_path
+        if self.metadata:
+            payload["metadata"] = self.metadata
+        if include_private:
+            payload["_child_role"] = self.child_role
+            payload["_child_cost_usd"] = self.child_cost_usd
+        return payload
+
+
+def _handoff_error(
+    *,
+    task_index: int,
+    status: str,
+    error: str,
+    exit_reason: str,
+    duration_seconds: Any = 0.0,
+    api_calls: Any = 0,
+    child_role: Optional[str] = None,
+    diagnostic_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a typed error/timeout/interrupted handoff dict."""
+    return HandoffResult.from_child_run(
+        task_index=task_index,
+        status=status,
+        summary=None,
+        error=error,
+        exit_reason=exit_reason,
+        duration_seconds=duration_seconds,
+        api_calls=api_calls,
+        child_role=child_role,
+        diagnostic_path=diagnostic_path,
+    ).to_dict()
 
 
 # Legacy event strings → DelegateEvent mapping.
@@ -2036,17 +2178,16 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
-                "task_index": task_index,
-                "status": "timeout" if is_timeout else "error",
-                "summary": None,
-                "error": _err,
-                "exit_reason": "timeout" if is_timeout else "error",
-                "api_calls": child_api_calls,
-                "duration_seconds": duration,
-                "_child_role": getattr(child, "_delegate_role", None),
-                "diagnostic_path": diagnostic_path,
-            }
+            return _handoff_error(
+                task_index=task_index,
+                status="timeout" if is_timeout else "error",
+                error=_err,
+                exit_reason="timeout" if is_timeout else "error",
+                api_calls=child_api_calls,
+                duration_seconds=duration,
+                child_role=getattr(child, "_delegate_role", None),
+                diagnostic_path=diagnostic_path,
+            )
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -2132,15 +2273,15 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
-        entry: Dict[str, Any] = {
-            "task_index": task_index,
-            "status": status,
-            "summary": summary,
-            "api_calls": api_calls,
-            "duration_seconds": duration,
-            "model": _model if isinstance(_model, str) else None,
-            "exit_reason": exit_reason,
-            "tokens": {
+        entry = HandoffResult.from_child_run(
+            task_index=task_index,
+            status=status,
+            summary=summary,
+            api_calls=api_calls,
+            duration_seconds=duration,
+            model=_model if isinstance(_model, str) else None,
+            exit_reason=exit_reason,
+            tokens={
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
                 ),
@@ -2148,17 +2289,9 @@ def _run_single_child(
                     _output_tokens if isinstance(_output_tokens, (int, float)) else 0
                 ),
             },
-            "tool_trace": tool_trace,
-            # Captured before the finally block calls child.close() so the
-            # parent thread can fire subagent_stop with the correct role.
-            # Stripped before the dict is serialised back to the model.
-            "_child_role": getattr(child, "_delegate_role", None),
-            # Captured before child.close() so the parent aggregator can fold
-            # the child's total spend into the parent's session cost.  Port of
-            # Kilo-Org/kilocode#9448 — previously the footer only reflected the
-            # parent's direct API calls and under-counted subagent-heavy runs.
-            # Stripped before the dict is serialised back to the model.
-            "_child_cost_usd": (
+            tool_trace=tool_trace,
+            child_role=getattr(child, "_delegate_role", None),
+            child_cost_usd=(
                 float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
                 if isinstance(
                     getattr(child, "session_estimated_cost_usd", 0.0),
@@ -2166,7 +2299,7 @@ def _run_single_child(
                 )
                 else 0.0
             ),
-        }
+        ).to_dict()
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -2280,15 +2413,14 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
-            "task_index": task_index,
-            "status": "error",
-            "summary": None,
-            "error": str(exc),
-            "api_calls": 0,
-            "duration_seconds": duration,
-            "_child_role": getattr(child, "_delegate_role", None),
-        }
+        return _handoff_error(
+            task_index=task_index,
+            status="error",
+            error=str(exc),
+            exit_reason="error",
+            duration_seconds=duration,
+            child_role=getattr(child, "_delegate_role", None),
+        )
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -2597,29 +2729,25 @@ def delegate_task(
                                 try:
                                     entry = f.result()
                                 except Exception as exc:
-                                    entry = {
-                                        "task_index": idx,
-                                        "status": "error",
-                                        "summary": None,
-                                        "error": str(exc),
-                                        "api_calls": 0,
-                                        "duration_seconds": 0,
-                                        "_child_role": getattr(
+                                    entry = _handoff_error(
+                                        task_index=idx,
+                                        status="error",
+                                        error=str(exc),
+                                        exit_reason="error",
+                                        child_role=getattr(
                                             _child_by_index.get(idx), "_delegate_role", None
                                         ),
-                                    }
+                                    )
                             else:
-                                entry = {
-                                    "task_index": idx,
-                                    "status": "interrupted",
-                                    "summary": None,
-                                    "error": "Parent agent interrupted — child did not finish in time",
-                                    "api_calls": 0,
-                                    "duration_seconds": 0,
-                                    "_child_role": getattr(
+                                entry = _handoff_error(
+                                    task_index=idx,
+                                    status="interrupted",
+                                    error="Parent agent interrupted — child did not finish in time",
+                                    exit_reason="interrupted",
+                                    child_role=getattr(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
-                                }
+                                )
                             results.append(entry)
                             completed_count += 1
                         break
@@ -2634,17 +2762,15 @@ def delegate_task(
                             entry = future.result()
                         except Exception as exc:
                             idx = futures[future]
-                            entry = {
-                                "task_index": idx,
-                                "status": "error",
-                                "summary": None,
-                                "error": str(exc),
-                                "api_calls": 0,
-                                "duration_seconds": 0,
-                                "_child_role": getattr(
+                            entry = _handoff_error(
+                                task_index=idx,
+                                status="error",
+                                error=str(exc),
+                                exit_reason="error",
+                                child_role=getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
-                            }
+                            )
                         results.append(entry)
                         completed_count += 1
 

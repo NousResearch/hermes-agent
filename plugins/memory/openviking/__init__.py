@@ -1189,8 +1189,9 @@ def _wait_for_openviking_health(
     while time.monotonic() < deadline:
         # Bail out promptly if the provider is being torn down, so the daemon
         # thread running this waiter can be join()ed at shutdown instead of
-        # lingering up to ``timeout_seconds`` (a worker still alive at
-        # interpreter exit aborts CPython with SIGABRT at Py_FinalizeEx).
+        # lingering up to ``timeout_seconds`` (a daemon thread still alive at
+        # interpreter exit causes CPython to abort during Py_FinalizeEx teardown;
+        # gh-97940).
         if should_stop is not None and should_stop():
             return False
         ok, _message = _validate_openviking_reachability(endpoint)
@@ -2067,10 +2068,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
             timeout_seconds=_LOCAL_OPENVIKING_AUTOSTART_TIMEOUT,
             should_stop=lambda: self._shutting_down,
         ):
-            _emit_runtime_warning(
-                _runtime_openviking_timeout_message(endpoint),
-                warning_callback,
-            )
+            # Suppress the timeout warning during clean shutdown —
+            # should_stop made the health-wait bail out, not a real timeout.
+            if not self._shutting_down:
+                _emit_runtime_warning(
+                    _runtime_openviking_timeout_message(endpoint),
+                    warning_callback,
+                )
             return
 
         try:
@@ -2082,21 +2086,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 agent=self._agent,
             )
             if not client.health():
-                _emit_runtime_warning(
-                    f"OpenViking server at {endpoint} is still not reachable after auto-start; "
-                    "OpenViking memory disabled for this Hermes run.",
-                    warning_callback,
-                )
+                # Suppress health-check failure warning during clean shutdown.
+                if not self._shutting_down:
+                    _emit_runtime_warning(
+                        f"OpenViking server at {endpoint} is still not reachable after auto-start; "
+                        "OpenViking memory disabled for this Hermes run.",
+                        warning_callback,
+                    )
                 return
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             return
         except Exception as e:
-            _emit_runtime_warning(
-                f"OpenViking server at {endpoint} could not be attached after auto-start: {e}. "
-                "OpenViking memory disabled for this Hermes run.",
-                warning_callback,
-            )
+            if not self._shutting_down:
+                _emit_runtime_warning(
+                    f"OpenViking server at {endpoint} could not be attached after auto-start: {e}. "
+                    "OpenViking memory disabled for this Hermes run.",
+                    warning_callback,
+                )
             return
 
         self._client = client
@@ -3346,7 +3353,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             prefetch_workers = list(self._prefetch_threads)
         # The runtime-autostart waiter is a tracked daemon thread that blocks on
         # network health probes; it must be joined too, or it can be left alive
-        # at interpreter exit (SIGABRT at Py_FinalizeEx). Setting _shutting_down
+        # at interpreter exit (CPython aborts during Py_FinalizeEx teardown when
+        # daemon threads are still active; gh-97940). Setting _shutting_down
         # above makes its health-wait loop bail out promptly so the join lands.
         with self._runtime_start_lock:
             runtime_start_thread = self._runtime_start_thread
@@ -3363,6 +3371,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if t.is_alive():
                 t.join(timeout=5.0)
         if runtime_start_thread is not None and runtime_start_thread.is_alive():
+            # Residual window: should_stop covers the poll loop, but if the
+            # thread is in the final _VikingClient.health() HTTP call when
+            # shutdown lands, this join may time out (~5s). Much smaller than
+            # the original 60s poll window. Fully closing the Viking client
+            # here (like the Honcho httpx pattern) would close this gap too.
             runtime_start_thread.join(timeout=5.0)
         # Clear atexit reference so it doesn't double-commit.
         global _last_active_provider

@@ -108,6 +108,62 @@ class TestSmsFormatAndTruncate:
         assert result == "a\n\nb"
 
 
+# ── Chunking capability flag (regression) ───────────────────────────
+
+class TestSmsChunkingCapabilityFlag:
+    """SmsAdapter.send() already chunks via truncate_message(), but the
+    class must also declare splits_long_messages=True or gateway.delivery
+    treats it as a non-chunking adapter and hard-truncates oversized
+    cron/agent output instead of letting send() split it into segments."""
+
+    def test_declares_splits_long_messages(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        assert SmsAdapter.splits_long_messages is True
+
+    @pytest.mark.asyncio
+    async def test_delivery_router_preserves_full_content_for_sms(self, tmp_path, monkeypatch):
+        """End-to-end: DeliveryRouter must hand send() the untruncated
+        content for SMS, exactly like the other chunking-capable adapters."""
+        from gateway.config import GatewayConfig
+        from gateway.delivery import DeliveryRouter, DeliveryTarget
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        with patch.dict(os.environ, env):
+            adapter = object.__new__(SmsAdapter)
+            adapter.config = PlatformConfig(enabled=True, api_key="tok")
+            adapter._platform = Platform.SMS
+            adapter._account_sid = "ACtest"
+            adapter._auth_token = "tok"
+            adapter._from_number = "+15550001111"
+
+        sent = {}
+
+        async def _fake_send(chat_id, content, reply_to=None, metadata=None):
+            sent["content"] = content
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True)
+
+        adapter.send = _fake_send
+
+        router = DeliveryRouter(GatewayConfig(), adapters={Platform.SMS: adapter})
+        target = DeliveryTarget.parse("sms:+15559998888")
+
+        long_content = "x" * 5000
+        await router._deliver_to_platform(target, long_content, metadata={"job_id": "job-sms"})
+
+        # Full content must reach send() untruncated — send() does its own
+        # chunking via truncate_message(MAX_SMS_LENGTH).
+        assert sent["content"] == long_content
+
+
 # ── Echo prevention ────────────────────────────────────────────────
 
 class TestSmsEchoPrevention:

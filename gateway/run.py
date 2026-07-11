@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List, Union
+from typing import Dict, Optional, Any, List, Union, Iterable
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -4182,6 +4182,40 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
 
+    def _queue_restart_notification_for_active_origin(
+        self, active_session_keys: Optional[Iterable[str]] = None
+    ) -> bool:
+        """Persist a restart reply target when exactly one turn is active.
+
+        A service-level restart has no command event of its own. If it interrupts
+        one active turn, that turn is its unambiguous initiator, so the next
+        gateway process should acknowledge the restart in that chat/topic rather
+        than broadcasting to a configured home channel.
+        """
+        active_keys = list(
+            active_session_keys
+            if active_session_keys is not None
+            else self._snapshot_running_agents()
+        )
+        if len(active_keys) != 1:
+            return False
+        source = self._get_cached_session_source(active_keys[0])
+        if source is None or not getattr(source, "chat_id", None):
+            return False
+        try:
+            payload = {
+                "platform": source.platform.value,
+                "chat_id": str(source.chat_id),
+                "chat_type": source.chat_type,
+            }
+            if source.thread_id:
+                payload["thread_id"] = str(source.thread_id)
+            atomic_json_write(_hermes_home / ".restart_notify.json", payload, indent=None)
+            return True
+        except Exception as exc:
+            logger.debug("Failed to persist active restart origin: %s", exc)
+            return False
+
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:
             return False
@@ -6765,6 +6799,15 @@ class GatewayRunner:
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
+            active_origin_notification_queued = False
+            if (
+                getattr(self, "_signal_initiated_shutdown", False)
+                and not self._restart_requested
+            ):
+                active_origin_notification_queued = (
+                    self._queue_restart_notification_for_active_origin(active_agents)
+                )
+
             should_notify_home_on_next_boot = (
                 # Normal Hermes-managed restarts with no specific originating
                 # chat should announce the comeback to configured home channels.
@@ -6776,6 +6819,7 @@ class GatewayRunner:
                 or (
                     getattr(self, "_signal_initiated_shutdown", False)
                     and not self._restart_requested
+                    and not active_origin_notification_queued
                 )
             )
             if should_notify_home_on_next_boot:

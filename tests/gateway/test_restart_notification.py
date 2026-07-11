@@ -45,6 +45,26 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     assert gateway_run._planned_restart_notification_pending() is False
 
 
+def test_external_restart_queues_notification_for_only_active_origin(tmp_path, monkeypatch):
+    """A service restart returns to the sole chat whose active turn caused it."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    source = make_restart_source(chat_id="current-chat", thread_id="current-topic")
+    session_key = build_session_key(source)
+    runner._cache_session_source(session_key, source)
+    runner._running_agents[session_key] = MagicMock()
+
+    assert runner._queue_restart_notification_for_active_origin() is True
+
+    data = json.loads((tmp_path / ".restart_notify.json").read_text())
+    assert data == {
+        "platform": "telegram",
+        "chat_id": "current-chat",
+        "chat_type": "dm",
+        "thread_id": "current-topic",
+    }
+
+
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 

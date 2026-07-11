@@ -183,6 +183,31 @@ async def test_unexpected_signal_writes_home_startup_marker(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_external_signal_replies_to_sole_active_session_not_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_drain_timeout = 0.0
+    source = make_restart_source(chat_id="current-chat", thread_id="current-topic")
+    session_key = build_session_key(source)
+    runner._cache_session_source(session_key, source)
+    runner._running_agents = {session_key: MagicMock()}
+    runner._signal_initiated_shutdown = True
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    payload = json.loads((tmp_path / ".restart_notify.json").read_text())
+    assert payload == {
+        "platform": "telegram",
+        "chat_id": "current-chat",
+        "chat_type": "dm",
+        "thread_id": "current-topic",
+    }
+    assert not (tmp_path / ".restart_pending.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_restart_shutdown_warning_uses_restart_command_reply_anchor_for_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")

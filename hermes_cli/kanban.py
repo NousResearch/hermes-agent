@@ -532,6 +532,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_complete.add_argument("--metadata", default=None,
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
+    p_complete.add_argument("--evidence", "--evidence-path", action="append",
+                            default=[], dest="evidence_paths",
+                            help="Required evidence path for the done claim. "
+                                 "Must be an existing absolute local file path. "
+                                 "Repeat for multiple evidence files.")
 
     p_edit = sub.add_parser(
         "edit",
@@ -552,6 +557,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--metadata",
         default=None,
         help="JSON dict of structured facts to store on the latest completed run.",
+    )
+    p_edit.add_argument(
+        "--evidence", "--evidence-path", action="append",
+        default=[], dest="evidence_paths",
+        help=(
+            "Evidence path for the edited done claim. Must be an existing "
+            "absolute local file path. Repeat for multiple evidence files."
+        ),
     )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
@@ -1871,14 +1884,16 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return 1
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
+    evidence_paths = list(getattr(args, "evidence_paths", None) or [])
     # Guard: structured handoff fields are per-run, so they'd be
     # copy-pasted identically across N runs — almost always a footgun.
     # Refuse instead of silently doing the wrong thing.
-    if len(ids) > 1 and (summary or raw_meta):
+    if len(ids) > 1 and (summary or raw_meta or evidence_paths):
         print(
-            "kanban: --summary / --metadata are per-task and can't be used "
-            "with multiple ids (would apply the same handoff to every task). "
-            "Complete tasks one at a time, or drop the flags for the bulk close.",
+            "kanban: --summary / --metadata / --evidence are per-task and "
+            "can't be used with multiple ids (would apply the same handoff "
+            "to every task). Complete tasks one at a time, or drop the flags "
+            "for the bulk close.",
             file=sys.stderr,
         )
         return 2
@@ -1899,6 +1914,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 result=args.result,
                 summary=summary,
                 metadata=metadata,
+                evidence_paths=evidence_paths,
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
@@ -1919,14 +1935,21 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+    evidence_paths = list(getattr(args, "evidence_paths", None) or [])
     with kb.connect_closing() as conn:
-        if not kb.edit_completed_task_result(
-            conn,
-            args.task_id,
-            result=args.result,
-            summary=getattr(args, "summary", None),
-            metadata=metadata,
-        ):
+        try:
+            ok = kb.edit_completed_task_result(
+                conn,
+                args.task_id,
+                result=args.result,
+                summary=getattr(args, "summary", None),
+                metadata=metadata,
+                evidence_paths=evidence_paths,
+            )
+        except kb.CompletionEvidenceError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+        if not ok:
             print(
                 f"cannot edit {args.task_id} (unknown id or task is not done)",
                 file=sys.stderr,

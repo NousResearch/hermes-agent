@@ -524,6 +524,7 @@ def _ensure_current_event_loop(request):
 # delivery is harmless.
 
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
+_REAL_COMPLETION_EVIDENCE_GATE_MARK = "real_completion_evidence_gate"
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -534,6 +535,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
     )
+    config.addinivalue_line(
+        "markers",
+        f"{_REAL_COMPLETION_EVIDENCE_GATE_MARK}: opt out of the legacy "
+        "Kanban test evidence shim so the real completion-evidence gate "
+        "is exercised.",
+    )
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on
     # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
@@ -542,6 +549,64 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     # suite runs natively there (POSIX keeps the more reliable signal method).
     if sys.platform == "win32" and getattr(config.option, "timeout_method", None) == "signal":
         config.option.timeout_method = "thread"
+
+
+@pytest.fixture(autouse=True)
+def _kanban_legacy_completion_evidence_shim(request, monkeypatch, tmp_path):
+    """Supply explicit temp evidence for legacy Kanban completion tests.
+
+    Production now requires every successful ``complete_task(...)`` call to
+    include at least one existing, absolute, non-sensitive evidence path. Most
+    older Kanban tests pre-date that invariant and exercise unrelated lifecycle
+    behaviour, so forcing every call to hand-roll an evidence file obscures
+    their intent.
+
+    This pytest-only shim preserves the runtime invariant while keeping legacy
+    tests focused: unmarked tests that call ``kb.complete_task`` without any
+    evidence get a per-test temp report path injected. Dedicated evidence-gate
+    tests opt out with ``@pytest.mark.real_completion_evidence_gate`` so
+    missing, relative, and sensitive evidence still hit the real production
+    validator.
+    """
+    node_path = str(getattr(request.node, "path", ""))
+    if "kanban" not in node_path:
+        yield
+        return
+    if request.node.get_closest_marker(_REAL_COMPLETION_EVIDENCE_GATE_MARK):
+        yield
+        return
+
+    from hermes_cli import kanban_db as kb
+
+    real_complete_task = kb.complete_task
+    evidence_dir = tmp_path / "kanban-completion-evidence"
+
+    def _has_completion_evidence(kwargs: dict) -> bool:
+        for key in ("evidence_paths", "evidence_refs"):
+            if kwargs.get(key):
+                return True
+        metadata = kwargs.get("metadata")
+        if isinstance(metadata, dict):
+            return any(
+                metadata.get(key)
+                for key in ("evidence_refs", "evidence_paths", "artifacts")
+            )
+        return False
+
+    def _complete_task_with_test_evidence(conn, task_id, *args, **kwargs):
+        if not _has_completion_evidence(kwargs):
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            evidence_path = evidence_dir / f"{task_id}.md"
+            if not evidence_path.exists():
+                evidence_path.write_text(
+                    "pytest legacy Kanban completion evidence\n",
+                    encoding="utf-8",
+                )
+            kwargs["evidence_paths"] = [str(evidence_path)]
+        return real_complete_task(conn, task_id, *args, **kwargs)
+
+    monkeypatch.setattr(kb, "complete_task", _complete_task_with_test_evidence)
+    yield
 
 
 @pytest.fixture(autouse=True)

@@ -1448,7 +1448,10 @@ def test_run_closed_on_complete_with_summary(kanban_home):
         assert r.status == "done"
         assert r.outcome == "completed"
         assert r.summary == "implemented rate limiter, tests pass"
-        assert r.metadata == {"changed_files": ["limiter.py"], "tests_run": 12}
+        assert r.metadata is not None
+        assert r.metadata["changed_files"] == ["limiter.py"]
+        assert r.metadata["tests_run"] == 12
+        assert len(r.metadata.get("evidence_refs", [])) == 1
         assert r.ended_at is not None
     finally:
         conn.close()
@@ -1856,7 +1859,9 @@ def test_cli_runs_json(kanban_home):
     data = json.loads(out)
     assert len(data) == 1
     assert data[0]["outcome"] == "completed"
-    assert data[0]["metadata"] == {"files": 1}
+    assert data[0]["metadata"] is not None
+    assert data[0]["metadata"]["files"] == 1
+    assert len(data[0]["metadata"].get("evidence_refs", [])) == 1
 
 
 def test_cli_complete_with_summary_and_metadata(kanban_home):
@@ -1877,8 +1882,11 @@ def test_cli_complete_with_summary_and_metadata(kanban_home):
         r = kb.latest_run(conn, tid)
     finally:
         conn.close()
+    assert r is not None
     assert r.summary == "done it"
-    assert r.metadata == {"files": 3}
+    assert r.metadata is not None
+    assert r.metadata["files"] == 3
+    assert len(r.metadata.get("evidence_refs", [])) == 1
 
 
 def test_cli_edit_backfills_result_on_done_task(kanban_home):
@@ -1906,8 +1914,11 @@ def test_cli_edit_backfills_result_on_done_task(kanban_home):
     finally:
         conn.close()
     assert task.result == "DECIDED: done"
+    assert run is not None
     assert run.summary == "DECIDED: done"
-    assert run.metadata == {"source": "dashboard-recovery"}
+    assert run.metadata is not None
+    assert run.metadata["source"] == "dashboard-recovery"
+    assert len(run.metadata.get("evidence_refs", [])) == 1
     assert events[-1].kind == "edited"
 
 
@@ -2120,7 +2131,9 @@ def test_complete_never_claimed_task_synthesizes_run(kanban_home):
         r = runs[0]
         assert r.outcome == "completed"
         assert r.summary == "did it manually"
-        assert r.metadata == {"reason": "human intervention"}
+        assert r.metadata is not None
+        assert r.metadata["reason"] == "human intervention"
+        assert len(r.metadata.get("evidence_refs", [])) == 1
         # Zero-duration synthetic run.
         assert r.started_at == r.ended_at
         # Task pointer still NULL (we never claimed, never opened a run).
@@ -2155,15 +2168,22 @@ def test_block_never_claimed_task_synthesizes_run(kanban_home):
         conn.close()
 
 
-def test_complete_never_claimed_without_handoff_skips_synthesis(kanban_home):
-    """If a bulk-complete passes no summary/metadata/result, don't spam
-    the runs table with empty synthetic rows."""
+def test_complete_never_claimed_with_evidence_only_synthesizes_run(kanban_home):
+    """Evidence-only completion is still a durable handoff.
+
+    The legacy no-handoff path is no longer reachable for successful
+    completions because production requires a valid evidence path.
+    """
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="simple", assignee="worker")
         ok = kb.complete_task(conn, tid)  # no handoff fields
         assert ok is True
-        assert kb.list_runs(conn, tid) == []  # no synthetic row
+        runs = kb.list_runs(conn, tid)
+        assert len(runs) == 1
+        assert runs[0].outcome == "completed"
+        assert runs[0].metadata is not None
+        assert len(runs[0].metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 

@@ -317,6 +317,62 @@ def test_patch_status_complete(client):
     assert any(x["id"] == t["id"] for x in done["tasks"])
 
 
+@pytest.mark.real_completion_evidence_gate
+def test_patch_status_done_requires_evidence(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "needs proof"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "done", "result": "shipped"},
+    )
+    assert r.status_code == 400
+    assert "evidence path" in r.json()["detail"]
+
+
+@pytest.mark.real_completion_evidence_gate
+def test_patch_status_done_accepts_evidence_path(client, tmp_path):
+    evidence = tmp_path / "dashboard-evidence.md"
+    evidence.write_text("dashboard proof\n", encoding="utf-8")
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "has proof"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={
+            "status": "done",
+            "result": "shipped",
+            "evidence_paths": [str(evidence)],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "done"
+
+
+@pytest.mark.real_completion_evidence_gate
+def test_bulk_status_done_returns_evidence_error_and_accepts_evidence(client, tmp_path):
+    missing = client.post("/api/plugins/kanban/tasks", json={"title": "missing proof"}).json()["task"]
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [missing["id"]], "status": "done", "result": "done"},
+    )
+    assert r.status_code == 200
+    first = r.json()["results"][0]
+    assert first["ok"] is False
+    assert "evidence path" in first["error"]
+
+    evidence = tmp_path / "bulk-evidence.md"
+    evidence.write_text("bulk proof\n", encoding="utf-8")
+    valid = client.post("/api/plugins/kanban/tasks", json={"title": "valid proof"}).json()["task"]
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [valid["id"]],
+            "status": "done",
+            "result": "done",
+            "evidence_paths": [str(evidence)],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["results"] == [{"id": valid["id"], "ok": True}]
+
+
 def test_patch_block_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(
@@ -1003,10 +1059,13 @@ def test_bulk_status_done_forwards_completion_summary(client):
         for tid in (a["id"], b["id"]):
             task = kb.get_task(conn, tid)
             run = kb.latest_run(conn, tid)
+            assert run is not None
             assert task.status == "done"
             assert task.result == "DECIDED: ship it"
             assert run.summary == "DECIDED: ship it"
-            assert run.metadata == {"source": "dashboard"}
+            assert run.metadata is not None
+            assert run.metadata["source"] == "dashboard"
+            assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 
@@ -1233,7 +1292,8 @@ def test_task_detail_includes_runs(client):
     assert run["outcome"] == "completed"
     assert run["profile"] == "worker"
     assert run["summary"] == "tested on rate limiter"
-    assert run["metadata"] == {"changed_files": ["limiter.py"]}
+    assert run["metadata"]["changed_files"] == ["limiter.py"]
+    assert len(run["metadata"].get("evidence_refs", [])) == 1
     assert run["ended_at"] is not None
 
 
@@ -1272,9 +1332,13 @@ def test_patch_status_done_with_summary_and_metadata(client):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, tid)
+        assert run is not None
         assert run.outcome == "completed"
         assert run.summary == "shipped the thing"
-        assert run.metadata == {"changed_files": ["a.py", "b.py"], "tests_run": 7}
+        assert run.metadata is not None
+        assert run.metadata["changed_files"] == ["a.py", "b.py"]
+        assert run.metadata["tests_run"] == 7
+        assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 

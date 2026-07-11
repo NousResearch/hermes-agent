@@ -304,9 +304,12 @@ def test_complete_happy_path(worker_env):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
+        assert run is not None
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 
@@ -334,7 +337,10 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     shown = json.loads(show_out)
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
-    assert shown["runs"][-1]["metadata"] == handoff
+    shown_metadata = shown["runs"][-1]["metadata"]
+    assert shown_metadata is not None
+    assert {key: shown_metadata[key] for key in handoff} == handoff
+    assert len(shown_metadata.get("evidence_refs", [])) == 1
 
 
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
@@ -354,10 +360,11 @@ def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "session-trusted",
-        }
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "session-trusted"
+        assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 
@@ -381,10 +388,11 @@ def test_complete_does_not_stamp_worker_session_id_without_scoped_task(
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata == {
-            "files": 2,
-            "worker_session_id": "user-provided",
-        }
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata["files"] == 2
+        assert run.metadata["worker_session_id"] == "user-provided"
+        assert len(run.metadata.get("evidence_refs", [])) == 1
     finally:
         conn.close()
 
@@ -397,16 +405,22 @@ def test_complete_with_result_only(worker_env):
     assert d["ok"] is True
 
 
-def test_complete_with_artifacts_lands_in_event_payload(worker_env):
+def test_complete_with_artifacts_lands_in_event_payload(worker_env, tmp_path):
     """``artifacts=[...]`` rides into the completed event payload so the
     gateway notifier can upload them as native attachments. See the
     kanban notifier in gateway/run.py for the consumer side."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    revenue = tmp_path / "q3-revenue.png"
+    report = tmp_path / "q3-report.pdf"
+    revenue.write_bytes(b"png")
+    report.write_bytes(b"pdf")
+    artifacts = [str(revenue), str(report)]
+
     out = kt._handle_complete({
         "summary": "rendered the chart",
-        "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+        "artifacts": artifacts,
     })
     assert json.loads(out)["ok"] is True
 
@@ -417,57 +431,70 @@ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
         completed = [e for e in events if e.kind == "completed"]
         assert len(completed) == 1
         payload = completed[0].payload or {}
-        assert payload.get("artifacts") == [
-            "/tmp/q3-revenue.png",
-            "/tmp/q3-report.pdf",
-        ]
+        assert payload.get("artifacts") == artifacts
         # And the artifacts also live on metadata for downstream workers
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata.get("artifacts") == [
-            "/tmp/q3-revenue.png",
-            "/tmp/q3-report.pdf",
-        ]
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata.get("artifacts") == artifacts
+        assert run.metadata.get("evidence_refs") == artifacts
     finally:
         conn.close()
 
 
-def test_complete_artifacts_accepts_single_string(worker_env):
+def test_complete_artifacts_accepts_single_string(worker_env, tmp_path):
     """A bare string is auto-promoted to a single-element list for convenience."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"png")
+
     out = kt._handle_complete({
         "summary": "one chart",
-        "artifacts": "/tmp/chart.png",
+        "artifacts": str(chart),
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata.get("artifacts") == ["/tmp/chart.png"]
+        assert run is not None
+        assert run.metadata is not None
+        assert run.metadata.get("artifacts") == [str(chart)]
+        assert run.metadata.get("evidence_refs") == [str(chart)]
     finally:
         conn.close()
 
 
-def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
+def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env, tmp_path):
     """If the worker passes metadata.artifacts AND the top-level artifacts
     param, merge the two without duplicates."""
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    artifact_a = tmp_path / "a.png"
+    artifact_b = tmp_path / "b.pdf"
+    artifact_a.write_bytes(b"a")
+    artifact_b.write_bytes(b"b")
+    artifact_a_s = str(artifact_a)
+    artifact_b_s = str(artifact_b)
+
     out = kt._handle_complete({
         "summary": "merged",
-        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
-        "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
+        "metadata": {"artifacts": [artifact_a_s], "other": "fact"},
+        "artifacts": [artifact_b_s, artifact_a_s],
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
+        assert run is not None
         # Order: existing entries first, then new ones, deduplicated.
-        assert run.metadata.get("artifacts") == ["/tmp/a.png", "/tmp/b.pdf"]
+        assert run.metadata is not None
+        assert run.metadata.get("artifacts") == [artifact_a_s, artifact_b_s]
+        assert run.metadata.get("evidence_refs") == [artifact_a_s, artifact_b_s]
         assert run.metadata.get("other") == "fact"
     finally:
         conn.close()
@@ -1350,8 +1377,11 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.status == "done"
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
+        assert run is not None
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        assert run.metadata is not None
+        assert run.metadata["child_task"] == child_out["task_id"]
+        assert len(run.metadata.get("evidence_refs", [])) == 1
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])

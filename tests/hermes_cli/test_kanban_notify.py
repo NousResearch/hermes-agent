@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -613,12 +614,36 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
-        kt._handle_complete({
+        out = kt._handle_complete({
             "summary": "one real, one ghost",
-            "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "artifacts": [str(real_pdf)],
         })
+        assert json.loads(out)["ok"] is True
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
+
+    # Completion now validates artifact paths as evidence, so a worker cannot
+    # create a new completed event with a missing artifact.  Keep this notifier
+    # regression by simulating an older/stale event payload that still contains
+    # a ghost path; the delivery layer should skip it rather than hang/crash.
+    ghost_pdf = tmp_path / "definitely-does-not-exist.pdf"
+    conn = kb.connect()
+    try:
+        row = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'completed' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row["payload"] or "{}")
+        payload["artifacts"] = [str(real_pdf), str(ghost_pdf)]
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload), row["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

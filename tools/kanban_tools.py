@@ -527,6 +527,8 @@ def _handle_complete(args: dict, **kw) -> str:
             pass
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
+    evidence_paths = args.get("evidence_paths")
+    evidence_refs = args.get("evidence_refs")
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -628,6 +630,8 @@ def _handle_complete(args: dict, **kw) -> str:
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
+                    evidence_paths=evidence_paths,
+                    evidence_refs=evidence_refs,
                     expected_run_id=_worker_run_id(tid),
                 )
             except kb.HallucinatedCardsError as hall_err:
@@ -649,6 +653,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"Retry kanban_complete with the same summary/metadata "
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
+                )
+            except kb.CompletionEvidenceError as evidence_err:
+                return tool_error(
+                    f"kanban_complete blocked: {evidence_err}. "
+                    f"Your task is still in-flight (no state change). "
+                    f"Retry with evidence_paths=[\"/absolute/path/to/report.md\"] "
+                    f"or metadata.evidence_refs containing an existing evidence file."
                 )
             if not ok:
                 return tool_error(
@@ -1202,7 +1213,10 @@ KANBAN_COMPLETE_SCHEMA = {
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required. If you created new "
+        "``summary`` or ``result`` is required, and every done claim "
+        "must include a valid evidence path via ``evidence_paths``, "
+        "``evidence_refs``, ``metadata.evidence_refs``, or existing "
+        "absolute ``artifacts``. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "
@@ -1262,6 +1276,27 @@ KANBAN_COMPLETE_SCHEMA = {
                     "did not create any cards."
                 ),
             },
+            "evidence_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Required evidence for the done claim: one or more "
+                    "absolute local file paths that already exist and are "
+                    "safe to reference. The Kanban kernel validates path "
+                    "existence with stat/exists only; it never reads file "
+                    "contents. Sensitive-looking paths (secret/token/cookie/"
+                    "wallet/private/auth/etc.) and relative paths are rejected."
+                ),
+            },
+            "evidence_refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Alias for evidence_paths. Use this when the evidence is "
+                    "already part of structured metadata; at least one ref "
+                    "must be an existing absolute local file path."
+                ),
+            },
             "artifacts": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1278,7 +1313,9 @@ KANBAN_COMPLETE_SCHEMA = {
                     "intermediate scratch files and references that "
                     "are not the deliverable. The path must exist "
                     "on disk when the notifier runs; missing files "
-                    "are silently skipped."
+                    "are rejected by the completion evidence gate. Existing "
+                    "absolute artifact paths also satisfy the required "
+                    "done-claim evidence path."
                 ),
             },
             "board": _board_schema_prop(),

@@ -3975,6 +3975,220 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+_COMPLETION_EVIDENCE_METADATA_KEYS = ("evidence_refs", "evidence_paths", "artifacts")
+_COMPLETION_EVIDENCE_SENSITIVE_COMPONENTS = {
+    ".aws",
+    ".azure",
+    ".config/gcloud",
+    ".gnupg",
+    ".kube",
+    ".password-store",
+    ".ssh",
+    "auth",
+    "cookie",
+    "cookies",
+    "credential",
+    "credentials",
+    "mnemonic",
+    "private",
+    "secret",
+    "secrets",
+    "seed",
+    "token",
+    "tokens",
+    "wallet",
+    "wallets",
+}
+_COMPLETION_EVIDENCE_SENSITIVE_FILENAMES = {
+    "authorized_keys",
+    "credentials.json",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "passwd",
+    "password",
+    "service-account.json",
+}
+_COMPLETION_EVIDENCE_SENSITIVE_SUFFIXES = (
+    ".key",
+    ".kdbx",
+    ".p12",
+    ".pem",
+    ".pfx",
+)
+
+
+class CompletionEvidenceError(ValueError):
+    """Raised when a task completion lacks a safe existing evidence path."""
+
+    def __init__(self, problems: Optional[Iterable[str]] = None):
+        self.problems = [str(p) for p in (problems or []) if str(p).strip()]
+        problem_text = ""
+        if self.problems:
+            problem_text = " Problems: " + "; ".join(self.problems[:5])
+            if len(self.problems) > 5:
+                problem_text += f"; +{len(self.problems) - 5} more"
+        super().__init__(
+            "completion blocked: done claims require at least one valid "
+            "evidence path. Provide metadata.evidence_refs or "
+            "metadata.evidence_paths (or top-level evidence_paths/artifacts "
+            "through the Kanban tool/CLI) with an existing, absolute, "
+            "non-sensitive local evidence file path. Evidence validation uses "
+            "stat-only checks and never reads file contents."
+            f"{problem_text}"
+        )
+
+
+def _completion_evidence_ref_looks_sensitive(
+    ref: str,
+    *,
+    resolved: Optional[Path] = None,
+) -> bool:
+    """Return True for credential-store-looking paths without broad substrings.
+
+    Keep this component-aware so benign evidence like ``author-report.md`` is
+    not rejected merely because it contains ``auth``.
+    """
+    candidates = [Path(ref).expanduser()]
+    if resolved is not None:
+        candidates.append(resolved)
+    for path in candidates:
+        parts = [p.lower() for p in path.parts if p and p not in {path.anchor, "/"}]
+        joined = "/".join(parts)
+        if ".config/gcloud" in joined:
+            return True
+        for part in parts:
+            if part == ".env" or part.startswith(".env."):
+                return True
+            if part in _COMPLETION_EVIDENCE_SENSITIVE_COMPONENTS:
+                return True
+            if part in _COMPLETION_EVIDENCE_SENSITIVE_FILENAMES:
+                return True
+            if any(part.endswith(suffix) for suffix in _COMPLETION_EVIDENCE_SENSITIVE_SUFFIXES):
+                return True
+    return False
+
+
+def _append_completion_evidence_values(
+    values: list[tuple[str, str]],
+    problems: list[str],
+    label: str,
+    raw: Any,
+) -> None:
+    """Collect evidence refs without logging raw values (secret-safe errors)."""
+    if raw is None:
+        return
+    if isinstance(raw, (str, os.PathLike)):
+        seq = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        seq = list(raw)
+    else:
+        problems.append(f"{label} must be a string path or a list of string paths")
+        return
+    for item in seq:
+        if item is None:
+            continue
+        if not isinstance(item, (str, os.PathLike)):
+            problems.append(f"{label} contains a non-string evidence path")
+            continue
+        ref = os.fspath(item).strip()
+        if ref:
+            values.append((label, ref))
+
+
+def _metadata_with_valid_completion_evidence(
+    metadata: Optional[dict],
+    *,
+    evidence_paths: Optional[Any] = None,
+    evidence_refs: Optional[Any] = None,
+) -> tuple[dict, list[str]]:
+    """Return metadata carrying canonical ``evidence_refs`` or raise.
+
+    The gate is deliberately metadata-only: it validates local evidence by
+    stat-only file checks and rejects sensitive-looking path strings/targets,
+    but never opens or reads evidence contents.
+    """
+    if metadata is None:
+        normalized_metadata: dict = {}
+    elif isinstance(metadata, dict):
+        normalized_metadata = dict(metadata)
+    else:
+        raise CompletionEvidenceError(["metadata must be a JSON object/dict"])
+
+    raw_values: list[tuple[str, str]] = []
+    problems: list[str] = []
+    _append_completion_evidence_values(raw_values, problems, "evidence_paths", evidence_paths)
+    _append_completion_evidence_values(raw_values, problems, "evidence_refs", evidence_refs)
+    for key in _COMPLETION_EVIDENCE_METADATA_KEYS:
+        _append_completion_evidence_values(
+            raw_values,
+            problems,
+            f"metadata.{key}",
+            normalized_metadata.get(key),
+        )
+
+    if not raw_values and not problems:
+        problems.append(
+            "no evidence path was provided; attach a durable report/artifact "
+            "path via evidence_paths, evidence_refs, artifacts, or metadata"
+        )
+
+    normalized_refs: list[str] = []
+    seen: set[str] = set()
+    for label, ref in raw_values:
+        if "://" in ref:
+            problems.append(
+                f"{label} contains a URL; provide an existing local file path"
+            )
+            continue
+        path = Path(ref).expanduser()
+        if not path.is_absolute():
+            problems.append(f"{label} contains a relative path; use an absolute path")
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError:
+            problems.append(
+                f"{label} points to a missing path; create the evidence file first"
+            )
+            continue
+        except OSError:
+            problems.append(
+                f"{label} could not be stat() checked; use a readable path "
+                "outside credential/auth stores"
+            )
+            continue
+        except RuntimeError:
+            problems.append(
+                f"{label} could not be resolved; use a non-cyclic evidence file path"
+            )
+            continue
+        if _completion_evidence_ref_looks_sensitive(ref, resolved=resolved):
+            problems.append(
+                f"{label} contains a sensitive-looking path; use a "
+                "non-secret report/artifact path instead"
+            )
+            continue
+        if not resolved.is_file():
+            problems.append(
+                f"{label} points to a directory or special path; use an existing file"
+            )
+            continue
+        normalized = str(resolved)
+        if normalized not in seen:
+            seen.add(normalized)
+            normalized_refs.append(normalized)
+
+    if problems or not normalized_refs:
+        if not normalized_refs and not problems:
+            problems.append("no valid evidence path remained after validation")
+        raise CompletionEvidenceError(problems)
+
+    normalized_metadata["evidence_refs"] = normalized_refs
+    return normalized_metadata, normalized_refs
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3983,6 +4197,8 @@ def complete_task(
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
+    evidence_paths: Optional[Any] = None,
+    evidence_refs: Optional[Any] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
@@ -4007,6 +4223,13 @@ def complete_task(
     attempt is auditable. When all ids verify, they are recorded on the
     ``completed`` event payload.
 
+    Every completion must include at least one valid evidence path via
+    ``evidence_paths`` / ``evidence_refs`` or via metadata fields
+    ``evidence_refs``, ``evidence_paths``, or ``artifacts``. Local paths
+    must be absolute, non-sensitive-looking, and existing files at
+    completion time. The check uses stat-only file checks and never reads
+    evidence contents; normalized refs are persisted as ``metadata['evidence_refs']``.
+
     After a successful completion, ``summary`` and ``result`` are scanned
     for prose references like ``t_deadbeefcafe`` that do not resolve.
     Any suspected phantom references are recorded as a
@@ -4014,6 +4237,17 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    preflight = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if preflight is None or preflight["status"] not in {"running", "ready", "blocked"}:
+        return False
+    if expected_run_id is not None:
+        current_run_id = preflight["current_run_id"]
+        if current_run_id is None or int(current_run_id) != int(expected_run_id):
+            return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4041,6 +4275,29 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    try:
+        metadata, normalized_evidence_refs = _metadata_with_valid_completion_evidence(
+            metadata,
+            evidence_paths=evidence_paths,
+            evidence_refs=evidence_refs,
+        )
+    except CompletionEvidenceError as evidence_err:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "completion_blocked_missing_evidence",
+                {
+                    "problems": evidence_err.problems[:10],
+                    "summary_preview": (
+                        (summary or result or "").strip().splitlines()[0][:200]
+                        if (summary or result)
+                        else None
+                    ),
+                },
+            )
+        raise
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -4109,6 +4366,7 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
+        completed_payload["evidence_refs"] = normalized_evidence_refs
         # Carry artifact paths in the event payload so the gateway
         # notifier can upload them as native attachments alongside the
         # completion message. Workers pass these via
@@ -4478,8 +4736,14 @@ def edit_completed_task_result(
     result: str,
     summary: Optional[str] = None,
     metadata: Optional[dict] = None,
+    evidence_paths: Optional[Any] = None,
+    evidence_refs: Optional[Any] = None,
 ) -> bool:
-    """Backfill the user-visible result for an already completed task."""
+    """Backfill the user-visible result for an already completed task.
+
+    Edits preserve existing evidence refs by default and require valid evidence
+    when new metadata would otherwise replace them.
+    """
     handoff_summary = summary if summary is not None else result
     with write_txn(conn):
         row = conn.execute(
@@ -4487,13 +4751,9 @@ def edit_completed_task_result(
         ).fetchone()
         if not row or row["status"] != "done":
             return False
-        conn.execute(
-            "UPDATE tasks SET result = ? WHERE id = ?",
-            (result, task_id),
-        )
         run = conn.execute(
             """
-            SELECT id FROM task_runs
+            SELECT id, metadata FROM task_runs
              WHERE task_id = ?
                AND outcome = 'completed'
              ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
@@ -4502,23 +4762,40 @@ def edit_completed_task_result(
             (task_id,),
         ).fetchone()
         run_id = int(run["id"]) if run else None
+        existing_metadata: dict = {}
+        if run and run["metadata"]:
+            try:
+                decoded = json.loads(run["metadata"])
+                if isinstance(decoded, dict):
+                    existing_metadata = decoded
+            except (TypeError, json.JSONDecodeError):
+                existing_metadata = {}
+        next_metadata = dict(metadata) if metadata is not None else dict(existing_metadata)
+        if not any(k in next_metadata for k in _COMPLETION_EVIDENCE_METADATA_KEYS):
+            existing_refs = existing_metadata.get("evidence_refs")
+            if existing_refs:
+                next_metadata["evidence_refs"] = existing_refs
+        next_metadata, normalized_evidence_refs = _metadata_with_valid_completion_evidence(
+            next_metadata,
+            evidence_paths=evidence_paths,
+            evidence_refs=evidence_refs,
+        )
+        conn.execute(
+            "UPDATE tasks SET result = ? WHERE id = ?",
+            (result, task_id),
+        )
         if run_id is None:
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
                 summary=handoff_summary,
-                metadata=metadata,
+                metadata=next_metadata,
             )
         else:
             conn.execute(
-                "UPDATE task_runs SET summary = ? WHERE id = ?",
-                (handoff_summary, run_id),
+                "UPDATE task_runs SET summary = ?, metadata = ? WHERE id = ?",
+                (handoff_summary, json.dumps(next_metadata, ensure_ascii=False), run_id),
             )
-            if metadata is not None:
-                conn.execute(
-                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                    (json.dumps(metadata, ensure_ascii=False), run_id),
-                )
         ev_summary = (
             handoff_summary.strip().splitlines()[0][:400]
             if handoff_summary else ""
@@ -4529,9 +4806,11 @@ def edit_completed_task_result(
                 "fields": (
                     ["result", "summary"]
                     + (["metadata"] if metadata is not None else [])
+                    + (["evidence_refs"] if normalized_evidence_refs else [])
                 ),
                 "result_len": len(result) if result else 0,
                 "summary": ev_summary or None,
+                "evidence_refs": normalized_evidence_refs,
             },
             run_id=run_id,
         )

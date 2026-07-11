@@ -17,8 +17,10 @@ new service.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
@@ -72,6 +74,37 @@ def _swarm_context(root_id: str, goal: str) -> str:
         "- Put cross-worker notes on the root task using structured comments.\n"
         f"- Goal: {goal.strip()}\n"
     )
+
+
+def _write_swarm_root_evidence(
+    conn: sqlite3.Connection,
+    root_id: str,
+    *,
+    goal: str,
+    worker_count: int,
+    created_by: str,
+) -> str:
+    """Write a small durable evidence file for immediate root completion.
+
+    Avoid storing the raw goal here: the root card already contains it, and the
+    evidence gate only needs a non-secret file proving the topology action.
+    """
+    db_row = conn.execute("PRAGMA database_list").fetchone()
+    db_file = db_row["file"] if db_row and "file" in db_row.keys() else None
+    base_dir = Path(db_file).resolve().parent if db_file else kb.kanban_home()
+    evidence_dir = base_dir / "kanban-evidence" / "swarm"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    path = evidence_dir / f"{root_id}.json"
+    payload = {
+        "kind": "kanban_swarm_v1_root_evidence",
+        "root_id": root_id,
+        "goal_len": len(goal or ""),
+        "goal_sha256": hashlib.sha256((goal or "").encode("utf-8")).hexdigest(),
+        "worker_count": worker_count,
+        "created_by": created_by,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    return str(path)
 
 
 def create_swarm(
@@ -142,6 +175,13 @@ def create_swarm(
                 synthesizer_id=str(synthesizer_id),
             )
 
+    root_evidence = _write_swarm_root_evidence(
+        conn,
+        root,
+        goal=goal,
+        worker_count=len(worker_specs),
+        created_by=created_by,
+    )
     kb.complete_task(
         conn,
         root,
@@ -151,6 +191,7 @@ def create_swarm(
             "goal": goal,
             "worker_count": len(worker_specs),
         },
+        evidence_paths=[root_evidence],
     )
 
     context_suffix = _swarm_context(root, goal)

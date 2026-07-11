@@ -1,7 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   SessionActiveItem,
@@ -205,18 +205,7 @@ export const closeFallbackAfterClose = (
 }
 
 export const draftModelArgFromPickerValue = (value: string) => {
-  const parts = value.trim().split(/\s+/).filter(Boolean)
-  const kept: string[] = []
-
-  for (const part of parts) {
-    if (part === TUI_SESSION_MODEL_FLAG || part === '--global') {
-      continue
-    }
-
-    kept.push(part)
-  }
-
-  return kept.join(' ')
+  return sessionScopedModelArg(value)
 }
 
 export const draftModelNameFromArg = (value: string) => {

@@ -68,6 +68,15 @@ class TestMsysToWindowsPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("/tmp/foo") == "/tmp/foo"
         assert _msys_to_windows_path("/home/x") == "/home/x"
+        # /mnt/<name>/... only translates when <name> is a single drive letter.
+        assert _msys_to_windows_path("/mnt/home/x") == "/mnt/home/x"
+
+    def test_translates_cygdrive_and_wsl_mnt_forms(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _msys_to_windows_path("/cygdrive/c/Users/NVIDIA") == r"C:\Users\NVIDIA"
+        assert _msys_to_windows_path("/mnt/d/Projects/foo") == r"D:\Projects\foo"
+        assert _msys_to_windows_path("/cygdrive/c") == "C:\\"
+        assert _msys_to_windows_path("/mnt/c/") == "C:\\"
 
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)

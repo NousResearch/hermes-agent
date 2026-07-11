@@ -73,14 +73,14 @@ def test_cron_edit_no_agent_tristate():
 def test_cron_reasoning_effort_options():
     parser = _build()
     created = parser.parse_args(
-        ["cron", "create", "30m", "prompt", "--reasoning-effort", "low"]
+        ["cron", "create", "30m", "prompt", "--reasoning-effort", "max"]
     )
-    assert created.reasoning_effort == "low"
+    assert created.reasoning_effort == "max"
 
     edited = parser.parse_args(
-        ["cron", "edit", "j", "--reasoning-effort", "none"]
+        ["cron", "edit", "j", "--reasoning-effort", "max"]
     )
-    assert edited.reasoning_effort == "none"
+    assert edited.reasoning_effort == "max"
     assert edited.clear_reasoning_effort is False
 
     cleared = parser.parse_args(["cron", "edit", "j", "--clear-reasoning-effort"])

@@ -294,6 +294,7 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
                 "enabled": True,
                 "next_run_at": "2026-06-01T00:00:00Z",
                 "deliver": ["local"],
+                "reasoning_effort": "max",
             }
         ],
     )
@@ -305,6 +306,7 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Gateway is not running" in out
     assert "Nightly docs" in out
+    assert "Reasoning: max" in out
 
 
 def test_cron_status_reports_running_gateway(monkeypatch, capsys):
@@ -352,7 +354,7 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
                 "script": "scripts/build_docs.py",
                 "no_agent": True,
                 "workdir": "/tmp/repo",
-                "reasoning_effort": "low",
+                "reasoning_effort": "max",
             },
         }
 
@@ -374,7 +376,7 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
         script="scripts/build_docs.py",
         workdir="/tmp/repo",
         no_agent=True,
-        reasoning_effort="low",
+        reasoning_effort="max",
     )
 
     rc = cron_cli.cron_create(args)
@@ -386,9 +388,9 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
     assert "Script: scripts/build_docs.py" in out
     assert "Mode: no-agent" in out
     assert "Workdir: /tmp/repo" in out
-    assert "Reasoning: low" in out
+    assert "Reasoning: max" in out
     assert "Next run: 2026-06-01T00:00:00Z" in out
-    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == "max"
 
 
 def test_cron_edit_clear_reasoning_effort(monkeypatch, capsys):

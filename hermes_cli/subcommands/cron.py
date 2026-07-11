@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
+
+
+_REASONING_EFFORT_CHOICES = ["none", *VALID_REASONING_EFFORTS]
 
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
@@ -72,7 +76,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_create.add_argument(
         "--reasoning-effort",
-        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        choices=_REASONING_EFFORT_CHOICES,
         help="Per-job reasoning override; omit to inherit agent.reasoning_effort.",
     )
 
@@ -141,7 +145,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_edit.add_argument(
         "--reasoning-effort",
-        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        choices=_REASONING_EFFORT_CHOICES,
         help="Per-job reasoning override; 'none' explicitly disables reasoning.",
     )
     cron_edit.add_argument(

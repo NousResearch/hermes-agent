@@ -987,16 +987,15 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
 
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Normalize and validate an optional per-job reasoning override."""
-    text = str(value or "").strip().lower()
-    if not text:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    from hermes_constants import parse_reasoning_effort
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
-    if parse_reasoning_effort(text) is None:
-        raise ValueError(
-            "reasoning_effort must be one of: none, minimal, low, medium, high, xhigh"
-        )
-    return text
+    parsed = parse_reasoning_effort(value)
+    if parsed is None:
+        valid = ", ".join(("none", *VALID_REASONING_EFFORTS))
+        raise ValueError(f"reasoning_effort must be one of: {valid}")
+    return "none" if not parsed["enabled"] else parsed["effort"]
 
 
 def _compute_provider_model_snapshots(

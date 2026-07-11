@@ -15,9 +15,9 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 def test_create_stores_normalized_reasoning_effort(tmp_cron_dir):
-    job = create_job(prompt="Think lightly", schedule="30m", reasoning_effort=" low ")
-    assert job["reasoning_effort"] == "low"
-    assert get_job(job["id"])["reasoning_effort"] == "low"
+    job = create_job(prompt="Think deeply", schedule="30m", reasoning_effort=" MAX ")
+    assert job["reasoning_effort"] == "max"
+    assert get_job(job["id"])["reasoning_effort"] == "max"
 
 
 def test_create_stores_none_as_explicit_override(tmp_cron_dir):
@@ -33,11 +33,11 @@ def test_create_invalid_reasoning_effort_raises(tmp_cron_dir):
 def test_update_changes_preserves_and_clears_reasoning_effort(tmp_cron_dir):
     job = create_job(prompt="Update me", schedule="30m", reasoning_effort="low")
 
-    updated = update_job(job["id"], {"reasoning_effort": "HIGH"})
-    assert updated["reasoning_effort"] == "high"
+    updated = update_job(job["id"], {"reasoning_effort": "MAX"})
+    assert updated["reasoning_effort"] == "max"
 
     preserved = update_job(job["id"], {"name": "renamed"})
-    assert preserved["reasoning_effort"] == "high"
+    assert preserved["reasoning_effort"] == "max"
 
     cleared = update_job(job["id"], {"reasoning_effort": ""})
     assert cleared is not None
@@ -66,6 +66,22 @@ def test_legacy_invalid_reasoning_effort_is_read_safe(tmp_cron_dir):
     jobs = list_jobs()
     assert jobs[0]["reasoning_effort"] is None
     assert get_job("abc123deadbe")["reasoning_effort"] is None
+
+
+def test_legacy_false_reasoning_effort_is_normalized_to_none(tmp_cron_dir):
+    save_jobs([
+        {
+            "id": "abc123deadbe",
+            "name": "legacy",
+            "prompt": "legacy",
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "enabled": True,
+            "reasoning_effort": False,
+        }
+    ])
+
+    assert list_jobs()[0]["reasoning_effort"] == "none"
+    assert get_job("abc123deadbe")["reasoning_effort"] == "none"
 
 
 @pytest.fixture()
@@ -149,7 +165,7 @@ def _minimal_job(reasoning_effort=None):
     return job
 
 
-def test_scheduler_uses_job_reasoning_effort_over_global(scheduler_harness):
+def test_scheduler_uses_max_job_reasoning_effort_over_global(scheduler_harness):
     home, captured = scheduler_harness
     (home / "config.yaml").write_text(
         "model:\n  default: gpt-5.5\n  provider: openai-codex\nagent:\n  reasoning_effort: high\n",
@@ -158,12 +174,12 @@ def test_scheduler_uses_job_reasoning_effort_over_global(scheduler_harness):
 
     from cron.scheduler import run_job
 
-    success, _doc, final_response, error = run_job(_minimal_job("low"))
+    success, _doc, final_response, error = run_job(_minimal_job("max"))
 
     assert success is True
     assert final_response == "ok"
     assert error is None
-    assert captured["reasoning_config"] == {"enabled": True, "effort": "low"}
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "max"}
 
 
 def test_scheduler_falls_back_to_global_reasoning_effort(scheduler_harness):
@@ -183,7 +199,8 @@ def test_scheduler_falls_back_to_global_reasoning_effort(scheduler_harness):
     assert captured["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
-def test_scheduler_none_disables_reasoning_instead_of_fallback(scheduler_harness):
+@pytest.mark.parametrize("job_effort", ["none", False])
+def test_scheduler_disabled_override_does_not_fall_back(scheduler_harness, job_effort):
     home, captured = scheduler_harness
     (home / "config.yaml").write_text(
         "model:\n  default: gpt-5.5\n  provider: openai-codex\nagent:\n  reasoning_effort: high\n",
@@ -192,7 +209,7 @@ def test_scheduler_none_disables_reasoning_instead_of_fallback(scheduler_harness
 
     from cron.scheduler import run_job
 
-    success, _doc, final_response, error = run_job(_minimal_job("none"))
+    success, _doc, final_response, error = run_job(_minimal_job(job_effort))
 
     assert success is True
     assert final_response == "ok"

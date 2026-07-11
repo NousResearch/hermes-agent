@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_constants import display_hermes_home
+from hermes_constants import VALID_REASONING_EFFORTS, display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -1091,7 +1091,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "reasoning_effort": {
                 "type": "string",
-                "enum": ["", "none", "minimal", "low", "medium", "high", "xhigh"],
+                "enum": ["", "none", *VALID_REASONING_EFFORTS],
                 "description": "Optional per-job reasoning effort. Omit or clear to inherit agent.reasoning_effort; pass 'none' to disable reasoning. Ignored for no_agent jobs. On update, pass empty string to clear."
             },
             "attach_to_session": {

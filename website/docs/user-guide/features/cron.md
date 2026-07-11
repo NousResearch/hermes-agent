@@ -135,7 +135,7 @@ hermes cron create "0 3 * * *" \
   --reasoning-effort low
 ```
 
-The `cronjob` tool accepts the same `reasoning_effort` field. Valid values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+The `cronjob` tool accepts the same `reasoning_effort` field. Valid values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 - Omit the field to inherit global `agent.reasoning_effort`.
 - Use `none` to explicitly disable reasoning for that job.

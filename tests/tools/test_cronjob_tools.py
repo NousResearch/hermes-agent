@@ -3,6 +3,8 @@
 import json
 import pytest
 
+from hermes_constants import VALID_REASONING_EFFORTS
+
 from tools.cronjob_tools import (
     CRONJOB_SCHEMA,
     _scan_cron_prompt,
@@ -271,11 +273,14 @@ class TestUnifiedCronjobTool:
                 action="create",
                 prompt="Check",
                 schedule="every 1h",
-                reasoning_effort="low",
+                reasoning_effort="max",
             )
         )
         assert created["success"] is True
-        assert created["job"]["reasoning_effort"] == "low"
+        assert created["job"]["reasoning_effort"] == "max"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["reasoning_effort"] == "max"
 
         updated = json.loads(
             cronjob(
@@ -286,6 +291,15 @@ class TestUnifiedCronjobTool:
         )
         assert updated["job"]["reasoning_effort"] == "none"
 
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                reasoning_effort="max",
+            )
+        )
+        assert updated["job"]["reasoning_effort"] == "max"
+
         cleared = json.loads(
             cronjob(
                 action="update", job_id=created["job_id"], reasoning_effort=""
@@ -294,7 +308,7 @@ class TestUnifiedCronjobTool:
         assert "reasoning_effort" not in cleared["job"]
 
         values = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]["enum"]
-        assert {"", "none", "xhigh"}.issubset(values)
+        assert set(values) == {"", "none", *VALID_REASONING_EFFORTS}
 
     def test_invalid_reasoning_effort_fails_without_writing(self):
         created = json.loads(

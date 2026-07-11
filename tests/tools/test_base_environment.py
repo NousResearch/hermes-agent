@@ -230,7 +230,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         # Note: includes credential filter to match production behavior.
         writer = (
             "for i in $(seq 1 80); do "
-            "export BIG_$i=$(head -c 600 /dev/zero | tr '\\\0' x); "
+            "export BIG_$i=$(head -c 600 /dev/urandom | base64 | tr -d '\\n'); "
             f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_q(snap)}; }} "
             f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true; "
             "done"

@@ -403,8 +403,8 @@ class BaseEnvironment(ABC):
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = f"{shlex.quote(self._snapshot_path)}.tmp.${{BASHPID}}"
         bootstrap = (
-            f"umask 077\\n"
-            f"export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp}\\n"
+            f"umask 077\n"
+            f"export -p | grep -vE '{_CREDENTIAL_ENV_FILTER_PATTERN}' > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``

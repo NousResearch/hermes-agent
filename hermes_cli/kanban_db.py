@@ -3740,6 +3740,31 @@ def release_stale_claims(
                 run_id=run_id,
             )
             reclaimed += 1
+        if heartbeat_stale:
+            # H1 (Audit 2026-07-11): a wedged-but-alive worker (PID up,
+            # heartbeat stale >1h) used to be reclaimed WITHOUT failure
+            # accounting — the same structural wedge respawned forever and
+            # the circuit breaker never tripped (livelock without backoff).
+            # Count it like a crash/timeout so consecutive_failures reaches
+            # failure_limit and the card auto-blocks for a human.
+            _record_task_failure(
+                conn, row["id"],
+                "wedged worker reclaimed: pid alive but heartbeat stale "
+                f">{DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS}s "
+                f"(lock={row['claim_lock']})",
+                outcome="reclaimed",
+                event_payload_extra={
+                    "wedged": True,
+                    "worker_pid": (
+                        int(row["worker_pid"])
+                        if row["worker_pid"] is not None else None
+                    ),
+                    "last_heartbeat_at": (
+                        int(row["last_heartbeat_at"])
+                        if row["last_heartbeat_at"] is not None else None
+                    ),
+                },
+            )
     return reclaimed
 
 
@@ -6382,8 +6407,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "SELECT t.id, t.worker_pid, t.claim_lock, t.started_at, "
+            "       r.started_at AS active_started_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
@@ -6393,8 +6420,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
-            # is visible on /proc.
-            started_at = row["started_at"] if "started_at" in row.keys() else None
+            # is visible on /proc. H2 (Audit 2026-07-11): measure from the
+            # ACTIVE run, not ``tasks.started_at`` — that column freezes at
+            # the first-ever claim, so from the first respawn on the grace
+            # was a no-op (exactly the respawn case it exists for).
+            # ``enforce_max_runtime`` does the same for the same reason.
+            started_at = (
+                row["active_started_at"]
+                if row["active_started_at"] is not None
+                else (row["started_at"] if "started_at" in row.keys() else None)
+            )
             if started_at is not None:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:

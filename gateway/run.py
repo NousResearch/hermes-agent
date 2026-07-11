@@ -801,6 +801,7 @@ def _build_replay_entry(
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
 _MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Matrix room context"
+_MAX_MATRIX_OBSERVED_CONTEXT_ROWS = 50
 _OBSERVED_CONTEXT_PROMPT_MARKERS = (
     _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER,
     _MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER,
@@ -838,6 +839,33 @@ def _uses_observed_group_context(channel_prompt: Optional[str]) -> bool:
     """Return True for gateway turns that may include observed group/room chatter."""
 
     return _observed_context_header_for_prompt(channel_prompt) is not None
+
+
+def _matrix_observed_context_source(
+    source: "SessionSource",
+    channel_prompt: Optional[str],
+) -> Optional["SessionSource"]:
+    """Return the shared Matrix room/thread source for an observed-context turn.
+
+    Matrix keeps an addressed turn in the sender's normal session when
+    per-user isolation is enabled, while passive room messages are stored in
+    a room/thread session without a participant.  Derive that latter source
+    from the trusted inbound source instead of accepting an adapter-provided
+    routing key, so the backfill cannot cross a room, thread, or profile.
+    """
+    if (
+        source.platform != Platform.MATRIX
+        or not channel_prompt
+        or _MATRIX_OBSERVED_CONTEXT_PROMPT_MARKER not in channel_prompt
+    ):
+        return None
+    return dataclasses.replace(
+        source,
+        user_id=None,
+        user_name=None,
+        user_id_alt=None,
+        message_id=None,
+    )
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
@@ -11144,6 +11172,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._async_session_store = facade
         return facade
 
+    async def _load_matrix_observed_context_history(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        session_entry: Any,
+    ) -> List[Dict[str, Any]]:
+        """Load only passive Matrix room rows for an isolated addressed turn.
+
+        The Matrix adapter deliberately persists unmentioned room chatter in a
+        participant-free room/thread session.  When the active addressed turn
+        is participant-isolated, load that shared transcript separately and
+        return only its ``observed=True`` rows.  Keeping this as a per-turn
+        overlay prevents another participant's addressed conversation from
+        entering the active session, its persisted transcript, or hygiene
+        compression.
+        """
+        shared_source = _matrix_observed_context_source(
+            source,
+            getattr(event, "channel_prompt", None),
+        )
+        if shared_source is None:
+            return []
+
+        shared_key = self._session_key_for_source(shared_source)
+        if not shared_key or shared_key == getattr(session_entry, "session_key", None):
+            # The room already uses a shared session, so its transcript is the
+            # active history and needs no separate overlay.
+            return []
+
+        try:
+            shared_session_id = await self.async_session_store.peek_session_id(shared_key)
+        except Exception:
+            logger.debug(
+                "Matrix observed-context session lookup failed for %s",
+                shared_key,
+                exc_info=True,
+            )
+            return []
+        if not shared_session_id or shared_session_id == getattr(session_entry, "session_id", None):
+            return []
+
+        try:
+            shared_history = await self.async_session_store.load_transcript(shared_session_id)
+        except Exception:
+            logger.debug(
+                "Matrix observed-context transcript load failed for %s",
+                shared_key,
+                exc_info=True,
+            )
+            return []
+
+        observed_rows = [
+            message
+            for message in shared_history or []
+            if isinstance(message, dict) and bool(message.get("observed"))
+        ]
+        # This is a prompt-only overlay, not persistent retention. Bound it
+        # here so an isolated room with no recent addressed turn cannot grow
+        # an unbounded one-shot prompt while its shared transcript accumulates.
+        return observed_rows[-_MAX_MATRIX_OBSERVED_CONTEXT_ROWS:]
+
     def _get_cached_session_source(self, session_key: str):
         if not session_key:
             return None
@@ -12041,6 +12131,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             run_generation,
         )
 
+        # Matrix observed room chatter lives in a participant-free shared
+        # transcript.  Overlay it only for this agent call when the addressed
+        # participant has an isolated session; never fold it into ``history``
+        # used by session hygiene or later persistence paths.
+        history_for_agent = history
+        observed_matrix_history = await self._load_matrix_observed_context_history(
+            event=event,
+            source=source,
+            session_entry=session_entry,
+        )
+        if observed_matrix_history:
+            history_for_agent = [*history, *observed_matrix_history]
+
         try:
             # Emit agent:start hook
             hook_ctx = {
@@ -12062,7 +12165,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
-                history=history,
+                history=history_for_agent,
                 source=source,
                 session_id=_run_start_session_id,
                 session_key=session_key,

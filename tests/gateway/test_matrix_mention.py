@@ -586,6 +586,121 @@ async def test_observed_room_context_marker_does_not_double_prefix_sender():
 
 
 @pytest.mark.asyncio
+async def test_observed_room_context_overlays_shared_rows_for_isolated_matrix_thread():
+    """An isolated Matrix turn receives only passive room context, not other users' history."""
+    from gateway.run import GatewayRunner, _build_gateway_agent_history
+    from gateway.session import build_session_key
+
+    config = GatewayConfig(
+        group_sessions_per_user=True,
+        thread_sessions_per_user=True,
+    )
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room1:example.org",
+        chat_type="group",
+        thread_id="$thread-root",
+        user_id="@bob:example.org",
+        user_name="bob",
+        profile="coder",
+    )
+    active_key = build_session_key(
+        source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=True,
+        profile="coder",
+    )
+    shared_source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+        thread_id=source.thread_id,
+        profile=source.profile,
+    )
+    shared_key = build_session_key(
+        shared_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=True,
+        profile="coder",
+    )
+    assert active_key != shared_key
+
+    class FakeStore:
+        def __init__(self):
+            self.peeked_keys = []
+
+        def _generate_session_key(self, candidate):
+            return build_session_key(
+                candidate,
+                group_sessions_per_user=True,
+                thread_sessions_per_user=True,
+                profile="coder",
+            )
+
+        def peek_session_id(self, key):
+            self.peeked_keys.append(key)
+            return "shared-observed-session" if key == shared_key else None
+
+        def load_transcript(self, session_id):
+            assert session_id == "shared-observed-session"
+            observed_rows = [
+                {
+                    "role": "user",
+                    "content": f"[alice|@alice:example.org]\nroom context {index}",
+                    "observed": True,
+                }
+                for index in range(52)
+            ]
+            return [
+                {
+                    "role": "user",
+                    "content": "[alice|@alice:example.org]\nprivate addressed history",
+                    "observed": False,
+                },
+                {"role": "assistant", "content": "private reply", "observed": False},
+                *observed_rows,
+            ]
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = FakeStore()
+    event = MessageEvent(
+        text="[bob|@bob:example.org]\nwhat did Alice say?",
+        source=source,
+        channel_prompt="observed Matrix room context",
+    )
+    session_entry = SimpleNamespace(session_key=active_key, session_id="bob-session")
+
+    observed_history = await runner._load_matrix_observed_context_history(
+        event=event,
+        source=source,
+        session_entry=session_entry,
+    )
+
+    assert runner.session_store.peeked_keys == [shared_key]
+    assert len(observed_history) == 50
+    assert [row["content"] for row in observed_history] == [
+        f"[alice|@alice:example.org]\nroom context {index}"
+        for index in range(2, 52)
+    ]
+
+    private_history = [
+        {"role": "user", "content": "Bob's earlier private question"},
+        {"role": "assistant", "content": "Bob's earlier private answer"},
+    ]
+    agent_history, observed_context = _build_gateway_agent_history(
+        [*private_history, *observed_history],
+        channel_prompt=event.channel_prompt,
+    )
+
+    assert [message["content"] for message in agent_history] == [
+        "Bob's earlier private question",
+        "Bob's earlier private answer",
+    ]
+    assert observed_context == "\n".join(row["content"] for row in observed_history)
+
+
+@pytest.mark.asyncio
 async def test_observed_room_context_preserves_slash_commands(monkeypatch):
     """Sender attribution must not hide slash commands from gateway command handling."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

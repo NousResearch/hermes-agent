@@ -233,9 +233,9 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 1.74
-    assert float(entry.output_cost_per_million) == 3.48
-    assert float(entry.cache_read_cost_per_million) == 0.0145
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.003625
 
 
 def test_deepseek_v4_pro_estimate_usage_cost():
@@ -248,8 +248,37 @@ def test_deepseek_v4_pro_estimate_usage_cost():
 
     assert result.status == "estimated"
     assert result.amount_usd is not None
-    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
-    assert float(result.amount_usd) == 3.48
+    # 1M input × $0.435/M + 500K output × $0.87/M = $0.435 + $0.435 = $0.87
+    assert float(result.amount_usd) == 0.87
+
+
+def test_deepseek_v4_flash_pricing_entry_exists():
+    """Ensure deepseek-v4-flash (newly added) has pricing data."""
+    entry = lookup_pricing_for_model(
+        "deepseek-v4-flash",
+        provider="deepseek",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
+
+
+def test_deepseek_v4_flash_estimate_usage_cost():
+    """Ensure deepseek-v4-flash sessions get a dollar estimate, not unknown."""
+    result = estimate_usage_cost(
+        "deepseek-v4-flash",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
+    assert float(result.amount_usd) == 0.28
 
 
 def test_bedrock_claude_rows_all_carry_cache_pricing():

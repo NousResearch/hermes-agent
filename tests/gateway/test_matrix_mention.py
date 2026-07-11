@@ -375,7 +375,6 @@ async def test_observe_setting_does_not_override_disabled_mention_gate(monkeypat
     message = adapter.handle_message.await_args.args[0]
     assert message.text == "ordinary room request"
     assert message.channel_prompt is None
-    assert message.source.force_shared_session is False
     assert store.messages == []
 
 
@@ -407,8 +406,8 @@ async def test_unmentioned_bot_thread_message_is_observed_when_thread_mentions_r
 
 
 @pytest.mark.asyncio
-async def test_observed_room_context_uses_shared_source_and_prompt_for_later_mentions(monkeypatch):
-    """Mentioned Matrix room turns align with the shared observed-context session."""
+async def test_observed_room_context_respects_group_session_isolation(monkeypatch):
+    """Addressed users share observed context only when group sessions are shared."""
     from gateway.session import build_session_key
 
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
@@ -419,22 +418,117 @@ async def test_observed_room_context_uses_shared_source_and_prompt_for_later_men
         "allowed_rooms": ["!room1:example.org"],
         "observe_unmentioned_group_messages": True,
     })
-    adapter._session_store = _FakeSessionStore()
-    event = _make_event("@hermes:example.org what did Alice say?", sender="@bob:example.org")
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org what did Alice say?",
+            sender="@bob:example.org",
+            event_id="$bob",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org summarize that",
+            sender="@alice:example.org",
+            event_id="$alice",
+        )
+    )
 
-    await adapter._on_room_message(event)
+    bob_event, alice_event = [call.args[0] for call in adapter.handle_message.await_args_list]
+    identity = await adapter._resolve_room_identity("!room1:example.org")
+    observed_source = adapter._matrix_observe_shared_source(identity, "group", None)
 
-    adapter.handle_message.assert_awaited_once()
-    msg = adapter.handle_message.await_args.args[0]
-    assert msg.source.chat_id == "!room1:example.org"
-    assert msg.source.chat_type == "group"
-    assert msg.source.user_id == "@bob:example.org"
-    assert msg.source.user_name == "bob"
-    assert build_session_key(msg.source, group_sessions_per_user=True) == "agent:main:matrix:group:!room1:example.org"
-    assert msg.text == "[bob|@bob:example.org]\nwhat did Alice say?"
-    assert "observed Matrix room context" in msg.channel_prompt
-    assert "current addressed message" in msg.channel_prompt
-    assert "Your own Matrix identity is @hermes:example.org" in msg.channel_prompt
+    bob_isolated = build_session_key(
+        bob_event.source, group_sessions_per_user=True
+    )
+    alice_isolated = build_session_key(
+        alice_event.source, group_sessions_per_user=True
+    )
+    observed_key = build_session_key(
+        observed_source, group_sessions_per_user=True
+    )
+    assert len({bob_isolated, alice_isolated, observed_key}) == 3
+
+    bob_shared = build_session_key(
+        bob_event.source, group_sessions_per_user=False
+    )
+    alice_shared = build_session_key(
+        alice_event.source, group_sessions_per_user=False
+    )
+    assert bob_shared == alice_shared == observed_key
+    assert bob_event.source.user_id == "@bob:example.org"
+    assert alice_event.source.user_id == "@alice:example.org"
+    assert bob_event.text == "[bob|@bob:example.org]\nwhat did Alice say?"
+    assert "observed Matrix room context" in bob_event.channel_prompt
+    assert "current addressed message" in bob_event.channel_prompt
+    assert "Your own Matrix identity is @hermes:example.org" in bob_event.channel_prompt
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_respects_thread_session_isolation(monkeypatch):
+    """Thread isolation wins even when root group sessions are shared."""
+    from gateway.session import build_session_key
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org first",
+            sender="@bob:example.org",
+            event_id="$bob-thread",
+            thread_id="$thread-root",
+        )
+    )
+    await adapter._on_room_message(
+        _make_event(
+            "@hermes:example.org second",
+            sender="@alice:example.org",
+            event_id="$alice-thread",
+            thread_id="$thread-root",
+        )
+    )
+
+    bob_event, alice_event = [call.args[0] for call in adapter.handle_message.await_args_list]
+    identity = await adapter._resolve_room_identity("!room1:example.org")
+    observed_source = adapter._matrix_observe_shared_source(
+        identity, "group", "$thread-root"
+    )
+
+    bob_isolated = build_session_key(
+        bob_event.source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=True,
+    )
+    alice_isolated = build_session_key(
+        alice_event.source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=True,
+    )
+    observed_key = build_session_key(
+        observed_source,
+        group_sessions_per_user=False,
+        thread_sessions_per_user=True,
+    )
+    assert len({bob_isolated, alice_isolated, observed_key}) == 3
+
+    bob_shared = build_session_key(
+        bob_event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    alice_shared = build_session_key(
+        alice_event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    shared_observed_key = build_session_key(
+        observed_source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    assert bob_shared == alice_shared == shared_observed_key
 
 
 @pytest.mark.asyncio
@@ -464,12 +558,12 @@ async def test_observed_room_sources_keep_profile_and_project_boundaries(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_observed_room_context_force_shared_session_does_not_double_prefix_sender():
-    """Gateway shared-session attribution must not duplicate Matrix's explicit observed-context prefix."""
+async def test_observed_room_context_marker_does_not_double_prefix_sender():
+    """The context marker suppresses only redundant display attribution."""
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner.config = GatewayConfig(group_sessions_per_user=True, thread_sessions_per_user=False)
+    runner.config = GatewayConfig(group_sessions_per_user=False)
     runner.adapters = {}
 
     source = SessionSource(
@@ -478,7 +572,6 @@ async def test_observed_room_context_force_shared_session_does_not_double_prefix
         chat_type="group",
         user_id="@bob:example.org",
         user_name="bob",
-        force_shared_session=True,
     )
     event = MessageEvent(
         text="[bob|@bob:example.org]\nwhat did Alice say?",

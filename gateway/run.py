@@ -10764,7 +10764,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             _is_shared_multi_user
             and source.user_name
-            and not getattr(source, "force_shared_session", False)
+            and not _uses_observed_group_context(event.channel_prompt)
         ):
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their

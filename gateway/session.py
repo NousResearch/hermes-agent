@@ -176,11 +176,6 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
-    # Internal routing signal used by adapters that preserve the authenticated
-    # actor while intentionally sharing one room/thread transcript. Excluding
-    # it from wire serialization prevents peers from collapsing isolated
-    # participant sessions.
-    force_shared_session: bool = False
     # Profile this inbound message is routed to in a multiplexing gateway
     # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
     # None => the gateway's active/default profile. Drives both session-key
@@ -870,8 +865,6 @@ def is_shared_multi_user_session(
     """
     if source.chat_type == "dm":
         return False
-    if getattr(source, "force_shared_session", False):
-        return True
     if source.thread_id:
         return not thread_sessions_per_user
     return not group_sessions_per_user
@@ -975,14 +968,12 @@ def build_session_key(
     if source.thread_id:
         key_parts.append(source.thread_id)
 
-    # In threads, default to shared sessions (all participants see the same
-    # conversation).  Per-user isolation only applies when explicitly enabled
-    # via thread_sessions_per_user, or when there is no thread (regular group).
-    isolate_user = group_sessions_per_user
-    if getattr(source, "force_shared_session", False):
-        isolate_user = False
-    if source.thread_id and not thread_sessions_per_user:
-        isolate_user = False
+    # Thread isolation is controlled independently from root group/channel
+    # isolation. An explicit thread_sessions_per_user=True must still isolate
+    # participants when root group sessions are configured as shared.
+    isolate_user = (
+        thread_sessions_per_user if source.thread_id else group_sessions_per_user
+    )
 
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))

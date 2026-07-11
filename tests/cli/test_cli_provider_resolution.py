@@ -8,6 +8,7 @@ import pytest
 
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
+from hermes_cli.config import load_config
 
 
 # ---------------------------------------------------------------------------
@@ -882,3 +883,41 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_cli_model_alias_resolves_to_target_provider_and_base_url(monkeypatch):
+    """#62491: `hermes chat --model <alias>` must resolve model_aliases.
+
+    Without this, the alias string is sent verbatim to the configured default
+    provider (OpenRouter) and 400s. The CLI path must behave like the GUI
+    picker: expand the alias into (model, provider, base_url).
+    """
+    cli = _import_cli()
+
+    _config = load_config()
+    _config["model_aliases"] = {
+        "gemma": {
+            "base_url": "http://localhost:1234/v1",
+            "model": "gemma-4-31B-it-qat-bf16",
+            "provider": "custom",
+        },
+    }
+    _config["model"] = {"provider": "openrouter", "default": "tencent/hy3:free"}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _config)
+    # CLI_CONFIG is read for the default provider + display.
+    monkeypatch.setattr(cli, "CLI_CONFIG", _config)
+
+    shell = cli.HermesCLI(model="gemma", compact=True, max_turns=1)
+    assert shell.model == "gemma-4-31B-it-qat-bf16"
+    assert shell.requested_provider == "custom"
+    assert shell.base_url == "http://localhost:1234/v1"
+
+    # Explicit --provider custom alongside the alias should not break either.
+    shell2 = cli.HermesCLI(model="gemma", provider="custom", compact=True, max_turns=1)
+    assert shell2.model == "gemma-4-31B-it-qat-bf16"
+    assert shell2.requested_provider == "custom"
+
+    # A non-alias model is untouched (no fallback to default provider).
+    shell3 = cli.HermesCLI(model="anthropic/claude-3.5", compact=True, max_turns=1)
+    assert shell3.model == "anthropic/claude-3.5"
+    assert shell3.requested_provider == "openrouter"

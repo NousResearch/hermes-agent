@@ -311,6 +311,31 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_requests_worker_stop_after_terminal(worker_env):
+    """After kanban_complete the worker must stop further tool calls (#61923)."""
+    from tools import kanban_tools as kt
+
+    kt.clear_worker_stop_request()
+    try:
+        out = kt._handle_complete({"summary": "closing and stopping"})
+        assert json.loads(out)["ok"] is True
+        assert kt.worker_stop_requested() is True
+    finally:
+        kt.clear_worker_stop_request()
+
+
+def test_request_worker_stop_noop_without_kanban_env(monkeypatch):
+    from tools import kanban_tools as kt
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    kt.clear_worker_stop_request()
+    try:
+        kt.request_worker_stop_after_terminal()
+        assert kt.worker_stop_requested() is False
+    finally:
+        kt.clear_worker_stop_request()
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

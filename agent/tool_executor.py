@@ -770,6 +770,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                 pass
                         break
 
+                    # Promote kanban terminal-transition stop into an agent
+                    # interrupt so concurrent siblings are cancelled (#61923).
+                    if not agent._interrupt_requested:
+                        try:
+                            from tools.kanban_tools import worker_stop_requested
+
+                            if worker_stop_requested():
+                                agent._interrupt_requested = True
+                        except Exception:
+                            pass
+
                     # Check for interrupt — the per-thread interrupt signal
                     # already causes individual tools (terminal, execute_code)
                     # to abort, but tools without interrupt checks (web_search,
@@ -1023,12 +1034,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
-    for i, tool_call in enumerate(assistant_message.tool_calls, 1):
+    for i, tool_call in enumerate(assistant_message.tool_calls):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
         # do NOT start any more tools -- skip them all immediately.
         if agent._interrupt_requested:
-            remaining_calls = assistant_message.tool_calls[i-1:]
+            remaining_calls = assistant_message.tool_calls[i:]
             if remaining_calls:
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
@@ -1139,11 +1150,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
             args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
-                print(f"  📞 Tool {i}: {function_name}({list(display_args.keys())})")
+                print(f"  📞 Tool {i + 1}: {function_name}({list(display_args.keys())})")
                 print(agent._wrap_verbose("Args: ", json.dumps(display_args, indent=2, ensure_ascii=False)))
             else:
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
-                print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                print(f"  📞 Tool {i + 1}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
         if not _execution_blocked:
             agent._current_tool = function_name
@@ -1686,17 +1697,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
-                print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
+                print(f"  ✅ Tool {i + 1} completed in {tool_duration:.2f}s")
                 print(agent._wrap_verbose("Result: ", function_result))
             else:
                 _fr_str = function_result if isinstance(function_result, str) else str(function_result)
                 response_preview = _fr_str[:agent.log_prefix_chars] + "..." if len(_fr_str) > agent.log_prefix_chars else _fr_str
-                print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                print(f"  ✅ Tool {i + 1} completed in {tool_duration:.2f}s - {response_preview}")
 
-        if agent._interrupt_requested and i < len(assistant_message.tool_calls):
-            remaining = len(assistant_message.tool_calls) - i
+        # Kanban worker terminal tools (#61923) set a process flag so no
+        # further tools run after complete/block — promote that to the
+        # agent interrupt so remaining calls in this sequential batch
+        # are skipped the same way as a user interrupt.
+        if not agent._interrupt_requested:
+            try:
+                from tools.kanban_tools import worker_stop_requested
+
+                if worker_stop_requested():
+                    agent._interrupt_requested = True
+            except Exception:
+                pass
+
+        if agent._interrupt_requested and i + 1 < len(assistant_message.tool_calls):
+            remaining = len(assistant_message.tool_calls) - i - 1
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
-            for skipped_tc in assistant_message.tool_calls[i:]:
+            for skipped_tc in assistant_message.tool_calls[i + 1:]:
                 skipped_name = skipped_tc.function.name
                 messages.append(make_tool_result_message(
                     skipped_name,
@@ -1711,7 +1735,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             break
 
-        if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
+        if agent.tool_delay > 0 and i + 1 < len(assistant_message.tool_calls):
             time.sleep(agent.tool_delay)
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────

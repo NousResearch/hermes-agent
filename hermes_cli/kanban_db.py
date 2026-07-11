@@ -3984,6 +3984,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    signal_fn=None,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -4041,6 +4042,17 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    # Kill a host-local foreign worker before clearing worker_pid so
+    # operator/dashboard completion cannot leave a live process mutating
+    # the workspace after the task is marked done (#61923). Self-complete
+    # (the worker closing its own run) is skipped here; the tool layer
+    # requests a clean process exit after the tool returns.
+    _terminate_running_task_for_manual_exit(
+        conn, task_id,
+        expected_run_id=expected_run_id,
+        signal_fn=signal_fn,
+    )
 
     with write_txn(conn):
         if expected_run_id is None:
@@ -4545,6 +4557,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    signal_fn=None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -4577,6 +4590,12 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # Same foreign-worker kill as complete_task (#61923).
+    _terminate_running_task_for_manual_exit(
+        conn, task_id,
+        expected_run_id=expected_run_id,
+        signal_fn=signal_fn,
+    )
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -5204,7 +5223,15 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    signal_fn=None,
+) -> bool:
+    # Terminate a live host-local worker before clearing claim metadata so
+    # archive does not orphan the OS process (#61923 / #42858 class).
+    _terminate_running_task_for_manual_exit(conn, task_id, signal_fn=signal_fn)
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -5591,6 +5618,7 @@ def schedule_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    signal_fn=None,
 ) -> bool:
     """Park a task in ``scheduled`` so it is waiting on time, not human input.
 
@@ -5598,6 +5626,11 @@ def schedule_task(
     human action, or automation can later call ``unblock_task`` to re-gate them
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
+    _terminate_running_task_for_manual_exit(
+        conn, task_id,
+        expected_run_id=expected_run_id,
+        signal_fn=signal_fn,
+    )
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """
@@ -5758,6 +5791,43 @@ _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
+# Host-local spawn registry: pid → task_id for workers this process started.
+# ``complete_task`` / ``block_task`` clear ``worker_pid`` in the DB while the
+# OS process may still be alive (self-complete continues tool calls; Windows
+# has no waitpid zombie reap). ``reap_orphaned_terminal_workers`` uses this
+# map to detect "DB says terminal, process still running" and kill the tree
+# (#61923 process-state sync).
+_SPAWNED_WORKERS: "dict[int, str]" = {}
+_SPAWNED_WORKERS_LOCK = threading.Lock()
+_SPAWNED_WORKERS_MAX = 4096
+
+
+def _track_spawned_worker(pid: int, task_id: str) -> None:
+    """Remember a worker this dispatcher process started."""
+    if not pid or pid <= 0 or not task_id:
+        return
+    with _SPAWNED_WORKERS_LOCK:
+        _SPAWNED_WORKERS[int(pid)] = str(task_id)
+        if len(_SPAWNED_WORKERS) > _SPAWNED_WORKERS_MAX:
+            # Drop arbitrary oldest half if the registry somehow balloons
+            # (pid reuse / never-reaped hosts). Insertion order is preserved
+            # on 3.7+ so first half ≈ oldest.
+            for drop_pid in list(_SPAWNED_WORKERS.keys())[: len(_SPAWNED_WORKERS) // 2]:
+                _SPAWNED_WORKERS.pop(drop_pid, None)
+
+
+def _untrack_spawned_worker(pid: Optional[int]) -> None:
+    if not pid or pid <= 0:
+        return
+    with _SPAWNED_WORKERS_LOCK:
+        _SPAWNED_WORKERS.pop(int(pid), None)
+
+
+def clear_spawned_worker_registry() -> None:
+    """Test helper — reset the in-process spawn tracker."""
+    with _SPAWNED_WORKERS_LOCK:
+        _SPAWNED_WORKERS.clear()
+
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
@@ -5829,7 +5899,10 @@ def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children of this process without blocking.
 
     Returns the list of reaped PIDs. Safe to call when there are no
-    children (returns []). No-op on Windows.
+    children (returns []). No-op on Windows: native Windows has no Unix
+    zombie/waitpid model. Live post-completion orphans on every platform
+    (including Windows) are handled by
+    :func:`reap_orphaned_terminal_workers` using the spawn registry.
     """
     reaped: "list[int]" = []
     if os.name != "nt":
@@ -5843,9 +5916,69 @@ def reap_worker_zombies() -> "list[int]":
                     break
                 _record_worker_exit(pid, status)
                 reaped.append(pid)
+                _untrack_spawned_worker(pid)
         except Exception:
             pass
     return reaped
+
+
+def reap_orphaned_terminal_workers(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> "list[dict[str, Any]]":
+    """Kill host-local workers whose task is no longer ``running``.
+
+    Closes the process-state gap from #61923: ``complete_task`` /
+    ``block_task`` / ``archive_task`` clear ``worker_pid`` in the DB, so
+    monitors that only read task status stop caring — even when the OS
+    process is still alive and may keep calling tools (browser, file
+    deletes). The spawn registry retains the PID so this pass can detect
+    ``DB terminal + process still alive`` and terminate the tree.
+
+    Returns a list of termination payloads (one per killed / attempted
+    orphan). Safe to call every dispatcher tick; no-ops when the registry
+    is empty.
+    """
+    with _SPAWNED_WORKERS_LOCK:
+        snapshot = list(_SPAWNED_WORKERS.items())
+    if not snapshot:
+        return []
+
+    results: "list[dict[str, Any]]" = []
+    for pid, task_id in snapshot:
+        if not _pid_alive(pid):
+            _untrack_spawned_worker(pid)
+            continue
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        # Unknown / deleted task with a live tracked worker → treat as orphan.
+        status = row["status"] if row is not None else None
+        if status == "running":
+            continue
+        termination = _terminate_worker_pid(int(pid), signal_fn=signal_fn)
+        payload = {
+            "task_id": task_id,
+            "status": status,
+            "worker_pid": int(pid),
+        }
+        payload.update(termination)
+        results.append(payload)
+        if termination.get("terminated") or not _pid_alive(pid):
+            _untrack_spawned_worker(pid)
+            try:
+                with write_txn(conn):
+                    _append_event(
+                        conn, task_id, "orphan_worker_terminated", payload,
+                    )
+            except Exception:
+                _log.debug(
+                    "orphan_worker_terminated event failed for %s",
+                    task_id, exc_info=True,
+                )
+    return results
 
 
 def _pid_alive(pid: Optional[int]) -> bool:
@@ -5912,29 +6045,59 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-def _terminate_reclaimed_worker(
-    pid: Optional[int],
-    claim_lock: Optional[str],
+def _terminate_worker_pid(
+    pid: int,
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Terminate a Kanban worker OS process (and its tree on Windows).
+
+    ``os.kill(pid, SIGTERM)`` on Windows maps to ``TerminateProcess`` for only
+    the direct process. Workers often own browser / MCP / Node children;
+    killing only the parent leaves those orphans (#61923). Prefer
+    ``taskkill /T /F`` on Windows (via ``gateway.status.terminate_pid``),
+    while preserving the ``signal_fn`` hook for unit tests.
+    """
     import signal
 
     info: dict[str, Any] = {
-        "prev_pid": int(pid) if pid else None,
-        "host_local": False,
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "process_tree": False,
+        "termination_method": None,
     }
-    if not pid or pid <= 0 or not claim_lock:
+    if pid <= 0:
         return info
 
-    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
-    if not str(claim_lock).startswith(host_prefix):
-        return info
-    info["host_local"] = True
+    # Windows process-tree kill when not under a test signal hook.
+    if signal_fn is None and _IS_WINDOWS:
+        info["termination_attempted"] = True
+        info["process_tree"] = True
+        info["termination_method"] = "taskkill_tree"
+        try:
+            from gateway.status import terminate_pid
+
+            terminate_pid(int(pid), force=True)
+        except Exception as exc:
+            # Fall through to the stdlib kill path when taskkill is missing
+            # or fails for any reason (permissions, already gone, …).
+            info["termination_method"] = f"taskkill_tree_failed:{type(exc).__name__}"
+            _log.debug(
+                "taskkill tree terminate failed for pid %s: %s",
+                pid, exc, exc_info=True,
+            )
+        else:
+            for _ in range(10):
+                if not _pid_alive(pid):
+                    info["terminated"] = True
+                    _untrack_spawned_worker(pid)
+                    return info
+                time.sleep(0.5)
+            info["terminated"] = not _pid_alive(pid)
+            if info["terminated"]:
+                _untrack_spawned_worker(pid)
+            return info
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
@@ -5943,6 +6106,8 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    if info["termination_method"] is None:
+        info["termination_method"] = "signal"
     try:
         kill(int(pid), signal.SIGTERM)
     except ProcessLookupError:
@@ -5950,6 +6115,7 @@ def _terminate_reclaimed_worker(
         # survival. Leaving terminated=False here would make the reclaim guard
         # misread a dead worker as still-alive and defer forever.
         info["terminated"] = True
+        _untrack_spawned_worker(pid)
         return info
     except OSError:
         return info
@@ -5957,6 +6123,7 @@ def _terminate_reclaimed_worker(
     for _ in range(10):
         if not _pid_alive(pid):
             info["terminated"] = True
+            _untrack_spawned_worker(pid)
             return info
         time.sleep(0.5)
 
@@ -5971,7 +6138,95 @@ def _terminate_reclaimed_worker(
             return info
 
     info["terminated"] = not _pid_alive(pid)
+    if info["terminated"]:
+        _untrack_spawned_worker(pid)
     return info
+
+
+def _terminate_reclaimed_worker(
+    pid: Optional[int],
+    claim_lock: Optional[str],
+    *,
+    signal_fn=None,
+) -> dict[str, Any]:
+    """Best-effort host-local worker termination for reclaim paths."""
+    info: dict[str, Any] = {
+        "prev_pid": int(pid) if pid else None,
+        "host_local": False,
+        "termination_attempted": False,
+        "terminated": False,
+        "sigkill": False,
+        "process_tree": False,
+        "termination_method": None,
+    }
+    if not pid or pid <= 0 or not claim_lock:
+        return info
+
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    if not str(claim_lock).startswith(host_prefix):
+        return info
+    info["host_local"] = True
+    info.update(_terminate_worker_pid(int(pid), signal_fn=signal_fn))
+    return info
+
+
+def _terminate_running_task_for_manual_exit(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int] = None,
+    signal_fn=None,
+) -> dict[str, Any]:
+    """Best-effort termination for operator-forced exits from ``running``.
+
+    Manual transitions like complete/archive/block/schedule must not leave a
+    live worker behind (#61923). The exception is the in-band worker path:
+    when the worker itself is completing or blocking its own run, killing the
+    current process would abort the transition mid-flight — that case is
+    skipped here and the tool layer requests a clean process exit after the
+    tool returns.
+    """
+    info: dict[str, Any] = {
+        "prev_pid": None,
+        "host_local": False,
+        "termination_attempted": False,
+        "terminated": False,
+        "sigkill": False,
+        "process_tree": False,
+        "termination_method": None,
+    }
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid, current_run_id "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["status"] != "running":
+        return info
+
+    if (
+        expected_run_id is not None
+        and row["current_run_id"] is not None
+        and int(row["current_run_id"]) != int(expected_run_id)
+    ):
+        return info
+
+    pid = row["worker_pid"]
+    if pid is None:
+        return info
+
+    info["prev_pid"] = int(pid)
+    # Never kill the current process. Self-complete / self-block (worker
+    # closing its own run) and tests that pin worker_pid to os.getpid()
+    # would otherwise SIGTERM the caller mid-flight. The tool layer
+    # requests a clean process exit after the tool returns for real
+    # dispatcher-spawned workers.
+    if int(pid) == os.getpid():
+        info["self_skipped"] = True
+        return info
+
+    return _terminate_reclaimed_worker(
+        pid, row["claim_lock"], signal_fn=signal_fn,
+    )
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -6731,6 +6986,9 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 (int(pid), run_id),
             )
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+    # Track outside the txn so a later terminal transition that NULLS
+    # worker_pid can still be matched to a live OS process (#61923).
+    _track_spawned_worker(int(pid), task_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -7058,6 +7316,13 @@ def _dispatch_once_locked(
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
+    # Kill live workers whose task is already terminal but whose OS
+    # process is still running (self-complete lag / Windows). See
+    # reap_orphaned_terminal_workers() / #61923.
+    try:
+        reap_orphaned_terminal_workers(conn)
+    except Exception:
+        _log.debug("reap_orphaned_terminal_workers failed", exc_info=True)
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)

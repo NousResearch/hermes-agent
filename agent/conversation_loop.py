@@ -644,6 +644,33 @@ def run_conversation(
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
+        # Kanban worker terminal transition (#61923): after a successful
+        # kanban_complete / kanban_block the tool sets a process flag (and
+        # may also promote it to agent._interrupt_requested so remaining
+        # tools in the current batch are skipped). Check this *before* the
+        # generic interrupt path so we exit as a clean completion, not as
+        # a user interrupt.
+        try:
+            from tools.kanban_tools import worker_stop_requested
+
+            if worker_stop_requested():
+                _turn_exit_reason = "kanban_terminal_transition"
+                if final_response is None:
+                    final_response = (
+                        "Kanban task closed; worker stopping further tool calls."
+                    )
+                if not agent.quiet_mode:
+                    agent._safe_print(
+                        "\n✔ Kanban terminal transition — ending worker tool loop..."
+                    )
+                # Clear the interrupt we may have set only to skip sibling
+                # tools so turn finalization treats this as a normal stop.
+                if agent._interrupt_requested:
+                    agent.clear_interrupt()
+                break
+        except Exception:
+            pass
+
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
             interrupted = True

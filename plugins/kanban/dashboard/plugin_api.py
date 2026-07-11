@@ -990,6 +990,18 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
+    # Kill the host-local worker *before* clearing claim/pid columns so a
+    # dashboard drag-drop off running cannot leave a live process behind
+    # (#61923).
+    prev_status = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if prev_status is None:
+        return False
+    if prev_status["status"] == "running" and new_status != "running":
+        kanban_db._terminate_running_task_for_manual_exit(conn, task_id)
+
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(

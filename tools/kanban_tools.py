@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -39,6 +41,87 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Worker process exit after terminal lifecycle tools (#61923)
+# ---------------------------------------------------------------------------
+# When a dispatcher-spawned worker calls kanban_complete / kanban_block, the
+# DB transition succeeds but the agent loop can keep issuing more tool calls
+# (file deletes, browser CDP, …). That is the zombie-worker class that
+# corrupted shared workspaces on Windows. After a successful terminal
+# transition we:
+#   1. Raise a process-level flag the conversation loop checks to stop the
+#      tool loop cleanly on the next iteration.
+#   2. Arm a short delayed os._exit backstop so a wedged cleanup path still
+#      reclaims the OS process (and any process-group children).
+# Never arm the hard exit under pytest — tests invoke the tools in-process.
+
+_worker_stop_requested = False
+_WORKER_HARD_EXIT_GRACE_S = 3.0
+
+
+def worker_stop_requested() -> bool:
+    """True when a kanban terminal tool asked the agent loop to stop."""
+    return _worker_stop_requested
+
+
+def clear_worker_stop_request() -> None:
+    """Test helper — reset the stop flag between cases."""
+    global _worker_stop_requested
+    _worker_stop_requested = False
+
+
+def request_worker_stop_after_terminal() -> None:
+    """Stop the agent loop (and eventually the process) after complete/block.
+
+    No-op unless this process is a dispatcher-spawned worker
+    (``HERMES_KANBAN_TASK`` set). Safe to call multiple times.
+    """
+    global _worker_stop_requested
+    if not (os.environ.get("HERMES_KANBAN_TASK") or "").strip():
+        return
+    _worker_stop_requested = True
+    # Nudge tools that poll is_interrupted() so concurrent work aborts.
+    try:
+        from tools.interrupt import set_interrupt
+
+        set_interrupt(True)
+    except Exception:
+        logger.debug("kanban worker stop: set_interrupt failed", exc_info=True)
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+
+    def _hard_exit() -> None:
+        try:
+            time.sleep(_WORKER_HARD_EXIT_GRACE_S)
+        except Exception:
+            pass
+        try:
+            import logging as _lg
+
+            _lg.shutdown()
+        except Exception:
+            pass
+        for stream in (getattr(__import__("sys"), "stdout", None),
+                       getattr(__import__("sys"), "stderr", None)):
+            if stream is None:
+                continue
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        os._exit(0)
+
+    try:
+        threading.Thread(
+            target=_hard_exit,
+            daemon=True,
+            name="kanban-worker-exit",
+        ).start()
+    except Exception:
+        logger.debug("kanban worker stop: hard-exit arm failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +738,9 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            # Task is durable-done; stop further tool calls from this worker
+            # so it cannot keep mutating the workspace (#61923).
+            request_worker_stop_after_terminal()
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -728,6 +814,10 @@ def _handle_block(args: dict, **kw) -> str:
             # Tell the worker where the task actually landed so it doesn't
             # assume it's sitting in 'blocked' when routing sent it elsewhere.
             landed = kb.get_task(conn, tid)
+            # Terminal for this worker run — same post-complete stop as
+            # kanban_complete so a blocked worker cannot keep running tools
+            # (#61923).
+            request_worker_stop_after_terminal()
             return _ok(
                 task_id=tid,
                 run_id=run.id if run else None,

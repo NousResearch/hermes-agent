@@ -198,6 +198,36 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_kanban_complete_stops_sequential_batch_without_duplicate_results():
+    """A terminal kanban transition keeps one result per requested call."""
+    agent = _make_agent()
+    tool_calls = [
+        _mock_tool_call(name="kanban_complete", call_id="complete-call"),
+        _mock_tool_call(name="web_search", call_id="later-call"),
+    ]
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=tool_calls)
+
+    with (
+        patch("run_agent.handle_function_call", return_value='{"ok": true}') as disp,
+        patch("tools.kanban_tools.worker_stop_requested", return_value=True),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    assert disp.call_count == 1
+    assert disp.call_args.args[0] == "kanban_complete"
+    assert [message["tool_call_id"] for message in messages] == [
+        "complete-call",
+        "later-call",
+    ]
+    assert len({message["tool_call_id"] for message in messages}) == 2
+    assert "not started" in messages[1]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Contract 3: the CONCURRENT path flushes each collected tool result in append
 # order.  Dispatch goes through agent._invoke_tool (the real concurrent

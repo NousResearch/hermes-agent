@@ -1170,6 +1170,168 @@ def test_complete_records_result(kanban_home):
     assert task.completed_at is not None
 
 
+def test_complete_task_terminates_foreign_running_worker(kanban_home, monkeypatch):
+    """Operator complete of a running task must kill the host-local worker
+    before clearing worker_pid (#61923)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, 424242)
+
+        calls = []
+
+        def _fake_terminate(pid, claim_lock, *, signal_fn=None):
+            calls.append((pid, claim_lock))
+            return {
+                "prev_pid": int(pid),
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+            }
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _fake_terminate)
+
+        assert kb.complete_task(conn, t, summary="closed by operator") is True
+        assert kb.get_task(conn, t).status == "done"
+        assert calls and calls[0][0] == 424242
+        assert calls[0][1]
+
+
+def test_complete_task_skips_terminating_self_worker(kanban_home, monkeypatch):
+    """Self-complete (worker closing its own run) must not kill mid-flight."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="worker")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None
+        kb._set_worker_pid(conn, t, os.getpid())
+        run_id = kb.latest_run(conn, t).id
+
+        def _unexpected(*_args, **_kwargs):
+            raise AssertionError("self-complete should not terminate current worker")
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _unexpected)
+
+        assert kb.complete_task(
+            conn, t,
+            summary="worker finished cleanly",
+            expected_run_id=run_id,
+        ) is True
+        assert kb.get_task(conn, t).status == "done"
+
+
+def test_archive_task_terminates_foreign_running_worker(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, 434343)
+
+        calls = []
+
+        def _fake_terminate(pid, claim_lock, *, signal_fn=None):
+            calls.append((pid, claim_lock))
+            return {
+                "prev_pid": int(pid),
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+            }
+
+        monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _fake_terminate)
+
+        assert kb.archive_task(conn, t) is True
+        task = kb.get_task(conn, t)
+        assert task.status == "archived"
+        assert task.current_run_id is None
+        assert calls and calls[0][0] == 434343
+
+
+def test_reap_orphaned_terminal_workers_kills_live_pid_after_complete(
+    kanban_home, monkeypatch,
+):
+    """Process-state sync: done task + still-alive tracked pid → kill (#61923)."""
+    kb.clear_spawned_worker_registry()
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, t)
+        # Skip real terminate during complete so the spawn registry keeps
+        # a live pid associated with a now-terminal task.
+        monkeypatch.setattr(
+            kb, "_terminate_running_task_for_manual_exit",
+            lambda *a, **k: {},
+        )
+        kb._set_worker_pid(conn, t, 515151)
+        assert kb.complete_task(conn, t, summary="done") is True
+        assert kb.get_task(conn, t).status == "done"
+        # worker_pid cleared in DB but spawn registry still tracks 515151
+        assert 515151 in kb._SPAWNED_WORKERS
+
+        killed = []
+
+        def _fake_kill(pid, *, signal_fn=None):
+            killed.append(pid)
+            return {
+                "termination_attempted": True,
+                "terminated": True,
+                "sigkill": False,
+                "process_tree": False,
+                "termination_method": "signal",
+            }
+
+        monkeypatch.setattr(kb, "_pid_alive", lambda p: int(p) == 515151)
+        monkeypatch.setattr(kb, "_terminate_worker_pid", _fake_kill)
+
+        results = kb.reap_orphaned_terminal_workers(conn)
+        assert len(results) == 1
+        assert results[0]["worker_pid"] == 515151
+        assert results[0]["task_id"] == t
+        assert killed == [515151]
+        assert 515151 not in kb._SPAWNED_WORKERS
+
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "orphan_worker_terminated" in kinds
+    kb.clear_spawned_worker_registry()
+
+
+def test_reap_orphaned_terminal_workers_skips_running(kanban_home, monkeypatch):
+    kb.clear_spawned_worker_registry()
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, 616161)
+        monkeypatch.setattr(kb, "_pid_alive", lambda p: True)
+
+        def _unexpected(*_a, **_k):
+            raise AssertionError("must not kill a still-running task worker")
+
+        monkeypatch.setattr(kb, "_terminate_worker_pid", _unexpected)
+        assert kb.reap_orphaned_terminal_workers(conn) == []
+    kb.clear_spawned_worker_registry()
+
+
+def test_terminate_worker_pid_uses_taskkill_on_windows(monkeypatch):
+    """Windows force-kill must tree-kill via terminate_pid (#61923)."""
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    calls = []
+
+    def _fake_terminate_pid(pid, *, force=False):
+        calls.append((pid, force))
+
+    monkeypatch.setattr("gateway.status.terminate_pid", _fake_terminate_pid)
+    monkeypatch.setattr(kb, "_pid_alive", lambda p: False)
+    info = kb._terminate_worker_pid(999001)
+    assert info["termination_attempted"] is True
+    assert info["process_tree"] is True
+    assert info["termination_method"] == "taskkill_tree"
+    assert info["terminated"] is True
+    assert calls == [(999001, True)]
+
+
 def test_block_then_unblock(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")

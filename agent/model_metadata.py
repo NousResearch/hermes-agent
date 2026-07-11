@@ -2645,3 +2645,5 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
         _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
     _TOOLS_TOKENS_CACHE[key] = (n, first, last, tokens)
     return tokens
+
+# CI retrigger: docker build failure appears transient

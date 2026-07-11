@@ -34,7 +34,9 @@ def store(tmp_path):
             "The user prefers John Doe aka JD for demos.",
             ["John Doe", "JD"],
         ),
+        ("John Doe aka JD.", ["John Doe", "JD"]),
         ("pytest aka py.test is configured.", ["pytest", "py.test"]),
+        ("pytest aka py.test.", ["pytest", "py.test"]),
         (
             "The user's editor is 'vim' and shell is 'zsh'.",
             ["vim", "zsh"],

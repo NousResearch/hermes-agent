@@ -90,11 +90,12 @@ _RE_CURLY_DOUBLE_QUOTE = re.compile(r'\u201c([^\u201d\r\n]+)\u201d')
 _RE_CURLY_SINGLE_QUOTE = re.compile(r'\u2018([^\u2019\r\n]+)\u2019')
 
 _ALIAS_NAME_PARTICLE = r'(?:van|von|de|del|der|da|di|la|le)'
+_ALIAS_TITLE_TOKEN = r'[A-Z](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?'
 _ALIAS_TITLE_TERM = (
-    rf'[A-Z][A-Za-z0-9_.-]*'
-    rf'(?:\s+(?:{_ALIAS_NAME_PARTICLE}\s+)?[A-Z][A-Za-z0-9_.-]*){{0,5}}'
+    rf'{_ALIAS_TITLE_TOKEN}'
+    rf'(?:\s+(?:{_ALIAS_NAME_PARTICLE}\s+)?{_ALIAS_TITLE_TOKEN}){{0,5}}'
 )
-_ALIAS_BARE_TERM = r'[a-z][a-z0-9_.-]{2,}'
+_ALIAS_BARE_TERM = r'[a-z][a-z0-9_.-]+[a-z0-9_]'
 _RE_AKA = re.compile(
     rf'(?P<left>{_ALIAS_TITLE_TERM}|{_ALIAS_BARE_TERM})\s+'
     rf'(?i:aka|also\s+known\s+as)\s+'

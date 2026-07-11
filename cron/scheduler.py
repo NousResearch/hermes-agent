@@ -2745,8 +2745,29 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _resolved_model = job.get("model") or _cfg.get("model", {}).get("default") if isinstance(_cfg, dict) and isinstance(_cfg.get("model"), dict) else job.get("model")
             _resolved_provider = job.get("provider") or _cfg.get("model", {}).get("provider") if isinstance(_cfg, dict) and isinstance(_cfg.get("model"), dict) else job.get("provider")
 
+            _configured_route = (
+                _cfg.get("model", {})
+                if isinstance(_cfg.get("model"), dict)
+                else {}
+            )
+            _job_route = {
+                key: job[key]
+                for key in ("provider", "model", "runtime", "api_mode")
+                if job.get(key) is not None
+            }
+            if (
+                job.get("provider")
+                and str(job.get("provider")).strip().lower()
+                != str(_configured_route.get("provider") or "").strip().lower()
+            ):
+                _primary_route = _job_route
+            else:
+                _primary_route = {**_configured_route, **_job_route}
+
             runtime_kwargs = {
                 "requested": _resolved_provider,
+                "target_model": _resolved_model,
+                "route_config": _primary_route,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
@@ -2760,12 +2781,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime = None
             for entry in _fb_chain:
                 try:
-                    fb_kwargs = {"requested": entry.get("provider")}
+                    fb_kwargs = {
+                        "requested": entry.get("provider"),
+                        "target_model": entry.get("model"),
+                        "route_config": entry,
+                    }
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
                     if entry.get("api_key"):
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
+                    model = str(
+                        runtime.get("model") or entry.get("model") or model
+                    )
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
                     break
                 except Exception as fb_exc:
@@ -2880,6 +2908,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
             api_mode=runtime.get("api_mode"),
+            runtime=runtime.get("runtime", "hermes"),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,

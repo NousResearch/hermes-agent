@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from urllib.parse import urlparse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1476,7 +1476,7 @@ def _resolve_explicit_runtime(
     return None
 
 
-def resolve_runtime_provider(
+def _resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
@@ -2019,6 +2019,69 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+def resolve_runtime_provider(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+    route_config: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve provider credentials plus the provider-neutral agent runtime."""
+
+    from agent.runtime_target import (
+        CLAUDE_AGENT_SDK_RUNTIME,
+        resolve_runtime_identity,
+    )
+
+    configured_route = dict(_get_model_config())
+    if route_config is not None:
+        effective_route = dict(route_config)
+    elif requested and str(requested).strip().lower() != str(
+        configured_route.get("provider") or ""
+    ).strip().lower():
+        # An explicit provider is a distinct route. Never leak the primary
+        # route's runtime identity into a fallback/auxiliary target.
+        effective_route = {}
+    else:
+        effective_route = configured_route
+    provider_hint = str(
+        requested or effective_route.get("provider") or "anthropic"
+    ).strip().lower()
+    runtime_identity = resolve_runtime_identity(
+        provider=provider_hint,
+        api_mode=str(effective_route.get("api_mode") or "anthropic_messages"),
+        route_config=effective_route,
+    )
+    if runtime_identity == CLAUDE_AGENT_SDK_RUNTIME:
+        if provider_hint != "anthropic":
+            raise RuntimeError(
+                "claude_agent_sdk runtime only supports provider=anthropic"
+            )
+        return {
+            "provider": "anthropic",
+            "model": str(
+                target_model or effective_route.get("model") or effective_route.get("default") or ""
+            ),
+            "api_mode": "anthropic_messages",
+            "runtime": CLAUDE_AGENT_SDK_RUNTIME,
+            "api_key": "",
+            "base_url": "",
+            "source": "claude_max_subscription",
+            "credential_pool": None,
+        }
+
+    resolved = _resolve_runtime_provider(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    from agent.runtime_target import attach_runtime_identity
+
+    return attach_runtime_identity(resolved, route_config=effective_route)
 
 
 def format_runtime_provider_error(error: Exception) -> str:

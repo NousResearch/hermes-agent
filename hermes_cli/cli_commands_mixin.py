@@ -1633,6 +1633,7 @@ class CLICommandsMixin:
                 pass
             try:
                 bg_agent = AIAgent(
+                    runtime=turn_route["runtime"].get("runtime"),
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
                     base_url=turn_route["runtime"].get("base_url"),

@@ -2348,6 +2348,7 @@ def terminal_tool(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
+                        owner_task_id=task_id or effective_task_id,
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
@@ -2358,6 +2359,7 @@ def terminal_tool(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
+                        owner_task_id=task_id or effective_task_id,
                         session_key=session_key,
                     )
 

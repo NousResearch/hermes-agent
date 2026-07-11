@@ -1818,6 +1818,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "runtime": runtime.get("runtime", "hermes"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
@@ -1847,11 +1848,24 @@ def _try_resolve_fallback_provider() -> dict | None:
                     ).strip()
                     if key_env:
                         explicit_api_key = os.getenv(key_env, "").strip() or None
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=explicit_api_key,
-                )
+                resolver_kwargs = {
+                    "requested": entry.get("provider"),
+                    "target_model": entry.get("model"),
+                    "route_config": entry,
+                    "explicit_base_url": entry.get("base_url"),
+                    "explicit_api_key": explicit_api_key,
+                }
+                try:
+                    runtime = resolve_runtime_provider(**resolver_kwargs)
+                except TypeError as exc:
+                    # Preserve compatibility with embedders/tests that patch
+                    # the historical resolver signature. The canonical
+                    # resolver receives the full route-specific identity.
+                    if "unexpected keyword argument" not in str(exc):
+                        raise
+                    resolver_kwargs.pop("route_config")
+                    resolver_kwargs.pop("target_model")
+                    runtime = resolve_runtime_provider(**resolver_kwargs)
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the
                 # OpenAI-compatible path and would otherwise be logged as
@@ -1866,6 +1880,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "base_url": runtime.get("base_url"),
                     "provider": runtime.get("provider"),
                     "api_mode": runtime.get("api_mode"),
+                    "runtime": runtime.get("runtime", "hermes"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
@@ -3660,6 +3675,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
+            "runtime": runtime_kwargs.get("runtime", "hermes"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
@@ -3673,6 +3689,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
+                runtime["runtime"],
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
@@ -14967,6 +14984,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
+                runtime.get("runtime", "hermes"),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -17850,6 +17868,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "base_url": getattr(agent, "base_url", None),
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
+                            "runtime": getattr(agent, "runtime", None),
                         } if agent else None,
                     }
                     if self._is_telegram_topic_lane(source):

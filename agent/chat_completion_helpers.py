@@ -1265,6 +1265,53 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
             return agent._try_activate_fallback()
 
+    # Whole-agent runtimes authenticate through their own subscription/login
+    # state and therefore must be activatable without resolving an API client.
+    # Each fallback entry carries its own runtime identity; never inherit the
+    # primary target's runtime here.
+    fb_runtime = str(fb.get("runtime") or "hermes").strip().lower()
+    if fb_runtime != "hermes":
+        from agent.runtime_target import (
+            CLAUDE_AGENT_SDK_RUNTIME,
+            CODEX_APP_SERVER_RUNTIME,
+        )
+
+        old_model = agent.model
+        agent._config_context_length = None
+        agent.model = fb_model
+        agent.provider = fb_provider
+        agent.runtime = fb_runtime
+        agent.base_url = str(fb.get("base_url") or "")
+        if fb_runtime == CLAUDE_AGENT_SDK_RUNTIME:
+            agent.api_mode = "anthropic_messages"
+        elif fb_runtime == CODEX_APP_SERVER_RUNTIME:
+            agent.api_mode = "codex_app_server"
+        else:  # fail closed for a future runtime until an adapter is registered
+            logger.error("Fallback runtime %s is unsupported", fb_runtime)
+            return agent._try_activate_fallback(reason)
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+        agent.api_key = ""
+        agent.client = None
+        agent._client_kwargs = {}
+        agent._credential_pool = None
+        agent._use_prompt_caching = False
+        agent._use_native_cache_layout = False
+        agent._fallback_activated = True
+        rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+        agent._buffer_status(
+            f"🔄 Primary model failed — switching to fallback: "
+            f"{fb_model} via {fb_provider} ({fb_runtime})"
+        )
+        logger.info(
+            "Fallback activated: %s → %s (%s, runtime=%s)",
+            old_model,
+            fb_model,
+            fb_provider,
+            fb_runtime,
+        )
+        return True
+
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.
@@ -1354,6 +1401,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        agent.runtime = "hermes"
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
@@ -1481,6 +1529,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
+            agent.context_compressor.runtime = agent.runtime
 
         # Keep the prompt's self-identity in sync with the model actually
         # answering, so "what model are you?" doesn't report the primary.

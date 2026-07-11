@@ -1759,6 +1759,17 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+    # A child on the same logical route must retain the provider-neutral
+    # runtime identity.  A provider override is a distinct route and cannot
+    # inherit a subscription runtime implicitly.
+    parent_runtime = getattr(parent_agent, "runtime", None)
+    if not isinstance(parent_runtime, str):
+        parent_runtime = None
+    effective_runtime = (
+        None
+        if override_provider and effective_provider != _parent_provider
+        else parent_runtime
+    )
     # Defensive: validate override_acp_command exists on PATH before honoring
     # it. Models occasionally pass acp_command="copilot" / "claude" / etc. in
     # delegate_task tool calls despite the schema saying not to, which forces
@@ -1913,6 +1924,7 @@ def _build_child_agent(
     _saved_kanban_task = os.environ.pop("HERMES_KANBAN_TASK", None)
     _saved_kanban_ws = os.environ.pop("HERMES_KANBAN_WORKSPACE", None)
     child = AIAgent(
+        runtime=effective_runtime,
         base_url=effective_base_url,
         api_key=effective_api_key,
         model=effective_model,

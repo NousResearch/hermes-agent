@@ -1148,12 +1148,18 @@ def restore_primary_runtime(agent) -> bool:
         return False  # primary still in rate-limit cooldown, stay on fallback
 
     rt = agent._primary_runtime
+    if rt.get("runtime", "hermes") != "hermes":
+        from agent.runtime_circuit import runtime_circuit_open_until
+
+        if runtime_circuit_open_until(agent, rt) is not None:
+            return False
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.base_url = rt["base_url"]           # setter updates _base_url_lower
         agent.api_mode = rt["api_mode"]
+        agent.runtime = rt.get("runtime", "hermes")
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
@@ -1167,7 +1173,9 @@ def restore_primary_runtime(agent) -> bool:
         )
 
         # ── Rebuild client for the primary provider ──
-        if agent.api_mode == "anthropic_messages":
+        if agent.runtime != "hermes":
+            agent.client = None
+        elif agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
@@ -1194,6 +1202,7 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"],
             api_mode=rt.get("compressor_api_mode", ""),
         )
+        cc.runtime = rt.get("compressor_runtime", rt.get("runtime", "hermes"))
 
         # ── Re-select from the credential pool if one is available ──
         # The snapshot's api_key was captured at construction time.  Across
@@ -1900,6 +1909,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        agent.context_compressor.runtime = agent.runtime
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
@@ -1911,6 +1921,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "provider": agent.provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
+        "runtime": getattr(agent, "runtime", "hermes"),
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
@@ -1921,6 +1932,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_provider": getattr(_cc, "provider", agent.provider) if _cc else agent.provider,
         "compressor_context_length": _cc.context_length if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
+        "compressor_runtime": getattr(_cc, "runtime", agent.runtime) if _cc else agent.runtime,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
     if api_mode == "anthropic_messages":

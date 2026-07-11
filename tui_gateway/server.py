@@ -2041,6 +2041,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         provider = billing_provider
     base_url = str(model_config.get("base_url") or "").strip()
     api_mode = str(model_config.get("api_mode") or "").strip()
+    runtime = str(model_config.get("runtime") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
 
@@ -2072,12 +2073,15 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         # initial resume and later rebuilds (/new). Deliberately do not persist
         # or restore raw api_key here; endpoint credentials should continue to
         # come from config/env/provider resolution rather than the session DB.
-        overrides["model_override"] = {
+        model_override = {
             "model": model,
             "provider": provider or None,
             "base_url": base_url or None,
             "api_mode": api_mode or None,
         }
+        if runtime:
+            model_override["runtime"] = runtime
+        overrides["model_override"] = model_override
     if provider:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
@@ -2094,6 +2098,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     provider = str(getattr(agent, "provider", "") or "").strip()
     base_url = str(getattr(agent, "base_url", "") or "").strip()
     api_mode = str(getattr(agent, "api_mode", "") or "").strip()
+    runtime = str(getattr(agent, "runtime", "") or "").strip()
     reasoning_config = getattr(agent, "reasoning_config", None)
     service_tier = getattr(agent, "service_tier", None)
 
@@ -2134,6 +2139,10 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         config["api_mode"] = api_mode
     else:
         config.pop("api_mode", None)
+    if runtime:
+        config["runtime"] = runtime
+    else:
+        config.pop("runtime", None)
     if isinstance(reasoning_config, dict):
         config["reasoning_config"] = reasoning_config
     else:
@@ -3943,6 +3952,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "api_key": getattr(agent, "api_key", None) or None,
         "provider": getattr(agent, "provider", None) or None,
         "api_mode": getattr(agent, "api_mode", None) or None,
+        "runtime": getattr(agent, "runtime", None) or "hermes",
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
@@ -4221,8 +4231,30 @@ def _resolve_runtime_with_fallback(
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     kwargs = resolve_kwargs or {}
+
+    def _resolve(call_kwargs: dict) -> dict:
+        compatible_kwargs = dict(call_kwargs)
+        while True:
+            try:
+                return resolve_runtime_provider(**compatible_kwargs)
+            except TypeError as exc:
+                message = str(exc)
+                if "unexpected keyword argument" not in message:
+                    raise
+                rejected = next(
+                    (
+                        key
+                        for key in ("route_config", "target_model")
+                        if key in compatible_kwargs and repr(key) in message
+                    ),
+                    None,
+                )
+                if rejected is None:
+                    raise
+                compatible_kwargs.pop(rejected)
+
     try:
-        return resolve_runtime_provider(**kwargs)
+        return _resolve(kwargs)
     except AuthError as primary_exc:
         fb_chain = _load_fallback_model() or []
         for entry in fb_chain:
@@ -4232,12 +4264,17 @@ def _resolve_runtime_with_fallback(
             if not fb_provider:
                 continue
             try:
-                fb_kwargs: dict = {"requested": fb_provider}
+                fb_kwargs: dict = {
+                    "requested": fb_provider,
+                    "target_model": entry.get("model"),
+                    "route_config": entry,
+                }
                 if entry.get("base_url"):
                     fb_kwargs["explicit_base_url"] = entry["base_url"]
                 if entry.get("api_key"):
                     fb_kwargs["explicit_api_key"] = entry["api_key"]
-                runtime = resolve_runtime_provider(**fb_kwargs)
+                runtime = _resolve(fb_kwargs)
+                runtime["_fallback_model"] = str(entry.get("model") or "")
                 import logging
 
                 logging.getLogger(__name__).warning(
@@ -4345,6 +4382,7 @@ def _make_agent(
                 resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs["requested"] = requested_provider
         resolve_kwargs["target_model"] = model or None
+        resolve_kwargs["route_config"] = model_override
         runtime = _resolve_runtime_with_fallback(resolve_kwargs)
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
@@ -4361,10 +4399,23 @@ def _make_agent(
             model = model_override
         if provider_override:
             requested_provider = provider_override
+        configured_route = (
+            cfg.get("model") if isinstance(cfg.get("model"), dict) else None
+        )
+        if (
+            provider_override
+            and str(provider_override).strip().lower()
+            != str((configured_route or {}).get("provider") or "").strip().lower()
+        ):
+            configured_route = None
         runtime = _resolve_runtime_with_fallback({
             "requested": requested_provider,
             "target_model": model or None,
+            "route_config": configured_route,
         })
+    fallback_model = str(runtime.pop("_fallback_model", "") or "")
+    if fallback_model:
+        model = fallback_model
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
@@ -4373,6 +4424,7 @@ def _make_agent(
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
         api_mode=runtime.get("api_mode"),
+        runtime=runtime.get("runtime", "hermes"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
@@ -6025,7 +6077,15 @@ def _main_runtime_from_agent(agent) -> dict | None:
     if agent is None:
         return None
     runtime: dict = {}
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+    for field in (
+        "provider",
+        "model",
+        "base_url",
+        "api_key",
+        "api_mode",
+        "runtime",
+        "auth_mode",
+    ):
         value = getattr(agent, field, None)
         if isinstance(value, str) and value.strip():
             runtime[field] = value.strip()
@@ -8863,6 +8923,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         text,
                         raw,
                         session.get("history", []),
+                        main_runtime=_main_runtime_from_agent(session.get("agent")),
                         # Push the generated title live so the sidebar renames
                         # without waiting for the next list refresh (the titler
                         # runs async, after this turn's refresh already fired).

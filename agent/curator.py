@@ -1849,6 +1849,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _api_key = None
     _base_url = None
     _api_mode = None
+    _runtime = None
     _resolved_provider = None
     _model_name = ""
     try:
@@ -1857,12 +1858,25 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _cfg = load_config()
         _binding = _resolve_review_runtime(_cfg)
         _provider, _model_name = _binding.provider, _binding.model
+        _main = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
+        _aux = _cfg.get("auxiliary", {}) if isinstance(_cfg.get("auxiliary"), dict) else {}
+        _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
+        _legacy_cur = _cfg.get("curator", {}) if isinstance(_cfg.get("curator"), dict) else {}
+        _legacy = _legacy_cur.get("auxiliary", {}) if isinstance(_legacy_cur.get("auxiliary"), dict) else {}
+        if (_cur_task.get("provider"), _cur_task.get("model")) == (_provider, _model_name):
+            _route_config = _cur_task
+        elif (_legacy.get("provider"), _legacy.get("model")) == (_provider, _model_name):
+            _route_config = _legacy
+        else:
+            _route_config = _main
         _rp = resolve_runtime_provider(
             requested=_provider,
             target_model=_model_name,
             explicit_api_key=_binding.explicit_api_key,
             explicit_base_url=_binding.explicit_base_url,
+            route_config=_route_config,
         )
+        _runtime = _rp.get("runtime")
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
@@ -1876,6 +1890,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     review_agent = None
     try:
         review_agent = AIAgent(
+            runtime=_runtime,
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,
@@ -1903,6 +1918,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # turn_context.py binds this onto the write-origin ContextVar at turn
         # start (see agent/turn_context.py).
         review_agent._memory_write_origin = "background_review"
+        if _runtime == "claude_agent_sdk":
+            review_agent._claude_capability_mode = "auxiliary"
+            review_agent._claude_auxiliary_tool_names = ("skill_manage",)
+            review_agent._fallback_chain = []
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

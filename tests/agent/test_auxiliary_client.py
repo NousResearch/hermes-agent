@@ -2154,7 +2154,7 @@ class TestAuxiliaryFallbackLayering:
         mock_task_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
         mock_main_chain.assert_called_once_with(
-            "title_generation", "auto", reason="payment error")
+            "title_generation", "auto", reason="payment error", main_runtime=None)
         mock_builtin_chain.assert_not_called()
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):

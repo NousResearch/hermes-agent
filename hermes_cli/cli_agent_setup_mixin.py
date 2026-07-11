@@ -57,7 +57,11 @@ class CLIAgentSetupMixin:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        runtime = resolve_runtime_provider(
+                            requested=_fb_provider,
+                            target_model=_fb_model,
+                            route_config=_fb,
+                        )
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
@@ -79,6 +83,7 @@ class CLIAgentSetupMixin:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        resolved_agent_runtime = runtime.get("runtime", "hermes")
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
@@ -88,7 +93,12 @@ class CLIAgentSetupMixin:
         # invokes it before every request. Skip the string-only validation
         # and placeholder substitution for callables.
         _is_callable_provider = callable(api_key) and not isinstance(api_key, str)
-        if not _is_callable_provider and (not isinstance(api_key, str) or not api_key):
+        _is_subscription_runtime = resolved_agent_runtime == "claude_agent_sdk"
+        if (
+            not _is_subscription_runtime
+            and not _is_callable_provider
+            and (not isinstance(api_key, str) or not api_key)
+        ):
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
             # no API key was found, use a placeholder so the OpenAI SDK
@@ -106,7 +116,10 @@ class CLIAgentSetupMixin:
                 print("\n⚠️  Provider resolver returned an empty API key. "
                       "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
-        if not isinstance(base_url, str) or not base_url:
+        if (
+            not _is_subscription_runtime
+            and (not isinstance(base_url, str) or not base_url)
+        ):
             print("\n⚠️  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: hermes setup")
             return False
@@ -115,11 +128,13 @@ class CLIAgentSetupMixin:
         routing_changed = (
             resolved_provider != self.provider
             or resolved_api_mode != self.api_mode
+            or resolved_agent_runtime != getattr(self, "agent_runtime", "hermes")
             or resolved_acp_command != self.acp_command
             or resolved_acp_args != self.acp_args
         )
         self.provider = resolved_provider
         self.api_mode = resolved_api_mode
+        self.agent_runtime = resolved_agent_runtime
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
         self._credential_pool = resolved_credential_pool
@@ -186,6 +201,7 @@ class CLIAgentSetupMixin:
             "base_url": self.base_url,
             "provider": self.provider,
             "api_mode": self.api_mode,
+            "runtime": getattr(self, "agent_runtime", "hermes"),
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
@@ -198,6 +214,7 @@ class CLIAgentSetupMixin:
                 runtime["provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
+                runtime["runtime"],
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
@@ -335,6 +352,7 @@ class CLIAgentSetupMixin:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "runtime": getattr(self, "agent_runtime", "hermes"),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -346,6 +364,7 @@ class CLIAgentSetupMixin:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                runtime=runtime.get("runtime"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
@@ -420,6 +439,7 @@ class CLIAgentSetupMixin:
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
+                runtime.get("runtime"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
             )

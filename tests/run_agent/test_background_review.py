@@ -76,6 +76,45 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     ]
 
 
+def test_claude_background_review_sets_auxiliary_mode_before_run(monkeypatch):
+    seen = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            seen["mode"] = self._claude_capability_mode
+            seen["tools"] = self._claude_auxiliary_tool_names
+            seen["fallback_chain"] = self._fallback_chain
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    agent = _bare_agent()
+    agent.runtime = "claude_agent_sdk"
+    agent.provider = "anthropic"
+    agent.model = "claude-sonnet-4-6"
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+        review_skills=True,
+    )
+
+    assert seen == {
+        "mode": "auxiliary",
+        "tools": ("memory", "skill_manage"),
+        "fallback_chain": [],
+    }
+
+
 def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
     """The review fork shares the parent's live session_id, so it must set
     ``_end_session_on_close = False``. Otherwise close() (now finalizing owned

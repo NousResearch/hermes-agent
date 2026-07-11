@@ -606,7 +606,9 @@ class SessionManager:
             return self._agent_factory()
 
         from run_agent import AIAgent
+        from hermes_cli.auth import AuthError
         from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         config = load_config()
@@ -637,20 +639,64 @@ class SessionManager:
             "model": model or default_model,
         }
 
+        fallback_chain = get_fallback_chain(config)
+        runtime = None
+        effective_model = model or default_model
+        primary_provider = requested_provider or config_provider
+        primary_route_config = model_cfg if isinstance(model_cfg, dict) else None
+        if (
+            requested_provider
+            and str(requested_provider).strip().lower()
+            != str(config_provider or "").strip().lower()
+        ):
+            primary_route_config = None
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
+            runtime = resolve_runtime_provider(
+                requested=primary_provider,
+                target_model=effective_model,
+                route_config=primary_route_config,
+            )
+        except AuthError:
+            for entry in fallback_chain:
+                try:
+                    runtime = resolve_runtime_provider(
+                        requested=entry.get("provider"),
+                        target_model=entry.get("model"),
+                        route_config=entry,
+                    )
+                    effective_model = str(
+                        runtime.get("model") or entry.get("model") or effective_model
+                    )
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            if isinstance(model_cfg, dict) and model_cfg.get("runtime"):
+                raise
+            logger.debug(
+                "ACP session falling back to default provider resolution",
+                exc_info=True,
+            )
+
+        if runtime is not None:
+            kwargs["model"] = effective_model
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
                     "api_mode": api_mode or runtime.get("api_mode"),
+                    "runtime": runtime.get("runtime", "hermes"),
                     "base_url": base_url or runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                 }
             )
-        except Exception:
-            logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+        elif isinstance(model_cfg, dict) and model_cfg.get("runtime"):
+            raise RuntimeError(
+                "ACP could not resolve the configured external agent runtime or any fallback"
+            )
+
+        kwargs["fallback_model"] = fallback_chain
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)

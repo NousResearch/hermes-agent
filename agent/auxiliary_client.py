@@ -1998,6 +1998,7 @@ _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+_RUNTIME_MAIN_RUNTIME: str = ""
 
 
 def set_runtime_main(
@@ -2007,6 +2008,7 @@ def set_runtime_main(
     base_url: str = "",
     api_key: str = "",
     api_mode: str = "",
+    runtime: str = "",
 ) -> None:
     """Record the live runtime provider/model/credentials for the current AIAgent.
 
@@ -2021,22 +2023,26 @@ def set_runtime_main(
     """
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
+    global _RUNTIME_MAIN_RUNTIME
     _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
     _RUNTIME_MAIN_MODEL = (model or "").strip()
     _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
     _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    _RUNTIME_MAIN_RUNTIME = (runtime or "").strip().lower()
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
     global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
+    global _RUNTIME_MAIN_RUNTIME
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
     _RUNTIME_MAIN_BASE_URL = ""
     _RUNTIME_MAIN_API_KEY = ""
     _RUNTIME_MAIN_API_MODE = ""
+    _RUNTIME_MAIN_RUNTIME = ""
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -2435,7 +2441,15 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_FIELDS = (
+    "runtime",
+    "provider",
+    "model",
+    "base_url",
+    "api_key",
+    "api_mode",
+    "auth_mode",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2462,6 +2476,11 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     if isinstance(provider, str):
         normalized["provider"] = provider.lower()
     return normalized
+
+
+def _main_runtime_identity(main_runtime: Optional[Dict[str, Any]] = None) -> str:
+    runtime = _normalize_main_runtime(main_runtime)
+    return str(runtime.get("runtime") or _RUNTIME_MAIN_RUNTIME or "hermes").lower()
 
 
 def _get_provider_chain() -> List[tuple]:
@@ -3289,6 +3308,7 @@ def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
     reason: str = "payment error",
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try alternative providers after a payment/credit or connection error.
 
@@ -3298,6 +3318,8 @@ def _try_payment_fallback(
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
+    if _main_runtime_identity(main_runtime) != "hermes":
+        return None, None, ""
     # Normalise the failed provider label for matching.
     skip = failed_provider.lower().strip()
     # Also skip Step-1 main-provider path if it maps to the same backend.
@@ -3340,6 +3362,7 @@ def _try_main_agent_model_fallback(
     failed_provider: str,
     task: str = None,
     reason: str = "error",
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the user's main agent provider + model.
 
@@ -3354,6 +3377,8 @@ def _try_main_agent_model_fallback(
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
+    if _main_runtime_identity(main_runtime) != "hermes":
+        return None, None, ""
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
@@ -3573,6 +3598,13 @@ def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
 
 def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
     """Resolve one fallback entry through the central provider router."""
+    runtime = str(entry.get("runtime") or "hermes").strip().lower()
+    if runtime != "hermes":
+        logger.warning(
+            "Ignoring auxiliary fallback entry with non-API runtime %s",
+            runtime,
+        )
+        return None, None
     provider = str(entry.get("provider") or "").strip()
     model = str(entry.get("model") or "").strip() or None
     if not provider or not model:
@@ -3593,6 +3625,7 @@ def _try_main_fallback_chain(
     task: Optional[str],
     failed_provider: str = "",
     reason: str = "error",
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try the top-level main-agent fallback chain for an auxiliary call.
 
@@ -3602,6 +3635,8 @@ def _try_main_fallback_chain(
     both modern ``fallback_providers`` and legacy ``fallback_model`` entries
     participate in the same order as the main agent.
     """
+    if _main_runtime_identity(main_runtime) != "hermes":
+        return None, None, ""
     try:
         from hermes_cli.config import load_config
         from hermes_cli.fallback_config import get_fallback_chain
@@ -3716,6 +3751,22 @@ def _resolve_auto(
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    runtime_identity = str(runtime.get("runtime") or _RUNTIME_MAIN_RUNTIME or "hermes")
+
+    # Whole-agent subscription/process runtimes are not API credentials. In
+    # auto mode, interpreting their provider/model (or their main fallback
+    # chain) as a direct provider route can silently turn included usage into
+    # paid API traffic. Auxiliary work on such a main route must name an
+    # explicit auxiliary provider/model with its own billing semantics.
+    if runtime_identity != "hermes":
+        logger.info(
+            "Auxiliary %s skipped: main runtime %s is not a direct API route; "
+            "configure auxiliary.%s.provider/model explicitly",
+            task or "call",
+            runtime_identity,
+            task or "<task>",
+        )
+        return None, None
 
     # Fall back to process-local globals when main_runtime dict was not
     # provided or was incomplete.  ``set_runtime_main()`` now records
@@ -3834,7 +3885,11 @@ def _resolve_auto(
         if fb_client is not None:
             return fb_client, fb_model
     fb_client, fb_model, _fb_label = _try_main_fallback_chain(
-        task, main_provider or "auto", reason="main provider unavailable")
+        task,
+        main_provider or "auto",
+        reason="main provider unavailable",
+        main_runtime=main_runtime,
+    )
     if fb_client is not None:
         return fb_client, fb_model
 
@@ -6353,16 +6408,28 @@ def call_llm(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
-                        task, resolved_provider or "auto", reason=reason)
+                        task,
+                        resolved_provider or "auto",
+                        reason=reason,
+                        main_runtime=main_runtime,
+                    )
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_payment_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider,
+                        task,
+                        reason=reason,
+                        main_runtime=main_runtime,
+                    )
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider,
+                        task,
+                        reason=reason,
+                        main_runtime=main_runtime,
+                    )
 
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
@@ -6838,16 +6905,28 @@ async def async_call_llm(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_fallback_chain(
-                        task, resolved_provider or "auto", reason=reason)
+                        task,
+                        resolved_provider or "auto",
+                        reason=reason,
+                        main_runtime=main_runtime,
+                    )
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_payment_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider,
+                        task,
+                        reason=reason,
+                        main_runtime=main_runtime,
+                    )
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
-                        resolved_provider, task, reason=reason)
+                        resolved_provider,
+                        task,
+                        reason=reason,
+                        main_runtime=main_runtime,
+                    )
 
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(

@@ -9239,6 +9239,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
 
+            # Plugin commands are absent from the built-in registry. Resolve
+            # them explicitly while busy so declared control-plane verbs can
+            # run without interrupting the active agent, and unsafe verbs are
+            # rejected instead of falling through as user text.
+            _plugin_entry_inner = None
+            _plugin_name_inner = ""
+            if _evt_cmd and _cmd_def_inner is None:
+                try:
+                    from hermes_cli.plugins import get_plugin_command_entry
+
+                    _plugin_name_inner = _evt_cmd.replace("_", "-")
+                    _plugin_entry_inner = get_plugin_command_entry(_plugin_name_inner)
+                except Exception:
+                    _plugin_entry_inner = None
+            if _plugin_entry_inner is not None:
+                _denied = self._check_slash_access(source, _plugin_name_inner)
+                if _denied is not None:
+                    return _denied
+                _plugin_args = (event.get_command_args() or "").strip()
+                _plugin_verb = _plugin_args.split(None, 1)[0].lower() if _plugin_args else ""
+                _busy_safe = set(_plugin_entry_inner.get("busy_safe_subcommands") or ())
+                if _plugin_verb in _busy_safe:
+                    _plugin_result = await self._dispatch_plugin_command_event(
+                        command=_plugin_name_inner,
+                        event=event,
+                        source=source,
+                        session_key=_quick_key,
+                    )
+                    return str(_plugin_result) if _plugin_result else None
+                return (
+                    f"⏳ Agent is running — `/{_plugin_name_inner}` can't run "
+                    "mid-turn. Wait for the current response or `/stop` first."
+                )
+
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
             # interrupt, no queued text.
@@ -10057,16 +10091,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so Telegram's underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                result = await self._dispatch_plugin_command_event(
+                    command=command,
+                    event=event,
+                    source=source,
+                    session_key=_quick_key,
+                )
+                if result is not None:
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
@@ -10306,6 +10337,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
+
+            # Generic plugin controllers run once at the same turn boundary.
+            # The plugin decides whether the turn belongs to its mission; the
+            # host only supplies session context and applies the directive.
+            try:
+                _plugin_final_text = ""
+                _plugin_interrupted = False
+                if isinstance(_agent_result, dict):
+                    _plugin_final_text = str(_agent_result.get("final_response") or "")
+                    _plugin_interrupted = bool(_agent_result.get("interrupted"))
+                elif isinstance(_agent_result, str):
+                    _plugin_final_text = _agent_result
+                if _plugin_final_text.strip():
+                    try:
+                        _plugin_session_entry = await self.async_session_store.get_or_create_session(source)
+                    except Exception:
+                        _plugin_session_entry = None
+                    if _plugin_session_entry is not None:
+                        await self._post_turn_plugin_controllers(
+                            session_entry=_plugin_session_entry,
+                            source=source,
+                            session_key=_quick_key,
+                            user_message=str(getattr(event, "text", "") or ""),
+                            final_response=_plugin_final_text,
+                            interrupted=_plugin_interrupted,
+                        )
+            except Exception as _plugin_exc:
+                logger.debug("plugin turn controller hook failed: %s", _plugin_exc)
             return _agent_result
         finally:
             # MoA one-shot restore must run on EVERY exit path, not just
@@ -12864,7 +12923,149 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
+    async def _enqueue_plugin_followup(
+        self,
+        *,
+        prompt: str,
+        source: Any,
+        session_id: str,
+        session_key: str,
+    ) -> bool:
+        """Append a plugin-requested follow-up through the native FIFO."""
+        if not isinstance(prompt, str) or not prompt.strip():
+            return False
+        try:
+            current_entry = await self.async_session_store.get_or_create_session(source)
+            current_session_id = getattr(current_entry, "session_id", "") or ""
+        except Exception:
+            return False
+        if not current_session_id or current_session_id != session_id:
+            return False
+        try:
+            adapter = self._adapter_for_source(source)
+            if not adapter or not session_key:
+                return False
+            followup_event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+                channel_prompt=None,
+            )
+            setattr(followup_event, "_hermes_plugin_continuation", True)
+            self._enqueue_fifo(session_key, followup_event, adapter)
+            return True
+        except Exception as exc:
+            logger.debug("Plugin follow-up enqueue failed: %s", exc)
+            return False
 
+    async def _post_turn_plugin_controllers(
+        self,
+        *,
+        session_entry: Any,
+        source: Any,
+        session_key: str,
+        user_message: str,
+        final_response: str,
+        interrupted: bool = False,
+    ) -> Any:
+        """Run generic plugin turn controllers and apply one directive."""
+        sid = getattr(session_entry, "session_id", "") or ""
+        if not sid:
+            return None
+        try:
+            from hermes_cli.plugins import TurnControlContext, invoke_turn_controllers
+        except Exception as exc:
+            logger.debug("Plugin turn controllers unavailable: %s", exc)
+            return None
+        platform = source.platform.value if getattr(source, "platform", None) else ""
+        directive = await invoke_turn_controllers(
+            TurnControlContext(
+                surface="gateway",
+                session_id=sid,
+                platform=platform,
+                source=source,
+                task_id=session_key or sid,
+                turn_id=f"{sid}:{time.time_ns()}",
+                user_message=user_message or "",
+                final_response=final_response or "",
+                interrupted=bool(interrupted),
+                background_processes=[],
+            )
+        )
+        if directive is None:
+            return None
+        notice = getattr(directive, "notice", None)
+        if notice and not getattr(directive, "silent", False):
+            try:
+                adapter = self._adapter_for_source(source)
+                if adapter:
+                    await adapter.send(
+                        source.chat_id,
+                        str(notice),
+                        metadata=self._thread_metadata_for_source(source),
+                    )
+            except Exception as exc:
+                logger.debug("Plugin turn directive notice failed: %s", exc)
+        if getattr(directive, "action", None) == "continue":
+            await self._enqueue_plugin_followup(
+                prompt=getattr(directive, "continuation_prompt", None) or "",
+                source=source,
+                session_id=sid,
+                session_key=session_key,
+            )
+        return directive
+
+    async def _dispatch_plugin_command_event(
+        self,
+        *,
+        command: str,
+        event: MessageEvent,
+        source: Any,
+        session_key: str,
+    ) -> Any:
+        """Dispatch a plugin slash command with gateway session context."""
+        from hermes_cli.plugins import (
+            CommandContext,
+            dispatch_plugin_command_async,
+            get_plugin_command_handler,
+        )
+
+        plugin_name = command.replace("_", "-")
+        if not get_plugin_command_handler(plugin_name):
+            return None
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(source)
+            bound_session_id = getattr(session_entry, "session_id", "") or ""
+        except Exception:
+            bound_session_id = ""
+
+        async def _enqueue_followup(prompt: str) -> bool:
+            return await self._enqueue_plugin_followup(
+                prompt=prompt,
+                source=source,
+                session_id=bound_session_id,
+                session_key=session_key,
+            )
+
+        plugin_ctx = CommandContext(
+            surface="gateway",
+            session_id=bound_session_id,
+            platform=source.platform.value if source.platform else "",
+            source=source,
+            task_id=session_key,
+            metadata={"command": plugin_name},
+            enqueue_followup=_enqueue_followup,
+        )
+        try:
+            return await dispatch_plugin_command_async(
+                plugin_name,
+                event.get_command_args().strip(),
+                plugin_ctx,
+            )
+        except Exception as exc:
+            logger.warning("Plugin command dispatch failed: %s", exc)
+            return "Plugin command failed."
 
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:

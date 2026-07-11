@@ -1,4 +1,5 @@
 import atexit
+import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
@@ -8918,6 +8919,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        plugin_followup = None  # set by the generic turn-controller hook below
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -9222,6 +9224,51 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         file=sys.stderr,
                     )
 
+            # Generic plugin turn controllers share the same single auto-followup
+            # slot as the legacy goal loop. A goal continuation wins for this
+            # physical turn, preventing duplicate hidden turns.
+            if (
+                not goal_followup
+                and status == "complete"
+                and isinstance(raw, str)
+                and raw.strip()
+            ):
+                try:
+                    from hermes_cli.plugins import TurnControlContext, invoke_turn_controllers
+
+                    _physical_sid = session.get("session_key") or getattr(agent, "session_id", "") or sid
+                    _turn_ctx = TurnControlContext(
+                        surface="tui",
+                        session_id=_physical_sid,
+                        platform="tui",
+                        source=None,
+                        task_id=_physical_sid,
+                        turn_id=f"{_physical_sid}:{time.time_ns()}",
+                        user_message=text or "",
+                        final_response=raw,
+                        interrupted=False,
+                        background_processes=[],
+                    )
+                    _turn_dir = asyncio.run(invoke_turn_controllers(_turn_ctx))
+                    if _turn_dir is not None:
+                        _notice = getattr(_turn_dir, "notice", None)
+                        if _notice and not getattr(_turn_dir, "silent", False):
+                            _emit(
+                                "status.update",
+                                sid,
+                                {"kind": "plugin", "text": str(_notice)},
+                            )
+                        if getattr(_turn_dir, "action", None) == "continue":
+                            _cont = getattr(_turn_dir, "continuation_prompt", "") or ""
+                            if _cont:
+                                plugin_followup = _cont
+                except Exception as _plugin_exc:
+                    print(
+                        f"[tui_gateway] plugin turn controller failed: "
+                        f"{type(_plugin_exc).__name__}: {_plugin_exc}",
+                        file=sys.stderr,
+                    )
+
             # Apply pending_title now that the DB row exists.
             _pending = session.get("pending_title")
             if _pending and status == "complete":
@@ -9330,25 +9377,21 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         if _drain_queued_prompt(rid, sid, session):
             return
 
-        # Chain a goal-continuation turn if the judge said so. We do
-        # this AFTER the finally releases session["running"], so the
-        # nested _run_prompt_submit doesn't deadlock on the busy
-        # guard. A real user prompt that races us wins because
-        # prompt.submit sets running=True under the history_lock and
-        # we check that guard before re-firing.
-        if goal_followup:
+        # Chain at most one automatic follow-up. Goal continuation has priority;
+        # otherwise use the generic plugin directive. User-queued input was
+        # already drained above and therefore always wins.
+        auto_followup = goal_followup or plugin_followup
+        if auto_followup:
             with session["history_lock"]:
                 if session.get("running"):
-                    # User already sent something — their turn wins,
-                    # the judge will re-run on the next turn anyway.
                     return
                 session["running"] = True
             try:
                 _emit("message.start", sid)
-                _run_prompt_submit(rid, sid, session, goal_followup)
+                _run_prompt_submit(rid, sid, session, auto_followup)
             except Exception as _cont_exc:
                 print(
-                    f"[tui_gateway] goal continuation dispatch failed: "
+                    f"[tui_gateway] auto continuation dispatch failed: "
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
                     file=sys.stderr,
                 )
@@ -11888,13 +11931,41 @@ def _(rid, params: dict) -> dict:
 
     try:
         from hermes_cli.plugins import (
+            CommandContext,
+            dispatch_plugin_command,
+            get_plugin_command_entry,
             get_plugin_command_handler,
             resolve_plugin_command_result,
         )
 
         handler = get_plugin_command_handler(name)
         if handler:
-            result = resolve_plugin_command_result(handler(arg))
+            session_id = session.get("session_key") if session else ""
+            if not session_id:
+                session_id = str(params.get("session_id", "") or "")
+
+            async def _closed_enqueue_followup(_: str) -> bool:
+                # The TUI RPC returns structured output to the client; it has no
+                # host-side pending-input drain in this process. Fail closed
+                # until a TUI-native follow-up transport is added.
+                return False
+
+            plugin_ctx = CommandContext(
+                surface="tui",
+                session_id=session_id,
+                platform="tui",
+                source=None,
+                task_id=str((session or {}).get("session_key") or session_id),
+                metadata={"rpc": "command.dispatch", "command": name},
+                enqueue_followup=_closed_enqueue_followup,
+            )
+            entry = get_plugin_command_entry(name)
+            command_result = (
+                dispatch_plugin_command(name, arg, plugin_ctx)
+                if entry is not None
+                else handler(arg)
+            )
+            result = resolve_plugin_command_result(command_result)
             return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
         pass
@@ -13213,10 +13284,16 @@ def _(rid, params: dict) -> dict:
         pass
 
     plugin_handler = None
+    get_plugin_command_entry = None
     resolve_plugin_command_result = None
+    dispatch_plugin_command = None
+    CommandContext = None
     if _cmd_base:
         try:
             from hermes_cli.plugins import (
+                CommandContext,
+                dispatch_plugin_command,
+                get_plugin_command_entry,
                 get_plugin_command_handler,
                 resolve_plugin_command_result,
             )
@@ -13224,11 +13301,42 @@ def _(rid, params: dict) -> dict:
             plugin_handler = get_plugin_command_handler(_cmd_base)
         except Exception:
             plugin_handler = None
+            get_plugin_command_entry = None
             resolve_plugin_command_result = None
+            dispatch_plugin_command = None
+            CommandContext = None
 
-    if plugin_handler and resolve_plugin_command_result:
+    if (
+        plugin_handler
+        and get_plugin_command_entry
+        and resolve_plugin_command_result
+        and dispatch_plugin_command
+        and CommandContext
+    ):
         try:
-            result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
+            session_id = session.get("session_key") if session else ""
+            if not session_id:
+                session_id = str(params.get("session_id", "") or "")
+
+            async def _closed_enqueue_followup(_: str) -> bool:
+                return False
+
+            plugin_ctx = CommandContext(
+                surface="tui",
+                session_id=session_id,
+                platform="tui",
+                source=None,
+                task_id=str((session or {}).get("session_key") or session_id),
+                metadata={"rpc": "slash.exec", "command": _cmd_base},
+                enqueue_followup=_closed_enqueue_followup,
+            )
+            entry = get_plugin_command_entry(_cmd_base)
+            command_result = (
+                dispatch_plugin_command(_cmd_base, _cmd_arg, plugin_ctx)
+                if entry is not None
+                else plugin_handler(_cmd_arg)
+            )
+            result = resolve_plugin_command_result(command_result)
             return _ok(rid, {"output": str(result or "(no output)")})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})

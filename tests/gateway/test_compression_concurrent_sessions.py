@@ -130,6 +130,32 @@ def test_concurrent_compressions_do_not_alias_sessions(tmp_path: Path) -> None:
     )
 
 
+def test_compression_rotation_invokes_plugin_session_rotate_after_child_durable(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_id = "ROTATE_PARENT"
+    db.create_session(parent_id, source="discord")
+    agent = _build_agent_with_db(db, parent_id)
+    observed = []
+
+    def capture_hook(hook_name, **kwargs):
+        if hook_name != "on_session_rotate":
+            return []
+        child = db.get_session(kwargs["new_session_id"])
+        observed.append((kwargs, child is not None))
+        return []
+
+    with patch("hermes_cli.plugins.invoke_hook", side_effect=capture_hook):
+        agent._compress_context(_MESSAGES, "sys", approx_tokens=120_000)
+
+    assert len(observed) == 1
+    payload, child_was_durable = observed[0]
+    assert child_was_durable is True
+    assert payload["old_session_id"] == parent_id
+    assert payload["new_session_id"] == agent.session_id
+    assert payload["reason"] == "compression"
+    assert payload["parent_session_id"] == parent_id
+
+
 def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     """Two agents sharing a session_id must not both rotate it.
 

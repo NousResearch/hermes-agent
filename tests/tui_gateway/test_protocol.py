@@ -1390,6 +1390,64 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
     assert worker.calls == []
 
 
+def test_slash_exec_passes_tui_context_to_context_aware_plugin(server):
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": "tui-session-key", "agent": None}
+    manager = PluginManager()
+    manager._discovered = True
+    seen = []
+
+    def handler(ctx, raw_args):
+        seen.append((ctx.surface, ctx.session_id, ctx.task_id, raw_args))
+        return "tui-ok"
+
+    PluginContext(PluginManifest(name="plug"), manager).register_command(
+        "ctx-cmd", handler, context_aware=True
+    )
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        resp = server.handle_request({
+            "id": "r-plugin-context",
+            "method": "slash.exec",
+            "params": {"command": "ctx-cmd start", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "tui-ok"}
+    # Physical session_key, not UI sid
+    assert seen == [("tui", "tui-session-key", "tui-session-key", "start")]
+
+
+def test_command_dispatch_passes_tui_context_to_context_aware_plugin(server):
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": "tui-session-key", "agent": None}
+    manager = PluginManager()
+    manager._discovered = True
+    seen = []
+
+    def handler(ctx, raw_args):
+        seen.append((ctx.surface, ctx.session_id, ctx.task_id, raw_args))
+        return "dispatch-ok"
+
+    PluginContext(PluginManifest(name="plug"), manager).register_command(
+        "ctx-dispatch", handler, context_aware=True
+    )
+    with patch("hermes_cli.plugins._plugin_manager", manager):
+        resp = server.handle_request({
+            "id": "r-plugin-context-dispatch",
+            "method": "command.dispatch",
+            "params": {"name": "ctx-dispatch", "arg": "start", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "dispatch-ok"}
+    # Physical session_key, not UI sid
+    assert seen == [("tui", "tui-session-key", "tui-session-key", "start")]
+
+
 def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
     """Plugin discovery failures must not break ordinary slash-worker commands."""
     sid = "test-session"

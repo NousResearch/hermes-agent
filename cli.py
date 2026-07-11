@@ -23,6 +23,7 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+import asyncio
 import logging
 import os
 import shutil
@@ -8969,15 +8970,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import (
-                    get_plugin_command_handler,
+                    CommandContext,
+                    dispatch_plugin_command,
                     resolve_plugin_command_result,
                 )
-                plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
-                if plugin_handler:
+                if base_cmd.lstrip("/"):
                     user_args = cmd_original[len(base_cmd):].strip()
+                    bound_session_id = getattr(self, "session_id", "") or ""
+                    async def _enqueue_followup(prompt: str) -> bool:
+                        if not isinstance(prompt, str) or not prompt.strip():
+                            return False
+                        current_sid = getattr(self, "session_id", "") or ""
+                        if not bound_session_id or current_sid != bound_session_id:
+                            return False
+                        self._pending_input.put(prompt)
+                        return True
+                    plugin_ctx = CommandContext(
+                        surface="cli",
+                        session_id=bound_session_id,
+                        platform=getattr(self, "platform", None) or "cli",
+                        source=None,
+                        task_id=bound_session_id,
+                        metadata={},
+                        enqueue_followup=_enqueue_followup,
+                    )
                     try:
                         result = resolve_plugin_command_result(
-                            plugin_handler(user_args)
+                            dispatch_plugin_command(
+                                base_cmd.lstrip("/"),
+                                user_args,
+                                plugin_ctx,
+                            )
                         )
                         if result:
                             _cprint(str(result))
@@ -9298,6 +9321,50 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
 
+    def _maybe_continue_plugin_after_turn(
+        self,
+        *,
+        user_message: str,
+        final_response: str,
+    ) -> object | None:
+        """Apply at most one generic plugin directive on the CLI surface."""
+        if getattr(self, "_last_turn_interrupted", False) or not str(final_response or "").strip():
+            return None
+        try:
+            if self._pending_input.qsize():
+                return None
+        except Exception:
+            return None
+        try:
+            from hermes_cli.plugins import TurnControlContext, invoke_turn_controllers
+
+            physical_sid = getattr(self.agent, "session_id", "") or self.session_id or ""
+            turn_ctx = TurnControlContext(
+                surface="cli",
+                session_id=physical_sid,
+                platform="cli",
+                source=None,
+                task_id=physical_sid,
+                turn_id=f"{physical_sid}:{time.time_ns()}",
+                user_message=user_message or "",
+                final_response=final_response or "",
+                interrupted=False,
+                background_processes=[],
+            )
+            directive = asyncio.run(invoke_turn_controllers(turn_ctx))
+            if directive is None:
+                return None
+            notice = getattr(directive, "notice", None)
+            if notice and not getattr(directive, "silent", False):
+                _cprint(f"  {notice}")
+            if getattr(directive, "action", None) == "continue":
+                prompt = getattr(directive, "continuation_prompt", "") or ""
+                if prompt and not self._pending_input.qsize():
+                    self._pending_input.put(prompt)
+            return directive
+        except Exception as exc:
+            logging.debug("plugin turn controller hook failed: %s", exc)
+            return None
 
 
     def _toggle_verbose(self):
@@ -15276,8 +15343,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._pet_reasoning = False
                     app.invalidate()  # Refresh status line
 
+                    _chat_response = None
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        _chat_response = self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
@@ -15319,6 +15387,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             self._maybe_continue_goal_after_turn()
                         except Exception as _goal_exc:
                             logging.debug("goal continuation hook failed: %s", _goal_exc)
+
+                        # Generic plugin turn controllers share the same pending
+                        # input slot; a legacy goal continuation or real user
+                        # message already queued above wins.
+                        self._maybe_continue_plugin_after_turn(
+                            user_message=user_input or "",
+                            final_response=_chat_response or "",
+                        )
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

@@ -5055,6 +5055,68 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_runs_tui_plugin_controller_and_one_followup(monkeypatch):
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, TurnDirective
+
+    prompts = []
+    controller_contexts = []
+
+    class _Agent:
+        session_id = "session-key"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            prompts.append(prompt)
+            return {
+                "final_response": f"reply:{prompt}",
+                "messages": [{"role": "assistant", "content": f"reply:{prompt}"}],
+            }
+
+    manager = PluginManager()
+    manager._discovered = True
+    count = {"n": 0}
+
+    def controller(ctx):
+        controller_contexts.append((ctx.surface, ctx.session_id, ctx.user_message, ctx.final_response))
+        count["n"] += 1
+        if count["n"] == 1:
+            return TurnDirective(action="continue", continuation_prompt="tui-next")
+        return None
+
+    PluginContext(PluginManifest(name="plug"), manager).register_turn_controller(
+        "tui-controller", controller
+    )
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
+
+        import hermes_cli.plugins as plugins
+        monkeypatch.setattr(plugins, "_plugin_manager", manager)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+
+        assert resp.get("result")
+        deadline = time.time() + 5
+        while len(prompts) < 2 and time.time() < deadline:
+            time.sleep(0.02)
+        assert prompts == ["hello", "tui-next"]
+        assert controller_contexts[0] == (
+            "tui",
+            "session-key",
+            "hello",
+            "reply:hello",
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     """Desktop user-message edits should restart the turn from the edited user."""
 

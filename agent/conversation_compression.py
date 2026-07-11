@@ -869,6 +869,23 @@ def compress_context(
                 # next turn re-bases its append diff.
                 agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
                 agent._last_flushed_db_idx = 0
+                if not in_place and locals().get("old_session_id"):
+                    try:
+                        from hermes_cli.plugins import invoke_hook as _invoke_plugin_hook
+
+                        _invoke_plugin_hook(
+                            "on_session_rotate",
+                            old_session_id=old_session_id,
+                            new_session_id=agent.session_id,
+                            reason="compression",
+                            parent_session_id=old_session_id,
+                            surface=getattr(agent, "platform", None) or "cli",
+                        )
+                    except Exception as _rotate_hook_err:
+                        logger.debug(
+                            "plugin on_session_rotate hook failed: %s",
+                            _rotate_hook_err,
+                        )
             except Exception as e:
                 # If the rotation rolled back to the parent (orphan-avoidance
                 # above), agent.session_id is the still-indexed parent and

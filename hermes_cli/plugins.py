@@ -44,7 +44,7 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -161,6 +161,7 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "on_session_rotate",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
@@ -328,6 +329,47 @@ class LoadedPlugin:
     # imported) loader. The module loads on first real use via the
     # platform_registry; see PluginManager._register_deferred_platform.
     deferred: bool = False
+
+
+@dataclass(frozen=True)
+class CommandContext:
+    """Host context passed to context-aware plugin slash commands."""
+
+    surface: str
+    session_id: str
+    platform: str
+    source: Any | None
+    task_id: str
+    metadata: Mapping[str, Any]
+    enqueue_followup: Callable[[str], Awaitable[bool]]
+
+
+@dataclass(frozen=True)
+class TurnControlContext:
+    """Data exposed to post-turn plugin controllers."""
+
+    surface: str
+    session_id: str
+    platform: str
+    source: Any | None
+    task_id: str
+    turn_id: str
+    user_message: str
+    final_response: str
+    interrupted: bool
+    background_processes: Sequence[Mapping[str, Any]]
+
+
+@dataclass(frozen=True)
+class TurnDirective:
+    """Host-owned post-turn directive returned by plugin controllers."""
+
+    action: Literal["noop", "continue", "pause", "done"]
+    continuation_prompt: str | None = None
+    notice: str | None = None
+    silent: bool = False
+    dedupe_key: str | None = None
+    state_version: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +572,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        context_aware: bool = False,
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -575,8 +618,42 @@ class PluginContext:
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "context_aware": bool(context_aware),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
+
+    def register_turn_controller(
+        self,
+        name: str,
+        handler: Callable[[TurnControlContext], Any],
+        priority: int = 100,
+    ) -> None:
+        """Register a post-turn controller.
+
+        Controllers return a :class:`TurnDirective` or ``None``. The host owns
+        all notices and follow-up enqueueing.
+        """
+        clean = (name or "").strip()
+        if not clean:
+            logger.warning(
+                "Plugin '%s' tried to register a turn controller with an empty name.",
+                self.manifest.name,
+            )
+            return
+        self._manager._turn_controllers.append(
+            {
+                "name": clean,
+                "handler": handler,
+                "priority": int(priority),
+                "plugin": self.manifest.name,
+            }
+        )
+        self._manager._turn_controllers.sort(
+            key=lambda item: (item.get("priority", 100), item.get("name", ""))
+        )
+        logger.debug(
+            "Plugin %s registered turn controller: %s", self.manifest.name, clean
+        )
 
     # -- tool dispatch -------------------------------------------------------
 
@@ -1255,6 +1332,9 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._turn_controllers: List[dict] = []
+        self._turn_directive_dedupe: Dict[tuple[str, str], None] = {}
+        self._turn_state_versions: Dict[tuple[str, str, str], int] = {}
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -1295,6 +1375,9 @@ class PluginManager:
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
+            self._turn_controllers.clear()
+            self._turn_directive_dedupe.clear()
+            self._turn_state_versions.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
@@ -2346,7 +2429,13 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     return entry["handler"] if entry else None
 
 
+def get_plugin_command_entry(name: str) -> Optional[dict]:
+    """Return plugin slash command metadata, or ``None``."""
+    return _ensure_plugins_discovered()._plugin_commands.get(name)
+
+
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+_MAX_TURN_DIRECTIVE_TRACKING = 4096
 
 
 def resolve_plugin_command_result(result: Any) -> Any:
@@ -2393,6 +2482,164 @@ def resolve_plugin_command_result(result: Any) -> Any:
     if "exc" in failure:
         raise failure["exc"]
     return outcome.get("value")
+
+
+def dispatch_plugin_command(
+    name: str,
+    raw_args: str,
+    context: CommandContext | None = None,
+) -> Any:
+    """Dispatch a plugin slash command while preserving legacy signatures."""
+    entry = get_plugin_command_entry(name)
+    if not entry:
+        return None
+    handler = entry["handler"]
+    if entry.get("context_aware"):
+        if context is None:
+            async def _closed_enqueue(_: str) -> bool:
+                return False
+            context = CommandContext(
+                surface="unknown",
+                session_id="",
+                platform="",
+                source=None,
+                task_id="",
+                metadata={},
+                enqueue_followup=_closed_enqueue,
+            )
+        return handler(context, raw_args)
+    return handler(raw_args)
+
+
+async def dispatch_plugin_command_async(
+    name: str,
+    raw_args: str,
+    context: CommandContext | None = None,
+    *,
+    timeout: float = _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS,
+) -> Any:
+    """Async plugin command dispatch used by Gateway/TUI surfaces.
+
+    Sync handlers run off-loop so their timeout is real instead of blocking the
+    event loop before ``wait_for`` can take effect. Legacy one-argument handlers
+    keep the same arguments; only their Gateway/TUI execution thread changes.
+    """
+    entry = get_plugin_command_entry(name)
+    if not entry:
+        return None
+    handler = entry["handler"]
+    args = (context, raw_args) if entry.get("context_aware") else (raw_args,)
+
+    async def _invoke() -> Any:
+        if inspect.iscoroutinefunction(handler):
+            return await handler(*args)
+        result = await asyncio.to_thread(handler, *args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    return await asyncio.wait_for(_invoke(), timeout=timeout)
+
+
+async def invoke_turn_controllers(
+    context: TurnControlContext,
+) -> TurnDirective | None:
+    """Return at most one accepted post-turn directive.
+
+    Controller failures are logged and treated as noop. Duplicate dedupe keys
+    are rejected process-locally.
+    """
+    manager = _ensure_plugins_discovered()
+    for entry in list(manager._turn_controllers):
+        handler = entry.get("handler")
+        if not callable(handler):
+            continue
+        try:
+            if inspect.iscoroutinefunction(handler):
+                result = await asyncio.wait_for(
+                    handler(context),
+                    timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(handler, context),
+                    timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS,
+                )
+                if inspect.isawaitable(result):
+                    result = await asyncio.wait_for(
+                        result,
+                        timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Turn controller '%s' from plugin '%s' raised: %s",
+                entry.get("name"),
+                entry.get("plugin"),
+                exc,
+            )
+            continue
+        if result is None:
+            continue
+        if isinstance(result, dict):
+            try:
+                result = TurnDirective(**result)
+            except TypeError:
+                logger.warning(
+                    "Turn controller '%s' returned invalid directive dict",
+                    entry.get("name"),
+                )
+                continue
+        if not isinstance(result, TurnDirective):
+            logger.warning(
+                "Turn controller '%s' returned unsupported directive %r",
+                entry.get("name"),
+                result,
+            )
+            continue
+        if result.action == "noop":
+            continue
+        if result.state_version is not None:
+            try:
+                state_version = int(result.state_version)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Turn controller '%s' returned invalid state_version %r",
+                    entry.get("name"),
+                    result.state_version,
+                )
+                continue
+            state_identity = (
+                context.session_id,
+                str(entry.get("plugin") or ""),
+                str(entry.get("name") or ""),
+            )
+            previous_version = manager._turn_state_versions.get(state_identity)
+            if previous_version is not None and state_version <= previous_version:
+                logger.info(
+                    "Turn controller '%s' stale state_version ignored: version=%s previous=%s session=%s",
+                    entry.get("name"),
+                    state_version,
+                    previous_version,
+                    context.session_id,
+                )
+                continue
+            manager._turn_state_versions[state_identity] = state_version
+            while len(manager._turn_state_versions) > _MAX_TURN_DIRECTIVE_TRACKING:
+                manager._turn_state_versions.pop(next(iter(manager._turn_state_versions)))
+        if result.dedupe_key:
+            dedupe_identity = (context.session_id, result.dedupe_key)
+            if dedupe_identity in manager._turn_directive_dedupe:
+                logger.info(
+                    "Turn controller '%s' duplicate directive ignored: %s",
+                    entry.get("name"),
+                    result.dedupe_key,
+                )
+                continue
+            manager._turn_directive_dedupe[dedupe_identity] = None
+            while len(manager._turn_directive_dedupe) > _MAX_TURN_DIRECTIVE_TRACKING:
+                manager._turn_directive_dedupe.pop(next(iter(manager._turn_directive_dedupe)))
+        return result
+    return None
 
 
 def get_plugin_commands() -> Dict[str, dict]:

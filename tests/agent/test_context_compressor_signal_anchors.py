@@ -35,6 +35,7 @@ def _response(content: str = "summary") -> MagicMock:
         ("Use approach B, not approach A.", "correction"),
         ("Actually, switch to approach B.", "correction"),
         ("Do not modify generated files.", "correction"),
+        ("Instead, use approach B.", "correction"),
         ("Configure timeout to 30 seconds.", "configuration"),
         ("以后必须保留原始引用。", "decision"),
         ("我们决定采用方案 B。", "decision"),
@@ -59,6 +60,8 @@ def test_explicit_signal_matrix(text: str, kind: str):
         "Please compare approach A and approach B.",
         "Use the tool. This is not a decision.",
         "The command returned two rows.",
+        "I don't know why the build failed.",
+        "I did this instead.",
     ],
 )
 def test_ordinary_or_ambiguous_turns_are_not_promoted(text: str):
@@ -92,6 +95,23 @@ def test_selects_explicit_user_signals_and_excludes_tool_noise():
     assert "Use Postgres rather than SQLite." in rendered
     assert "Actually, do not use Postgres; switch to SQLite." in rendered
     assert "以后必须保留原始引用。" in rendered
+
+
+def test_selector_rejects_bare_dont_and_instead_statements():
+    compressor = _compressor()
+    turns = [
+        {"role": "user", "content": "I don't know why the build failed."},
+        {"role": "user", "content": "I did this instead."},
+        {"role": "user", "content": "Do not modify generated files."},
+        {"role": "user", "content": "Use approach B, not approach A."},
+    ]
+
+    anchors = compressor._select_high_signal_user_anchors(turns, token_budget=800)
+
+    assert [text for _index, _kind, text in anchors] == [
+        "Do not modify generated files.",
+        "Use approach B, not approach A.",
+    ]
 
 
 def test_anchor_budget_prefers_newer_correction_over_older_preference():

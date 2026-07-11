@@ -63,11 +63,14 @@ def test_format_secret_source_suffix_generic_label_for_future_sources():
     )
 
 
-def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch):
+def test_apply_external_secret_sources_hides_names_by_default(
+    tmp_path, monkeypatch, capsys
+):
     """End-to-end: when ``apply_bitwarden_secrets`` returns applied keys,
-    they end up in ``_SECRET_SOURCES`` so the UI can label them."""
+    the startup note reports only their count by default."""
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_SECRETS_DEBUG", raising=False)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "secrets:\n"
@@ -82,8 +85,11 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     from agent.secret_sources.bitwarden import FetchResult
 
     fake_result = FetchResult(
-        secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
-        applied=["ANTHROPIC_API_KEY"],
+        secrets={
+            "ANTHROPIC_API_KEY": "sk-ant-test",
+            "OPENAI_API_KEY": "sk-openai-test",
+        },
+        applied=["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
     )
 
     def _fake_apply(**_kwargs):
@@ -96,12 +102,48 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
 
     env_loader._apply_external_secret_sources(tmp_path)
+    stderr = capsys.readouterr().err
 
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
+    assert "applied 2 secrets" in stderr
+    assert "ANTHROPIC_API_KEY" not in stderr
+    assert "OPENAI_API_KEY" not in stderr
     assert (
         env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
         == " (from Bitwarden)"
     )
+
+
+def test_apply_external_secret_sources_debug_includes_names(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_SECRETS_DEBUG", "1")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.bitwarden import FetchResult
+
+    def _fake_apply(**_kwargs):
+        return FetchResult(
+            secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
+            applied=["ANTHROPIC_API_KEY"],
+        )
+
+    import agent.secret_sources.bitwarden as bw_module
+    monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+
+    env_loader._apply_external_secret_sources(tmp_path)
+    stderr = capsys.readouterr().err
+
+    assert "applied 1 secret" in stderr
+    assert "applied 1 secrets" not in stderr
+    assert "ANTHROPIC_API_KEY" in stderr
 
 
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):

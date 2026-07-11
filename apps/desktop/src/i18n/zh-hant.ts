@@ -1819,6 +1819,7 @@ export const zhHant = defineLocale({
     featuredPitch: '一個訂閱，300+ 前沿模型 — 執行 Hermes 的建議方式',
     openRouterPitch: '一個金鑰，數百個模型 — 穩定的預設選擇',
     apiKeyOptions: {
+      fireworks: { short: '直接模型 API', description: '直接存取 Fireworks AI 託管的模型。' },
       openrouter: { short: '一個金鑰，多個模型', description: '用一個金鑰存取數百個模型。適合新安裝的預設選擇。' },
       openai: { short: 'GPT 等級模型', description: '直接存取 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接存取 Google Gemini 模型。' },

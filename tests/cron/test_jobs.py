@@ -20,6 +20,7 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
 )
@@ -1102,6 +1103,133 @@ class TestGetDueJobs:
         assert get_job("claimclear").get("run_claim") is not None
         mark_job_run("claimclear", True)
         assert get_job("claimclear")["run_claim"] is None
+
+    def test_stale_maxed_oneshot_kept_while_running_in_this_process(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """#62002: a live run must never have its job record deleted underneath it.
+
+        A one-shot whose run outlives the run_claim TTL (stream stall, laptop
+        asleep mid-run) satisfies the same completed >= times + expired-claim
+        condition as a dead tick. When the scheduler in this process still has
+        the job in its running set, the stale-entry recovery must keep the
+        record so the in-flight run's mark_job_run() can land its outcome —
+        and remove it only once the run is actually gone.
+        """
+        import cron.scheduler as scheduler_mod
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=ttl + 300)).isoformat()
+        # Mid-run store shape: claim_dispatch committed completed=1 and the
+        # run_claim was stamped at fire time; next_run_at is only resolved by
+        # mark_job_run, so it still points at the (past) fire time.
+        save_jobs([{
+            "id": "inflight", "name": "flight check", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 1},
+            "run_claim": {"at": run_at, "by": "this-machine"},
+        }])
+
+        # Run still alive in this process → keep the record, dispatch nothing.
+        monkeypatch.setattr(
+            scheduler_mod, "get_running_job_ids", lambda: frozenset({"inflight"})
+        )
+        assert get_due_jobs() == []
+        assert get_job("inflight") is not None  # still visible to list/run
+
+        # The claiming tick really died (running set empty) → recovered as before.
+        monkeypatch.setattr(
+            scheduler_mod, "get_running_job_ids", lambda: frozenset()
+        )
+        assert get_due_jobs() == []
+        assert get_job("inflight") is None  # stale entry cleaned up
+
+    def test_run_claim_heartbeat_keeps_long_run_claimed_past_ttl(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """#62002 cross-process leg: a heartbeat-refreshed claim never expires
+        while the run is alive, so no other tick re-dispatches or stale-removes
+        the job even when the run outlives the original TTL horizon."""
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "slowrun", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 0},
+        }])
+
+        # Tick claims + dispatches the job.
+        assert [j["id"] for j in get_due_jobs()] == ["slowrun"]
+        assert claim_dispatch("slowrun") is True
+
+        # Mid-run heartbeat before the TTL horizon refreshes the claim.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl - 60))
+        owner = get_job("slowrun")["run_claim"]["by"]
+        assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
+
+        # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
+        # tick would stale-remove the maxed one-shot; with it the claim is
+        # fresh, so the job is skipped and the record survives.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl + 10))
+        assert get_due_jobs() == []
+        assert get_job("slowrun") is not None
+
+        # Run completes → outcome lands on a record that still exists
+        # (times=1 reached, so mark_job_run retires the job normally).
+        mark_job_run("slowrun", True)
+        assert get_job("slowrun") is None
+
+    def test_heartbeat_run_claim_noop_without_claim(self, tmp_cron_dir):
+        """heartbeat_run_claim is a safe no-op when there is nothing to refresh
+        (manual run that never stamped a claim, or the job is gone)."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        save_jobs([{
+            "id": "noclaim", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": future},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+        }])
+        assert heartbeat_run_claim("noclaim", expected_owner="owner") is False
+        assert heartbeat_run_claim("missing-job", expected_owner="owner") is False
+        assert get_job("noclaim").get("run_claim") is None
+
+    def test_heartbeat_run_claim_rejects_replaced_owner(self, tmp_cron_dir):
+        """A resumed stale runner must not keep a newer owner's claim alive."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "reclaimed", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": future},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+            "run_claim": {"at": original_at, "by": "new-owner"},
+        }])
+
+        assert heartbeat_run_claim("reclaimed", expected_owner="old-owner") is False
+        assert get_job("reclaimed")["run_claim"] == {
+            "at": original_at,
+            "by": "new-owner",
+        }
+
+    def test_heartbeat_run_claim_rejects_non_oneshot(self, tmp_cron_dir):
+        """Heartbeat ownership applies only to one-shot dispatch claims."""
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "recurring", "name": "R", "prompt": "x",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "enabled": True,
+            "run_claim": {"at": original_at, "by": "owner"},
+        }])
+
+        assert heartbeat_run_claim("recurring", expected_owner="owner") is False
+        assert get_job("recurring")["run_claim"]["at"] == original_at
 
 
     def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):

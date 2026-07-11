@@ -273,6 +273,7 @@ def apply_turn_facts(receipt: TurnReceipt, facts: Mapping[str, Any] | None) -> T
         for segment in mechanisms:
             _add_mechanism_segment(receipt, str(segment))
 
+    moa_failed_refs_observed = False
     moa = _as_mapping(facts.get("moa"))
     if moa:
         reference_count = _count_strings(moa.get("reference_models"))
@@ -281,9 +282,20 @@ def apply_turn_facts(receipt: TurnReceipt, facts: Mapping[str, Any] | None) -> T
             reference_count = _int_or_zero(moa.get("reference_count"))
         if "aggregator_count" in moa:
             aggregator_count = _int_or_zero(moa.get("aggregator_count"))
-        observed = bool(moa.get("observed")) or reference_count > 0 or aggregator_count > 0
+        failed_count = max(0, _int_or_zero(moa.get("failed_count"))) if "failed_count" in moa else 0
+        if "reference_total" in moa:
+            reference_total = max(0, _int_or_zero(moa.get("reference_total")))
+        else:
+            reference_total = reference_count + failed_count
+        reference_total = max(reference_total, reference_count + failed_count)
+        observed = bool(moa.get("observed")) or reference_count > 0 or failed_count > 0 or aggregator_count > 0
         if observed:
-            _add_mechanism_segment(receipt, f"MoA {reference_count}+{aggregator_count}")
+            if failed_count > 0:
+                segment = f"MoA {reference_count}/{reference_total}+{aggregator_count}"
+                moa_failed_refs_observed = True
+            else:
+                segment = f"MoA {reference_count}+{aggregator_count}"
+            _add_mechanism_segment(receipt, segment)
             if receipt.route == "native":
                 receipt.route = "moa"
                 receipt.reason = "provider_moa"
@@ -339,5 +351,10 @@ def apply_turn_facts(receipt: TurnReceipt, facts: Mapping[str, Any] | None) -> T
         receipt.evidence_status = str(evidence.get("level") or "unknown")
     elif evidence.get("status"):
         receipt.evidence_status = str(evidence.get("status") or "unknown")
+
+    if moa_failed_refs_observed and not receipt.failed and not receipt.interrupted:
+        current_evidence = (receipt.evidence_status or "unknown").strip().lower()
+        if current_evidence not in {"failed", "fail", "error", "errored"}:
+            receipt.evidence_status = "partial"
 
     return receipt

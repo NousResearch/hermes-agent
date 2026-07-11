@@ -11,20 +11,33 @@ def _response(content="done", *, model="fake-model"):
     return SimpleNamespace(choices=[choice], usage=None, model=model)
 
 
-def _write_moa_config(home, *, refs, aggregator_model="agg-model", fanout=None):
+def _write_moa_config(home, *, refs, aggregator_model="agg-model", fanout=None, enabled=True):
     home.mkdir()
-    ref_yaml = "\n".join(
-        f"        - provider: openrouter\n          model: {model}" for model in refs
+    ref_lines = []
+    for ref in refs:
+        if isinstance(ref, dict):
+            provider = ref.get("provider") or "openrouter"
+            model = ref.get("model") or ""
+        else:
+            provider = "openrouter"
+            model = str(ref)
+        ref_lines.append(f"        - provider: {provider}\n          model: {model}")
+    ref_yaml = "\n".join(ref_lines)
+    reference_section = (
+        f"      reference_models:\n{ref_yaml}"
+        if ref_yaml
+        else "      reference_models: []"
     )
     fanout_yaml = f"\n      fanout: {fanout}" if fanout else ""
+    enabled_yaml = "true" if enabled else "false"
     (home / "config.yaml").write_text(
         f"""
 moa:
   default_preset: review
   presets:
     review:{fanout_yaml}
-      reference_models:
-{ref_yaml if ref_yaml else '        []'}
+      enabled: {enabled_yaml}
+{reference_section}
       aggregator:
         provider: openrouter
         model: {aggregator_model}
@@ -33,9 +46,9 @@ moa:
     )
 
 
-def _install_fake_moa(monkeypatch, tmp_path, *, refs, fail_refs=(), aggregator_raises_for=(), stream=False):
+def _install_fake_moa(monkeypatch, tmp_path, *, refs, fail_refs=(), aggregator_raises_for=(), stream=False, enabled=True):
     home = tmp_path / ".hermes"
-    _write_moa_config(home, refs=refs)
+    _write_moa_config(home, refs=refs, enabled=enabled)
     monkeypatch.setenv("HERMES_HOME", str(home))
     calls = []
     fail_refs = set(fail_refs)
@@ -65,7 +78,7 @@ def _install_fake_moa(monkeypatch, tmp_path, *, refs, fail_refs=(), aggregator_r
     return MoAClient("review"), calls
 
 
-def _bar_for(facts):
+def _receipt_for(facts, *, failed=False, interrupted=False):
     from agent.route_depth_bar import format_route_depth_bar
     from agent.turn_receipt import TurnReceipt, apply_turn_facts, update_turn_receipt_from_result
 
@@ -78,18 +91,54 @@ def _bar_for(facts):
     )
     update_turn_receipt_from_result(
         receipt,
-        completed=True,
-        failed=False,
-        interrupted=False,
+        completed=not failed and not interrupted,
+        failed=failed,
+        interrupted=interrupted,
         api_calls=1,
         exit_reason="stop",
         messages=[],
     )
     apply_turn_facts(receipt, facts)
+    return receipt
+
+
+def _bar_for(facts):
+    from agent.route_depth_bar import format_route_depth_bar
+
+    receipt = _receipt_for(facts)
     return format_route_depth_bar(receipt)
 
 
-def test_moa_client_reports_only_successful_references_and_completed_aggregator(monkeypatch, tmp_path) -> None:
+def test_moa_client_reports_all_successful_references_compact_and_evidence_ok(monkeypatch, tmp_path) -> None:
+    client, _calls = _install_fake_moa(
+        monkeypatch,
+        tmp_path,
+        refs=["ref-a", "ref-b", "ref-c", "ref-d"],
+    )
+
+    client.chat.completions.create(messages=[{"role": "user", "content": "q"}], tools=[])
+
+    facts = client.coordination_turn_facts()
+    assert facts["moa"]["reference_models"] == [
+        "openrouter:ref-a",
+        "openrouter:ref-b",
+        "openrouter:ref-c",
+        "openrouter:ref-d",
+    ]
+    assert facts["moa"]["reference_count"] == 4
+    assert facts["moa"]["reference_total"] == 4
+    assert facts["moa"]["failed_count"] == 0
+    assert facts["moa"]["aggregator_count"] == 1
+
+    receipt = _receipt_for(facts)
+    bar = _bar_for(facts)
+    assert "MoA 4+1" in bar
+    assert "MoA 4/4+1" not in bar
+    assert receipt.evidence_status == "ok"
+    assert "证据 ✓" in bar
+
+
+def test_moa_client_reports_success_total_and_failed_references_as_partial(monkeypatch, tmp_path) -> None:
     client, _calls = _install_fake_moa(
         monkeypatch,
         tmp_path,
@@ -102,8 +151,14 @@ def test_moa_client_reports_only_successful_references_and_completed_aggregator(
     facts = client.coordination_turn_facts()
     assert facts["moa"]["reference_models"] == ["openrouter:ref-a", "openrouter:ref-b"]
     assert facts["moa"]["reference_count"] == 2
+    assert facts["moa"]["reference_total"] == 3
+    assert facts["moa"]["failed_count"] == 1
     assert facts["moa"]["aggregator_count"] == 1
-    assert "MoA 2+1" in _bar_for(facts)
+    receipt = _receipt_for(facts)
+    bar = _bar_for(facts)
+    assert "MoA 2/3+1" in bar
+    assert receipt.evidence_status == "partial"
+    assert "证据 partial" in bar
 
 
 def test_moa_client_reports_zero_references_when_all_refs_fail_but_aggregator_succeeds(monkeypatch, tmp_path) -> None:
@@ -119,8 +174,84 @@ def test_moa_client_reports_zero_references_when_all_refs_fail_but_aggregator_su
     facts = client.coordination_turn_facts()
     assert facts["moa"]["reference_models"] == []
     assert facts["moa"]["reference_count"] == 0
+    assert facts["moa"]["reference_total"] == 2
+    assert facts["moa"]["failed_count"] == 2
     assert facts["moa"]["aggregator_count"] == 1
-    assert "MoA 0+1" in _bar_for(facts)
+    receipt = _receipt_for(facts)
+    bar = _bar_for(facts)
+    assert "MoA 0/2+1" in bar
+    assert receipt.evidence_status == "partial"
+    assert "证据 partial" in bar
+
+
+def test_moa_runtime_facts_builder_counts_explicit_skipped_reference_output_as_failed_slot() -> None:
+    from agent.moa_loop import MoAChatCompletions, _RefAccounting
+    from agent.usage_pricing import CanonicalUsage
+
+    facts = MoAChatCompletions("review")._coordination_facts_from_outputs(
+        [
+            (
+                "openrouter:ref-a",
+                "advice from ref-a",
+                _RefAccounting(CanonicalUsage(), succeeded=True),
+            ),
+            (
+                "moa:nested",
+                "[skipped: MoA presets cannot recursively reference MoA]",
+                _RefAccounting(CanonicalUsage(), succeeded=False),
+            ),
+        ],
+        {"provider": "openrouter", "model": "agg-model"},
+    )
+
+    assert facts["moa"]["reference_models"] == ["openrouter:ref-a"]
+    assert facts["moa"]["reference_count"] == 1
+    assert facts["moa"]["reference_total"] == 2
+    assert facts["moa"]["failed_count"] == 1
+    assert facts["moa"]["aggregator_count"] == 1
+    receipt = _receipt_for(facts)
+    bar = _bar_for(facts)
+    assert "MoA 1/2+1" in bar
+    assert receipt.evidence_status == "partial"
+    assert "证据 partial" in bar
+
+
+def test_moa_client_no_configured_references_keeps_aggregator_only_not_partial(monkeypatch, tmp_path) -> None:
+    client, _calls = _install_fake_moa(
+        monkeypatch,
+        tmp_path,
+        refs=[],
+        enabled=False,
+    )
+
+    client.chat.completions.create(messages=[{"role": "user", "content": "q"}], tools=[])
+
+    facts = client.coordination_turn_facts()
+    assert facts["moa"]["reference_models"] == []
+    assert facts["moa"]["reference_count"] == 0
+    assert facts["moa"]["reference_total"] == 0
+    assert facts["moa"]["failed_count"] == 0
+    assert facts["moa"]["aggregator_count"] == 1
+    receipt = _receipt_for(facts)
+    bar = _bar_for(facts)
+    assert "MoA 0+1" in bar
+    assert "MoA 0/0+1" not in bar
+    assert receipt.evidence_status == "ok"
+    assert "证据 ✓" in bar
+
+
+def test_moa_failed_reference_facts_do_not_downgrade_failed_receipt_to_partial(monkeypatch, tmp_path) -> None:
+    client, _calls = _install_fake_moa(
+        monkeypatch,
+        tmp_path,
+        refs=["ref-a"],
+        fail_refs={"ref-a"},
+    )
+
+    client.chat.completions.create(messages=[{"role": "user", "content": "q"}], tools=[])
+
+    receipt = _receipt_for(client.coordination_turn_facts(), failed=True)
+    assert receipt.evidence_status == "failed"
 
 
 def test_moa_client_clears_stale_facts_when_aggregator_raises(monkeypatch, tmp_path) -> None:
@@ -208,13 +339,13 @@ def test_moa_cache_hit_reuses_successful_labels_without_fabricating_failed_refs_
     client.chat.completions.create(messages=messages, tools=[])
     first = client.coordination_turn_facts()
     assert first["moa"]["reference_models"] == ["openrouter:ref-a"]
-    assert "MoA 1+1" in _bar_for(first)
+    assert "MoA 1/2+1" in _bar_for(first)
 
     client.chat.completions.create(messages=messages, tools=[])
     cached = client.coordination_turn_facts()
     assert cached["moa"]["reference_models"] == ["openrouter:ref-a"]
     assert "openrouter:ref-b" not in cached["moa"]["reference_models"]
-    assert "MoA 1+1" in _bar_for(cached)
+    assert "MoA 1/2+1" in _bar_for(cached)
 
     with pytest.raises(RuntimeError, match="aggregator failed"):
         client.chat.completions.create(

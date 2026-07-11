@@ -738,20 +738,24 @@ class MoAChatCompletions:
     ) -> dict[str, Any]:
         """Build private MoA completion facts from actual reference outcomes."""
 
-        reference_labels = [
-            label
-            for label, _text, accounting in reference_outputs
-            if isinstance(label, str)
-            and isinstance(accounting, _RefAccounting)
-            and accounting.succeeded is True
-        ]
+        reference_labels: list[str] = []
+        failed_count = 0
+        for label, _text, accounting in reference_outputs:
+            if isinstance(accounting, _RefAccounting) and accounting.succeeded is True:
+                if isinstance(label, str):
+                    reference_labels.append(label)
+            else:
+                failed_count += 1
+        reference_total = len(reference_outputs)
         aggregator_model = str((aggregator or {}).get("model") or "").strip()
         aggregator_count = 1 if aggregator_model else 0
         return {
             "moa": {
-                "observed": bool(reference_labels or aggregator_count),
+                "observed": bool(reference_labels or failed_count or aggregator_count),
                 "reference_models": reference_labels,
                 "reference_count": len(reference_labels),
+                "reference_total": reference_total,
+                "failed_count": failed_count,
                 "aggregator_model": aggregator_model,
                 "aggregator_count": aggregator_count,
             }
@@ -788,11 +792,32 @@ class MoAChatCompletions:
                 aggregator_count = 1 if aggregator_model.strip() else 0
         else:
             aggregator_count = 1 if aggregator_model.strip() else 0
+        if "failed_count" in moa:
+            try:
+                failed_count = int(moa.get("failed_count") or 0)
+            except Exception:
+                failed_count = 0
+        else:
+            failed_count = 0
+        if "reference_total" in moa:
+            try:
+                reference_total = int(moa.get("reference_total") or 0)
+            except Exception:
+                reference_total = reference_count + failed_count
+        else:
+            reference_total = reference_count + failed_count
         return {
             "moa": {
-                "observed": bool(moa.get("observed")) or reference_count > 0 or aggregator_count > 0,
+                "observed": (
+                    bool(moa.get("observed"))
+                    or reference_count > 0
+                    or failed_count > 0
+                    or aggregator_count > 0
+                ),
                 "reference_models": reference_models,
                 "reference_count": reference_count,
+                "reference_total": reference_total,
+                "failed_count": failed_count,
                 "aggregator_model": aggregator_model,
                 "aggregator_count": aggregator_count,
             }

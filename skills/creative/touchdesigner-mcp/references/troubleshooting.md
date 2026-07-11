@@ -133,7 +133,7 @@ n.cook(force=True)
 actual = str(n.width) + 'x' + str(n.height)
 ```
 
-## 5. Hermes Configuration
+## 5. HT AI Agent Configuration
 
 ### Config location
 
@@ -150,7 +150,7 @@ mcpServers:
 
 ### After config changes
 
-Restart the Hermes session for changes to take effect. The MCP connection is
+Restart the HT AI Agent session for changes to take effect. The MCP connection is
 established at session startup.
 
 ### Verifying MCP tools are available

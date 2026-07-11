@@ -1,7 +1,7 @@
 # Design System: Composio
 
 
-> **Hermes Agent — Implementation Notes**
+> **HT AI Agent — Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `DM Sans` | **Mono:** `JetBrains Mono`

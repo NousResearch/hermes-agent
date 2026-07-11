@@ -1,7 +1,7 @@
 # Design System: Revolut
 
 
-> **Hermes Agent — Implementation Notes**
+> **HT AI Agent — Implementation Notes**
 >
 > The original site uses proprietary fonts. For self-contained HTML output, use these CDN substitutes:
 > - **Primary:** `Inter` | **Mono:** `system monospace stack`

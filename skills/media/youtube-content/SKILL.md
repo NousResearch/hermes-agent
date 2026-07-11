@@ -14,7 +14,7 @@ Extract transcripts from YouTube videos and convert them into useful formats.
 
 ## Setup
 
-Use `uv` so the dependency is installed into the same Hermes-managed environment
+Use `uv` so the dependency is installed into the same HT AI Agent-managed environment
 that runs the helper script:
 
 ```bash

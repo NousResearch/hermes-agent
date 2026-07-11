@@ -90,6 +90,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli.worktree_safety import (
+    branch_ahead_count as _wt_branch_ahead_count,
+    detect_default_branch as _wt_detect_default_branch,
+    is_worktree_dirty as _wt_is_worktree_dirty,
+)
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -4014,6 +4019,136 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _locate_completed_worktree(
+    task_id: str, workspace_path: Optional[str]
+) -> Optional[Path]:
+    """READ-ONLY locator for a worktree task's checkout at completion time.
+
+    Mirrors the resolution order of :func:`_resolve_worktree_workspace`
+    WITHOUT materializing anything: prefer ``workspace_path`` when it names
+    an existing linked worktree; treat an existing repo-root ``workspace_path``
+    as an anchor (``<repo>/.worktrees/<task_id>``); otherwise fall back to the
+    active board's ``default_workdir`` anchor. Returns ``None`` when no
+    existing linked worktree can be found — completion NEVER creates one.
+    """
+    if workspace_path:
+        p = Path(workspace_path).expanduser()
+        if p.exists():
+            if _is_linked_worktree_checkout(p):
+                return p
+            # Anchor form: workspace_path names the repo root (create_task
+            # persists the board default_workdir verbatim for worktree cards).
+            root = _git_toplevel(p)
+            if root is not None:
+                cand = root / ".worktrees" / task_id
+                if cand.exists() and _is_linked_worktree_checkout(cand):
+                    return cand
+    board_default = (
+        read_board_metadata(get_current_board()).get("default_workdir") or ""
+    ).strip()
+    if not board_default:
+        return None
+    anchor = Path(board_default).expanduser()
+    if not anchor.is_absolute():
+        return None
+    repo_root = _git_toplevel(anchor)
+    if repo_root is None:
+        return None
+    cand = repo_root / ".worktrees" / task_id
+    if cand.exists() and _is_linked_worktree_checkout(cand):
+        return cand
+    return None
+
+
+def _worktree_repo_root(wt: Path) -> Optional[Path]:
+    """Main-repo root for a linked worktree (common dir's parent)."""
+    common = _git_common_dir(wt)
+    if common is not None and common.name == ".git":
+        return common.parent
+    return _git_toplevel(wt)
+
+
+def _run_worktree_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _collect_worktree_integration_facts(
+    task_id: str, workspace_path: Optional[str]
+) -> dict:
+    """Gather surface-don't-merge integration facts for a completing worktree task.
+
+    REQ-027 (saga decision 0004): completed worktree work is surfaced, never
+    auto-merged. Facts: repo_root, branch, head_sha, base_branch, ahead_count,
+    dirty, wip_commit, diffstat. Preserve-don't-stash: a dirty tree is first
+    committed on the task branch as ``wip(<task_id>): auto-preserve at
+    completion`` — never ``git stash`` (the stash stack is shared across all
+    worktrees of a repo). Never raises: any failure is reported via an
+    ``error`` field so completion is never blocked by git.
+    """
+    try:
+        wt = _locate_completed_worktree(task_id, workspace_path)
+        if wt is None:
+            return {
+                "error": (
+                    f"worktree for task {task_id} not found "
+                    f"(workspace_path={workspace_path!r})"
+                )
+            }
+        facts: dict[str, Any] = {
+            "repo_root": None,
+            "branch": None,
+            "head_sha": None,
+            "base_branch": None,
+            "ahead_count": None,
+            "dirty": None,
+            "wip_commit": None,
+            "diffstat": None,
+        }
+        repo_root = _worktree_repo_root(wt)
+        facts["repo_root"] = str(repo_root) if repo_root is not None else None
+        branch = _git_current_branch(wt)
+        facts["branch"] = branch
+        dirty = _wt_is_worktree_dirty(wt)
+        facts["dirty"] = dirty
+        if dirty:
+            # Preserve-don't-stash: WIP commit on the task branch.
+            add = _run_worktree_git(wt, "add", "-A")
+            commit = _run_worktree_git(
+                wt, "commit", "-m", f"wip({task_id}): auto-preserve at completion"
+            )
+            if add.returncode != 0 or commit.returncode != 0:
+                stderr = (
+                    (commit.stderr or commit.stdout or add.stderr or add.stdout or "")
+                ).strip()
+                facts["error"] = f"auto-preserve WIP commit failed: {stderr[:400]}"
+            else:
+                head = _run_worktree_git(wt, "rev-parse", "HEAD")
+                if head.returncode == 0:
+                    facts["wip_commit"] = (head.stdout or "").strip() or None
+        head = _run_worktree_git(wt, "rev-parse", "HEAD")
+        if head.returncode == 0:
+            facts["head_sha"] = (head.stdout or "").strip() or None
+        base = _wt_detect_default_branch(repo_root) if repo_root is not None else None
+        facts["base_branch"] = base
+        if repo_root is not None and branch and base:
+            try:
+                facts["ahead_count"] = _wt_branch_ahead_count(repo_root, branch, base)
+            except Exception as exc:
+                facts.setdefault("error", f"ahead_count failed: {exc}")
+            diff = _run_worktree_git(repo_root, "diff", "--stat", f"{base}...{branch}")
+            if diff.returncode == 0:
+                facts["diffstat"] = (diff.stdout or "").strip()[:800] or None
+        return facts
+    except Exception as exc:  # never let git block completion
+        return {"error": f"worktree integration surfacing failed: {exc}"}
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4119,6 +4254,28 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        # REQ-027 (saga decision 0004: surface-don't-merge): a completing
+        # worktree task surfaces integration facts — branch, HEAD, ahead
+        # count vs the default branch, dirty flag (auto-WIP-committed,
+        # never stashed), diffstat — into the closing run's metadata and a
+        # `worktree_surfaced` event. Handoff context propagates run
+        # metadata to children, so downstream cards and the operator see
+        # exactly what work exists and where; merging stays deliberate.
+        # Wrapped so a git failure can NEVER block the completion itself.
+        worktree_facts: Optional[dict] = None
+        try:
+            ws_row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if ws_row and (ws_row["workspace_kind"] or "scratch") == "worktree":
+                worktree_facts = _collect_worktree_integration_facts(
+                    task_id, ws_row["workspace_path"]
+                )
+                metadata = dict(metadata) if metadata else {}
+                metadata["worktree_integration"] = worktree_facts
+        except Exception as exc:
+            worktree_facts = {"error": f"worktree surfacing failed: {exc}"}
         run_id = _end_run(
             conn, task_id,
             outcome="completed", status="done",
@@ -4135,6 +4292,16 @@ def complete_task(
                 outcome="completed",
                 summary=summary if summary is not None else result,
                 metadata=metadata,
+            )
+        # REQ-027: audit trail for the surfaced (or failed-to-surface)
+        # worktree facts. Non-worktree tasks never emit this event.
+        if worktree_facts is not None:
+            _append_event(
+                conn,
+                task_id,
+                "worktree_surfaced",
+                worktree_facts,
+                run_id=run_id,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a

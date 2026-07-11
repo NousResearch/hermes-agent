@@ -140,6 +140,80 @@ class TestEnvAssignments:
         assert "mypassword" not in result
 
 
+class TestEnvLookupPreserved:
+    """Programmatic env var lookups must not be corrupted (issue #2852)."""
+
+    def test_os_getenv_single_quote_uppercase_key(self):
+        text = "MY_API_KEY=os.getenv('OPENAI_API_KEY')"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_getenv_lowercase_config_key(self):
+        text = "ha_token=os.getenv('HOMEASSISTANT_TOKEN')"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_getenv_double_quote(self):
+        text = 'API_TOKEN=os.getenv("MY_API_TOKEN")'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_environ_get(self):
+        text = "HA_TOKEN=os.environ.get('HOMEASSISTANT_TOKEN')"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_os_environ_bracket(self):
+        text = "MY_SECRET=os.environ['MY_SECRET']"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_process_env(self):
+        text = "api_key=process.env.API_KEY"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_real_env_value_still_redacted(self):
+        text = "HOMEASSISTANT_TOKEN=eyJhbGciOiJIUzI1NiJ9.abc123.xyz"
+        result = redact_sensitive_text(text, force=True)
+        assert "eyJhbGciOiJIUzI1NiJ9" not in result
+
+    def test_real_lowercase_value_still_redacted(self):
+        text = "password=hunter2hunter2"
+        result = redact_sensitive_text(text, force=True)
+        assert "hunter2hunter2" not in result
+
+    def test_multiline_prose_with_code_snippet(self):
+        text = """Set it up like this:
+    HA_TOKEN=os.getenv('HOMEASSISTANT_TOKEN')
+    if not HA_TOKEN:
+        raise ValueError('Missing credentials')"""
+        result = redact_sensitive_text(text, force=True)
+        assert "os.getenv('HOMEASSISTANT_TOKEN')" in result
+
+    def test_json_field_os_getenv_preserved(self):
+        # _redact_env has the env-lookup exception; _redact_json (a separate
+        # closure, JSON key: "value" syntax) did not, and mangled this into
+        # '"apiKey": "os.get...EY')"'.
+        text = '{"apiKey": "os.getenv(\'OPENAI_API_KEY\')"}'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_json_field_os_environ_get_preserved(self):
+        text = '{"token": "os.environ.get(\'MY_TOKEN\')"}'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_json_field_real_value_still_redacted(self):
+        text = '{"apiKey": "sk-realSecretValue1234567890"}'
+        result = redact_sensitive_text(text, force=True)
+        assert "sk-realSecretValue1234567890" not in result
+
+    def test_yaml_field_os_getenv_preserved(self):
+        # Same exception missing from _redact_yaml (unquoted key: value
+        # syntax) — mangled 'api_key: os.getenv("OPENAI_API_KEY")' into
+        # 'api_key: os.get...EY")'.
+        text = 'api_key: os.getenv("OPENAI_API_KEY")'
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_yaml_field_real_value_still_redacted(self):
+        text = "api_key: sk-realSecretValue1234567890"
+        result = redact_sensitive_text(text, force=True)
+        assert "sk-realSecretValue1234567890" not in result
+
+
 class TestJsonFields:
     def test_json_api_key(self):
         text = '{"apiKey": "sk-proj-abc123def456ghi789jkl012"}'

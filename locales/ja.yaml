@@ -107,6 +107,8 @@ gateway:
     no_pending:            "拒否待ちのコマンドはありません。"
     denied_singular:       "❌ コマンドを拒否しました。"
     denied_plural:         "❌ コマンドを拒否しました ({count} 件)。"
+    denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
+    denied_reason_plural:  "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"

@@ -621,7 +621,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     return resolved_command, resolved_env
 
 
-def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
+def _wrap_stdio_command_with_watchdog(command: str, args: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     """Wrap a stdio MCP server command in the parent-death watchdog supervisor.
 
     See ``tools/mcp_stdio_watchdog.py`` module docstring for the full
@@ -637,18 +637,12 @@ def _wrap_command_with_watchdog(command: str, args: list) -> tuple[str, list]:
         return command, args
     try:
         my_pid = os.getpid()
-        try:
-            import psutil
-            create_time = psutil.Process(my_pid).create_time()
-        except ImportError:
-            create_time = time.time()
     except Exception:
         # Never let watchdog bookkeeping failure block a real MCP connection.
         return command, args
     watchdog_args = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp_stdio_watchdog.py"),
         "--ppid", str(my_pid),
-        "--create-time", repr(create_time),
         "--",
         command,
         *args,

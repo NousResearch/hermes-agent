@@ -40,7 +40,7 @@ fast and can't itself become a resource leak.
 Usage (see ``tools/mcp_tool.py::_run_stdio``)::
 
     python3 -m tools.mcp_stdio_watchdog \\
-        --ppid <original_parent_pid> --create-time <original_parent_create_time> \\
+        --ppid <original_parent_pid> \\
         -- <real_command> <arg1> <arg2> ...
 """
 
@@ -63,26 +63,22 @@ _POLL_INTERVAL_S = 2.0
 _TERM_GRACE_S = 3.0
 
 
-def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getppid) -> bool:
-    """Mirrors ``tui_gateway.slash_worker._is_orphaned`` exactly.
+def _is_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
+    """Detect if the original parent process is gone.
 
-    True once the process that spawned us is gone. Never trusts a bare
-    ``getppid() == 1`` check (Linux reparents orphans to a subreaper, not
-    always PID 1), and guards against PID reuse via the recorded creation
-    time of the original parent.
+    For a direct POSIX child, checking PPID equality is sufficient:
+    when the original parent exits, this process is reparented to a
+    different PID (init or subreaper). PID reuse attacks are not possible
+    because we are a direct child of the original parent — the kernel
+    cannot reparent this existing watchdog to a new process with the same
+    PID as the original parent without breaking the parent-child chain.
+
+    The historical create_time check was removed because psutil's public
+    Process.create_time() value is not stable across system clock changes
+    (psutil issue #2526), causing false-positive orphan detection on
+    WSL2 and other environments where the clock may drift.
     """
-    if getppid() != original_ppid:
-        return True
-    if psutil is None:
-        # No reliable staleness check available; fall back to the ppid
-        # comparison alone (still catches the common case).
-        return False
-    try:
-        if not psutil.pid_exists(original_ppid):
-            return True
-        return psutil.Process(original_ppid).create_time() != parent_create_time
-    except psutil.Error:
-        return True
+    return getppid() != original_ppid
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
@@ -118,9 +114,9 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
             continue
 
 
-def _watchdog_loop(proc: subprocess.Popen, original_ppid: int, parent_create_time: float) -> None:
+def _watchdog_loop(proc: subprocess.Popen, original_ppid: int) -> None:
     while proc.poll() is None:
-        if _is_orphaned(original_ppid, parent_create_time):
+        if _is_orphaned(original_ppid):
             _terminate_process_group(proc)
             return
         time.sleep(_POLL_INTERVAL_S)
@@ -131,7 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         description="Parent-death watchdog for a stdio MCP subprocess.",
     )
     parser.add_argument("--ppid", type=int, required=True)
-    parser.add_argument("--create-time", type=float, required=True)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
 
@@ -168,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
 
     watchdog = threading.Thread(
         target=_watchdog_loop,
-        args=(proc, args.ppid, args.create_time),
+        args=(proc, args.ppid),
         daemon=True,
     )
     watchdog.start()

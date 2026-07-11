@@ -207,12 +207,32 @@ export type Terminal = {
   stderr: Writable
 }
 
+// -- PTY readiness state (for WebSocket handshake) --
+// When the client receives a 'pty_ready' message from the server it calls setPtyReady().
+// Until then, any writeDiffToTerminal() calls are queued and flushed once ready.
+let ptyReady = false
+const pendingDiffs: Array<{ terminal: Terminal; diff: Diff; skipSyncMarkers: boolean; onDrain?: () => void }> = []
+
+export function setPtyReady(): void {
+  ptyReady = true
+  for (const p of pendingDiffs) {
+    writeDiffToTerminal(p.terminal, p.diff, p.skipSyncMarkers, p.onDrain)
+  }
+  pendingDiffs.length = 0
+}
+
 export function writeDiffToTerminal(
   terminal: Terminal,
   diff: Diff,
   skipSyncMarkers = false,
   onDrain?: () => void
 ): { bytes: number; backpressure: boolean } {
+  // If the PTY is not yet ready, queue the diff for later
+  if (!ptyReady) {
+    pendingDiffs.push({ terminal, diff, skipSyncMarkers, onDrain })
+    return { bytes: 0, backpressure: false }
+  }
+
   // No output if there are no patches
   if (diff.length === 0) {
     return { bytes: 0, backpressure: false }

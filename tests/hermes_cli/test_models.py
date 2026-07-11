@@ -1,6 +1,5 @@
 """Tests for the hermes_cli models module."""
 
-import urllib.request
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
@@ -71,7 +70,7 @@ class TestFetchOpenRouterModels:
                 return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
@@ -83,7 +82,7 @@ class TestFetchOpenRouterModels:
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == OPENROUTER_MODELS
@@ -128,7 +127,10 @@ class TestFetchOpenRouterModels:
             ],
         )
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
@@ -162,7 +164,7 @@ class TestFetchOpenRouterModels:
                 )
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
@@ -781,7 +783,7 @@ class TestNousRecommendedModels:
     def test_fetch_caches_per_portal_url(self):
         from hermes_cli.models import fetch_nous_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
             a = fetch_nous_recommended_models("https://portal.example.com")
             b = fetch_nous_recommended_models("https://portal.example.com")
         assert a == self._SAMPLE_PAYLOAD
@@ -791,21 +793,21 @@ class TestNousRecommendedModels:
     def test_fetch_cache_is_keyed_per_portal(self):
         from hermes_cli.models import fetch_nous_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
             fetch_nous_recommended_models("https://portal.example.com")
             fetch_nous_recommended_models("https://portal.staging-nousresearch.com")
         assert mock_urlopen.call_count == 2  # different portals → separate fetches
 
     def test_fetch_returns_empty_on_network_failure(self):
         from hermes_cli.models import fetch_nous_recommended_models
-        with patch("urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=OSError("boom")):
             result = fetch_nous_recommended_models("https://portal.example.com")
         assert result == {}
 
     def test_fetch_force_refresh_bypasses_cache(self):
         from hermes_cli.models import fetch_nous_recommended_models
         mock_cm = self._mock_urlopen(self._SAMPLE_PAYLOAD)
-        with patch("urllib.request.urlopen", return_value=mock_cm) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_cm) as mock_urlopen:
             fetch_nous_recommended_models("https://portal.example.com")
             fetch_nous_recommended_models("https://portal.example.com", force_refresh=True)
         assert mock_urlopen.call_count == 2
@@ -971,43 +973,3 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
-
-
-class TestModelCatalogRedirectCredentialStripping:
-    def test_cross_host_redirect_strips_provider_credentials(self):
-        req = urllib.request.Request("https://models.example.test/v1/models")
-        req.add_header("Authorization", "Bearer sk-model-secret")
-        req.add_header("x-api-key", "anthropic-secret")
-        req.add_header("Cookie", "session=secret")
-        req.add_header("User-Agent", "hermes-test")
-
-        handler = _models_mod._StripCredentialRedirectHandler("models.example.test")
-        redirected = handler.redirect_request(
-            req, None, 302, "Found", {}, "https://attacker.example.test/leak"
-        )
-
-        redirected_headers = {
-            key.lower(): value
-            for key, value in redirected.header_items()
-        }
-        assert "authorization" not in redirected_headers
-        assert "x-api-key" not in redirected_headers
-        assert "cookie" not in redirected_headers
-        assert redirected_headers["user-agent"] == "hermes-test"
-
-    def test_same_host_redirect_preserves_provider_credentials(self):
-        req = urllib.request.Request("https://models.example.test/v1/models")
-        req.add_header("Authorization", "Bearer sk-model-secret")
-        req.add_header("x-api-key", "anthropic-secret")
-
-        handler = _models_mod._StripCredentialRedirectHandler("models.example.test")
-        redirected = handler.redirect_request(
-            req, None, 302, "Found", {}, "https://models.example.test/v1/models/"
-        )
-
-        redirected_headers = {
-            key.lower(): value
-            for key, value in redirected.header_items()
-        }
-        assert redirected_headers["authorization"] == "Bearer sk-model-secret"
-        assert redirected_headers["x-api-key"] == "anthropic-secret"

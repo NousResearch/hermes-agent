@@ -194,8 +194,9 @@ class ProviderProfile:
             url = effective_base.rstrip("/") + "/models"
 
         import json
-        import urllib.parse
         import urllib.request
+
+        from hermes_cli.urllib_security import open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
@@ -208,37 +209,8 @@ class ProviderProfile:
         for k, v in self.default_headers.items():
             req.add_header(k, v)
 
-        # urllib keeps every header — including Authorization — when it
-        # follows a redirect, so a catalog endpoint answering 3xx to a
-        # different origin would receive the provider API key.  Drop
-        # credential headers on cross-origin redirects.  Origin = scheme +
-        # hostname + effective port: a different port on the same host can
-        # be a different service, so it must not inherit credentials either.
-        sensitive = {"authorization", "x-api-key", "api-key", "x-goog-api-key", "cookie"}
-
-        def _origin(target_url: str) -> tuple:
-            parsed = urllib.parse.urlparse(target_url)
-            scheme = (parsed.scheme or "").lower()
-            port = parsed.port or {"http": 80, "https": 443}.get(scheme)
-            return scheme, (parsed.hostname or "").lower(), port
-
-        original_origin = _origin(url)
-
-        class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, redirected, fp, code, msg, hdrs, newurl):
-                new_req = super().redirect_request(
-                    redirected, fp, code, msg, hdrs, newurl
-                )
-                if new_req is not None and _origin(newurl) != original_origin:
-                    for header in list(new_req.headers):
-                        if header.lower() in sensitive:
-                            new_req.remove_header(header)
-                return new_req
-
-        opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect())
-
         try:
-            with opener.open(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]

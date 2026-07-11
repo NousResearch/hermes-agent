@@ -8,7 +8,8 @@ import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Locale, useI18n } from '@/i18n'
+import { zhCategoryLabel, zhHantCategoryLabel } from '@/lib/category-labels-zh'
 import { zhSkillDescription } from '@/lib/skill-descriptions-zh'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -36,6 +37,25 @@ function skillDescription(skill: SkillInfo, zh: boolean): string {
   const original = asText(skill.description)
 
   return zh ? zhSkillDescription(skill.name, original) : original
+}
+
+// Category tab / group-header label. Mirror of skillDescription: in Simplified
+// or Traditional Chinese we swap in OUR whitelist label (lib/category-labels-zh)
+// keyed by the runtime category string, falling back to prettyName() (the
+// title-cased English folder name) for unmapped categories and every other
+// locale.
+function categoryLabel(key: string, locale: Locale): string {
+  const fallback = prettyName(key)
+
+  if (locale === 'zh') {
+    return zhCategoryLabel(key, fallback)
+  }
+
+  if (locale === 'zh-hant') {
+    return zhHantCategoryLabel(key, fallback)
+  }
+
+  return fallback
 }
 
 function filteredSkills(skills: SkillInfo[], query: string, category: string | null, zh: boolean): SkillInfo[] {
@@ -221,7 +241,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 key={category.key}
                 onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
               >
-                {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
+                {categoryLabel(category.key, locale)} <TextTabMeta>{category.count}</TextTabMeta>
               </TextTab>
             ))}
           </>
@@ -269,7 +289,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 {skillGroups.map(([category, list]) => (
                   <div className="space-y-1" key={category}>
                     {activeCategory === null && (
-                      <div className="px-1 pb-0.5 text-xs font-medium text-muted-foreground">{prettyName(category)}</div>
+                      <div className="px-1 pb-0.5 text-xs font-medium text-muted-foreground">{categoryLabel(category, locale)}</div>
                     )}
                     <div className="grid gap-x-6 gap-y-0.5 sm:grid-cols-2">
                       {list.map(skill => (

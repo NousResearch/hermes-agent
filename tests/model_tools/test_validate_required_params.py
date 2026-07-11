@@ -6,9 +6,10 @@ error message instead of a confusing KeyError deep inside a tool handler.
 """
 
 import json
-import uuid
+import types
 
-from tools.registry import registry, ToolRegistry
+from hermes_cli.plugins import PluginManager
+from tools.registry import ToolRegistry
 
 
 def _make_test_registry():
@@ -16,7 +17,7 @@ def _make_test_registry():
     return ToolRegistry()
 
 
-def _register_test_tool(reg, name, required, properties=None):
+def _register_test_tool(reg, name, required, properties=None, tool_handler=None):
     """Register a minimal tool schema in the given registry."""
     properties = properties or {}
     schema = {
@@ -29,14 +30,16 @@ def _register_test_tool(reg, name, required, properties=None):
         },
     }
 
-    def _noop_handler(*args, **kwargs):
-        return '{"ok": true}'
+    if tool_handler is None:
+        def _noop_handler(*args, **kwargs):
+            return '{"ok": true}'
+        tool_handler = _noop_handler
 
     reg.register(
         name=name,
         toolset="test",
         schema=schema,
-        handler=_noop_handler,
+        handler=tool_handler,
     )
     return schema
 
@@ -179,3 +182,136 @@ class TestValidateRequiredParams:
             assert result == []
         finally:
             model_tools.registry = orig
+
+
+class TestRequiredParamDispatchBoundaries:
+    """Integration coverage for middleware-adjusted effective arguments."""
+
+    @staticmethod
+    def _install_middleware(monkeypatch, **callbacks):
+        manager = PluginManager()
+        manager._middleware = {
+            kind: [callback] for kind, callback in callbacks.items()
+        }
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    def test_request_middleware_can_add_required_param(self, monkeypatch):
+        import model_tools
+
+        calls = []
+
+        def handler(args, **kwargs):
+            calls.append(args)
+            return json.dumps({"ok": True, "args": args})
+
+        reg = _make_test_registry()
+        _register_test_tool(
+            reg,
+            "request_adds_required",
+            ["command"],
+            tool_handler=handler,
+        )
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        def add_command(**kwargs):
+            return {"args": {**kwargs["args"], "command": "printf ok"}}
+
+        self._install_middleware(monkeypatch, tool_request=add_command)
+
+        result = json.loads(model_tools.handle_function_call("request_adds_required", {}))
+
+        assert result == {"ok": True, "args": {"command": "printf ok"}}
+        assert calls == [{"command": "printf ok"}]
+
+    def test_execution_middleware_cannot_remove_required_param(self, monkeypatch):
+        import model_tools
+
+        calls = []
+
+        def handler(args, **kwargs):
+            calls.append(args)
+            return '{"ok": true}'
+
+        reg = _make_test_registry()
+        _register_test_tool(
+            reg,
+            "execution_removes_required",
+            ["command"],
+            tool_handler=handler,
+        )
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        def remove_command(**kwargs):
+            return kwargs["next_call"]({})
+
+        self._install_middleware(monkeypatch, tool_execution=remove_command)
+
+        result = json.loads(model_tools.handle_function_call(
+            "execution_removes_required", {"command": "printf ok"}
+        ))
+
+        assert "Missing required parameter(s): command" in result["error"]
+        assert calls == []
+
+    def test_sequential_agent_tool_validates_final_args(self, monkeypatch):
+        import model_tools
+        from agent.tool_executor import _run_agent_tool_execution_middleware
+
+        calls = []
+        reg = _make_test_registry()
+        _register_test_tool(reg, "memory", ["target"])
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        def remove_target(**kwargs):
+            return kwargs["next_call"]({})
+
+        self._install_middleware(monkeypatch, tool_execution=remove_target)
+        agent = types.SimpleNamespace(
+            session_id="session",
+            _current_turn_id="turn",
+            _current_api_request_id="request",
+        )
+
+        result, observed_args = _run_agent_tool_execution_middleware(
+            agent,
+            function_name="memory",
+            function_args={"target": "memory"},
+            effective_task_id="task",
+            tool_call_id="call",
+            execute=lambda args: calls.append(args) or '{"ok": true}',
+        )
+
+        assert "Missing required parameter(s): target" in json.loads(result)["error"]
+        assert observed_args == {}
+        assert calls == []
+
+    def test_concurrent_agent_tool_validates_final_args(self, monkeypatch):
+        import model_tools
+        from agent.agent_runtime_helpers import invoke_tool
+
+        reg = _make_test_registry()
+        _register_test_tool(reg, "memory", ["target"])
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        def remove_target(**kwargs):
+            return kwargs["next_call"]({})
+
+        self._install_middleware(monkeypatch, tool_execution=remove_target)
+        agent = types.SimpleNamespace(
+            session_id="session",
+            _current_turn_id="turn",
+            _current_api_request_id="request",
+            _memory_manager=None,
+            _memory_store=None,
+            valid_tool_names=set(),
+        )
+
+        result = invoke_tool(
+            agent,
+            "memory",
+            {"target": "memory"},
+            "task",
+            tool_call_id="call",
+        )
+
+        assert "Missing required parameter(s): target" in json.loads(result)["error"]

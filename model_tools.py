@@ -970,17 +970,15 @@ def validate_required_params(
     in *args*.  Returns an empty list when all required params are present
     (or when no schema / no required array exists for the tool).
 
-    This runs after ``coerce_tool_args`` so type-mismatched values have already
-    been normalized — it only catches genuinely *missing* params that the model
-    omitted from its tool call, which currently surfaces as a confusing
-    ``KeyError`` or default-value-when-none-existed deep inside the tool
-    handler.
+    Callers validate at the final execution boundary. Registry calls have
+    already applied initial argument coercion by then, and request middleware
+    may supply required fields while execution middleware cannot remove them
+    undetected. This only catches genuinely *missing* params that would
+    otherwise surface as a confusing ``KeyError`` or default-value-when-none-
+    existed deep inside the tool handler.
     """
-    if not isinstance(args, dict) or not args and args != {}:
-        # args could be {} (valid: no required params or all optional).
-        # Only skip on non-dict.
-        if not isinstance(args, dict):
-            return []
+    if not isinstance(args, dict):
+        return []
     schema = registry.get_schema(tool_name)
     if not schema:
         return []
@@ -988,6 +986,19 @@ def validate_required_params(
     if not required or not isinstance(required, list):
         return []
     return [r for r in required if r not in args]
+
+
+def required_params_error(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Return the model-facing missing-required-parameter error, if any."""
+    missing = validate_required_params(tool_name, args)
+    if not missing:
+        return None
+    hint = (
+        f"Missing required parameter(s): {', '.join(missing)}. "
+        "Please retry with all required parameters."
+    )
+    logger.info("validate_required_params: %s missing %s", tool_name, missing)
+    return json.dumps({"error": hint}, ensure_ascii=False)
 
 
 def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optional[str]]:
@@ -1095,22 +1106,6 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
-
-    # Validate required parameters are present before dispatching.
-    # coerce_tool_args handles *type* mismatches; this catches genuinely
-    # *missing* required params that would otherwise surface as confusing
-    # KeyError or None-default behaviour deep inside the tool handler.
-    _missing = validate_required_params(function_name, function_args)
-    if _missing:
-        _hint = (
-            f"Missing required parameter(s): {', '.join(_missing)}. "
-            f"Please retry with all required parameters."
-        )
-        logger.info(
-            "validate_required_params: %s missing %s",
-            function_name, _missing,
-        )
-        return json.dumps({"error": _hint}, ensure_ascii=False)
 
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
@@ -1308,6 +1303,9 @@ def handle_function_call(
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    validation_error = required_params_error(function_name, next_args)
+                    if validation_error is not None:
+                        return validation_error
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1316,6 +1314,9 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    validation_error = required_params_error(function_name, next_args)
+                    if validation_error is not None:
+                        return validation_error
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,

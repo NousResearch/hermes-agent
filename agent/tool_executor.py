@@ -285,6 +285,11 @@ def _run_agent_tool_execution_middleware(
     def _execute(next_args: dict) -> Any:
         nonlocal observed_args
         observed_args = next_args if isinstance(next_args, dict) else function_args
+        from model_tools import required_params_error
+
+        validation_error = required_params_error(function_name, observed_args)
+        if validation_error is not None:
+            return validation_error
         return execute(observed_args)
 
     from hermes_cli.middleware import run_tool_execution_middleware

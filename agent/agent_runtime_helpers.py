@@ -2291,10 +2291,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     from hermes_cli.middleware import run_tool_execution_middleware
 
+    def _execute_final(next_args: dict) -> Any:
+        effective_args = next_args if isinstance(next_args, dict) else function_args
+        if agent_runtime_owns_post_tool_hook(agent, function_name):
+            from model_tools import required_params_error
+
+            validation_error = required_params_error(function_name, effective_args)
+            if validation_error is not None:
+                return _finish_agent_tool(validation_error, effective_args)
+        return _execute(effective_args)
+
     return run_tool_execution_middleware(
         function_name,
         function_args,
-        lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
+        _execute_final,
         original_args=function_args,
         task_id=effective_task_id or "",
         session_id=getattr(agent, "session_id", "") or "",

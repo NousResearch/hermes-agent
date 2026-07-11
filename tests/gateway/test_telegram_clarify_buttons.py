@@ -98,10 +98,11 @@ class TestTelegramSendClarify:
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs["chat_id"] == 12345
         assert "Which option?" in kwargs["text"]
-        # Full option text rendered in the message body (not just buttons)
-        assert "1. alpha" in kwargs["text"]
-        assert "2. beta" in kwargs["text"]
-        assert "3. gamma" in kwargs["text"]
+        # Choices are rendered only as inline buttons, not duplicated as a
+        # numbered text list in the message body.
+        assert "1. alpha" not in kwargs["text"]
+        assert "2. beta" not in kwargs["text"]
+        assert "3. gamma" not in kwargs["text"]
         # InlineKeyboardMarkup with N+1 buttons (3 choices + Other)
         markup = kwargs["reply_markup"]
         assert markup is not None
@@ -146,9 +147,8 @@ class TestTelegramSendClarify:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_long_choice_rendered_in_body_not_truncated(self):
-        """Long choice text appears in full in the message body;
-        button labels stay short numeric (1, 2, …)."""
+    async def test_long_choice_not_duplicated_in_body(self):
+        """Long choices are not duplicated in the body; button labels truncate."""
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 102
@@ -164,11 +164,8 @@ class TestTelegramSendClarify:
         )
         assert result.success is True
         kwargs = adapter._bot.send_message.call_args[1]
-        # The full long choice text appears in the message body
-        assert long_choice in kwargs["text"]
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        # The full long choice text should not be duplicated in the message body.
+        assert long_choice not in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

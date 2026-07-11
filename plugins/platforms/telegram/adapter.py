@@ -4708,19 +4708,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            text = f"❓ {_html.escape(question)}"
+            # Keep clarify prompts visually close to the agent-provided card.
+            # Do not prepend emoji or render a numbered duplicate of the inline
+            # buttons: Telegram already shows the choices as actual buttons, and
+            # workflows like thesis review need compact metadata cards.
+            text = _html.escape(question)
             thread_id = self._metadata_thread_id(metadata)
-
-            if choices:
-                # Render full option text in the message body so mobile
-                # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
-                option_lines = "\n".join(
-                    f"{i + 1}. {_html.escape(str(c))}"
-                    for i, c in enumerate(choices)
-                )
-                text += f"\n\n{option_lines}"
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
@@ -4733,10 +4726,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
                 # short.
                 rows = []
-                for idx in range(len(choices)):
+                for idx, choice in enumerate(choices):
+                    label = str(choice).strip() or str(idx + 1)
+                    # Telegram clients truncate long button labels visually;
+                    # keep labels compact while preserving exact short actions.
+                    if len(label) > 40:
+                        label = label[:37].rstrip() + "…"
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            label,
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])
@@ -4764,6 +4762,66 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_review_card(
+        self,
+        chat_id: str,
+        card_id: str,
+        kind: str,
+        thesis: str,
+        body: str,
+        person: str = "",
+        url: str = "",
+        source: str = "",
+        thread_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a persistent Antidote thesis-review card with rq: callbacks."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            from tools import review_queue_cards as rq
+
+            metadata = metadata or {}
+            thread_id = thread_id or self._metadata_thread_id(metadata)
+            card = rq.create_card(
+                card_id=card_id,
+                kind=kind,
+                thesis=thesis,
+                body=body,
+                person=person,
+                url=url,
+                source=source,
+                telegram_chat_id=str(chat_id),
+                telegram_thread_id=str(thread_id or ""),
+            )
+            rows = [
+                [InlineKeyboardButton(label, callback_data=cb) for label, cb in row]
+                for row in rq.build_button_rows(card)
+            ]
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": _html.escape(rq.render_card_text(card)),
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": InlineKeyboardMarkup(rows) if rows else None,
+                **self._link_preview_kwargs(),
+            }
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            rq.set_telegram_message_id(card_id, str(msg.message_id))
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_review_card failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     async def send_model_picker(
@@ -5313,6 +5371,221 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+    def _review_queue_ops_target(self, source_chat_id: str = "") -> tuple[Any, Optional[str]]:
+        target = os.getenv("REVIEW_QUEUE_OPS_TARGET", "telegram:-1003915682412:63").strip()
+        if target.startswith("telegram:"):
+            target = target.split(":", 1)[1]
+        parts = target.split(":") if target else []
+        chat_id = parts[0] if parts and parts[0] else (source_chat_id or "-1003915682412")
+        thread_id = parts[1] if len(parts) > 1 and parts[1] else None
+        chat_value: Any = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+        return chat_value, thread_id
+
+    async def _send_review_queue_ops_notification(self, card: Dict[str, Any], *, source_chat_id: str = "") -> None:
+        if not self._bot:
+            return
+        kind = str(card.get("kind") or "").strip().lower()
+        status = str(card.get("status") or "").strip().lower()
+        if kind not in {"evidence", "expert"} or status not in {"accepted_no_note", "elaborated"}:
+            return
+        title = card.get("person") or card.get("id") or "candidate"
+        path = card.get("obsidian_path") or ""
+        text = (
+            f"✅ Review Queue accepted {kind}: {title}\n"
+            f"Card: {card.get('id') or ''}\n"
+            f"Thesis: {card.get('thesis') or ''}"
+        )
+        if path:
+            text += f"\nObsidian: {path}"
+        try:
+            chat_id, thread_id = self._review_queue_ops_target(source_chat_id)
+            kwargs: Dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                **self._notification_kwargs(None),
+                **self._link_preview_kwargs(),
+            }
+            if thread_id:
+                kwargs["message_thread_id"] = int(thread_id) if str(thread_id).isdigit() else thread_id
+            await self._bot.send_message(**kwargs)
+        except Exception as exc:
+            logger.debug("[%s] review-card Ops notification failed: %s", self.name, exc)
+
+    async def _handle_review_queue_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id=None,
+        query_chat_type=None,
+        query_thread_id=None,
+        query_user_name=None,
+    ) -> None:
+        """Resolve persistent Antidote review-card inline buttons."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid review-card action.")
+            return
+        _, action, card_id = parts
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to review this card.")
+            return
+
+        try:
+            from tools import review_queue_cards as rq
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            card = rq.resolve_card(card_id, action, user=user_display)
+            rows = [
+                [InlineKeyboardButton(label, callback_data=cb) for label, cb in row]
+                for row in rq.build_button_rows(card)
+            ]
+            await query.answer(text=rq.callback_label(action, card)[:200])
+            try:
+                kind = str(card.get("kind") or "").strip().lower()
+                status = str(card.get("status") or "").strip().lower()
+                delete_final_evidence_or_expert = (
+                    kind in {"evidence", "expert"}
+                    and status in {"denied", "denied_with_note", "accepted_no_note", "elaborated"}
+                )
+                delete_skipped_job_or_application = (
+                    kind in {"job", "startup"}
+                    and status == "skipped"
+                )
+                if (delete_final_evidence_or_expert or delete_skipped_job_or_application) and query.message:
+                    # Keep the durable DB row so future review-queue production won't
+                    # re-send this candidate, but only remove the noisy Telegram card
+                    # after a final decision is resolved.
+                    await query.message.delete()
+                else:
+                    await query.edit_message_text(
+                        text=_html.escape(rq.render_card_text(card)),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(rows) if rows else None,
+                        **self._link_preview_kwargs(),
+                    )
+            except Exception as exc:
+                logger.warning("[%s] review-card message update/delete failed: %s", self.name, exc)
+            await self._send_review_queue_ops_notification(
+                card,
+                source_chat_id=str(query_chat_id or (getattr(query.message, "chat_id", "") if query.message else "")),
+            )
+        except KeyError:
+            await query.answer(text="Review card not found.")
+        except Exception as exc:
+            logger.error("[%s] review-card callback failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Review-card action failed.")
+
+    async def _handle_flat_hunt_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id=None,
+        query_chat_type=None,
+        query_thread_id=None,
+        query_user_name=None,
+    ) -> None:
+        """Resolve Zurich flat-hunt inline buttons and draft outreach on interest."""
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer(text="Invalid flat-hunt action.")
+            return
+        _, action, listing_id = parts
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to review this flat.")
+            return
+
+        import sqlite3
+        from pathlib import Path
+
+        db_path = Path(os.getenv("FLAT_HUNT_DB", str(Path.home() / ".hermes" / "flat_hunt.db"))).expanduser()
+        con = sqlite3.connect(db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+            if row is None:
+                await query.answer(text="Flat card not found.")
+                return
+            user_display = getattr(query.from_user, "first_name", "User")
+            status = "interested" if action == "y" else "skipped" if action == "n" else "needs_rescore"
+            draft = ""
+            if status == "interested":
+                title = row["title"] or "the apartment"
+                address = row["address"] or ""
+                agent = row["agent_name"] or "the leasing team"
+                object_line = title
+                details = []
+                if address:
+                    details.append(address)
+                if row["rooms"]:
+                    details.append(f"{row['rooms']} rooms")
+                if row["price_chf"]:
+                    details.append(f"CHF {int(row['price_chf']):,}/month".replace(",", "'"))
+                if row["url"]:
+                    details.append(row["url"])
+                if details:
+                    object_line += " (" + "; ".join(str(x) for x in details) + ")"
+                draft = (
+                    f"Subject: Interesse an {title}\n\n"
+                    f"Dear {agent},\n\n"
+                    f"I am interested in the following rental object: {object_line}.\n\n"
+                    "Could you please let me know whether it is still available and what the next steps are for applying or arranging a viewing?\n\n"
+                    "Best regards,\n"
+                    "Antidote"
+                )
+            con.execute(
+                "UPDATE listings SET status = ?, decided_by = ?, outreach_draft = ?, updated_at = ? WHERE id = ?",
+                (status, user_display, draft, datetime.now(tz=timezone.utc).isoformat(timespec="seconds"), listing_id),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        label = "✅ Interested — outreach drafted" if status == "interested" else "❌ Skipped"
+        await query.answer(text=label)
+        try:
+            if status == "skipped" and query.message:
+                # Keep the DB row as skipped so the crawler never re-flags this URL,
+                # but remove the noisy card from the Telegram topic.
+                await query.message.delete()
+            else:
+                original_text = (query.message.text or "") if query.message else ""
+                await query.edit_message_text(text=f"{original_text}\n\n— {label} by {user_display}", reply_markup=None)
+        except Exception:
+            pass
+        if status == "interested" and draft and query.message:
+            send_kwargs: Dict[str, Any] = {
+                "chat_id": int(query.message.chat_id),
+                "text": f"Draft outreach for {listing_id}:\n\n{draft}",
+                **self._link_preview_kwargs(),
+            }
+            thread_id = getattr(query.message, "message_thread_id", None)
+            if thread_id is not None:
+                send_kwargs.update(
+                    self._thread_kwargs_for_send(
+                        str(query.message.chat_id),
+                        str(thread_id),
+                        {"thread_id": str(thread_id)},
+                        reply_to_mode=self._reply_to_mode,
+                    )
+                )
+            await self._send_message_with_thread_fallback(**send_kwargs)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -5333,6 +5606,30 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Persistent review-queue callbacks (rq:action:card_id) ---
+        if data.startswith("rq:"):
+            await self._handle_review_queue_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
+        # --- Zurich flat-hunt callbacks (fh:action:listing_id) ---
+        if data.startswith("fh:"):
+            await self._handle_flat_hunt_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---
@@ -7500,6 +7797,77 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _capture_review_queue_note_if_pending(self, message: Message) -> bool:
+        """Consume the next topic text as a review-card Elaborate note, if pending."""
+        text = (getattr(message, "text", None) or "").strip()
+        if not text:
+            return False
+        chat = getattr(message, "chat", None)
+        user = getattr(message, "from_user", None)
+        chat_id = str(getattr(chat, "id", "") or "")
+        thread_id = str(getattr(message, "message_thread_id", "") or "")
+        user_name = getattr(user, "full_name", None) or getattr(user, "first_name", None) or ""
+        user_id = str(getattr(user, "id", "") or "")
+        chat_type = getattr(chat, "type", None)
+        if not chat_id:
+            return False
+        if not self._is_callback_user_authorized(
+            user_id,
+            chat_id=chat_id,
+            chat_type=str(chat_type) if chat_type is not None else None,
+            thread_id=thread_id or None,
+            user_name=user_name or None,
+        ):
+            return False
+        try:
+            from tools import review_queue_cards as rq
+
+            card = rq.capture_pending_note(
+                telegram_chat_id=chat_id,
+                telegram_thread_id=thread_id,
+                user=user_name,
+                note=text,
+            )
+        except Exception as exc:
+            logger.warning("[%s] failed to capture review-card note: %s", self.name, exc)
+            return False
+        if not card:
+            return False
+        try:
+            if self._bot and card.get("telegram_message_id"):
+                kind = str(card.get("kind") or "").strip().lower()
+                status = str(card.get("status") or "").strip().lower()
+                chat_id_value = int(chat_id) if chat_id.lstrip("-").isdigit() else chat_id
+                message_id_value = int(card["telegram_message_id"])
+                if status in {"denied_with_note", "elaborated"} and kind in {"evidence", "expert"}:
+                    await self._bot.delete_message(chat_id=chat_id_value, message_id=message_id_value)
+                else:
+                    rows = [
+                        [InlineKeyboardButton(label, callback_data=cb) for label, cb in row]
+                        for row in rq.build_button_rows(card)
+                    ]
+                    await self._bot.edit_message_text(
+                        chat_id=chat_id_value,
+                        message_id=message_id_value,
+                        text=_html.escape(rq.render_card_text(card)),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(rows) if rows else None,
+                        **self._link_preview_kwargs(),
+                    )
+            if self._bot:
+                kwargs: Dict[str, Any] = {
+                    "chat_id": int(chat_id) if chat_id.lstrip("-").isdigit() else chat_id,
+                    "text": f"Captured note for review card {card['id']}.",
+                    **self._notification_kwargs(None),
+                }
+                if thread_id:
+                    kwargs["message_thread_id"] = int(thread_id) if thread_id.isdigit() else thread_id
+                await self._bot.send_message(**kwargs)
+            await self._send_review_queue_ops_notification(card, source_chat_id=chat_id)
+        except Exception as exc:
+            logger.debug("[%s] review-card note acknowledgement/edit failed: %s", self.name, exc)
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7520,6 +7888,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "from_user", None), "id", None),
                 getattr(getattr(msg, "chat", None), "id", None),
             )
+            return
+        if await self._capture_review_queue_note_if_pending(msg):
             return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):

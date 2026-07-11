@@ -65,6 +65,12 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Cross-platform messaging (gated on gateway running via check_fn)
+    "send_message",
+    # Narrow persistent-review card sender. Kept outside the broad messaging
+    # toolset so cron jobs can send review cards without gaining generic
+    # cross-platform message sending.
+    "send_review_card",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -186,7 +192,18 @@ TOOLSETS = {
         "tools": ["cronjob"],
         "includes": []
     },
-    
+
+    "messaging": {
+        "description": "Cross-platform messaging for Telegram, Discord, Slack, SMS, etc.",
+        "tools": ["send_message"],
+        "includes": []
+    },
+
+    "review_queue": {
+        "description": "Persistent human review queue cards with Telegram inline actions",
+        "tools": ["send_review_card"],
+        "includes": []
+    },
 
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",

@@ -652,7 +652,16 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "web_extract":
         urls = args.get("urls", [])
-        url_desc = urls[0] if isinstance(urls, list) and urls else "?"
+        first = urls[0] if isinstance(urls, list) and urls else "?"
+        # web_search results are dicts ({"url"/"href": ...}) and models often
+        # forward them straight into web_extract. Unwrap to the URL string so
+        # the summary stays readable and the ``+=`` below never hits the
+        # ``dict + str`` TypeError that would abort pre-compression pruning.
+        if isinstance(first, dict):
+            first = first.get("url") or first.get("href") or "?"
+        elif not isinstance(first, str):
+            first = "?"
+        url_desc = first
         if isinstance(urls, list) and len(urls) > 1:
             url_desc += f" (+{len(urls) - 1} more)"
         return f"[web_extract] {url_desc} ({content_len:,} chars)"

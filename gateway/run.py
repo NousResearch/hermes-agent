@@ -10619,10 +10619,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _msg_config_ctx = int(_msg_raw_ctx)
                 except Exception:
                     pass
+                # Issue #62695: self._model and self._base_url don't exist on
+                # GatewayRunner (they were never assigned). The block was
+                # copy-pasted from HermesCLI where self.model/self.base_url
+                # are real attributes. Resolve the runtime via the same
+                # session-aware helper the hygiene compression block uses
+                # later in this file (line ~11068).
+                _msg_resolved_model, _msg_resolved_runtime = (
+                    self._resolve_session_agent_runtime(
+                        source=source,
+                        session_key=session_key,
+                        user_config=_msg_cfg if isinstance(_msg_cfg, dict) else None,
+                    )
+                )
                 _msg_ctx_len = await get_model_context_length_async(
-                    self._model,
-                    base_url=self._base_url or _msg_runtime.get("base_url") or "",
-                    api_key=_msg_runtime.get("api_key") or "",
+                    _msg_resolved_model,
+                    base_url=(_msg_resolved_runtime.get("base_url")
+                              or _msg_runtime.get("base_url") or ""),
+                    api_key=(_msg_resolved_runtime.get("api_key")
+                             or _msg_runtime.get("api_key") or ""),
                     config_context_length=_msg_config_ctx,
                 )
                 _ctx_result = await preprocess_context_references_async(
@@ -10642,7 +10657,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _ctx_result.expanded:
                     message_text = _ctx_result.message
             except Exception as exc:
-                logger.debug("@ context reference expansion failed: %s", exc)
+                # Issue #62695: raise from debug to warning so future
+                # breakage of @ context-reference expansion is visible.
+                # The previous debug-level log was silently swallowed,
+                # which is how this regression went unnoticed.
+                logger.warning(
+                    "@ context reference expansion failed: %s", exc
+                )
 
         return message_text
 

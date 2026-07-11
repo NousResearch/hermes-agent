@@ -1745,6 +1745,29 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    def _active_compression_session(
+        self,
+        session_id: str,
+        session: Dict[str, Any],
+    ) -> tuple[str, Dict[str, Any]]:
+        """Resolve only compression continuations, never ordinary API forks."""
+        db = self._ensure_session_db()
+        if db is None:
+            return session_id, session
+        try:
+            effective_id = db.get_compression_tip(session_id) or session_id
+        except Exception as exc:
+            logger.warning("Failed to resolve compression tip for %s: %s", session_id, exc)
+            return session_id, session
+        if effective_id == session_id:
+            return session_id, session
+        effective = db.get_session(effective_id)
+        if not effective:
+            return session_id, session
+        if session.get("execution_policy") is not None:
+            effective = {**effective, "execution_policy": session["execution_policy"]}
+        return effective_id, effective
+
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
         auth_err = self._check_auth(request)
@@ -1887,7 +1910,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         session_id = request.match_info["session_id"]
-        session, err = self._get_existing_session_or_404(session_id)
+        _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = self._ensure_session_db()
@@ -1959,6 +1982,10 @@ class APIServerAdapter(BasePlatformAdapter):
         session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        effective_session_id, effective_session = self._active_compression_session(
+            session_id,
+            session,
+        )
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1968,24 +1995,24 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
-        history = self._conversation_history_for_session(session_id)
+        history = self._conversation_history_for_session(effective_session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
-            session_id=session_id,
+            session_id=effective_session_id,
             gateway_session_key=gateway_session_key,
-            execution_policy=session.get("execution_policy"),
+            execution_policy=effective_session.get("execution_policy"),
         )
-        effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
+        result_session_id = result.get("session_id") if isinstance(result, dict) else effective_session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
-        headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
+        headers = {"X-Hermes-Session-Id": result_session_id or effective_session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(
             {
                 "object": "hermes.session.chat.completion",
-                "session_id": effective_session_id or session_id,
+                "session_id": result_session_id or effective_session_id,
                 "message": {"role": "assistant", "content": final_response},
                 "usage": usage,
             },
@@ -2004,6 +2031,10 @@ class APIServerAdapter(BasePlatformAdapter):
         session, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        effective_session_id, effective_session = self._active_compression_session(
+            session_id,
+            session,
+        )
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -2023,7 +2054,7 @@ class APIServerAdapter(BasePlatformAdapter):
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
             nonlocal seq
             seq += 1
-            payload.setdefault("session_id", session_id)
+            payload.setdefault("session_id", effective_session_id)
             payload.setdefault("run_id", run_id)
             payload.setdefault("seq", seq)
             payload.setdefault("ts", time.time())
@@ -2058,22 +2089,22 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
-                history = self._conversation_history_for_session(session_id)
+                history = self._conversation_history_for_session(effective_session_id)
                 result, usage = await self._run_agent(
                     user_message=user_message,
                     conversation_history=history,
                     ephemeral_system_prompt=system_prompt,
-                    session_id=session_id,
+                    session_id=effective_session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
-                    execution_policy=session.get("execution_policy"),
+                    execution_policy=effective_session.get("execution_policy"),
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
-                effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
+                result_session_id = result.get("session_id", effective_session_id) if isinstance(result, dict) else effective_session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
                 await queue.put(_event_payload("assistant.completed", {
-                    "session_id": effective_session_id,
+                    "session_id": result_session_id,
                     "message_id": message_id,
                     "content": final_response,
                     "completed": True,
@@ -2081,7 +2112,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "interrupted": False,
                 }))
                 await queue.put(_event_payload("run.completed", {
-                    "session_id": effective_session_id,
+                    "session_id": result_session_id,
                     "message_id": message_id,
                     "completed": True,
                     "messages": turn_messages,
@@ -2106,7 +2137,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
-            "X-Hermes-Session-Id": session_id,
+            "X-Hermes-Session-Id": effective_session_id,
         }
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key

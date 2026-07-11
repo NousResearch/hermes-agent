@@ -129,6 +129,24 @@ class TestSessionLifecycle:
         assert session["model"] == "real-model"
         assert session["source"] == "cli"
 
+    def test_create_session_enriches_execution_policy_once_on_conflict(self, db):
+        db.create_session("restricted", source="api_server")
+        assert db.get_session("restricted")["execution_policy"] is None
+
+        db.create_session(
+            "restricted",
+            source="api_server",
+            execution_policy="read_only_generation",
+        )
+        assert db.get_session("restricted")["execution_policy"] == "read_only_generation"
+
+        db.create_session(
+            "restricted",
+            source="api_server",
+            execution_policy="replacement_policy",
+        )
+        assert db.get_session("restricted")["execution_policy"] == "read_only_generation"
+
     def test_update_session_cwd_persists_git_branch(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_session_cwd("s1", "/work/repo", git_branch="pets-feature")

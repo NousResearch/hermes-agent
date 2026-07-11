@@ -367,8 +367,15 @@ forks and compression continuations. Restricted turns expose zero tool schemas
 to the model and also deny any fabricated tool dispatch at runtime. Identity,
 persona and context reads, transcript persistence, and provenance remain
 available; only external-memory sync, background memory/skill review, and the
-`on_session_end` persistence hook are suppressed. Sessions created without an
-execution policy keep the ordinary API-server toolset and lifecycle behavior.
+`post_llm_call` and `on_session_end` persistence hooks are suppressed. Sessions
+created without an execution policy keep the ordinary API-server toolset and
+lifecycle behavior.
+
+When compression rotates a session, clients may continue addressing the
+original stable session ID. Session chat and chat streaming resolve only the
+active compression continuation, load its compacted transcript, preserve its
+execution policy, and return the effective continuation ID. Ordinary forks are
+not treated as compression continuations.
 
 ## Skills and toolsets discovery
 

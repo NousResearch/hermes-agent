@@ -171,6 +171,59 @@ async def test_run_agent_read_only_generation_installs_empty_dispatch_whitelist(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_run_agent_read_only_generation_clears_dispatch_whitelist_on_worker(
+    adapter, monkeypatch, raises,
+):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    class ExecutorLoop:
+        def __init__(self, pool):
+            self.pool = pool
+
+        async def run_in_executor(self, _executor, func):
+            return self.pool.submit(func).result()
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_id = "restricted-session"
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            if raises:
+                raise RuntimeError("execution failed")
+            return {"final_response": "ok"}
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        monkeypatch.setattr(asyncio, "get_running_loop", lambda: ExecutorLoop(pool))
+        if raises:
+            with pytest.raises(RuntimeError, match="execution failed"):
+                await adapter._run_agent(
+                    user_message="hello",
+                    conversation_history=[],
+                    session_id="restricted-session",
+                    execution_policy="read_only_generation",
+                )
+        else:
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="restricted-session",
+                execution_policy="read_only_generation",
+            )
+
+        def current_whitelist():
+            from hermes_cli.plugins import _thread_tool_whitelist
+
+            return getattr(_thread_tool_whitelist, "allowed", None)
+
+        assert pool.submit(current_whitelist).result() is None
+
+
+@pytest.mark.asyncio
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -367,6 +420,88 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_parent_resolves_active_compression_tip(auth_adapter, session_db):
+    parent_id = session_db.create_session(
+        "stable-parent",
+        "api_server",
+        execution_policy="read_only_generation",
+    )
+    session_db.append_message(parent_id, "user", "old uncompressed context")
+    session_db.end_session(parent_id, "compression")
+    session_db.create_session(
+        "compression-tip",
+        "api_server",
+        execution_policy="read_only_generation",
+        parent_session_id=parent_id,
+    )
+    session_db.append_message("compression-tip", "user", "compacted context")
+    session_db.append_message("compression-tip", "assistant", "current answer")
+
+    mock_run = AsyncMock(return_value=(
+        {"final_response": "continued", "session_id": "compression-tip"},
+        {"total_tokens": 2},
+    ))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{parent_id}/chat",
+                json={"message": "continue"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert response.status == 200
+            payload = await response.json()
+
+    assert response.headers["X-Hermes-Session-Id"] == "compression-tip"
+    assert payload["session_id"] == "compression-tip"
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_id"] == "compression-tip"
+    assert kwargs["execution_policy"] == "read_only_generation"
+    assert [message["content"] for message in kwargs["conversation_history"]] == [
+        "compacted context",
+        "current answer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_chat_does_not_resolve_ordinary_api_fork(auth_adapter, session_db):
+    parent_id = session_db.create_session(
+        "ordinary-parent",
+        "api_server",
+        execution_policy="read_only_generation",
+    )
+    session_db.append_message(parent_id, "user", "parent context")
+    session_db.end_session(parent_id, "branched")
+    session_db.create_session(
+        "ordinary-fork",
+        "api_server",
+        execution_policy="read_only_generation",
+        parent_session_id=parent_id,
+    )
+    session_db.append_message("ordinary-fork", "user", "fork context")
+
+    mock_run = AsyncMock(return_value=(
+        {"final_response": "parent reply", "session_id": parent_id},
+        {"total_tokens": 2},
+    ))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{parent_id}/chat",
+                json={"message": "continue parent"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert response.status == 200
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["session_id"] == parent_id
+    assert [message["content"] for message in kwargs["conversation_history"]] == [
+        "parent context",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [
@@ -458,6 +593,46 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_parent_resolves_active_compression_tip(adapter, session_db):
+    parent_id = session_db.create_session(
+        "stream-parent",
+        "api_server",
+        execution_policy="read_only_generation",
+    )
+    session_db.end_session(parent_id, "compression")
+    session_db.create_session(
+        "stream-tip",
+        "api_server",
+        execution_policy="read_only_generation",
+        parent_session_id=parent_id,
+    )
+    session_db.append_message("stream-tip", "user", "compacted stream context")
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"final_response": "continued", "session_id": "stream-tip"}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                f"/api/sessions/{parent_id}/chat/stream",
+                json={"message": "continue"},
+            )
+            assert response.status == 200
+            body = await response.text()
+
+    assert response.headers["X-Hermes-Session-Id"] == "stream-tip"
+    assert captured["session_id"] == "stream-tip"
+    assert captured["execution_policy"] == "read_only_generation"
+    assert [message["content"] for message in captured["conversation_history"]] == [
+        "compacted stream context",
+    ]
+    assert '"session_id": "stream-tip"' in body
 
 
 @pytest.mark.asyncio

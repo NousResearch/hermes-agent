@@ -44,17 +44,29 @@ $env:KINDLE_INGEST_TOKEN = '<random-secret>'
 $env:KINDLE_ALLOWED_USERS = 'kindle-user'
 ```
 
-Configure the tools this platform may use:
+Configure the tools this platform may use. The Kindle channel is meant to reach
+the real Hermes agent, so do not leave it as a plain/no-tools notebook unless
+you are intentionally sandboxing it. Give `platform_toolsets.kindle` the same
+tools the Kindle user should be able to ask Hermes to use from the Scribe:
 
 ```yaml
 platform_toolsets:
   kindle:
     - memory
+    - file
+    - terminal
     - web
+    - live-page
+    - vision
 ```
 
 Then start the Gateway and verify `http://127.0.0.1:8793/health` before starting
 the companion bridge.
+
+The companion bridge should route normal Kindle sends through this adapter. It
+should not default to a separate plain/local model path, because that makes the
+same notebook randomly lose tools and memory depending on a UI toggle or stale
+browser storage.
 
 For MoA or tool-heavy notebook turns, raise the synchronous reply window instead
 of letting the Kindle surface fail early:

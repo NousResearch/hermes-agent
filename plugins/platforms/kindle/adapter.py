@@ -51,10 +51,12 @@ MAX_KINDLE_LENGTH = 8000  # e-ink page; plenty for a notebook reply
 
 KINDLE_HOST_CONTEXT = (
     "[Kindle host context: This Kindle is a remote interface to Hermes running on the "
-    "gateway host. You may use the host's configured tools, files, databases, and services. "
+    "gateway host. This is a tool-enabled Hermes platform, not a plain local notebook "
+    "model. You may use the host's configured tools, files, databases, and services. "
     "For requests that read, create, save, copy, or change host resources, perform the action "
     "with an available tool and verify its result before claiming success. Never invent a path "
-    "or claim a resource was accessed or changed without a successful tool result.]"
+    "or claim a resource was accessed or changed without a successful tool result. Do not tell "
+    "the user this Kindle channel has no tools unless the gateway reports an actual tool failure.]"
 )
 
 KINDLE_INTENTS = {

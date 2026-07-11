@@ -200,7 +200,10 @@ async def test_ingest_explains_host_access_and_requires_verified_tool_results(
     assert response.status == 200
     assert len(dispatched) == 1
     assert "remote interface to Hermes running on the gateway host" in dispatched[0]
+    assert "tool-enabled Hermes platform" in dispatched[0]
+    assert "not a plain local notebook model" in dispatched[0]
     assert "perform the action with an available tool and verify its result" in dispatched[0]
+    assert "Do not tell the user this Kindle channel has no tools" in dispatched[0]
     assert dispatched[0].endswith("\n\nSave this to my desktop")
 
 

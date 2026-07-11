@@ -878,7 +878,9 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: secondary)
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
-        monkeypatch.setattr(runner, "_make_adapter_auth_check", lambda p: None)
+        monkeypatch.setattr(
+            runner, "_make_adapter_auth_check", lambda p, **kwargs: None
+        )
 
         connected = await runner._start_one_profile_adapters(
             "reviewer", "/tmp/x", claimed
@@ -934,7 +936,9 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: next(adapters))
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
-        monkeypatch.setattr(runner, "_make_adapter_auth_check", lambda p: None)
+        monkeypatch.setattr(
+            runner, "_make_adapter_auth_check", lambda p, **kwargs: None
+        )
 
         first = await runner._start_one_profile_adapters("broken", "/tmp/x", claimed)
         second = await runner._start_one_profile_adapters("later", "/tmp/y", claimed)
@@ -943,6 +947,50 @@ class TestSecondaryProfileConfigHandling:
         assert failed.disconnected is True
         assert second == 1
         assert runner._profile_adapters["later"][photon] is later
+
+    @pytest.mark.asyncio
+    async def test_failed_primary_photon_listener_is_reserved_for_retry(
+        self, monkeypatch
+    ):
+        """A retrying primary keeps secondaries off its sidecar endpoint."""
+        from gateway.config import GatewayConfig, Platform
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+        runner.pairing_stores = {}
+
+        photon = Platform("photon")
+        listener_claim = ("listener", "photon", "127.0.0.1", 8789)
+        runner._failed_platforms = {
+            photon: {
+                "config": object(),
+                "attempts": 1,
+                "next_retry": 0,
+                "listener_claim": listener_claim,
+            }
+        }
+        seen = {}
+
+        async def _start(profile_name, profile_home, claimed):
+            seen.update(claimed)
+            return 0
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex=True: (("default", "/tmp/default"), ("reviewer", "/tmp/reviewer")),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kwargs: None)
+        monkeypatch.setattr(runner, "_start_one_profile_adapters", _start)
+
+        connected = await runner._start_secondary_profile_adapters()
+
+        assert connected == 0
+        assert seen[listener_claim] == "default"
 
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES

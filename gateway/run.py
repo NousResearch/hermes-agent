@@ -7451,6 +7451,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "config": platform_config,
                                 "attempts": 1,
                                 "next_retry": time.monotonic() + 30,
+                                "credential_claim": self._adapter_credential_claim(
+                                    platform, adapter
+                                ),
+                                "listener_claim": self._adapter_listener_claim(
+                                    platform, adapter
+                                ),
                             }
                     else:
                         self._update_platform_runtime_status(
@@ -7467,6 +7473,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "config": platform_config,
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
+                            "credential_claim": self._adapter_credential_claim(
+                                platform, adapter
+                            ),
+                            "listener_claim": self._adapter_listener_claim(
+                                platform, adapter
+                            ),
                         }
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
@@ -7486,6 +7498,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "config": platform_config,
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
+                    "credential_claim": self._adapter_credential_claim(
+                        platform, adapter
+                    ),
+                    "listener_claim": self._adapter_listener_claim(
+                        platform, adapter
+                    ),
                 }
             if await self._abort_startup_if_shutdown_requested():
                 return True
@@ -9090,6 +9108,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             listener_claim = self._adapter_listener_claim(_plat, _ad)
             if listener_claim is not None:
                 claimed[listener_claim] = active
+        # A retryable primary still owns its configured credential and listener.
+        # Reserve both while it is queued so a secondary cannot take the endpoint
+        # before the reconnect watcher retries the primary adapter.
+        for retry_info in getattr(self, "_failed_platforms", {}).values():
+            for claim_name in ("credential_claim", "listener_claim"):
+                retry_claim = retry_info.get(claim_name)
+                if isinstance(retry_claim, tuple):
+                    claimed[retry_claim] = active
 
         for profile_name, profile_home in profiles_to_serve(multiplex=True):
             if profile_name == active:
@@ -9198,8 +9224,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             # Same-token conflict detection — refuse a duplicate poll.
-            fp = self._adapter_credential_fingerprint(adapter)
-            credential_claim = (platform, fp) if fp is not None else None
+            credential_claim = self._adapter_credential_claim(platform, adapter)
             if credential_claim is not None:
                 owner = claimed.get(credential_claim)
                 if owner is not None:
@@ -9472,6 +9497,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_message(event)
 
         return _handler
+
+    @staticmethod
+    def _adapter_credential_claim(
+        platform: Platform, adapter: Any
+    ) -> Optional[tuple]:
+        """Return the exclusive credential resource claimed by an adapter."""
+        fingerprint = GatewayRunner._adapter_credential_fingerprint(adapter)
+        if fingerprint is None:
+            return None
+        return (platform, fingerprint)
 
     @staticmethod
     def _adapter_listener_claim(platform: Platform, adapter: Any) -> Optional[tuple]:

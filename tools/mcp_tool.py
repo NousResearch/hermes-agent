@@ -92,6 +92,7 @@ Thread safety:
 import asyncio
 import contextvars
 import concurrent.futures
+import errno
 import inspect
 import json
 import logging
@@ -3645,12 +3646,17 @@ _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 _LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
 _MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
 
+# Retry constants for the bounded wait when another process holds the lock.
+_MCP_DISCOVERY_LOCK_MAX_RETRIES: int = 10
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S: float = 0.2
+
 
 class _LockCookie:
     """Holds a cross-process file lock; release() drops it.
 
-    On Windows, the underlying file handle MUST stay alive while the lock
-    is held (portalocker keeps the kernel lock on the fd).  We keep the
+    On Windows the underlying file handle MUST stay alive while the lock is
+    held (portalocker keeps the kernel lock on the fd).  On POSIX the fcntl
+    lockdown is similarly tied to the file-descriptor lifetime.  We keep the
     file object in ``_fh`` and close it on release.
     """
 
@@ -3660,8 +3666,19 @@ class _LockCookie:
     def release(self) -> None:
         if self._fh is not None:
             try:
-                import portalocker
-                portalocker.unlock(self._fh)
+                fd = self._fh.fileno()
+                if os.name == "posix":
+                    import fcntl
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                else:
+                    import portalocker
+                    try:
+                        portalocker.unlock(self._fh)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
@@ -3669,6 +3686,34 @@ class _LockCookie:
             except Exception:
                 pass
             self._fh = None
+
+
+def _acquire_lock_on_fh(fh: Any) -> bool:
+    """Acquire a non-blocking exclusive lock on an open file handle.
+
+    Uses ``fcntl.flock`` on POSIX and ``portalocker.lock`` on Windows.
+
+    Returns ``True`` if the lock was acquired, ``False`` if another process
+    holds it (non-blocking refusal).  Raises ``RuntimeError`` on unexpected
+    errors so the caller can treat lock acquisition as unavailable.
+    """
+    fd = fh.fileno()
+    if os.name == "posix":
+        import fcntl
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                return False
+            raise
+    else:
+        import portalocker
+        try:
+            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
+            return True
+        except portalocker.LockException:
+            return False
 
 
 def _try_acquire_mcp_discovery_lock() -> Any:
@@ -3679,7 +3724,7 @@ def _try_acquire_mcp_discovery_lock() -> Any:
     _LockCookie
         Lock acquired successfully.
     None
-        Another process holds the lock.
+        Another process holds the lock (non-blocking refusal).
     _LOCK_UNAVAILABLE
         Locking mechanism is broken or unavailable -- caller should run
         discovery unguarded.
@@ -3696,24 +3741,21 @@ def _try_acquire_mcp_discovery_lock() -> Any:
         return _LOCK_UNAVAILABLE
 
     try:
-        import portalocker
-    except ImportError:
-        return _LOCK_UNAVAILABLE
-
-    try:
         fh = open(lock_path, "w", encoding="utf-8")
     except Exception:
         return _LOCK_UNAVAILABLE
 
     try:
-        portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
-        return _LockCookie(fh)
-    except portalocker.LockException:
-        fh.close()
-        return None
+        acquired = _acquire_lock_on_fh(fh)
     except Exception:
         fh.close()
         return _LOCK_UNAVAILABLE
+
+    if acquired:
+        return _LockCookie(fh)
+    else:
+        fh.close()
+        return None
 
 
 def _snapshot_child_pids() -> set:
@@ -5299,14 +5341,26 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
-    # Cross-process discovery guard (#62771)
+    # Cross-process discovery guard (#62771) -- bounded wait, never returns
+    # early with a stale local registry.
     cookie = _try_acquire_mcp_discovery_lock()
     if cookie is None:
         logger.debug(
-            "Another process holds MCP discovery lock -- "
-            "returning already-registered tools"
+            "Another process holds MCP discovery lock -- retrying with backoff"
         )
-        return _existing_tool_names()
+        for _ in range(_MCP_DISCOVERY_LOCK_MAX_RETRIES):
+            time.sleep(_MCP_DISCOVERY_LOCK_RETRY_DELAY_S)
+            cookie = _try_acquire_mcp_discovery_lock()
+            if cookie is not None:
+                break
+        if cookie is None:
+            logger.warning(
+                "MCP discovery lock still held after %d retries -- "
+                "running discovery unguarded",
+                _MCP_DISCOVERY_LOCK_MAX_RETRIES,
+            )
+        elif cookie is not _LOCK_UNAVAILABLE:
+            logger.debug("Retry succeeded -- acquired MCP discovery lock")
 
     try:
         with _lock:
@@ -5336,7 +5390,7 @@ def discover_mcp_tools() -> List[str]:
 
         return tool_names
     finally:
-        if cookie is not _LOCK_UNAVAILABLE:
+        if cookie not in (None, _LOCK_UNAVAILABLE):
             cookie.release()
 
 

@@ -164,6 +164,25 @@ class InProcessCronScheduler(CronScheduler):
         return "builtin"
 
     def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+        # Issue #62151: in-gateway cron worker deadlocks on the 2nd+ API
+        # call when the gateway's main event loop is busy. The cron worker
+        # thread schedules tool-execution coroutines onto the main loop via
+        # ``safe_schedule_threadsafe`` and blocks on the resulting Future.
+        # If the main loop is busy serving HTTP/WS, both threads block
+        # indefinitely. The CLI cron tick path works because it has its
+        # own event loop. Disable the in-process ticker via env var so
+        # operators can run system-cron `hermes cron tick` instead.
+        import os
+        if os.environ.get("HERMES_CRON_DISABLE_IN_PROCESS") == "1":
+            import logging
+            logger = logging.getLogger("cron.scheduler_provider")
+            logger.warning(
+                "HERMES_CRON_DISABLE_IN_PROCESS=1: in-gateway cron ticker "
+                "is disabled. Use system-cron `hermes cron tick` to fire "
+                "jobs from a separate process. See issue #62151 for "
+                "details on the deadlock this avoids."
+            )
+            return None
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat

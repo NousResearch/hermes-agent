@@ -220,6 +220,11 @@ chown_hermes_tree() {
         echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
 }
 
+tree_has_non_hermes_owner() {
+    target="$1"
+    find "$target" \( ! -user hermes -o ! -group hermes \) -print -quit 2>/dev/null | grep -q .
+}
+
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
@@ -243,7 +248,7 @@ if [ "$needs_chown" = true ]; then
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
     for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
-        if [ -e "$HERMES_HOME/$sub" ]; then
+        if [ -e "$HERMES_HOME/$sub" ] && tree_has_non_hermes_owner "$HERMES_HOME/$sub"; then
             chown_hermes_tree "$HERMES_HOME/$sub"
         fi
     done
@@ -273,9 +278,10 @@ fi
 # are invoked via `docker exec <container> hermes …` (which defaults
 # to root unless `-u` is passed), and that breaks the cont-init
 # reconciler (02-reconcile-profiles) which runs as hermes and walks
-# the profiles dir. Idempotent; skipped on rootless containers where
-# chown would fail.
-if [ -d "$HERMES_HOME/profiles" ]; then
+# the profiles dir. Skip the recursive walk when the tree is already
+# owned correctly so warm boots do not rescan huge profile caches.
+# Idempotent; skipped on rootless containers where chown would fail.
+if [ -d "$HERMES_HOME/profiles" ] && tree_has_non_hermes_owner "$HERMES_HOME/profiles"; then
     chown_hermes_tree "$HERMES_HOME/profiles"
 fi
 

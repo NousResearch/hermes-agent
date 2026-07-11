@@ -64,7 +64,10 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
     # Request processors run in ascending order. Keep this last so an installed
     # cookie/auth/instrumentation processor cannot re-add a secret after the
     # redirect handler sanitizes the new Request.
-    handler_order = 1_000_000_000
+    # Infinity is greater than every finite handler order. If an installed
+    # processor also uses infinity, stable sorting keeps this appended handler
+    # after it, so sanitization still owns the final request boundary.
+    handler_order = float("inf")  # type: ignore[assignment]
 
     def __init__(self, original_url: str) -> None:
         self._original_origin = url_origin(original_url)

@@ -39,6 +39,7 @@ _STATUS_ICONS = {
     "running":  "●",
     "scheduled":"⏱",
     "blocked":  "⊘",
+    "review":   "◉",
     "done":     "✓",
     "archived": "—",
 }
@@ -513,7 +514,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
                          help="Claim TTL in seconds (default: 900)")
 
-    # --- comment / complete / block / unblock / archive ---
+    # --- comment / complete / review / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
     p_comment.add_argument("task_id")
     p_comment.add_argument("text", nargs="+", help="Comment body")
@@ -554,6 +555,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="JSON dict of structured facts to store on the latest completed run.",
     )
 
+    p_review = sub.add_parser("review", help="Move a task to Review for human/PM verification")
+    p_review.add_argument("task_id")
+    p_review.add_argument("summary", nargs="*", help="Review handoff summary")
+    p_review.add_argument(
+        "--metadata",
+        default=None,
+        help='JSON dict of structured review facts (e.g. \'{"changed_files": [...], '
+             '\"tests_run\": 12}\'). Stored on the closing run.',
+    )
+
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
@@ -576,7 +587,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_schedule.add_argument("--ids", nargs="+", default=None,
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
+    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled/review tasks to ready")
     p_unblock.add_argument(
         "--reason",
         default=None,
@@ -953,6 +964,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "comment":  _cmd_comment,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
+            "review":   _cmd_review,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
@@ -1936,6 +1948,38 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_review(args: argparse.Namespace) -> int:
+    summary = " ".join(args.summary).strip() if args.summary else None
+    raw_meta = getattr(args, "metadata", None)
+    metadata = None
+    if raw_meta:
+        try:
+            metadata = json.loads(raw_meta)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    author = _profile_author()
+    with kb.connect_closing() as conn:
+        if summary:
+            kb.add_comment(conn, args.task_id, author, f"REVIEW: {summary}")
+        if not kb.review_task(
+            conn,
+            args.task_id,
+            summary=summary,
+            metadata=metadata,
+            expected_run_id=_worker_run_id_for(args.task_id),
+        ):
+            print(
+                f"cannot review {args.task_id} (unknown id or terminal state)",
+                file=sys.stderr,
+            )
+            return 1
+    print(f"Review {args.task_id}" + (f": {summary}" if summary else ""))
+    return 0
+
+
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     kind = getattr(args, "kind", None)
@@ -2011,7 +2055,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
+                print(f"cannot unblock {tid} (not blocked/scheduled/review?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1

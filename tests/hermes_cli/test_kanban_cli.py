@@ -159,6 +159,39 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_review_moves_task_to_review_with_handoff(kanban_home):
+    out = kc.run_slash("create 'needs eyes' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    msg = kc.run_slash(
+        f"review {tid} 'ready for PM verification' --metadata '{{\"tests_run\": 3}}'"
+    )
+
+    assert "Review" in msg
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.status == "review"
+    assert run is not None
+    assert run.outcome == "review"
+    assert run.summary == "ready for PM verification"
+    assert run.metadata == {"tests_run": 3}
+    assert any(e.kind == "review_requested" for e in events)
+
+
+def test_run_slash_unblock_review_returns_to_ready(kanban_home):
+    out = kc.run_slash("create 'needs edits' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"review {tid} 'ready for review'")
+
+    assert "Unblocked" in kc.run_slash(f"unblock {tid} --reason 'changes requested'")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

@@ -3726,6 +3726,48 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
+def test_review_task_transitions_ready_to_review_with_run_handoff(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs review", assignee="alice")
+        assert kb.review_task(
+            conn,
+            t,
+            summary="ready for review",
+            metadata={"changed_files": ["a.py"]},
+        )
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task.status == "review"
+    assert run is not None
+    assert run.outcome == "review"
+    assert run.summary == "ready for review"
+    assert run.metadata == {"changed_files": ["a.py"]}
+    assert any(e.kind == "review_requested" for e in events)
+
+
+def test_review_task_can_be_completed_after_approval(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="approve me", assignee="alice")
+        assert kb.review_task(conn, t, summary="ready")
+        assert kb.complete_task(conn, t, result="approved", summary="approved by reviewer")
+        task = kb.get_task(conn, t)
+
+    assert task.status == "done"
+    assert task.result == "approved"
+
+
+def test_review_task_can_be_unblocked_for_changes(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs changes", assignee="alice")
+        assert kb.review_task(conn, t, summary="ready")
+        assert kb.unblock_task(conn, t)
+        task = kb.get_task(conn, t)
+
+    assert task.status == "ready"
+
+
 def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
     """dispatch_once dry-run sees review tasks and reports them as spawned."""
     with kb.connect() as conn:

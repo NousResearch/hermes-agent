@@ -136,7 +136,7 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
     A process spawned by the dispatcher has ``HERMES_KANBAN_TASK`` set
-    to its own task id. Tools like ``kanban_complete`` / ``kanban_block``
+    to its own task id. Tools like ``kanban_complete`` / ``kanban_review`` / ``kanban_block``
     / ``kanban_heartbeat`` mutate run-lifecycle state, so a buggy or
     prompt-injected worker that passed an explicit ``task_id`` for some
     other task could corrupt sibling or cross-tenant runs (see #19534).
@@ -327,7 +327,7 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
-            "must use kanban_complete, kanban_block, kanban_heartbeat, or "
+            "must use kanban_complete, kanban_review, kanban_block, kanban_heartbeat, or "
             "kanban_comment for their assigned task."
         )
     return None
@@ -741,6 +741,52 @@ def _handle_block(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_block failed")
         return tool_error(f"kanban_block: {e}")
+
+
+def _handle_review(args: dict, **kw) -> str:
+    """Move the task to review with a structured handoff."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    if not summary or not str(summary).strip():
+        return tool_error("summary is required — explain what is ready for review")
+    summary = redact_sensitive_text(str(summary), force=True)
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error(
+            f"metadata must be an object/dict, got {type(metadata).__name__}"
+        )
+    metadata = _stamp_worker_session_metadata(tid, metadata)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.review_task(
+                conn,
+                tid,
+                summary=summary,
+                metadata=metadata,
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not move {tid} to review (unknown id or already terminal)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, run_id=run.id if run else None, status="review")
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
 
 
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -1331,6 +1377,45 @@ KANBAN_BLOCK_SCHEMA = {
     },
 }
 
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Move your current task to the Review column with a structured "
+        "handoff when the artifact is ready but should not count as done "
+        "until a human/PM/verifier approves it. Use this for code changes, "
+        "designs, or other review-gated deliverables. A reviewer can approve "
+        "with kanban_complete or request changes by commenting and unblocking "
+        "the task back to ready."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Human-readable review handoff, 1-3 sentences naming "
+                    "what changed, where the reviewer should look, and what "
+                    "evidence/checks passed."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Free-form dict of structured review facts — "
+                    "{\"changed_files\": [...], \"tests_run\": 12, "
+                    "\"diff_path\": \"...\"}."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["summary"],
+    },
+}
+
 KANBAN_HEARTBEAT_SCHEMA = {
     "name": "kanban_heartbeat",
     "description": (
@@ -1624,6 +1709,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_mode,
+    emoji="👀",
 )
 
 registry.register(

@@ -4056,7 +4056,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                 """,
                 (result, now, task_id),
             )
@@ -4073,7 +4073,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -4471,6 +4471,81 @@ def _maybe_emit_scratch_tip(
         _mark_scratch_tip_shown()
 
 
+def review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running|ready|blocked`` -> ``review``.
+
+    This is the explicit human-review state. It closes the active worker run
+    with outcome/status ``review`` and stores the handoff ``summary`` and
+    ``metadata`` on that run, mirroring ``complete_task`` without marking the
+    task done. Reviewers can approve with ``complete_task`` or request changes
+    by commenting and unblocking the task back to the work queue.
+    """
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status        = 'review',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL,
+                       block_kind    = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status        = 'review',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL,
+                       block_kind    = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="review",
+            status="review",
+            summary=summary,
+            metadata=metadata,
+        )
+        if run_id is None and (summary or metadata):
+            run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="review",
+                summary=summary,
+                metadata=metadata,
+            )
+        ev_summary = (summary or "").strip().splitlines()[0][:400] if summary else ""
+        _append_event(
+            conn,
+            task_id,
+            "review_requested",
+            {"summary": ev_summary or None},
+            run_id=run_id,
+        )
+    return True
+
+
 def edit_completed_task_result(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4825,7 +4900,7 @@ def promote_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked``/``scheduled`` -> ready or todo.
+    """Transition ``blocked``/``scheduled``/``review`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -4837,7 +4912,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled', 'review')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -4878,7 +4953,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'review')",
             (new_status, task_id),
         )
         if cur.rowcount != 1:

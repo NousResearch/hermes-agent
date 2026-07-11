@@ -511,7 +511,9 @@ class PluginContext:
 
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
-        as the default dispatch function via ``set_defaults(func=...)``."""
+        as the default dispatch function via ``set_defaults(func=...)``.
+        Handlers may return an integer process exit status; ``None`` and
+        non-integer results are treated as success for backward compatibility."""
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,

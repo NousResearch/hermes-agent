@@ -272,6 +272,11 @@ class VideoLibraryStore:
         with self.connect() as conn:
             return [dict(row) for row in conn.execute("SELECT * FROM assets ORDER BY created_at DESC, id").fetchall()]
 
+    def delete_asset_record(self, asset_id: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+            return cursor.rowcount == 1
+
     def update_asset_metadata(self, asset_id: str, metadata: dict[str, Any], *, status: str = "analyzed") -> dict[str, Any]:
         allowed = {"duration_seconds", "width", "height", "fps"}
         values = {key: metadata.get(key) for key in allowed if key in metadata}

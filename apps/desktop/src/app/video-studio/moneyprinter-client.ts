@@ -75,9 +75,11 @@ export interface VideoLibraryStatus {
   clips: number
   database_exists: boolean
   failed: number
+  failed_assets: number
   library_id: string
   low_confidence: number
   root: string
+  semantic_failed: number
   unusable: number
 }
 

@@ -57,9 +57,11 @@ const status: VideoLibraryStatus = {
   clips: 24,
   database_exists: true,
   failed: 0,
+  failed_assets: 0,
   library_id: 'beef-noodle',
   low_confidence: 0,
   root: '/vault/牛肉面资产库',
+  semantic_failed: 0,
   unusable: 0
 }
 

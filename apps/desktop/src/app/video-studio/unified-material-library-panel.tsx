@@ -215,8 +215,8 @@ export function UnifiedMaterialLibraryPanel(props: UnifiedMaterialLibraryPanelPr
               <div>{selectedLibrary.root}</div>
               <div>来源目录：{selectedLibrary.source_roots.join('、')}</div>
               <div>
-                素材 {status?.assets ?? '--'} · 镜头 {status?.clips ?? '--'} · 失败 {status?.failed ?? '--'} · 低置信度{' '}
-                {status?.low_confidence ?? '--'}
+                素材 {status?.assets ?? '--'} · 镜头 {status?.clips ?? '--'} · 失败素材 {status?.failed_assets ?? '--'} ·
+                语义失败 {status?.semantic_failed ?? status?.failed ?? '--'} · 低置信度 {status?.low_confidence ?? '--'}
               </div>
             </div>
           ) : (

@@ -184,6 +184,34 @@ def scan_library(library_id: str, *, dry_run: bool = False) -> dict[str, Any]:
     return VideoLibraryBatchRunner(library).scan(dry_run=dry_run).to_dict()
 
 
+def prune_derived_assets(library_id: str, *, execute: bool = False) -> dict[str, Any]:
+    library = resolve_library_config(library_id)
+    service = build_library_service(library)
+    matched = [
+        asset
+        for asset in service.store.list_assets()
+        if is_generated_library_path(library, str(asset.get("source_path") or ""))
+    ]
+    deleted = 0
+    if execute:
+        for asset in matched:
+            deleted += int(service.store.delete_asset_record(str(asset["id"])))
+    return {
+        "deleted": deleted,
+        "execute": execute,
+        "library_id": library.id,
+        "matched": len(matched),
+        "records": [
+            {
+                "asset_id": asset["id"],
+                "source_path": asset["source_path"],
+                "status": asset["status"],
+            }
+            for asset in matched
+        ],
+    }
+
+
 def library_status(library_id: str) -> dict[str, Any]:
     library = resolve_library_config(library_id)
     if not library.database_path.is_file():
@@ -191,19 +219,28 @@ def library_status(library_id: str) -> dict[str, Any]:
             "assets": 0,
             "clips": 0,
             "database_exists": False,
+            "failed": 0,
+            "failed_assets": 0,
             "library_id": library.id,
+            "low_confidence": 0,
             "root": str(library.root),
+            "semantic_failed": 0,
+            "unusable": 0,
         }
     service = build_library_service(library)
+    assets = service.store.list_assets()
     clips = service.store.list_clips()
+    semantic_failed = sum(1 for clip in clips if clip.get("status") == "semantic_failed")
     return {
-        "assets": len(service.store.list_assets()),
+        "assets": len(assets),
         "clips": len(clips),
         "database_exists": True,
-        "failed": sum(1 for clip in clips if clip.get("status") == "semantic_failed"),
+        "failed": semantic_failed,
+        "failed_assets": sum(1 for asset in assets if asset.get("status") == "failed"),
         "library_id": library.id,
         "low_confidence": sum(1 for clip in clips if clip.get("status") == "low_confidence"),
         "root": str(library.root),
+        "semantic_failed": semantic_failed,
         "unusable": sum(1 for clip in clips if clip.get("status") == "unusable"),
     }
 
@@ -222,6 +259,7 @@ __all__ = [
     "build_library_service",
     "library_status",
     "list_libraries",
+    "prune_derived_assets",
     "scan_library",
     "search_library",
 ]

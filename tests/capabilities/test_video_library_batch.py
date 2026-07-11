@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from capabilities.video_library.batch import VideoLibraryBatchRunner
+from capabilities.video_library import batch
+from capabilities.video_library.batch import VideoLibraryBatchRunner, build_library_service
 from capabilities.video_library.config import VideoLibraryConfig
 
 
@@ -102,3 +103,46 @@ def test_scan_excludes_generated_video_directories_when_library_root_is_a_source
     result = VideoLibraryBatchRunner(library).scan(dry_run=True)
 
     assert result.total == 1
+
+
+def test_prune_derived_assets_is_dry_run_by_default(tmp_path, monkeypatch):
+    library = _library(tmp_path, [])
+    derived = library.root / "02_精选镜头" / "old.mp4"
+    derived.parent.mkdir(parents=True)
+    derived.write_bytes(b"derived")
+    service = build_library_service(library)
+    asset = service.store.import_asset(derived, source_mode="linked", library_id=library.id)
+    monkeypatch.setattr(batch, "resolve_library_config", lambda _library_id: library)
+
+    preview = batch.prune_derived_assets(library.id)
+
+    assert preview["matched"] == 1
+    assert preview["deleted"] == 0
+    assert service.store.get_asset(asset["id"]) is not None
+
+    executed = batch.prune_derived_assets(library.id, execute=True)
+
+    assert executed["deleted"] == 1
+    assert service.store.get_asset(asset["id"]) is None
+    assert derived.is_file()
+
+
+def test_library_status_reports_failed_assets_separately_from_semantic_failures(tmp_path, monkeypatch):
+    library = _library(tmp_path, [])
+    source = library.source_roots[0] / "raw.mp4"
+    source.write_bytes(b"raw")
+    service = build_library_service(library)
+    asset = service.store.import_asset(source, source_mode="linked", library_id=library.id)
+    service.store.update_asset_metadata(asset["id"], {}, status="failed")
+    clip = service.store.replace_clips(
+        asset["id"],
+        [{"end_seconds": 1.0, "source_file_path": str(source), "start_seconds": 0.0}],
+    )[0]
+    service.store.update_clip_status(clip["id"], "semantic_failed")
+    monkeypatch.setattr(batch, "resolve_library_config", lambda _library_id: library)
+
+    status = batch.library_status(library.id)
+
+    assert status["failed_assets"] == 1
+    assert status["semantic_failed"] == 1
+    assert status["failed"] == 1

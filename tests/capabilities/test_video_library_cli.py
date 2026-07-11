@@ -50,3 +50,31 @@ def test_cli_search_prints_results(monkeypatch, capsys):
     assert cli.main(["search", "--library", "beef-noodle", "--query", "厨师拉面"]) == 0
 
     assert json.loads(capsys.readouterr().out)["clips"][0]["id"] == "clip-1"
+
+
+def test_cli_prune_derived_is_preview_by_default(monkeypatch, capsys):
+    calls = []
+
+    def fake_prune(library_id, execute=False):
+        calls.append((library_id, execute))
+        return {"deleted": 0, "execute": execute, "library_id": library_id, "matched": 2, "records": []}
+
+    monkeypatch.setattr(cli, "prune_derived_assets", fake_prune, raising=False)
+
+    assert cli.main(["prune-derived", "--library", "beef-noodle"]) == 0
+    assert calls == [("beef-noodle", False)]
+    assert json.loads(capsys.readouterr().out)["deleted"] == 0
+
+
+def test_cli_prune_derived_requires_explicit_execute_flag(monkeypatch, capsys):
+    calls = []
+
+    def fake_prune(library_id, execute=False):
+        calls.append((library_id, execute))
+        return {"deleted": 2, "execute": execute, "library_id": library_id, "matched": 2, "records": []}
+
+    monkeypatch.setattr(cli, "prune_derived_assets", fake_prune, raising=False)
+
+    assert cli.main(["prune-derived", "--library", "beef-noodle", "--execute"]) == 0
+    assert calls == [("beef-noodle", True)]
+    assert json.loads(capsys.readouterr().out)["deleted"] == 2

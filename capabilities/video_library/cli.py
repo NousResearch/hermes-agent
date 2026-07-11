@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any
 
-from .batch import library_status, list_libraries, scan_library, search_library
+from .batch import library_status, list_libraries, prune_derived_assets, scan_library, search_library
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -17,6 +17,9 @@ def _parser() -> argparse.ArgumentParser:
     scan = commands.add_parser("scan")
     scan.add_argument("--library", required=True)
     scan.add_argument("--dry-run", action="store_true")
+    prune = commands.add_parser("prune-derived")
+    prune.add_argument("--library", required=True)
+    prune.add_argument("--execute", action="store_true")
     status = commands.add_parser("status")
     status.add_argument("--library", required=True)
     search = commands.add_parser("search")
@@ -36,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "libraries":
             payload = list_libraries()
+        elif args.command == "prune-derived":
+            payload = prune_derived_assets(args.library, execute=bool(args.execute))
         elif args.command == "scan":
             payload = scan_library(args.library, dry_run=bool(args.dry_run))
         elif args.command == "status":

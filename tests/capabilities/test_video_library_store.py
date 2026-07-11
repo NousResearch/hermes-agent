@@ -56,6 +56,29 @@ def test_linked_import_does_not_copy_source(tmp_path):
     assert not any(store.assets_dir.iterdir())
 
 
+def test_delete_asset_record_cascades_metadata_without_deleting_source(tmp_path):
+    root = tmp_path / "library"
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    store = VideoLibraryStore(root=root)
+    asset = store.import_asset(source, source_mode="linked", library_id="beef-noodle")
+    job = store.create_analysis_job(asset["id"], analyzer_version="test-v1")
+    clips = store.replace_clips(
+        asset["id"],
+        [{"end_seconds": 1.0, "source_file_path": str(source), "start_seconds": 0.0}],
+    )
+    store.replace_clip_tags(clips[0]["id"], [{"name": "测试标签"}])
+
+    deleted = store.delete_asset_record(asset["id"])
+
+    assert deleted is True
+    assert store.get_asset(asset["id"]) is None
+    assert store.list_clips() == []
+    assert store.latest_analysis_job(asset["id"]) is None
+    assert source.is_file()
+    assert store.delete_asset_record(asset["id"]) is False
+
+
 def test_linked_import_is_idempotent_after_source_rename(tmp_path):
     root = tmp_path / "牛肉面资产库"
     source_root = root / "01_原始素材"

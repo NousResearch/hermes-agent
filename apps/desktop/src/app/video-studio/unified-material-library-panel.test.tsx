@@ -68,6 +68,30 @@ describe('UnifiedMaterialLibraryPanel', () => {
     expect((screen.getByRole('button', { name: '迁移旧素材' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('distinguishes failed assets from semantic clip failures', () => {
+    render(
+      <UnifiedMaterialLibraryPanel
+        {...baseProps}
+        selectedLibraryId="beef-noodle"
+        status={{
+          assets: 45,
+          clips: 150,
+          database_exists: true,
+          failed: 3,
+          failed_assets: 5,
+          library_id: 'beef-noodle',
+          low_confidence: 2,
+          root: '/vault/牛肉面资产库',
+          semantic_failed: 3,
+          unusable: 1
+        }}
+      />
+    )
+
+    expect(screen.getByText(/失败素材 5/)).toBeTruthy()
+    expect(screen.getByText(/语义失败 3/)).toBeTruthy()
+  })
+
   it('shows only confirmed candidates in the render basket', () => {
     render(
       <UnifiedMaterialLibraryPanel

@@ -1,8 +1,8 @@
 """OpenAI-compatible shim that forwards Hermes requests to ``devin acp``.
 
 Mirrors :class:`agent.copilot_acp_client.CopilotACPClient` for Cognition's
-Devin CLI ACP mode (JSON-RPC over stdio). Devin is launched as a short-lived
-subprocess per request, the same lifecycle Copilot ACP uses.
+Devin CLI ACP mode (JSON-RPC over stdio). Process reuse and per-prompt
+``session/new`` follow the shared ACP client lifecycle (see parent module).
 
 Docs: https://docs.devin.ai/cli/acp/jetbrains (``devin acp`` subcommand).
 """

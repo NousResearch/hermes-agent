@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/kanban-video-orchestrator/plan.schema.json",
+  "title": "Kanban Video Orchestrator Plan",
+  "type": "object",
+  "required": [
+    "title",
+    "slug",
+    "tenant",
+    "duration_s",
+    "aspect",
+    "resolution",
+    "fps",
+    "team",
+    "scenes",
+    "audio",
+    "deliverables",
+    "brief_extra",
+    "taste"
+  ],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "tenant": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration_s": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "aspect": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "api_keys_required": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "team": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "profile",
+          "role",
+          "toolsets",
+          "skills",
+          "responsibilities",
+          "inputs",
+          "outputs"
+        ],
+        "properties": {
+          "profile": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "toolsets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "responsibilities": {
+            "type": "string",
+            "minLength": 1
+          },
+          "inputs": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outputs": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role_rules": {
+            "type": "string"
+          },
+          "external_tools": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "n",
+          "time",
+          "content",
+          "tool",
+          "audio",
+          "notes"
+        ],
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "time": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tool": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audio": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "audio": {
+      "type": "object",
+      "required": [
+        "approach",
+        "vo",
+        "music",
+        "sfx"
+      ],
+      "properties": {
+        "approach": {
+          "type": "string"
+        },
+        "vo": {
+          "type": "string"
+        },
+        "music": {
+          "type": "string"
+        },
+        "sfx": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "deliverables": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "format",
+          "resolution",
+          "notes"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resolution": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "brief_extra": {
+      "type": "object",
+      "required": [
+        "concept_one_liner",
+        "emotional_north_star",
+        "platforms",
+        "tone",
+        "aesthetic_rules"
+      ],
+      "properties": {
+        "concept_one_liner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "emotional_north_star": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platforms": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deadline": {
+          "type": "string"
+        },
+        "quality_bar": {
+          "type": "string"
+        },
+        "visual_refs": {
+          "type": "string"
+        },
+        "tone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "brand_constraints": {
+          "type": "string"
+        },
+        "aesthetic_rules": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ext_deps": {
+          "type": "string"
+        },
+        "source_assets": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "taste": {
+      "type": "object",
+      "required": [
+        "brand_guide",
+        "emotional_dna"
+      ],
+      "properties": {
+        "brand_guide": {
+          "type": "string",
+          "minLength": 1
+        },
+        "emotional_dna": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "assets": {
+      "type": "object",
+      "properties": {
+        "audio_track": {
+          "type": "string"
+        },
+        "logos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fonts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "existing_footage": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "style_frames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "voiceover_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sfx_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

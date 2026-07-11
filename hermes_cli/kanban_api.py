@@ -8,6 +8,7 @@ profile internals, and raw event payloads are never serialized.
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import time
@@ -20,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.redact import redact_sensitive_text
 from hermes_cli import kanban_db
 
+log = logging.getLogger(__name__)
+
 router = APIRouter()
 
 _API_VERSION = "1"
@@ -28,9 +31,46 @@ _MAX_LOG_TAIL = 32_768
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:])(?:[A-Za-z]:[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]*|/(?:[^/\s]+/)+[^/\s]*)"
 )
+# Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
+# not just at its start — the token can appear mid-line inside a dumped curl
+# command (``curl -H 'Authorization: Bearer ...'``) or a shell trace.
 _AUTH_HEADER_RE = re.compile(
-    r"(?im)^(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+"
+    r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+"
 )
+
+# Known-safe validation messages from ``kanban_db`` that may be echoed to an
+# external caller verbatim: they carry no filesystem paths, SQL, or other
+# internal detail — only user-facing input guidance. Anything else collapses
+# to a stable generic fallback while the raw error is logged server-side.
+_SAFE_ERROR_MARKERS = (
+    "title is required",
+    "unknown parent task",
+    "unknown task",
+    "a task cannot depend on itself",
+    "would create a cycle",
+    "is a toolset name",
+    "are toolset names",
+    "skill name cannot contain comma",
+    "must be one of",
+)
+
+
+def _client_error(
+    exc: Exception,
+    *,
+    fallback: str,
+    status_code: int = 400,
+) -> HTTPException:
+    """Build an HTTPException with a sanitized, stable ``detail``.
+
+    The original exception is always logged server-side. The client sees a
+    known-safe validation message when one is recognised, otherwise the
+    generic ``fallback`` — raw internal text never reaches the wire.
+    """
+    message = str(exc)
+    detail = message if any(m in message for m in _SAFE_ERROR_MARKERS) else fallback
+    log.warning("kanban_api request rejected (detail=%r): %s", detail, message)
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 class _RequestModel(BaseModel):
@@ -86,9 +126,9 @@ def _resolve_board_slug(board: Optional[str]) -> str:
     if board is None or not str(board).strip():
         return kanban_db.get_current_board()
     try:
-        slug = kanban_db._normalize_board_slug(board)
+        slug = kanban_db.normalize_board_slug(board)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise _client_error(exc, fallback="invalid board id") from exc
     if not slug or not kanban_db.board_exists(slug):
         raise HTTPException(status_code=404, detail="board not found")
     return slug
@@ -295,7 +335,7 @@ def list_tasks(
             )
             items = [_task_dto(conn, task) for task in tasks]
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise _client_error(exc, fallback="invalid task filter") from exc
     return {"tasks": items, "count": len(items), "limit": limit}
 
 
@@ -407,7 +447,7 @@ def comment_task(
         try:
             comment_id = kanban_db.add_comment(conn, task_id, payload.author, payload.body)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _client_error(exc, fallback="comment rejected") from exc
         row = conn.execute(
             "SELECT created_at FROM task_comments WHERE id = ?", (comment_id,)
         ).fetchone()
@@ -452,7 +492,7 @@ def block_task(
                 kind=payload.kind if payload else None,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _client_error(exc, fallback="task could not be blocked") from exc
         return _transition_response(conn, task_id, ok, "blocked")
 
 
@@ -481,10 +521,14 @@ def link_tasks(
     board: Optional[str] = Query(default=None),
 ) -> dict[str, Any]:
     with _connection(board) as conn:
+        # A nonexistent parent/child is a 404 (consistent with unlink), not a
+        # 400 from kanban_db's "unknown task(s)" ValueError.
+        _require_task(conn, parent_id)
+        _require_task(conn, child_id)
         try:
             kanban_db.link_tasks(conn, parent_id, child_id)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _client_error(exc, fallback="link rejected") from exc
         return {"parent_id": parent_id, "child_id": child_id, "linked": True}
 
 

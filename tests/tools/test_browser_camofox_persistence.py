@@ -6,6 +6,7 @@ dedicated persistent Firefox profile on the server side.
 """
 
 import json
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -183,6 +184,7 @@ class TestManagedPersistenceMode:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config = {"browser": {"camofox": {"mode": "per_thread_instances"}}}
         pool = MagicMock()
+        pool.scope_lifecycle.side_effect = lambda scope: nullcontext()
         pool.get_or_start.side_effect = [
             MagicMock(api_url="http://127.0.0.1:19401", viewer_url="http://127.0.0.1:19403/vnc.html"),
             MagicMock(api_url="http://127.0.0.1:19404", viewer_url="http://127.0.0.1:19406/vnc.html"),

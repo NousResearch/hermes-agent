@@ -677,6 +677,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    browser_scope: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -750,6 +751,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                browser_scope=browser_scope,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -923,6 +925,8 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
+            if browser_scope is not None:
+                updates["browser_scope"] = str(browser_scope).strip() or None
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -978,6 +982,9 @@ Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
+Browser state is also isolated unless `browser_scope` explicitly names a durable scope.
+If a task claims it will continue an existing browser session, set `browser_scope`; otherwise
+do not schedule it as though login or open tabs will carry over.
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
@@ -1085,6 +1092,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
+            "browser_scope": {
+                "type": "string",
+                "description": "Optional browser scope to reuse across cron runs. Use 'current' to persist the active interactive browser scope (recommended for timed continuation), or provide a previously declared opaque scope label. Required when the job is intended to continue authenticated browser work; omit for a fresh isolated browser. Never pass a tab ID or profile path."
+            },
         },
         "required": ["action"]
     }
@@ -1111,6 +1122,16 @@ def check_cronjob_requirements() -> bool:
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
     )
+
+
+def _resolve_cron_browser_scope(requested: Optional[str], current: Optional[str]) -> Optional[str]:
+    value = str(requested or "").strip()
+    if value.lower() == "current":
+        resolved = str(current or "").strip()
+        if not resolved:
+            raise ValueError("browser_scope='current' requires an active browser scope")
+        return resolved
+    return value or None
 
 
 # --- Registry ---
@@ -1140,6 +1161,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
+        browser_scope=_resolve_cron_browser_scope(args.get("browser_scope"), kw.get("browser_scope")),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

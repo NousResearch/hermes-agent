@@ -39,6 +39,20 @@ def test_concurrent_same_task_waits_for_one_ready_instance(tmp_path):
     popen.assert_called_once()
 
 
+def test_scope_lifecycle_does_not_block_a_different_task(tmp_path):
+    (tmp_path / "server.js").write_text("// test")
+    process = MagicMock()
+    process.poll.return_value = None
+    pool = CamofoxInstancePool(tmp_path)
+
+    with patch("tools.camofox_instance_pool.subprocess.Popen", return_value=process), patch.object(
+        pool, "_wait_until_ready"
+    ), pool.scope_lifecycle("thread-a"):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            other = executor.submit(pool.get_or_start, "thread-b")
+            assert other.result(timeout=1).task_id == "thread-b"
+
+
 def test_different_tasks_get_distinct_port_triples(tmp_path):
     pool = CamofoxInstancePool(tmp_path)
     with patch.object(pool, "_port_available", return_value=True):
@@ -145,6 +159,57 @@ def test_popup_viewer_uses_dedicated_profile_and_instance_url(tmp_path):
     assert "--profile" in viewer_args
     assert instance.viewer_url == viewer_args[-1]
     assert instance.viewer_process is viewer_process
+
+
+def test_force_viewer_relaunch_waits_for_ready_then_reaps_old_popup(tmp_path):
+    executable = tmp_path / "camoufox"
+    executable.write_text("")
+    pool = CamofoxInstancePool(
+        tmp_path, launch_viewer=True, viewer_executable=executable,
+        viewer_profile_root=tmp_path / "profiles",
+    )
+    from tools.camofox_instance_pool import CamofoxInstance
+    server = MagicMock()
+    old_viewer = MagicMock(pid=101)
+    old_viewer.poll.return_value = None
+    new_viewer = MagicMock(pid=102)
+    new_viewer.poll.return_value = None
+    instance = CamofoxInstance(
+        "thread-a", 19401, 19402, 19403, server, viewer_process=old_viewer,
+    )
+
+    events = []
+    response = MagicMock(status_code=200)
+    with patch("tools.camofox_instance_pool.requests.get", side_effect=lambda *a, **k: events.append("ready") or response), patch(
+        "tools.camofox_instance_pool.os.getpgid", return_value=777
+    ), patch("tools.camofox_instance_pool.os.killpg", side_effect=lambda *a: events.append("stop")), patch(
+        "tools.camofox_instance_pool.subprocess.Popen", side_effect=lambda *a, **k: events.append("launch") or new_viewer
+    ):
+        pool.ensure_viewer(instance, force=True)
+
+    assert events == ["ready", "stop", "launch"]
+    old_viewer.wait.assert_called_once_with(timeout=5)
+    assert instance.viewer_process is new_viewer
+
+
+def test_force_viewer_relaunch_keeps_old_popup_when_novnc_is_not_ready(tmp_path):
+    pool = CamofoxInstancePool(tmp_path, launch_viewer=True, startup_timeout=0)
+    from tools.camofox_instance_pool import CamofoxInstance
+    old_viewer = MagicMock(pid=101)
+    old_viewer.poll.return_value = None
+    instance = CamofoxInstance(
+        "thread-a", 19401, 19402, 19403, MagicMock(), viewer_process=old_viewer,
+    )
+
+    with patch.object(pool, "_terminate_viewer") as terminate, patch.object(
+        pool, "_launch_viewer"
+    ) as launch:
+        with pytest.raises(RuntimeError, match="noVNC did not become ready"):
+            pool.ensure_viewer(instance, force=True)
+
+    terminate.assert_not_called()
+    launch.assert_not_called()
+    assert instance.viewer_process is old_viewer
 
 
 def test_missing_server_fails_before_spawn(tmp_path):

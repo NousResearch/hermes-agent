@@ -414,18 +414,36 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
+    """Acquire the per-scope lifecycle before touching shared session state."""
+    camofox_cfg = _get_camofox_config()
+    if _per_thread_instances_mode(camofox_cfg):
+        if not str(task_id or "").strip():
+            raise ValueError("browser scope is required in Camofox per_thread_instances mode")
+        pool = _get_instance_pool(camofox_cfg)
+        with pool.scope_lifecycle(task_id):
+            return _get_session_impl(task_id, camofox_cfg)
+    return _get_session_impl(task_id, camofox_cfg)
+
+
+def _get_session_impl(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Get or create a camofox session for the given task.
 
     When managed persistence is enabled, uses a deterministic userId
     derived from the Hermes profile so the Camofox server can map it
     to the same persistent browser profile across restarts.
     """
-    camofox_cfg = _get_camofox_config()
-    if _per_thread_instances_mode(camofox_cfg) and not str(task_id or "").strip():
-        raise ValueError("browser scope is required in Camofox per_thread_instances mode")
     task_id = task_id or "default"
     with _sessions_lock:
         if task_id in _sessions:
+            if _per_thread_instances_mode(camofox_cfg):
+                pool = _get_instance_pool(camofox_cfg)
+                instance = pool.get_or_start(task_id)
+                if _sessions[task_id].get("instance") is not instance:
+                    _sessions[task_id]["instance"] = instance
+                    _sessions[task_id]["api_url"] = instance.api_url
+                    _sessions[task_id]["viewer_url"] = instance.viewer_url
+                    _sessions[task_id]["tab_id"] = None
+                    pool.ensure_viewer(instance, force=True)
             session = _adopt_existing_tab(_sessions[task_id])
             _request_base_url.set(session.get("api_url"))
             return session
@@ -469,9 +487,41 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
             else os.getenv("CAMOFOX_URL", "").rstrip("/")
         )
         session["viewer_url"] = instance.viewer_url if instance else None
+        session["instance"] = instance
         _sessions[task_id] = session
         _request_base_url.set(session["api_url"])
         return _adopt_existing_tab(session)
+
+
+def camofox_identity_for_scope(task_id: str) -> Dict[str, str]:
+    """Derive a scope's identity without starting or selecting a server."""
+    scope = str(task_id or "").strip()
+    if not scope:
+        raise ValueError("browser scope is required")
+    cfg = _get_camofox_config()
+    override = _camofox_identity_override(scope, cfg)
+    if override:
+        return override
+    return get_camofox_identity(
+        scope,
+        isolate_task=_visible_isolated_mode(cfg) or bool(cfg.get("isolate_tasks")),
+    )
+
+
+def stop_camofox_scope(task_id: str) -> None:
+    """Stop only one scoped instance and invalidate its process-local tab."""
+    scope = str(task_id or "").strip()
+    if not scope:
+        raise ValueError("browser scope is required")
+    cfg = _get_camofox_config()
+    with _sessions_lock:
+        session = _sessions.get(scope)
+        if session is not None:
+            session["tab_id"] = None
+    if _per_thread_instances_mode(cfg):
+        _get_instance_pool(cfg).stop(scope)
+    _drop_session(scope)
+    _request_base_url.set(None)
 
 
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
@@ -600,7 +650,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             session = _ensure_tab(task_id, browser_url)
             data = {"ok": True, "url": browser_url}
         else:
-            # Navigate existing tab — recover from stale tab 404
+            # Navigate existing tab — recover once from an invalidated tab.
             try:
                 data = _post(
                     f"/tabs/{session['tab_id']}/navigate",
@@ -608,14 +658,34 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                     timeout=60,
                 )
             except requests.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
+                response = e.response
+                status = response.status_code if response is not None else None
+                body = ""
+                if response is not None:
+                    try:
+                        body = str(response.json().get("error") or "").lower()
+                    except (TypeError, ValueError, AttributeError):
+                        body = str(response.text or "").lower()
+                stale = status in {404, 410} or (
+                    status == 503
+                    and any(marker in body for marker in (
+                        "target page", "context", "browser has been closed", "tab not found",
+                    ))
+                )
+                if stale:
                     logger.warning(
-                        "Camofox tab %s returned 404 — tab was garbage collected. "
-                        "Creating a fresh tab.",
-                        session["tab_id"],
+                        "Camofox tab became stale (HTTP %s); creating one fresh tab "
+                        "in the same browser scope.", status,
                     )
                     session["tab_id"] = None
                     session = _ensure_tab(task_id, browser_url)
+                    recovery_cfg = _get_camofox_config()
+                    if _per_thread_instances_mode(recovery_cfg):
+                        instance = session.get("instance")
+                        if instance is not None:
+                            _get_instance_pool(recovery_cfg).ensure_viewer(
+                                instance, force=True
+                            )
                     data = {"ok": True, "url": browser_url}
                 else:
                     raise

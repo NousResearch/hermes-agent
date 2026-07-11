@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, IO, Optional
@@ -68,6 +69,19 @@ class CamofoxInstancePool:
         self.log_root = Path(log_root).expanduser().resolve()
         self._instances: Dict[str, CamofoxInstance] = {}
         self._lock = threading.RLock()
+        self._scope_locks: Dict[str, threading.RLock] = {}
+
+    def _scope_lock(self, task_id: Optional[str]) -> threading.RLock:
+        key = task_id or "default"
+        with self._lock:
+            return self._scope_locks.setdefault(key, threading.RLock())
+
+    @contextmanager
+    def scope_lifecycle(self, task_id: Optional[str]):
+        """Exclude start/stop/profile mutation for exactly one browser scope."""
+        lock = self._scope_lock(task_id)
+        with lock:
+            yield
 
     def _ports_for_task(self, task_id: str) -> tuple[int, int, int]:
         slots = (self.port_end - self.port_start + 1) // 3
@@ -93,70 +107,91 @@ class CamofoxInstancePool:
 
     def get_or_start(self, task_id: Optional[str]) -> CamofoxInstance:
         key = task_id or "default"
-        with self._lock:
-            current = self._instances.get(key)
-            if current and current.process.poll() is None:
-                return current
-            if current:
-                self.stop(key)
+        with self.scope_lifecycle(key):
+            with self._lock:
+                current = self._instances.get(key)
+                if current and current.process.poll() is None:
+                    return current
+                if current:
+                    self.stop(key)
 
-            if not (self.server_dir / "server.js").is_file():
-                raise RuntimeError(f"Camofox server.js not found under {self.server_dir}")
+                if not (self.server_dir / "server.js").is_file():
+                    raise RuntimeError(f"Camofox server.js not found under {self.server_dir}")
 
-            api_port, vnc_port, novnc_port = self._ports_for_task(key)
-            env = os.environ.copy()
-            env.update({
-                "CAMOFOX_PORT": str(api_port),
-                "VNC_PORT": str(vnc_port),
-                "NOVNC_PORT": str(novnc_port),
-                "VNC_BIND": "127.0.0.1",
-                "NODE_ENV": "production",
-            })
-            self.log_root.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256(key.encode()).hexdigest()[:16]
-            log_file = (self.log_root / f"{digest}.log").open("ab", buffering=0)
-            process = subprocess.Popen(
-                ["node", "server.js"],
-                cwd=self.server_dir,
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            instance = CamofoxInstance(
-                key, api_port, vnc_port, novnc_port, process, log_file=log_file
-            )
-            self._instances[key] = instance
-            try:
-                # Serialize same-process acquisition until the published
-                # instance is actually ready. A second caller must never
-                # receive a merely-spawned server that can still fail startup.
-                self._wait_until_ready(instance)
-            except Exception:
-                self.stop(key)
-                raise
-            return instance
+                api_port, vnc_port, novnc_port = self._ports_for_task(key)
+                env = os.environ.copy()
+                env.update({
+                    "CAMOFOX_PORT": str(api_port),
+                    "VNC_PORT": str(vnc_port),
+                    "NOVNC_PORT": str(novnc_port),
+                    "VNC_BIND": "127.0.0.1",
+                    "NODE_ENV": "production",
+                })
+                self.log_root.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+                log_file = (self.log_root / f"{digest}.log").open("ab", buffering=0)
+                process = subprocess.Popen(
+                    ["node", "server.js"],
+                    cwd=self.server_dir,
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                instance = CamofoxInstance(
+                    key, api_port, vnc_port, novnc_port, process, log_file=log_file
+                )
+                self._instances[key] = instance
+                try:
+                    # Serialize same-process acquisition until the published
+                    # instance is actually ready. A second caller must never
+                    # receive a merely-spawned server that can still fail startup.
+                    self._wait_until_ready(instance)
+                except Exception:
+                    self.stop(key)
+                    raise
+                return instance
 
-    def ensure_viewer(self, instance: CamofoxInstance) -> None:
-        """Launch the popup only after this instance's noVNC endpoint is live."""
-        if not self.launch_viewer or (
-            instance.viewer_process and instance.viewer_process.poll() is None
-        ):
+    def ensure_viewer(self, instance: CamofoxInstance, *, force: bool = False) -> None:
+        """Launch this instance's popup after noVNC is live.
+
+        ``force`` replaces a still-running popup whose URL can point at an old
+        Xvfb display after browser recovery.  Readiness is established before
+        the old popup is stopped, and the pool lock serializes replacement so
+        two callers cannot leave duplicate viewers behind.
+        """
+        if not self.launch_viewer:
             return
-        deadline = time.monotonic() + self.startup_timeout
-        last_error = "not ready"
-        while time.monotonic() < deadline:
-            try:
-                response = requests.get(instance.viewer_url, timeout=1)
-                if response.status_code == 200:
-                    self._launch_viewer(instance)
-                    return
-                last_error = f"HTTP {response.status_code}"
-            except requests.RequestException as exc:
-                last_error = str(exc)
-            time.sleep(0.2)
+        with self._lock:
+            viewer = instance.viewer_process
+            if not force and viewer and viewer.poll() is None:
+                return
+            deadline = time.monotonic() + self.startup_timeout
+            last_error = "not ready"
+            while time.monotonic() < deadline:
+                try:
+                    response = requests.get(instance.viewer_url, timeout=1)
+                    if response.status_code == 200:
+                        if viewer and viewer.poll() is None:
+                            self._terminate_viewer(viewer)
+                        instance.viewer_process = None
+                        self._launch_viewer(instance)
+                        return
+                    last_error = f"HTTP {response.status_code}"
+                except requests.RequestException as exc:
+                    last_error = str(exc)
+                time.sleep(0.2)
         raise RuntimeError(f"Task-scoped Camofox noVNC did not become ready: {last_error}")
+
+    @staticmethod
+    def _terminate_viewer(viewer: subprocess.Popen) -> None:
+        os.killpg(os.getpgid(viewer.pid), signal.SIGTERM)
+        try:
+            viewer.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(viewer.pid), signal.SIGKILL)
+            viewer.wait(timeout=5)
 
     def _launch_viewer(self, instance: CamofoxInstance) -> None:
         """Open a dedicated native popup showing this instance's VNC display."""
@@ -199,26 +234,22 @@ class CamofoxInstancePool:
 
     def stop(self, task_id: Optional[str]) -> None:
         key = task_id or "default"
-        with self._lock:
-            instance = self._instances.pop(key, None)
-        if not instance:
-            return
-        if instance.viewer_process and instance.viewer_process.poll() is None:
-            os.killpg(os.getpgid(instance.viewer_process.pid), signal.SIGTERM)
-            try:
-                instance.viewer_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(instance.viewer_process.pid), signal.SIGKILL)
-                instance.viewer_process.wait(timeout=5)
-        if instance.process.poll() is None:
-            os.killpg(os.getpgid(instance.process.pid), signal.SIGTERM)
-            try:
-                instance.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(instance.process.pid), signal.SIGKILL)
-                instance.process.wait(timeout=5)
-        if instance.log_file:
-            instance.log_file.close()
+        with self.scope_lifecycle(key):
+            with self._lock:
+                instance = self._instances.pop(key, None)
+            if not instance:
+                return
+            if instance.viewer_process and instance.viewer_process.poll() is None:
+                self._terminate_viewer(instance.viewer_process)
+            if instance.process.poll() is None:
+                os.killpg(os.getpgid(instance.process.pid), signal.SIGTERM)
+                try:
+                    instance.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(instance.process.pid), signal.SIGKILL)
+                    instance.process.wait(timeout=5)
+            if instance.log_file:
+                instance.log_file.close()
 
     def stop_all(self) -> None:
         with self._lock:

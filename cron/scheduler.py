@@ -3074,6 +3074,7 @@ def run_job(
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            browser_scope=job.get("browser_scope"),
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run

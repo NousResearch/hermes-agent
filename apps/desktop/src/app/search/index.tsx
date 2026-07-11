@@ -112,29 +112,30 @@ export function SearchView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   return (
     <PageSearchShell
       {...props}
+      centered
       onSearchChange={setQuery}
       searchInputRef={inputRef}
       searchPlaceholder={s.searchPlaceholder}
       searchValue={query}
     >
-      <div className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-2xl px-3 pb-8 pt-1">
-          {trimmedQuery && results.length === 0 ? (
-            <div className="grid min-h-32 place-items-center px-2 text-center text-sm text-(--ui-text-tertiary)">
-              {s.noMatch(trimmedQuery)}
-            </div>
-          ) : (
-            <ul className="flex flex-col gap-px">
-              {results.map(session => (
-                <SearchResultRow
-                  key={session.id}
-                  onOpen={() => navigate(sessionRoute(session.id))}
-                  session={session}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
+      {/* Shell owns the scroll + centered max-w-2xl column (centered mode); this
+          just supplies the column's content and its vertical padding. */}
+      <div className="pb-8 pt-1">
+        {trimmedQuery && results.length === 0 ? (
+          <div className="grid min-h-32 place-items-center px-2 text-center text-sm text-(--ui-text-tertiary)">
+            {s.noMatch(trimmedQuery)}
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-px">
+            {results.map(session => (
+              <SearchResultRow
+                key={session.id}
+                onOpen={() => navigate(sessionRoute(session.id))}
+                session={session}
+              />
+            ))}
+          </ul>
+        )}
       </div>
     </PageSearchShell>
   )

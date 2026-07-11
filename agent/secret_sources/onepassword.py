@@ -98,6 +98,9 @@ _OP_ENV_ALLOWLIST = (
     "OP_ACCOUNT",
     "OP_CONNECT_HOST",
     "OP_CONNECT_TOKEN",
+    # Lets a user skip op's desktop-app integration probe (which can hang with
+    # no timeout on a wedged desktop container) and go straight to token auth.
+    "OP_LOAD_DESKTOP_APP_SETTINGS",
 )
 
 

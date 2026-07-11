@@ -18,7 +18,7 @@ export interface NamedLibraryPanelProps {
   onConfirmClip: (segmentId: string, clipId: string) => void
   onCreateTimeline: () => void | Promise<void>
   onMatchAll: () => void | Promise<void>
-  onMatchSegment: (segmentId: string) => void | Promise<void>
+  onMatchSegment: (segmentId: string) => unknown | Promise<unknown>
   onRefresh: () => void | Promise<void>
   onScan: () => void | Promise<void>
   onSelectLibrary: (libraryId: string) => void

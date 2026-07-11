@@ -17,6 +17,7 @@ import {
   miniMaxVoiceName,
   validateMiniMaxCloneInput
 } from './minimax-voice-workflows'
+import { NamedLibraryPanel } from './named-library-panel'
 import {
   configFormFromSummary,
   defaultMoneyPrinterConfigForm,
@@ -40,6 +41,7 @@ import {
   type VideoLibraryClip,
   type VideoSource
 } from './moneyprinter-client'
+import { useNamedVideoLibrary } from './use-named-video-library'
 
 interface VideoStudioViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -96,6 +98,17 @@ function savedStateLabel(configured?: boolean): string {
 
 function isVideoFile(file: File): boolean {
   return file.type.startsWith('video/') || /\.(?:avi|flv|mkv|mov|mp4|webm)$/i.test(file.name)
+}
+
+function timelineVideoFiles(timeline: Record<string, unknown>): string[] {
+  const tracks = timeline.tracks
+  if (!tracks || typeof tracks !== 'object' || Array.isArray(tracks)) return []
+  const video = (tracks as { video?: unknown }).video
+  if (!Array.isArray(video)) return []
+
+  return video
+    .map(item => (item && typeof item === 'object' && !Array.isArray(item) ? (item as { file?: unknown }).file : ''))
+    .filter((file): file is string => typeof file === 'string' && file.length > 0)
 }
 
 function storedVideoGenerationForm(): VideoGenerationForm {
@@ -183,6 +196,11 @@ export function VideoStudioView({
   const [miniMaxLyricsBusy, setMiniMaxLyricsBusy] = useState(false)
   const [miniMaxMusicPrompt, setMiniMaxMusicPrompt] = useState('适合短视频的现代感背景音乐')
   const [miniMaxLyrics, setMiniMaxLyrics] = useState('')
+  const namedLibrary = useNamedVideoLibrary({
+    client: videoLibraryClient,
+    script: form.videoScript,
+    terms: form.videoTerms
+  })
 
   const selectedTask = useMemo(
     () => tasks.find(task => task.id === selectedTaskId) ?? tasks[0] ?? null,
@@ -451,6 +469,38 @@ export function VideoStudioView({
       setVideoLibraryActionId(null)
     }
   }, [])
+
+  const createNamedLibraryTimeline = useCallback(async () => {
+    try {
+      const result = await namedLibrary.createTimeline(form.videoAspect)
+      const sourcePaths = timelineVideoFiles(result.timeline)
+      const uploadedFiles: string[] = []
+
+      for (const sourcePath of sourcePaths) {
+        const filename = sourcePath.split(/[\\/]/).pop() || 'selected-clip.mp4'
+        const response = await moneyprinterClient.uploadLocalMaterial({ filename, sourcePath })
+        if (!response.ok || !response.data) {
+          throw new Error(response.error?.message || `无法加入镜头 ${filename}`)
+        }
+        const material = response.data.material
+        uploadedFiles.push(material.file)
+        setLocalMaterials(current => [material, ...current.filter(item => item.file !== material.file)])
+      }
+
+      setForm(current => ({
+        ...current,
+        localMaterials: Array.from(new Set([...current.localMaterials, ...uploadedFiles])),
+        videoSource: 'local'
+      }))
+      notify({
+        kind: 'success',
+        title: '具名资产库时间线已创建',
+        message: `${uploadedFiles.length} 个人工确认镜头已加入本地混剪。`
+      })
+    } catch (reason) {
+      notifyError(reason instanceof Error ? reason.message : String(reason), '无法创建素材时间线')
+    }
+  }, [form.videoAspect, namedLibrary])
 
   const uploadBgmFiles = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget
@@ -1576,6 +1626,28 @@ export function VideoStudioView({
                 </div>
               </div>
             )}
+
+            <NamedLibraryPanel
+              error={namedLibrary.error}
+              libraries={namedLibrary.libraries}
+              loadingLibraries={namedLibrary.loadingLibraries}
+              loadingLibrary={namedLibrary.loadingLibrary}
+              matches={namedLibrary.matches}
+              matchingAll={namedLibrary.matchingAll}
+              matchingSegmentId={namedLibrary.matchingSegmentId}
+              onConfirmClip={namedLibrary.confirmClip}
+              onCreateTimeline={createNamedLibraryTimeline}
+              onMatchAll={namedLibrary.matchAll}
+              onMatchSegment={namedLibrary.matchSegment}
+              onRefresh={namedLibrary.refreshSelectedLibrary}
+              onScan={namedLibrary.scanSelectedLibrary}
+              onSelectLibrary={namedLibrary.selectLibrary}
+              scanBusy={namedLibrary.scanBusy}
+              segments={namedLibrary.segments}
+              selectedLibraryId={namedLibrary.selectedLibraryId}
+              status={namedLibrary.status}
+              timelineBusy={namedLibrary.timelineBusy}
+            />
 
             <div className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3">
               <div className="mb-3 flex items-center justify-between gap-2">

@@ -547,7 +547,14 @@ def _convert_content_to_converse(content) -> List[Dict]:
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text.strip() else _EMPTY_TEXT_PLACEHOLDER})
+                # ``text`` may be a non-string (e.g. an explicit ``None``) —
+                # guard before calling ``.strip()`` so a malformed part can't
+                # crash the whole conversion. Anything empty, whitespace-only,
+                # or non-string collapses to the non-whitespace sentinel.
+                if isinstance(text, str) and text.strip():
+                    blocks.append({"text": text})
+                else:
+                    blocks.append({"text": _EMPTY_TEXT_PLACEHOLDER})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""

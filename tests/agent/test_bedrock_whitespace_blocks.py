@@ -62,6 +62,27 @@ def test_whitespace_only_text_part_in_list():
     assert blocks[0]["text"].strip(), "list-branch whitespace text not sanitized"
 
 
+def test_none_text_part_in_list_does_not_crash():
+    """A malformed part ``{"type": "text", "text": None}`` must NOT raise.
+
+    ``dict.get("text", "")`` returns ``None`` (not the default) when the key is
+    present with a ``None`` value, so an unguarded ``.strip()`` would throw
+    AttributeError and kill the whole conversion. It must instead collapse to
+    the non-whitespace sentinel — matching main's tolerance of falsy text.
+    """
+    blocks = _convert_content_to_converse([{"type": "text", "text": None}])
+    assert len(blocks) == 1
+    assert blocks[0]["text"].strip(), "None text part not sanitized"
+
+
+def test_non_string_text_part_in_list_does_not_crash():
+    """Any non-string ``text`` value (e.g. an int) collapses to the sentinel
+    rather than crashing on ``.strip()``."""
+    blocks = _convert_content_to_converse([{"type": "text", "text": 123}])
+    assert len(blocks) == 1
+    assert blocks[0]["text"].strip(), "non-string text part not sanitized"
+
+
 def test_empty_tool_result():
     """A tool that produced no output (empty stdout) must still be valid."""
     msgs = [

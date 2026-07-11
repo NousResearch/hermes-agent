@@ -610,6 +610,62 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(accepted).toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
   })
+
+  it('does not abort the first message of a new chat when creation mutates the context (#52253)', async () => {
+    // Regression: commit 7acaff5ef (#54527) pinned the session context and
+    // aborts the submit if it drifts. createBackendSessionForSend legitimately
+    // assigns the new stored/runtime session to the context refs and navigates
+    // to the new route — that self-induced change is NOT a user switching
+    // sessions, so the submit must proceed on the first Enter. Before the fix
+    // the drift guard tripped immediately after creation, dropping the message
+    // and requiring a second Enter.
+    const storedSessionId = 'stored-new'
+    const routeTokens = ['/chat', `/chat/${storedSessionId}`]
+    let routeIdx = 0
+
+    const activeSessionIdRef = { current: null as string | null }
+    const selectedStoredSessionIdRef = { current: null as string | null }
+    const getRouteToken = () => routeTokens[Math.min(routeIdx, routeTokens.length - 1)]
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_ID
+      selectedStoredSessionIdRef.current = storedSessionId
+      routeIdx += 1 // simulate the navigate(sessionRoute(stored)) side effect
+
+      return RUNTIME_SESSION_ID
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={getRouteToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    // Single Enter of a brand-new chat must send without returning false.
+    const accepted = await handle!.submitText('first message of a new chat')
+
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first message of a new chat'
+      },
+      1_800_000
+    )
+  })
 })
 
 describe('usePromptActions steerPrompt', () => {

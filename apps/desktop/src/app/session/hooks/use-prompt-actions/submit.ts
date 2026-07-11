@@ -118,17 +118,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Pin the session context for the whole async submit pipeline. Without
       // this, a fast session switch during session.resume / file.attach can
       // redirect the user's text into a different chat (#54527).
-      const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      const captureContext = () => ({
+        activeSessionId: activeSessionIdRef.current,
+        storedSessionId: selectedStoredSessionIdRef.current,
+        routeToken: getRouteToken()
+      })
+
+      let startingContext = captureContext()
 
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== startingContext.storedSessionId ||
+        getRouteToken() !== startingContext.routeToken
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
-      const submitLockKey = startingStoredSessionId || startingActiveSessionId || '__pending_new__'
+      const submitLockKey = startingContext.storedSessionId || startingContext.activeSessionId || '__pending_new__'
 
       if (_submitInFlight.has(submitLockKey)) {
         return false
@@ -179,7 +183,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
-          startingStoredSessionId
+          startingContext.storedSessionId
         )
 
       // After sync rewrites refs, refresh the optimistic message in place so the
@@ -191,7 +195,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             ...state,
             messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
-          startingStoredSessionId
+          startingContext.storedSessionId
         )
 
       const dropOptimistic = (sid: null | string) => {
@@ -210,7 +214,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             awaitingResponse: false,
             pendingBranchGroup: null
           }),
-          startingStoredSessionId
+          startingContext.storedSessionId
         )
       }
 
@@ -234,7 +238,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!sessionId && startingStoredSessionId) {
+      if (!sessionId && startingContext.storedSessionId) {
         // A stored session is SELECTED but its runtime binding is gone (the
         // live session was orphan-reaped, or a timeout/reconnect cleared
         // activeSessionId). Continuing the selected conversation must mean
@@ -244,7 +248,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // new-chat draft).
         try {
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: startingStoredSessionId
+            session_id: startingContext.storedSessionId
           })
 
           if (sessionContextDrifted()) {
@@ -280,6 +284,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
+
+        // createBackendSessionForSend legitimately assigns the new session to
+        // the context refs and navigates to its route. That is the expected
+        // context now — not a user switching away mid-submit — so re-baseline
+        // the drift baseline here. Without this, the #54527 guard trips on the
+        // submit's own side effect and aborts the first message of every new
+        // chat, forcing a second Enter (#52253 class of regression).
+        startingContext = captureContext()
 
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)
@@ -324,7 +336,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         } catch (firstErr) {
           if (
             (isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) &&
-            startingStoredSessionId
+            startingContext.storedSessionId
           ) {
             // Re-register the session in the gateway and get a fresh live ID.
             // Timeouts recover the same way as "session not found": a starved
@@ -332,7 +344,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // the stored session is fine — resume + retry instead of erroring
             // out and losing the session binding.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: startingStoredSessionId,
+              session_id: startingContext.storedSessionId,
               source: 'desktop'
             })
 

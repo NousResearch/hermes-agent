@@ -4577,6 +4577,15 @@ function getTrayIconPath() {
   return TRAY_ICON_PATHS.find(fileExists) || getAppIconPath()
 }
 
+import {
+  shouldHideToTray,
+  decideTrayClickAction,
+  shouldQuitOnLastWindowClose
+} from './tray-lifecycle'
+
+// Re-export types for use in main.ts
+export type { ToggleAction } from './tray-lifecycle'
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -7438,7 +7447,14 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', e => {
+    if (shouldHideToTray({ hasTray: !!trayIcon, isHandoff: isQuittingForHandoff })) {
+      e.preventDefault()
+      mainWindow.hide()
+      return
+    }
+    schedulePersistWindowState.flush()
+  })
 
   // The overlay rides the main window — closing the app's primary window must
   // tear it down too (otherwise it strands as an orphan that blocks
@@ -9243,13 +9259,16 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  // When handing off to the detached updater / swap / uninstall script, the
+  // process MUST exit so the script can replace or remove the bundle and
+  // relaunch — without this the script's PID-wait spins to its full timeout
+  // and the user is left with an invisible app (or an uninstall that appears
+  // to do nothing).
+  if (shouldQuitOnLastWindowClose({
+    isHandoff: isQuittingForHandoff,
+    hasTray: !!trayIcon && !trayIcon.isDestroyed(),
+    isMac: IS_MAC
+  }) === 'quit') {
     app.quit()
   }
 })

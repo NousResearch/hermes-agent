@@ -20,21 +20,30 @@ test -n "$DOUBLEWORD_API_KEY"
 
 Use the strongest readiness check available for the login mode.
 
-For browser login, verify the authenticated CLI identity and active
-organization before uploading data:
+For browser login, authenticate interactively and verify the CLI identity and
+active organization before uploading data:
 
 ```bash
+dw login
 dw whoami
 ```
 
 If `dw whoami` fails after browser login, do not upload data. Check whether the
-Doubleword CLI is installed, whether `DOUBLEWORD_API_KEY` is available in the
-shell context, and whether the active account or organization is correct.
+Doubleword CLI is installed and whether the active account or organization is
+correct.
 
-For headless/API-key login, `dw whoami` may fail because API-key login stores
-only the inference key and does not enable admin API commands. In that mode,
-validate the payload locally and run a cheap, non-interactive realtime
-inference probe before uploading or submitting jobs:
+For headless/API-key login, pass the securely injected environment variable to
+the CLI without placing the literal key in the command:
+
+```bash
+dw login --api-key "$DOUBLEWORD_API_KEY"
+```
+
+The CLI validates the key, then stores it in `~/.dw/credentials.toml` with
+restricted permissions. API-key login enables file, batch, stream, and
+realtime operations, but not admin API commands such as `dw whoami` or
+`dw models list`. Validate the payload locally and run a cheap,
+non-interactive realtime probe before uploading or submitting jobs:
 
 The readiness probe defaults to `openai/gpt-oss-20b`, the lowest-cost available
 realtime model; set `MODEL` first to override it.
@@ -59,7 +68,6 @@ printf 'Reply with OK.\n' | dw realtime "$MODEL" --temperature 0 --max-tokens 2 
 Useful auth/account commands:
 
 ```bash
-dw login --api-key <key>
 dw account current
 dw account list
 dw account switch <account>
@@ -70,7 +78,8 @@ Do not run key-management commands such as `dw keys create` or
 
 ## Model Discovery
 
-Use the installed CLI to verify available model names and details:
+Browser-authenticated accounts can use the installed CLI to verify available
+model names and details:
 
 ```bash
 dw models list
@@ -79,6 +88,10 @@ dw models list --type embeddings
 : "${MODEL:?set MODEL to the model to inspect}"
 dw models get "$MODEL"
 ```
+
+These model commands use the admin API and are unavailable after API-key-only
+login. In that mode, start from `references/models-and-pricing.md` or a model
+the user supplied, then verify it with the token-limited realtime probe.
 
 ## JSONL Validation
 

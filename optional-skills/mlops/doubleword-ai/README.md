@@ -16,23 +16,42 @@ If you do not already have an account, sign up at
 [doubleword.ai](https://doubleword.ai/). Signup is free and includes free tokens
 so you can try the platform before adding paid usage.
 
-After creating an account, create or copy an API key and expose it to your agent
-environment as:
+After creating an account, create or copy an API key. When this skill is loaded
+in an interactive Hermes session, Hermes requests `DOUBLEWORD_API_KEY` through
+its masked secret prompt and stores it in the active profile's `.env` file.
+
+For manual or non-interactive setup, add the key to
+`${HERMES_HOME:-~/.hermes}/.env`:
 
 ```bash
-export DOUBLEWORD_API_KEY="your_api_key_here"
+DOUBLEWORD_API_KEY=your_api_key_here
 ```
 
-The skill supports two authentication readiness paths. With browser login, it
-verifies identity and organization with:
+Do not put the key in `config.yaml`, pass its literal value on a command line,
+or commit it to a repository.
+
+For headless use, configure the CLI by referencing the environment variable:
 
 ```bash
+dw login --api-key "$DOUBLEWORD_API_KEY"
+```
+
+The CLI validates the key and stores it in `~/.dw/credentials.toml` with
+restricted permissions. The command contains the variable name rather than the
+secret value.
+
+The skill supports two authentication readiness paths. With browser login, run
+the interactive login and then verify identity and organization:
+
+```bash
+dw login
 dw whoami
 ```
 
-For headless/API-key login, `dw whoami` may fail because API-key credentials do
-not include admin API access. In that mode, the skill validates JSONL payloads
-locally and uses a non-interactive, token-limited realtime request, such as
+For headless/API-key login, `dw whoami` and `dw models list` are unavailable
+because API-key credentials do not include admin API access. In that mode, the
+skill validates JSONL payloads locally and uses a non-interactive,
+token-limited realtime request, such as
 `MODEL="${MODEL:-openai/gpt-oss-20b}"; dw realtime "$MODEL" "Reply with OK." --temperature 0 --max-tokens 2 --no-stream`,
 as the inference-authentication probe before uploading or submitting jobs.
 
@@ -58,8 +77,9 @@ references/
   models-and-pricing.md
 ```
 
-This repository is packaged as a single skill, so `SKILL.md` lives at the
-repository root.
+In the Hermes repository, this skill lives at
+`optional-skills/mlops/doubleword-ai/`. Installing it through the official
+skills source copies the bundle into the active Hermes profile.
 
 The skill uses progressive disclosure:
 
@@ -83,7 +103,8 @@ skill procedure.
 ## Requirements
 
 - A Doubleword.ai account.
-- `DOUBLEWORD_API_KEY` configured in the agent environment.
+- `DOUBLEWORD_API_KEY` configured through Hermes' secure prompt or the active
+  profile's `.env` file.
 - The Doubleword `dw` CLI available wherever the agent runs Doubleword jobs.
 - Terminal access for Hermes/OpenClaw skill execution.
 

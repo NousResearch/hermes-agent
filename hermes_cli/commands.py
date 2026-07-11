@@ -150,6 +150,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
                "Configuration", args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
+    CommandDef("auth-relay", "Toggle / inspect the operator WhatsApp auth-relay (relays clarify/approval/secret/sudo prompts to your WhatsApp)",
+               "Configuration", aliases=("authrelay", "auth_relay"),
+               args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
@@ -1163,7 +1167,14 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - auth_relay: operator WhatsApp auth-relay toggle (a config power-user
+#     command); reached via /hermes auth-relay on Slack so it doesn't spend a
+#     scarce native slash. Works natively on Telegram/Discord/CLI/gateway.
+#     The canonical sanitized Slack name is "auth-relay" (hyphen preserved by
+#     _sanitize_slack_name), so that is what must be excluded here.
+_SLACK_VIA_HERMES_ONLY = frozenset(
+    {"credits", "billing", "moa", "debug", "auth-relay", "authrelay"}
+)
 
 
 def _sanitize_slack_name(raw: str) -> str:

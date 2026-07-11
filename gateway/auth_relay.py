@@ -186,6 +186,69 @@ def is_enabled() -> bool:
     return _LIVE_CFG.active
 
 
+def set_enabled(enabled: bool, cfg: Optional[AuthRelayConfig] = None) -> bool:
+    """Live on/off switch for the relay — no gateway restart required.
+
+    When ``cfg`` is provided it fully replaces the live config (e.g. after a
+    config.yaml edit).  When omitted, the current live config is reused with
+    only ``enabled`` flipped, so a single toggle call can't accidentally wipe
+    the operator_chat / per-kind settings the operator already has.
+
+    Returns True if the relay ended up active (enabled + operator resolvable +
+    callbacks installed), False if it ended up inactive (either because it was
+    turned off, or because it couldn't be enabled — e.g. no operator target).
+    """
+    global _LIVE_CFG
+    if cfg is None:
+        cfg = AuthRelayConfig(
+            enabled=enabled,
+            operator_chat=_LIVE_CFG.operator_chat,
+            clarify=_LIVE_CFG.clarify,
+            approval=_LIVE_CFG.approval,
+            secret=_LIVE_CFG.secret,
+            sudo=_LIVE_CFG.sudo,
+            require_confirm=_LIVE_CFG.require_confirm,
+            timeout=_LIVE_CFG.timeout,
+        )
+    else:
+        cfg = AuthRelayConfig(
+            enabled=enabled if enabled else cfg.enabled,
+            operator_chat=cfg.operator_chat or _LIVE_CFG.operator_chat,
+            clarify=cfg.clarify,
+            approval=cfg.approval,
+            secret=cfg.secret,
+            sudo=cfg.sudo,
+            require_confirm=cfg.require_confirm,
+            timeout=cfg.timeout,
+        )
+    # configure() derives operator_chat from the local WhatsApp config when
+    # empty, and forces inactive when enabled-but-unresolvable.
+    configure(cfg)
+    if _LIVE_CFG.active:
+        # Best-effort: install the gateway callbacks now.  A failure (e.g. no
+        # WhatsApp adapter connected in this process, or gateway not fully up)
+        # does NOT make the feature inactive — the operator target is valid and
+        # the callbacks will be (re)installed when the gateway connects at
+        # startup / on the next connect.  This matches the startup wiring, which
+        # logs and continues on install failure rather than disabling the relay.
+        if install_gateway_callbacks():
+            return True
+        logger.warning(
+            "auth_relay: enabled + operator resolved, but callback install failed "
+            "now (no WhatsApp adapter connected?); relay stays active and will "
+            "install callbacks when the gateway connects."
+        )
+        return True
+    # Turned off (or could not be enabled): tear down callbacks if present.
+    uninstall_gateway_callbacks()
+    return False
+
+
+def toggle() -> bool:
+    """Flip the relay's enabled state and return the new active state."""
+    return set_enabled(not _LIVE_CFG.enabled)
+
+
 def kind_enabled(kind: str) -> bool:
     if not _LIVE_CFG.active:
         return False

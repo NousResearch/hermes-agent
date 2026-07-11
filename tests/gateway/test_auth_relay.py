@@ -352,3 +352,74 @@ class TestConfigParse:
         assert cfg.enabled is True
         # Derived + normalized (no "+").
         assert cfg.operator_chat == "85251234567"
+
+
+class TestLiveToggle:
+    def test_set_enabled_true_activates(self, relay_module, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", tempfile.mkdtemp())
+        relay_module.configure(
+            relay_module.AuthRelayConfig(
+                enabled=False, operator_chat="85251234567", timeout=10
+            )
+        )
+        assert relay_module.is_enabled() is False
+        ok = relay_module.set_enabled(True)
+        assert ok is True
+        assert relay_module.is_enabled() is True
+
+    def test_set_enabled_false_deactivates(self, relay_module):
+        relay_module.configure(
+            relay_module.AuthRelayConfig(
+                enabled=True, operator_chat="85251234567", timeout=10
+            )
+        )
+        # callbacks installed on configure? No — only at gateway startup.
+        # set_enabled(False) must tear down any installed callbacks safely.
+        ok = relay_module.set_enabled(False)
+        assert ok is False
+        assert relay_module.is_enabled() is False
+
+    def test_toggle_flips_state(self, relay_module):
+        relay_module.configure(
+            relay_module.AuthRelayConfig(
+                enabled=False, operator_chat="85251234567", timeout=10
+            )
+        )
+        assert relay_module.is_enabled() is False
+        assert relay_module.toggle() is True
+        assert relay_module.is_enabled() is True
+        assert relay_module.toggle() is False
+        assert relay_module.is_enabled() is False
+
+    def test_set_enabled_without_operator_stays_inactive(self, relay_module, monkeypatch):
+        # No operator_chat and no local WhatsApp env → enabling cannot activate.
+        for v in (
+            "WHATSAPP_ALLOWED_USERS",
+            "WHATSAPP_CLOUD_PHONE",
+            "WHATSAPP_CLOUD_BUSINESS_PHONE",
+            "WHATSAPP_CLOUD_OWNER_WA_ID",
+        ):
+            monkeypatch.delenv(v, raising=False)
+        relay_module.configure(
+            relay_module.AuthRelayConfig(enabled=False, operator_chat="", timeout=10)
+        )
+        ok = relay_module.set_enabled(True)
+        assert ok is False
+        assert relay_module.is_enabled() is False
+
+
+class TestCommandRegistration:
+    def test_auth_relay_in_gateway_known_commands(self):
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "auth-relay" in GATEWAY_KNOWN_COMMANDS
+        assert "auth_relay" in GATEWAY_KNOWN_COMMANDS  # alias
+        assert "authrelay" in GATEWAY_KNOWN_COMMANDS    # alias
+
+    def test_auth_relay_not_cli_only(self):
+        from hermes_cli.commands import COMMAND_REGISTRY
+        cmd = next(c for c in COMMAND_REGISTRY if c.name == "auth-relay")
+        assert cmd.cli_only is False
+        assert cmd.category == "Configuration"
+        assert "on" in cmd.subcommands
+        assert "off" in cmd.subcommands
+        assert "status" in cmd.subcommands

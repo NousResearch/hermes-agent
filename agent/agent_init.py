@@ -346,6 +346,7 @@ def init_agent(
     notice_callback: callable = None,
     notice_clear_callback: callable = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
+    reaction_callback: Optional[Callable[[str], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
@@ -579,6 +580,7 @@ def init_agent(
     agent.notice_callback = notice_callback
     agent.notice_clear_callback = notice_clear_callback
     agent.event_callback = event_callback
+    agent.reaction_callback = reaction_callback
     agent.tool_gen_callback = tool_gen_callback
 
     

@@ -89,6 +89,13 @@ def _gate(cfg_key: str, env_name: str, default: bool = False) -> bool:
 
 
 def _matrix_adapter() -> Tuple[Any, str]:
+    """Resolve the live Matrix adapter for the *current session profile*.
+
+    Multiplex gateways keep secondary-profile adapters in
+    ``runner._profile_adapters[profile]``. Always consulting
+    ``runner.adapters`` would operate through the default profile bot.
+    Fail closed when a stamped secondary profile has no Matrix adapter.
+    """
     if get_session_env("HERMES_SESSION_PLATFORM", "").lower() != "matrix":
         return None, "Matrix tools are only available while handling a Matrix conversation."
     try:
@@ -98,8 +105,28 @@ def _matrix_adapter() -> Tuple[Any, str]:
         runner = _gateway_runner_ref()
         if not runner:
             return None, "Matrix gateway is not running."
-        adapter = runner.adapters.get(Platform.MATRIX)
+
+        profile = (get_session_env("HERMES_SESSION_PROFILE", "") or "").strip() or None
+        resolver = getattr(runner, "_authorization_adapter", None)
+        if callable(resolver):
+            adapter = resolver(Platform.MATRIX, profile)
+        else:
+            # Lightweight fallback for unit tests / older runners.
+            if profile and profile != "default":
+                profile_adapters = getattr(runner, "_profile_adapters", None) or {}
+                if profile in profile_adapters:
+                    adapter = profile_adapters[profile].get(Platform.MATRIX)
+                else:
+                    adapter = None
+            else:
+                adapters = getattr(runner, "adapters", None) or {}
+                adapter = adapters.get(Platform.MATRIX)
+
         if not adapter:
+            if profile and profile != "default":
+                return None, (
+                    f"Matrix adapter is not connected for profile '{profile}'."
+                )
             return None, "Matrix adapter is not connected."
         return adapter, ""
     except Exception as exc:

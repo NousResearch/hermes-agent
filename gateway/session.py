@@ -1728,6 +1728,14 @@ class SessionStore:
         db_end_session_id = None
         db_create_kwargs = None
         existing_session_id = None
+        # Issue #61993: when the runtime self-heal detects a stale routing
+        # entry (sessions.json points at an ended session in state.db), the
+        # user or the agent has explicitly closed that session. Falling
+        # through to _recover_session_from_db resurrects it because the
+        # recovery query treats end_reason='agent_close' as recoverable.
+        # Set this flag in that branch and check it below to skip recovery
+        # and mint a fresh session_id instead.
+        _skip_recovery = False
 
         if not force_new:
             with self._lock:
@@ -1782,6 +1790,16 @@ class SessionStore:
                     was_auto_reset = False
                     auto_reset_reason = None
                     reset_had_activity = False
+                    # Issue #61993: when the user (or the agent, at the user's
+                    # instruction) has explicitly ended a session and the
+                    # routing key is still in sessions.json, falling through
+                    # to _recover_session_from_db resurrects the same
+                    # session_id because end_reason='agent_close' is treated
+                    # as recoverable. That silently undoes the user's reset
+                    # and locks them into an oversized/expensive session.
+                    # Mark ``_skip_recovery`` so the create-new-session path
+                    # below runs without consulting the recovery query.
+                    _skip_recovery = True
                     # Fall through to the recovery/create path below; the
                     # stale entry is gone so we must NOT consult its
                     # suspended/resume/reset state.
@@ -1840,7 +1858,7 @@ class SessionStore:
                 auto_reset_reason = None
                 reset_had_activity = False
 
-            if not force_new and not db_end_session_id:
+            if not force_new and not db_end_session_id and not _skip_recovery:
                 recovered_entry = self._recover_session_from_db(
                     session_key=session_key,
                     source=source,
@@ -1850,6 +1868,13 @@ class SessionStore:
                     self._entries[session_key] = recovered_entry
                     self._save()
                     return recovered_entry
+            elif _skip_recovery:
+                logger.debug(
+                    "gateway.session: skipping recovery for routing key %r — "
+                    "stale routing entry was just dropped by self-heal; "
+                    "minting fresh session id instead of resurrecting "
+                    "(#61993)", session_key,
+                )
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"

@@ -238,6 +238,7 @@ class DirectAlias(NamedTuple):
     model: str
     provider: str
     base_url: str
+    api_mode: str = ""
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -281,9 +282,10 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 model = entry.get("model", "")
                 provider = entry.get("provider", "custom")
                 base_url = entry.get("base_url", "")
+                api_mode = entry.get("api_mode", "")
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
-                        model=model, provider=provider, base_url=base_url,
+                        model=model, provider=provider, base_url=base_url, api_mode=api_mode,
                     )
 
         # --- model.aliases (string-based format, from config set) ---
@@ -1251,7 +1253,10 @@ def switch_model(
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
             base_url = _da.base_url
-            api_mode = ""  # clear so determine_api_mode re-detects from URL
+            if _da.api_mode:
+                api_mode = _da.api_mode
+            else:
+                api_mode = ""  # clear so determine_api_mode re-detects from URL
             if not api_key:
                 api_key = "no-key-required"
 

@@ -343,9 +343,10 @@ def _run_agent(
     # MCP discovery used to race oneshot tool snapshotting (#38448 / #61184):
     # background discovery started in _prepare_agent_startup, but -z never
     # waited, so aliases (server-b → mcp-server-b) were missing when tools
-    # were resolved and disabled-toolset subtraction could no-op. Run/await
-    # discovery BEFORE building AIAgent so MCP aliases exist and
-    # disabled_toolsets can strip them.
+    # were resolved and disabled-toolset subtraction could no-op. Ensure the
+    # shared discovery owner exists, then wait only for its configured bounded
+    # interval before building AIAgent. Slow servers continue in that same
+    # background thread and are picked up by late-binding refresh.
     try:
         from hermes_cli.mcp_startup import (
             start_background_mcp_discovery,
@@ -357,11 +358,6 @@ def _run_agent(
             thread_name="oneshot-mcp-discovery",
         )
         wait_for_mcp_discovery()
-        # Idempotent: finish any servers that missed the bounded wait so the
-        # single oneshot turn sees a complete registry (or explicit failures).
-        from tools.mcp_tool import discover_mcp_tools
-
-        discover_mcp_tools()
     except Exception:
         logging.getLogger(__name__).debug(
             "oneshot MCP discovery failed (non-fatal)", exc_info=True,

@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -347,10 +349,7 @@ class TestOneshotDisabledMcp61184:
         from hermes_cli import oneshot as oneshot_mod
 
         captured = {}
-
-        def fake_discover():
-            captured["discovered"] = True
-            return [two_mcp_servers["tool_a"], two_mcp_servers["tool_b"]]
+        synchronous_discover = MagicMock()
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -410,17 +409,93 @@ class TestOneshotDisabledMcp61184:
             "hermes_cli.mcp_startup.wait_for_mcp_discovery",
             lambda timeout=None: captured.__setitem__("waited", True),
         )
-        monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", fake_discover)
+        monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", synchronous_discover)
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
 
         response, result = oneshot_mod._run_agent("check cluster", model="test-model")
 
         assert response == "ok"
         assert captured.get("waited") is True
-        assert captured.get("discovered") is True
+        synchronous_discover.assert_not_called()
         assert captured["kwargs"].get("disabled_toolsets") == ["server-b"]
         assert two_mcp_servers["tool_b"] not in captured.get("tool_names", set())
         assert two_mcp_servers["tool_a"] in captured.get("tool_names", set())
+
+    def test_slow_discovery_is_not_duplicated_or_awaited_past_bound(self, monkeypatch):
+        from hermes_cli import mcp_startup
+        from hermes_cli import oneshot as oneshot_mod
+
+        discovery_started = threading.Event()
+        release_discovery = threading.Event()
+        attempts = 0
+
+        def slow_discover():
+            nonlocal attempts
+            attempts += 1
+            discovery_started.set()
+            release_discovery.wait(timeout=2)
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.suppress_status_output = False
+                self.stream_delta_callback = None
+                self.tool_gen_callback = None
+
+            def run_conversation(self, prompt):
+                return {"final_response": "ok", "completed": True}
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {"default": "test-model", "provider": "test"},
+                "mcp_discovery_timeout": 0.02,
+                "mcp_servers": {"slow-server": {"url": "http://slow/mcp"}},
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda cfg, platform: {"slow-server"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kw: {
+                "api_key": "k",
+                "base_url": "http://localhost",
+                "provider": "test",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.fallback_config.get_fallback_chain",
+            lambda cfg: None,
+        )
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
+        monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+        monkeypatch.setattr(mcp_startup, "_has_configured_mcp_servers", lambda: True)
+        monkeypatch.setattr(
+            mcp_startup,
+            "_discover_mcp_tools_without_interactive_oauth",
+            slow_discover,
+        )
+
+        started_at = time.monotonic()
+        try:
+            response, _ = oneshot_mod._run_agent("check cluster", model="test-model")
+            elapsed = time.monotonic() - started_at
+
+            assert discovery_started.is_set()
+            assert response == "ok"
+            assert attempts == 1
+            assert elapsed < 0.5
+            assert mcp_startup.mcp_discovery_in_flight()
+        finally:
+            release_discovery.set()
+            thread = mcp_startup._mcp_discovery_thread
+            if thread is not None:
+                thread.join(timeout=1)
 
 
 # ---------------------------------------------------------------------------
@@ -518,4 +593,3 @@ class TestPlatformAndCliDisabledMcp61184:
         assert statuses["server-b"]["disabled"] is True
         assert statuses["server-b"]["status"] == "disabled_toolsets"
         assert statuses["server-a"]["disabled"] is False
-

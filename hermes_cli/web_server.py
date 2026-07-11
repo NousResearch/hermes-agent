@@ -16858,6 +16858,33 @@ def start_server(
     except Exception as exc:
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
+    # Issue #62175: log a warning when dashboard fd count exceeds 80% of the
+    # soft limit so the CLOSE_WAIT socket leak (or any other fd leak) is
+    # surfaced before EMFILE surfaces at the user level. This does NOT fix
+    # the leak; it provides observability. Per the reporter's #62175
+    # suggestion. Soft limit detection uses importlib.resource since
+    # resource.getrlimit is Linux-only and the dashboard runs on macOS too.
+    try:
+        import resource
+        soft_fd_limit, _hard_fd_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, ValueError):
+        soft_fd_limit = None
+    if soft_fd_limit and soft_fd_limit > 0:
+        try:
+            import os as _os
+            pid = _os.getpid()
+            fd_count = len(_os.listdir(f"/proc/{pid}/fd")) if _os.path.isdir(f"/proc/{pid}/fd") else None
+        except OSError:
+            fd_count = None
+        if fd_count is not None and fd_count > int(soft_fd_limit * 0.8):
+            _log.warning(
+                "dashboard startup: fd count %d is >80%% of soft RLIMIT_NOFILE %d. "
+                "If this number keeps growing, /api/status may start hitting "
+                "EMFILE in a few days (see #62175). Check CLOSE_WAIT sockets to "
+                "ec2-*.us-west-2.compute.amazonaws.com.",
+                fd_count, soft_fd_limit,
+            )
+
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on

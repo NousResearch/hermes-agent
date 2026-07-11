@@ -621,6 +621,14 @@ class _DisplayDeltaDeduper:
     def reset_item(self) -> None:
         self._item_buf = ""
 
+    @property
+    def displayed_text(self) -> str:
+        """The full deduplicated text shown to the user — the monotonic
+        watermark. Used as the single source of truth for the final
+        ``output_text`` so the returned response can't re-inflate the same
+        snapshot replays the display path already collapsed."""
+        return self._displayed
+
     def feed(self, delta: str) -> str:
         """Return only the newly-visible suffix for this delta ("" if none)."""
         if not delta:
@@ -765,24 +773,26 @@ def _consume_codex_event_stream(
                         logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
             elif delta_text:
                 collected_text_deltas.append(delta_text)
-                if not has_tool_calls:
-                    # Only the genuinely-new suffix reaches the screen; on a
-                    # snapshot-replaying endpoint this suppresses the repeats,
-                    # on a well-behaved one it's a transparent pass-through.
-                    display_text = display_deduper.feed(delta_text)
-                    if display_text:
-                        if not first_delta_fired:
-                            first_delta_fired = True
-                            if on_first_delta is not None:
-                                try:
-                                    on_first_delta()
-                                except Exception:
-                                    logger.debug("Codex stream on_first_delta raised", exc_info=True)
-                        if on_text_delta is not None:
+                # Always run the delta through the snapshot deduper so the
+                # final ``output_text`` reflects the collapsed (non-replayed)
+                # answer — even on tool-call turns where nothing is displayed
+                # live. Only the genuinely-new suffix is *displayed*; on a
+                # snapshot-replaying endpoint this suppresses the repeats, on a
+                # well-behaved one it's a transparent pass-through.
+                display_text = display_deduper.feed(delta_text)
+                if display_text and not has_tool_calls:
+                    if not first_delta_fired:
+                        first_delta_fired = True
+                        if on_first_delta is not None:
                             try:
-                                on_text_delta(display_text)
+                                on_first_delta()
                             except Exception:
-                                logger.debug("Codex stream on_text_delta raised", exc_info=True)
+                                logger.debug("Codex stream on_first_delta raised", exc_info=True)
+                    if on_text_delta is not None:
+                        try:
+                            on_text_delta(display_text)
+                        except Exception:
+                            logger.debug("Codex stream on_text_delta raised", exc_info=True)
             continue
 
         if "function_call" in event_type:
@@ -837,18 +847,51 @@ def _consume_codex_event_stream(
             # Stop on terminal event.
             break
 
+    # The deduped answer text: the snapshot deduper's monotonic watermark.
+    # On a snapshot-replaying endpoint (Bedrock mantle) this is the answer
+    # ONCE; on a well-behaved endpoint it equals the raw delta join. Falls back
+    # to the raw join only if the deduper somehow saw nothing (defensive).
+    assembled_text = display_deduper.displayed_text or "".join(collected_text_deltas)
+
     # Build the final output list.  Prefer items observed via output_item.done;
     # if none arrived but we streamed plain text deltas (no tool calls), synthesize
     # a single message item so downstream normalization has something to work with.
     if collected_output_items:
-        output = list(collected_output_items)
+        # Some providers (e.g. Bedrock mantle) emit cumulative ``message``
+        # output_items where each item is a prefix-superset of the prior.
+        # Downstream normalization concatenates item text, so keeping all of
+        # them duplicates the answer quadratically. Collapse consecutive
+        # message-type items to the last (most complete) one, preserving
+        # function_call / reasoning / other item types untouched.
+        # (Sibling to the display-path dedup above; carries the final-assembly
+        # half from the still-open PR #41332 by @liuhao1024, since it is the
+        # prerequisite this display fix assumed but which is not yet on main.)
+        deduped: List[Any] = []
+        last_msg_idx = None
+        for item in collected_output_items:
+            item_type = getattr(item, "type", None)
+            if item_type is None and isinstance(item, dict):
+                item_type = item.get("type")
+            if item_type == "message":
+                if last_msg_idx is not None:
+                    deduped[last_msg_idx] = item
+                else:
+                    deduped.append(item)
+                    last_msg_idx = len(deduped) - 1
+            else:
+                # Non-message items (function_call, reasoning, …) always kept.
+                deduped.append(item)
+                # Reset message slot so a message after tool calls is kept.
+                last_msg_idx = None
+        output = deduped
     elif collected_text_deltas and not has_tool_calls:
-        assembled = "".join(collected_text_deltas)
+        # Use the deduplicated watermark, NOT the raw delta join, so a synthesized
+        # message item can't smuggle the replayed snapshots back into final.output.
         output = [SimpleNamespace(
             type="message",
             role="assistant",
             status="completed",
-            content=[SimpleNamespace(type="output_text", text=assembled)],
+            content=[SimpleNamespace(type="output_text", text=assembled_text)],
         )]
     else:
         output = []
@@ -863,8 +906,6 @@ def _consume_codex_event_stream(
         raise RuntimeError(
             "Codex Responses stream did not emit a terminal response"
         )
-
-    assembled_text = "".join(collected_text_deltas)
 
     final = SimpleNamespace(
         output=output,

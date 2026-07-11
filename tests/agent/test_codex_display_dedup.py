@@ -138,6 +138,67 @@ def test_e2e_mantle_snapshot_stream_displays_once():
     naive = sum(len(answer[:len(answer) // 8 * k]) for k in range(1, 9))
     assert len(displayed) < naive, "fix must beat naive concatenation"
 
+    # --- The returned response object must ALSO be deduplicated, not just the
+    # live display. This is the half the display-only fix originally missed:
+    # final.output_text (raw delta join) and final.output (cumulative message
+    # items) both re-inflated the same snapshots the display path collapsed.
+    assert final.output_text == answer, (
+        f"final.output_text inflated: {len(final.output_text)} chars vs "
+        f"answer {len(answer)}"
+    )
+    # Cumulative message items collapse to a single most-complete message.
+    assert len(final.output) == 1, (
+        f"expected 1 collapsed message item, got {len(final.output)}"
+    )
+    assert final.output[0].type == "message"
+    assert final.output[0].content[0].text == answer, (
+        "collapsed output item must carry the answer exactly once"
+    )
+
+
+def test_e2e_final_output_text_deduped_on_tool_call_turn():
+    """Even when nothing is displayed (tool-call turn), final.output_text is deduped.
+
+    The deduper is fed on every delta regardless of has_tool_calls, so a
+    snapshot-replaying endpoint can't smuggle the replays into the returned
+    output_text via the tool-call path (where the display gate is closed).
+    """
+    answer = "".join(f"tok{i} " for i in range(1, 25))
+    displayed_parts = []
+
+    def make_stream():
+        # A function_call item flips has_tool_calls True, closing the display gate.
+        yield _ev("response.output_item.added",
+                  item=SimpleNamespace(type="function_call", name="t", arguments="{}"))
+        yield _ev("response.output_item.done",
+                  item=SimpleNamespace(type="function_call", name="t", arguments="{}"))
+        # Now a message that replays the full answer twice across two items.
+        for _ in range(2):
+            yield _ev("response.output_item.added", item=_message_item(""))
+            step = max(1, len(answer) // 4)
+            for s in range(0, len(answer), step):
+                yield _ev("response.output_text.delta", delta=answer[s:s + step])
+            yield _ev("response.output_item.done", item=_message_item(answer))
+        yield _ev("response.completed", response=SimpleNamespace(output=[], status="completed"))
+
+    final = _consume_codex_event_stream(
+        make_stream(),
+        model="openai.gpt-5.5",
+        on_text_delta=lambda s: displayed_parts.append(s),
+    )
+
+    # Display gate closed on a tool-call turn → nothing streamed to screen.
+    assert "".join(displayed_parts) == "", "no live display on a tool-call turn"
+    # But the final assembled text is still deduped to the answer exactly once.
+    assert final.output_text == answer, (
+        f"final.output_text inflated on tool-call turn: {len(final.output_text)} "
+        f"vs {len(answer)}"
+    )
+    # function_call preserved; two cumulative messages collapsed to one.
+    types = [getattr(it, "type", None) for it in final.output]
+    assert types == ["function_call", "message"], types
+    assert final.output[1].content[0].text == answer
+
 
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { readKey, writeKey } from '@/lib/storage'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -22,7 +23,6 @@ import {
   confirmedTimelineFormPatch,
   timelineVideoSelections
 } from './material-cache'
-import { NamedLibraryPanel } from './named-library-panel'
 import {
   configFormFromSummary,
   defaultMoneyPrinterConfigForm,
@@ -35,29 +35,19 @@ import {
   type MoneyPrinterConfigInput,
   type MoneyPrinterConfigSummary,
   type MoneyPrinterHealth,
-  type MoneyPrinterLocalMaterial,
   type MoneyPrinterTask,
   resolveMoneyPrinterMediaUrl,
   scriptTextFromResult,
   termsTextFromResult,
   type VideoGenerationForm,
-  type VideoLibraryAsset,
   videoLibraryClient,
-  type VideoLibraryClip,
-  type VideoSource
 } from './moneyprinter-client'
+import { UnifiedMaterialLibraryPanel } from './unified-material-library-panel'
 import { useNamedVideoLibrary } from './use-named-video-library'
 
 interface VideoStudioViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
-
-const SOURCE_OPTIONS: { label: string; value: VideoSource }[] = [
-  { label: 'Pexels', value: 'pexels' },
-  { label: 'Pixabay', value: 'pixabay' },
-  { label: 'Coverr', value: 'coverr' },
-  { label: 'Local materials', value: 'local' }
-]
 
 const PIPELINE_STEPS = ['主题', '文案', '关键词', '语音', '素材', '字幕', '合成', '预览']
 
@@ -99,10 +89,6 @@ function formatBytes(size: number): string {
 
 function savedStateLabel(configured?: boolean): string {
   return configured ? '已保存' : '未配置'
-}
-
-function isVideoFile(file: File): boolean {
-  return file.type.startsWith('video/') || /\.(?:avi|flv|mkv|mov|mp4|webm)$/i.test(file.name)
 }
 
 function storedVideoGenerationForm(): VideoGenerationForm {
@@ -157,15 +143,8 @@ export function VideoStudioView({
   const [termsBusy, setTermsBusy] = useState(false)
   const [audioBusy, setAudioBusy] = useState(false)
   const [subtitleBusy, setSubtitleBusy] = useState(false)
-  const [localMaterials, setLocalMaterials] = useState<MoneyPrinterLocalMaterial[]>([])
-  const [localMaterialsBusy, setLocalMaterialsBusy] = useState(false)
-  const [videoLibraryAssets, setVideoLibraryAssets] = useState<VideoLibraryAsset[]>([])
-  const [videoLibraryClips, setVideoLibraryClips] = useState<VideoLibraryClip[]>([])
-  const [videoLibraryBusy, setVideoLibraryBusy] = useState(false)
-  const [videoLibraryActionId, setVideoLibraryActionId] = useState<string | null>(null)
   const [assets, setAssets] = useState<MoneyPrinterAssets>(EMPTY_ASSETS)
   const [assetsBusy, setAssetsBusy] = useState(false)
-  const [uploadBusy, setUploadBusy] = useState(false)
   const [bgmUploadBusy, setBgmUploadBusy] = useState(false)
   const [customAudioUploadBusy, setCustomAudioUploadBusy] = useState(false)
   const [serviceBusy, setServiceBusy] = useState(false)
@@ -260,49 +239,6 @@ export function VideoStudioView({
     setSelectedTaskId(current => current || response.data?.tasks[0]?.id || null)
   }, [])
 
-  const refreshLocalMaterials = useCallback(async () => {
-    setLocalMaterialsBusy(true)
-
-    try {
-      const response = await moneyprinterClient.listLocalMaterials()
-
-      if (!response.ok || !response.data) {
-        notifyError(response.error?.message, 'Unable to load local materials')
-
-        return
-      }
-
-      setLocalMaterials(response.data.materials)
-    } finally {
-      setLocalMaterialsBusy(false)
-    }
-  }, [])
-
-  const refreshVideoLibrary = useCallback(async () => {
-    setVideoLibraryBusy(true)
-
-    try {
-      const [assetsResponse, clipsResponse] = await Promise.all([
-        videoLibraryClient.listAssets(),
-        videoLibraryClient.listClips()
-      ])
-
-      if (!assetsResponse.ok || !assetsResponse.data) {
-        notifyError(assetsResponse.error?.message, 'Unable to load video library assets')
-      } else {
-        setVideoLibraryAssets(assetsResponse.data.assets)
-      }
-
-      if (!clipsResponse.ok || !clipsResponse.data) {
-        notifyError(clipsResponse.error?.message, 'Unable to load analyzed video clips')
-      } else {
-        setVideoLibraryClips(clipsResponse.data.clips)
-      }
-    } finally {
-      setVideoLibraryBusy(false)
-    }
-  }, [])
-
   const refreshAssets = useCallback(async () => {
     setAssetsBusy(true)
 
@@ -331,138 +267,51 @@ export function VideoStudioView({
   useEffect(() => {
     void loadConfig()
     void refreshTasks()
-    void refreshLocalMaterials()
-    void refreshVideoLibrary()
     void refreshAssets()
-  }, [loadConfig, refreshAssets, refreshLocalMaterials, refreshTasks, refreshVideoLibrary])
+  }, [loadConfig, refreshAssets, refreshTasks])
 
-  const toggleLocalMaterial = useCallback((file: string, checked: boolean) => {
-    setForm(current => {
-      const selected = new Set(current.localMaterials)
-
-      if (checked) {
-        selected.add(file)
-      } else {
-        selected.delete(file)
-      }
-
-      return { ...current, localMaterials: Array.from(selected) }
-    })
-  }, [])
-
-  const uploadLocalMaterials = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget
-    const files = Array.from(input.files || [])
-
-    if (files.length === 0) {
-      return
-    }
-
-    setUploadBusy(true)
-
-    try {
-      const uploadedFiles: string[] = []
-
-      for (const file of files) {
-        let sourcePath = ''
-
-        try {
-          sourcePath = window.hermesDesktop?.getPathForFile?.(file) || ''
-        } catch {
-          sourcePath = ''
-        }
-
-        const response = await moneyprinterClient.uploadLocalMaterial({
-          ...(sourcePath ? { sourcePath } : { contentBase64: await fileToDataUrl(file) }),
-          filename: file.name
-        })
-
-        if (!response.ok || !response.data) {
-          notifyError(response.error?.message, `Unable to upload ${file.name}`)
-
-          continue
-        }
-
-        const material = response.data.material
-        uploadedFiles.push(material.file)
-        setLocalMaterials(current => [material, ...current.filter(item => item.file !== material.file)])
-
-        if (sourcePath && isVideoFile(file)) {
-          const libraryResponse = await videoLibraryClient.importAsset(sourcePath)
-
-          if (!libraryResponse.ok || !libraryResponse.data) {
-            notifyError(libraryResponse.error?.message, `Unable to import ${file.name} into the video library`)
-          } else {
-            const importedAsset = libraryResponse.data.asset
-            setVideoLibraryAssets(current => [importedAsset, ...current.filter(item => item.id !== importedAsset.id)])
-          }
-        }
-      }
-
-      if (uploadedFiles.length > 0) {
-        setForm(current => ({
-          ...current,
-          localMaterials: Array.from(new Set([...current.localMaterials, ...uploadedFiles])),
-          videoSource: 'local'
-        }))
-        notify({ kind: 'success', title: 'Local materials uploaded', message: uploadedFiles.join(', ') })
-      }
-    } finally {
-      setUploadBusy(false)
-      input.value = ''
-    }
-  }, [])
-
-  const analyzeVideoAsset = useCallback(async (assetId: string) => {
-    setVideoLibraryActionId(assetId)
-
-    try {
-      const response = await videoLibraryClient.analyzeAsset(assetId)
-
-      if (!response.ok || !response.data) {
-        notifyError(response.error?.message, 'Unable to split and tag this video')
-
-        return
-      }
-
-      const analysis = response.data
-      setVideoLibraryAssets(current => [analysis.asset, ...current.filter(item => item.id !== assetId)])
-      setVideoLibraryClips(current => [...analysis.clips, ...current.filter(clip => clip.asset_id !== assetId)])
-      notify({
-        kind: 'success',
-        title: '素材分析完成',
-        message: `已切分 ${analysis.clips.length} 个片段并写入技术标签`
-      })
-    } finally {
-      setVideoLibraryActionId(null)
-    }
-  }, [])
-
-  const addLibraryClipToMix = useCallback(async (clip: VideoLibraryClip) => {
-    setVideoLibraryActionId(clip.id)
-
-    try {
-      const filename = clip.file_path.split(/[\\/]/).pop() || `${clip.id}.mp4`
-      const response = await moneyprinterClient.uploadLocalMaterial({ filename, sourcePath: clip.file_path })
-
-      if (!response.ok || !response.data) {
-        notifyError(response.error?.message, 'Unable to add this clip to MoneyPrinter')
-
-        return
-      }
-
-      const material = response.data.material
-      setLocalMaterials(current => [material, ...current.filter(item => item.file !== material.file)])
+  const selectMaterialLibrary = useCallback(
+    (libraryId: string) => {
+      namedLibrary.selectLibrary(libraryId)
       setForm(current => ({
         ...current,
-        localMaterials: Array.from(new Set([...current.localMaterials, material.file])),
+        localMaterials: [],
+        matchMaterialsToScript: true,
+        videoConcatMode: 'sequential',
         videoSource: 'local'
       }))
-      notify({ kind: 'success', title: '已加入混剪', message: material.name })
-    } finally {
-      setVideoLibraryActionId(null)
+    },
+    [namedLibrary]
+  )
+
+  const addNamedLibraryFiles = useCallback(async () => {
+    const paths = await selectDesktopPaths({
+      directories: false,
+      filters: [{ extensions: ['mp4', 'mov', 'mkv', 'avi', 'flv', 'webm'], name: 'Video' }],
+      multiple: true,
+      title: '添加素材到当前资产库'
+    })
+    if (paths.length === 0) return
+    try {
+      await namedLibrary.importFiles(paths)
+    } catch {
+      // The controller owns the user-visible per-operation error.
     }
-  }, [])
+  }, [namedLibrary])
+
+  const addNamedLibraryDirectory = useCallback(async () => {
+    const [directory] = await selectDesktopPaths({
+      directories: true,
+      multiple: false,
+      title: '选择当前资产库的素材目录'
+    })
+    if (!directory) return
+    try {
+      await namedLibrary.addSourceRoot(directory)
+    } catch {
+      // The controller owns the user-visible per-operation error.
+    }
+  }, [namedLibrary])
 
   const createNamedLibraryTimeline = useCallback(async () => {
     try {
@@ -482,7 +331,6 @@ export function VideoStudioView({
         }
         const material = response.data.material
         uploadedFiles.push(material.file)
-        setLocalMaterials(current => [material, ...current.filter(item => item.file !== material.file)])
       }
 
       setForm(current => ({
@@ -1003,8 +851,14 @@ export function VideoStudioView({
       return
     }
 
-    if (form.videoSource === 'local' && form.localMaterials.length === 0) {
-      notifyError(null, '请选择或上传至少一个本地素材后再生成视频')
+    if (!namedLibrary.selectedLibraryId) {
+      notifyError(null, '请先选择一个素材库')
+
+      return
+    }
+
+    if (form.localMaterials.length === 0) {
+      notifyError(null, '请先匹配并人工确认镜头，再创建素材时间线')
 
       return
     }
@@ -1028,7 +882,7 @@ export function VideoStudioView({
     } finally {
       setBusy(false)
     }
-  }, [form])
+  }, [form, namedLibrary.selectedLibraryId])
 
   return (
     <section
@@ -1334,25 +1188,15 @@ export function VideoStudioView({
                 </Button>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block space-y-2">
-                  <span className={fieldLabelClass()}>关键词数量</span>
-                  <Input
-                    min={1}
-                    onChange={event => updateForm('searchTermsAmount', numberValue(event.target.value, 5))}
-                    type="number"
-                    value={form.searchTermsAmount}
-                  />
-                </label>
-                <label className="flex items-end gap-2 text-xs text-(--ui-text-secondary)">
-                  <input
-                    checked={form.matchMaterialsToScript}
-                    onChange={event => updateForm('matchMaterialsToScript', event.target.checked)}
-                    type="checkbox"
-                  />
-                  按文案顺序匹配素材
-                </label>
-              </div>
+              <label className="block space-y-2">
+                <span className={fieldLabelClass()}>关键词数量</span>
+                <Input
+                  min={1}
+                  onChange={event => updateForm('searchTermsAmount', numberValue(event.target.value, 5))}
+                  type="number"
+                  value={form.searchTermsAmount}
+                />
+              </label>
 
               <label className="mt-3 block space-y-2">
                 <span className={fieldLabelClass()}>素材关键词 / video_terms</span>
@@ -1393,51 +1237,13 @@ export function VideoStudioView({
 
             <div className="grid grid-cols-2 gap-3">
               <label className="block space-y-2">
-                <span className={fieldLabelClass()}>素材来源</span>
-                <select
-                  className="h-8 w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 text-xs"
-                  onChange={event => {
-                    const source = event.target.value as VideoSource
-
-                    updateForm('videoSource', source)
-
-                    if (source === 'local') {
-                      void refreshLocalMaterials()
-                    }
-                  }}
-                  value={form.videoSource}
-                >
-                  {SOURCE_OPTIONS.map(option => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block space-y-2">
-                <span className={fieldLabelClass()}>片段秒数</span>
+                <span className={fieldLabelClass()}>片段最长秒数</span>
                 <Input
                   min={1}
                   onChange={event => updateForm('videoClipDuration', numberValue(event.target.value, 5))}
                   type="number"
                   value={form.videoClipDuration}
                 />
-              </label>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block space-y-2">
-                <span className={fieldLabelClass()}>拼接模式</span>
-                <select
-                  className="h-8 w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 text-xs"
-                  onChange={event =>
-                    updateForm('videoConcatMode', event.target.value as VideoGenerationForm['videoConcatMode'])
-                  }
-                  value={form.videoConcatMode}
-                >
-                  <option value="random">random 随机素材</option>
-                  <option value="sequential">sequential 顺序素材</option>
-                </select>
               </label>
               <label className="block space-y-2">
                 <span className={fieldLabelClass()}>转场</span>
@@ -1458,188 +1264,29 @@ export function VideoStudioView({
               </label>
             </div>
 
-            {form.videoSource === 'local' && (
-              <div className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="text-xs font-semibold text-(--ui-text-primary)">本地素材</div>
-                    <div className="mt-1 text-[0.6875rem] text-(--ui-text-tertiary)">
-                      上传后会保存到 MoneyPrinterTurbo 的 storage/local_videos 白名单目录。
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      disabled={localMaterialsBusy}
-                      onClick={refreshLocalMaterials}
-                      size="xs"
-                      type="button"
-                      variant="secondary"
-                    >
-                      {localMaterialsBusy ? 'Loading…' : 'Refresh'}
-                    </Button>
-                    <label className="inline-flex h-7 cursor-pointer items-center rounded border border-(--ui-stroke-secondary) px-2 text-xs text-(--ui-text-primary) hover:bg-(--chrome-action-hover)">
-                      {uploadBusy ? 'Uploading…' : 'Upload'}
-                      <input
-                        accept=".mp4,.mov,.avi,.flv,.mkv,.jpg,.jpeg,.png,video/*,image/*"
-                        className="hidden"
-                        disabled={uploadBusy}
-                        multiple
-                        onChange={uploadLocalMaterials}
-                        type="file"
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                {localMaterials.length === 0 ? (
-                  <div className="rounded border border-dashed border-(--ui-stroke-secondary) p-3 text-xs text-(--ui-text-tertiary)">
-                    还没有本地素材。上传 mp4/mov/mkv 或 jpg/png 后，勾选素材即可用于生成。
-                  </div>
-                ) : (
-                  <div className="max-h-44 space-y-2 overflow-auto pr-1">
-                    {localMaterials.map(material => (
-                      <label
-                        className="flex items-center gap-2 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 py-2 text-xs text-(--ui-text-secondary)"
-                        key={material.file}
-                      >
-                        <input
-                          checked={form.localMaterials.includes(material.file)}
-                          onChange={event => toggleLocalMaterial(material.file, event.target.checked)}
-                          type="checkbox"
-                        />
-                        <span className="min-w-0 flex-1 truncate text-(--ui-text-primary)">{material.name}</span>
-                        <span className="shrink-0 text-(--ui-text-tertiary)">{material.kind}</span>
-                        <span className="shrink-0 text-(--ui-text-tertiary)">{formatBytes(material.size)}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                <div className="mt-4 border-t border-(--ui-stroke-secondary) pt-3">
-                  <div className="mb-3 flex items-start justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2 text-xs font-semibold text-(--ui-text-primary)">
-                        <Codicon name="library" size="0.875rem" />
-                        视频素材库
-                      </div>
-                      <div className="mt-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-                        桌面端上传的视频会进入隔离素材库。分析会按镜头切分并写入画幅、时长、清晰度标签。
-                      </div>
-                    </div>
-                    <Button
-                      disabled={videoLibraryBusy}
-                      onClick={refreshVideoLibrary}
-                      size="xs"
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Codicon name="refresh" size="0.75rem" spinning={videoLibraryBusy} />
-                      刷新
-                    </Button>
-                  </div>
-
-                  {videoLibraryAssets.length === 0 ? (
-                    <div className="border border-dashed border-(--ui-stroke-secondary) p-3 text-xs text-(--ui-text-tertiary)">
-                      上传本地视频后，它会显示在这里并等待切分分析。
-                    </div>
-                  ) : (
-                    <div className="max-h-48 space-y-1 overflow-auto pr-1">
-                      {videoLibraryAssets.map(asset => {
-                        const clipCount = videoLibraryClips.filter(clip => clip.asset_id === asset.id).length
-                        const duration = asset.duration_seconds ? `${asset.duration_seconds.toFixed(1)}s` : '--'
-                        const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : '--'
-
-                        return (
-                          <div
-                            className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-1 py-2 text-xs last:border-b-0"
-                            key={asset.id}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate font-medium text-(--ui-text-primary)">{asset.original_name}</div>
-                              <div className="mt-1 text-[0.6875rem] text-(--ui-text-tertiary)">
-                                {asset.status} · {duration} · {resolution} · {clipCount} 个片段
-                              </div>
-                            </div>
-                            <Button
-                              disabled={videoLibraryActionId !== null}
-                              onClick={() => void analyzeVideoAsset(asset.id)}
-                              size="xs"
-                              type="button"
-                              variant="outline"
-                            >
-                              <Codicon
-                                name={videoLibraryActionId === asset.id ? 'loading' : 'run-all'}
-                                size="0.75rem"
-                                spinning={videoLibraryActionId === asset.id}
-                              />
-                              {clipCount > 0 ? '重新分析' : '切分分析'}
-                            </Button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-
-                  {videoLibraryClips.length > 0 && (
-                    <div className="mt-3">
-                      <div className="mb-2 text-[0.6875rem] font-semibold text-(--ui-text-secondary)">可用片段</div>
-                      <div className="max-h-56 space-y-1 overflow-auto pr-1">
-                        {videoLibraryClips.map(clip => (
-                          <div
-                            className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-1 py-2 text-xs last:border-b-0"
-                            key={clip.id}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="text-(--ui-text-primary)">
-                                #{clip.clip_index + 1} · {clip.start_seconds.toFixed(1)}-{clip.end_seconds.toFixed(1)}s
-                              </div>
-                              <div className="mt-1 flex flex-wrap gap-1">
-                                {clip.tags.map(tag => (
-                                  <span className="text-[0.625rem] text-(--ui-text-tertiary)" key={tag.id}>
-                                    #{tag.name}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                            <Button
-                              disabled={videoLibraryActionId !== null}
-                              onClick={() => void addLibraryClipToMix(clip)}
-                              size="xs"
-                              type="button"
-                              variant="secondary"
-                            >
-                              <Codicon
-                                name={videoLibraryActionId === clip.id ? 'loading' : 'add'}
-                                size="0.75rem"
-                                spinning={videoLibraryActionId === clip.id}
-                              />
-                              加入混剪
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <NamedLibraryPanel
+            <UnifiedMaterialLibraryPanel
               error={namedLibrary.error}
               libraries={namedLibrary.libraries}
               loadingLibraries={namedLibrary.loadingLibraries}
               loadingLibrary={namedLibrary.loadingLibrary}
+              managementBusy={namedLibrary.managementBusy}
               matches={namedLibrary.matches}
               matchingAll={namedLibrary.matchingAll}
               matchingSegmentId={namedLibrary.matchingSegmentId}
+              migrationResult={namedLibrary.migrationResult}
+              onAddFiles={addNamedLibraryFiles}
               onConfirmClip={namedLibrary.confirmClip}
+              onConfirmScan={namedLibrary.confirmScan}
               onCreateTimeline={createNamedLibraryTimeline}
               onMatchAll={namedLibrary.matchAll}
               onMatchSegment={namedLibrary.matchSegment}
+              onMigrateLegacy={namedLibrary.migrateLegacyLibrary}
+              onPreviewScan={namedLibrary.previewScan}
               onRefresh={namedLibrary.refreshSelectedLibrary}
-              onScan={namedLibrary.scanSelectedLibrary}
-              onSelectLibrary={namedLibrary.selectLibrary}
+              onSelectDirectory={addNamedLibraryDirectory}
+              onSelectLibrary={selectMaterialLibrary}
               scanBusy={namedLibrary.scanBusy}
+              scanPreview={namedLibrary.scanPreview}
               segments={namedLibrary.segments}
               selectedLibraryId={namedLibrary.selectedLibraryId}
               status={namedLibrary.status}

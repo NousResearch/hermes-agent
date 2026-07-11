@@ -195,6 +195,20 @@ describe('useNamedVideoLibrary', () => {
     expect(client.scanLibrary).toHaveBeenCalledWith('beef-noodle', false)
   })
 
+  it('previews existing source roots without writing', async () => {
+    const client = fakeClient()
+    const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '后厨现煮。' }))
+    await waitFor(() => expect(result.current.libraries).toHaveLength(2))
+    act(() => result.current.selectLibrary('beef-noodle'))
+    await waitFor(() => expect(result.current.status).not.toBeNull())
+
+    await act(() => result.current.previewScan())
+
+    expect(client.scanLibrary).toHaveBeenCalledWith('beef-noodle', true)
+    expect(client.scanLibrary).not.toHaveBeenCalledWith('beef-noodle', false)
+    expect(result.current.scanPreview).not.toBeNull()
+  })
+
   it('clears management results when switching libraries', async () => {
     const client = fakeClient()
     const { result } = renderHook(() => useNamedVideoLibrary({ client, script: '后厨现煮。' }))

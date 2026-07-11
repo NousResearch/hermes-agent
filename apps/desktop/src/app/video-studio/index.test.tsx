@@ -47,6 +47,16 @@ afterEach(() => {
 })
 
 describe('VideoStudioView named library integration', () => {
+  it('renders only the unified material library entry', async () => {
+    render(<VideoStudioView />)
+
+    await waitFor(() => expect(screen.getByLabelText('视频资产库')).toBeTruthy())
+    expect(screen.getAllByText('素材库')).toHaveLength(1)
+    expect(screen.queryByText('本地素材')).toBeNull()
+    expect(screen.queryByText('视频素材库')).toBeNull()
+    expect(screen.queryByText('Obsidian 具名资产库')).toBeNull()
+  })
+
   it('does not restore a named library from the saved MoneyPrinter draft', async () => {
     writeKey(
       'hermes-video-studio-moneyprinter-draft-v1',

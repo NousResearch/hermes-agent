@@ -268,6 +268,21 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
     }
   }, [client, refreshSelectedLibrary, selectedLibraryId])
 
+  const previewScan = useCallback(async () => {
+    if (!selectedLibraryId) throw new Error('请先选择资产库')
+    setScanBusy(true)
+    try {
+      const preview = requireData(
+        await client.scanLibrary(selectedLibraryId, true),
+        '资产库预扫描失败'
+      )
+      setScanPreview(preview)
+      return preview
+    } finally {
+      setScanBusy(false)
+    }
+  }, [client, selectedLibraryId])
+
   const migrateLegacyLibrary = useCallback(async () => {
     if (!selectedLibraryId) throw new Error('请先选择资产库')
     setManagementBusy(true)
@@ -328,6 +343,7 @@ export function useNamedVideoLibrary({ client, script, terms = '' }: UseNamedVid
     matchingSegmentId,
     migrateLegacyLibrary,
     migrationResult,
+    previewScan,
     refreshSelectedLibrary,
     scanBusy,
     scanPreview,

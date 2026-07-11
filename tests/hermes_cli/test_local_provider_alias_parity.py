@@ -21,7 +21,16 @@ from hermes_cli.models import normalize_provider as models_normalize
 from hermes_cli.providers import normalize_provider as providers_normalize
 
 # Local OpenAI-compatible server aliases users are told to configure.
-_LOCAL_ALIASES = ("ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp")
+#
+# ``local`` is included: it is declared a ``custom`` alias in
+# ``plugins/model-providers/custom/__init__.py`` and ``auth.resolve_provider``
+# already mapped it to ``"custom"`` (statically and via the plugin import), so
+# leaving it as the orphan ``"local"`` id (no ``ProviderDef``) in the providers
+# and models tables was exactly the cross-table disagreement this contract
+# guards against. Routing code already treats ``{"custom", "local"}`` as
+# equivalent (e.g. ``model_switch``/``web_server``), so unifying to ``custom``
+# is behaviour-preserving.
+_LOCAL_ALIASES = ("local", "ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp")
 
 
 @pytest.mark.parametrize("alias", _LOCAL_ALIASES)

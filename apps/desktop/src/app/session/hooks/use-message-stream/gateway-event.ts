@@ -1,10 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import { recoverClarifyDrafts } from '@/app/session/clarify-draft-recovery'
 import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -12,9 +12,8 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { type ClarifyRequest, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
-import { appendSessionDraft } from '@/store/composer'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -48,40 +47,6 @@ import type { RpcEvent } from '@/types/hermes'
 import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
-
-function formatRecoveredClarifyDraft(request: ClarifyRequest): string {
-  const answer = (request.answerDraft || request.selectedChoice || '').trim()
-
-  if (!answer) {
-    return ''
-  }
-
-  const question = request.question.trim()
-
-  return question ? `Unsent answer to Hermes question:\n${question}\n\n${answer}` : answer
-}
-
-function recoverClarifyDrafts(requests: ClarifyRequest[], activeSessionId: string | null) {
-  const activeDrafts: string[] = []
-
-  for (const request of requests) {
-    const text = formatRecoveredClarifyDraft(request)
-
-    if (!text) {
-      continue
-    }
-
-    if (request.sessionId && request.sessionId === activeSessionId) {
-      activeDrafts.push(text)
-    } else {
-      appendSessionDraft(request.sessionId, text)
-    }
-  }
-
-  if (activeDrafts.length > 0 && typeof window !== 'undefined') {
-    window.setTimeout(() => requestComposerInsert(activeDrafts.join('\n\n'), { mode: 'block', target: 'main' }), 100)
-  }
-}
 
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -349,7 +314,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
-        recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef.current)
+        recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef)
         // Turn ended without a final `todo` update — drop a still-unfinished
         // list so "Tasks N/M" doesn't stay pinned above the composer with the
         // last item stuck pending/in_progress. Finished lists keep their linger.
@@ -633,7 +598,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
-          recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef.current)
+          recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef)
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)

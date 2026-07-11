@@ -2,6 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { recoverClarifyDrafts } from '@/app/session/clarify-draft-recovery'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
@@ -535,7 +536,7 @@ export function usePromptActions({
     // a dead panel (and the sidebar "needs input" dot) can't linger and accept
     // an answer the backend will reject.
     clearAllPrompts(sessionId)
-    clearClarifyRequest(undefined, sessionId)
+    recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef)
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })

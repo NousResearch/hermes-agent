@@ -12,19 +12,23 @@ import {
   setClarifyRequest,
   updateClarifyAnswerDraft
 } from '@/store/clarify'
-import { clearSessionDraft, takeSessionDraft } from '@/store/composer'
+import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
 
+const { requestComposerInsert } = vi.hoisted(() => ({ requestComposerInsert: vi.fn() }))
+
+vi.mock('@/app/chat/composer/focus', () => ({ requestComposerInsert }))
+
 const SID = 'session-1'
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
+let activeSessionIdRef = { current: SID as string | null }
 let handleEvent: ((event: RpcEvent) => void) | null = null
 
 function Harness() {
-  const activeSessionIdRef = useRef<string | null>(SID)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
   const queryClientRef = useRef(new QueryClient())
 
@@ -60,7 +64,9 @@ const complete = () => act(() => handleEvent!({ payload: { text: 'done' }, sessi
 
 describe('useMessageStream turn-end todo cleanup', () => {
   beforeEach(() => {
+    activeSessionIdRef = { current: SID }
     handleEvent = null
+    requestComposerInsert.mockReset()
     $clarifyRequests.set({})
     clearSessionDraft(SID)
     clearSessionDraft('session-2')
@@ -74,6 +80,7 @@ describe('useMessageStream turn-end todo cleanup', () => {
     clearSessionDraft('session-2')
     clearSessionTodos(SID)
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('drops a still-active task list when the turn completes', async () => {
@@ -122,5 +129,56 @@ describe('useMessageStream turn-end todo cleanup', () => {
         'Use the customer-facing release notes.'
     )
     expect($clarifyRequests.get()['session-2']).toBeUndefined()
+  })
+
+  it('keeps an active clarify draft with its session when the user switches during recovery', async () => {
+    await mountStream()
+    vi.useFakeTimers()
+    setClarifyRequest({
+      choices: null,
+      question: 'Which release notes should I use?',
+      requestId: 'clarify-1',
+      sessionId: SID
+    })
+    updateClarifyAnswerDraft('clarify-1', SID, 'Use the customer-facing release notes.')
+
+    complete()
+    // Session-switch cleanup can flush the live composer over the first stash
+    // before the delayed recovery callback runs.
+    stashSessionDraft(SID, 'existing live draft', [])
+    activeSessionIdRef.current = 'session-2'
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(takeSessionDraft(SID).text).toBe(
+      'existing live draft\n\n' +
+        'Unsent answer to Hermes question:\n' +
+        'Which release notes should I use?\n\n' +
+        'Use the customer-facing release notes.'
+    )
+    expect(takeSessionDraft('session-2').text).toBe('')
+    expect(requestComposerInsert).not.toHaveBeenCalled()
+  })
+
+  it('restores an active clarify draft only after its session is still confirmed', async () => {
+    await mountStream()
+    vi.useFakeTimers()
+    setClarifyRequest({
+      choices: null,
+      question: 'Which release notes should I use?',
+      requestId: 'clarify-1',
+      sessionId: SID
+    })
+    updateClarifyAnswerDraft('clarify-1', SID, 'Use the customer-facing release notes.')
+
+    complete()
+    await vi.advanceTimersByTimeAsync(100)
+
+    const recovered =
+      'Unsent answer to Hermes question:\n' +
+      'Which release notes should I use?\n\n' +
+      'Use the customer-facing release notes.'
+
+    expect(takeSessionDraft(SID).text).toBe(recovered)
+    expect(requestComposerInsert).toHaveBeenCalledWith(recovered, { mode: 'block', target: 'main' })
   })
 })

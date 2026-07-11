@@ -270,7 +270,18 @@ def test_installed_custom_opener_policy_is_preserved(monkeypatch):
             return _Response(b"custom")
 
     installed = urllib.request.build_opener(FooHandler())
+    installed.addheaders = [
+        ("X-Trace-Policy", "installed"),
+        ("User-agent", "enterprise-client"),
+    ]
     monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    from hermes_cli.urllib_security import _secure_opener_from_installed_policy
+
+    secured = _secure_opener_from_installed_policy(
+        "foo://models.example.test/catalog"
+    )
+    assert secured.addheaders == installed.addheaders
 
     request = urllib.request.Request(
         "foo://models.example.test/catalog", headers={"Authorization": "secret"}
@@ -300,6 +311,57 @@ def test_installed_proxy_handler_is_preserved(monkeypatch):
     assert getattr(proxy_handlers[0], "proxies", {}) == {
         "https": "http://proxy.example.test:8443"
     }
+
+
+def test_multihop_redirects_never_resurrect_credentials():
+    request = urllib.request.Request(
+        "https://a.example.test/models", headers=_credential_headers()
+    )
+    handler = SafeCredentialRedirectHandler(request.full_url)
+
+    same_origin = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://a.example.test/step-two",
+    )
+    assert same_origin is not None
+    same_headers = {
+        name.lower(): value for name, value in same_origin.header_items()
+    }
+    assert "authorization" in same_headers
+
+    cross_origin = handler.redirect_request(
+        same_origin,
+        None,
+        302,
+        "Found",
+        {},
+        "https://b.example.test/step-three",
+    )
+    assert cross_origin is not None
+    cross_headers = {
+        name.lower(): value for name, value in cross_origin.header_items()
+    }
+    assert "authorization" not in cross_headers
+    assert "cf-access-client-secret" not in cross_headers
+
+    returned = handler.redirect_request(
+        cross_origin,
+        None,
+        302,
+        "Found",
+        {},
+        "https://a.example.test/final",
+    )
+    assert returned is not None
+    returned_headers = {
+        name.lower(): value for name, value in returned.header_items()
+    }
+    assert "authorization" not in returned_headers
+    assert "cf-access-client-secret" not in returned_headers
 
 
 def test_probe_api_models_drops_custom_credentials_on_wire():

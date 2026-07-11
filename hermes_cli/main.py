@@ -1647,6 +1647,8 @@ def _ensure_tui_node() -> None:
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=300,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return

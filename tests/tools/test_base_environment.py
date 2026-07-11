@@ -32,7 +32,9 @@ class TestWrapCommand:
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
-        assert "export -p >" in wrapped
+        # Env re-dump now pipes through the session-identity filter
+        # (2026-07-10 cross-session snapshot leak) before the temp write.
+        assert "export -p | grep -vE" in wrapped
         assert "pwd -P >" in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
@@ -105,14 +107,15 @@ class TestAtomicSnapshotWrite:
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
         # Env dump goes to a temp file, not directly over the live snapshot.
-        assert "export -p > " in wrapped
+        # (dump is piped through the session-identity filter first)
+        assert "export -p | grep -vE" in wrapped
         assert ".tmp." in wrapped
         # Then an atomic rename onto the real snapshot path.
         assert "mv -f " in wrapped
         # The env-dump must NOT write the live snapshot in place (the bug).
         snap = env._snapshot_path
-        assert f"export -p > {snap} " not in wrapped
-        assert f"export -p > '{snap}'" not in wrapped
+        assert f"> {snap} " not in wrapped
+        assert f"> '{snap}'" not in wrapped
 
     def test_temp_path_uses_bashpid_not_dollardollar(self):
         """The temp name MUST use ``$BASHPID`` (the real subshell PID), not
@@ -150,7 +153,7 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "export -p > " in wrapped and "&& mv -f " in wrapped
+        assert "export -p | grep -vE" in wrapped and "&& mv -f " in wrapped
         assert "rm -f " in wrapped  # temp cleanup on failure
 
     def test_init_session_bootstrap_also_atomic_and_bashpid(self):
@@ -181,7 +184,7 @@ class TestAtomicSnapshotWrite:
 
         assert "umask 077" in wrapped
         assert wrapped.index("eval 'echo hi'") < wrapped.index("umask 077")
-        assert wrapped.index("umask 077") < wrapped.index("export -p >")
+        assert wrapped.index("umask 077") < wrapped.index("export -p |")
 
     def test_init_session_bootstrap_uses_private_umask(self):
         env = _TestableEnv()
@@ -198,7 +201,7 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert "umask 077" in boot
-        assert boot.index("umask 077") < boot.index("export -p >")
+        assert boot.index("umask 077") < boot.index("export -p |")
 
 
 class TestAtomicSnapshotConcurrencyBehavioral:

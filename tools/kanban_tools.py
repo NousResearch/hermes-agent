@@ -125,6 +125,8 @@ def _auto_subscribe_gateway_source(
     conn,
     task_id: str,
     gateway_source: Optional[dict] = None,
+    *,
+    session_subscribed: bool = False,
 ) -> dict[str, Any]:
     """Create a kanban notify subscription when gateway source context is set.
 
@@ -159,6 +161,13 @@ def _auto_subscribe_gateway_source(
                 "count": 0,
                 "source": source,
                 "reason": "missing_gateway_source_fields",
+            }
+        if session_subscribed:
+            return {
+                "subscribed": False,
+                "count": 0,
+                "source": "session",
+                "reason": "session_subscription_exists",
             }
         return _auto_subscribe_home_channels(kb, conn, task_id)
     notifier_profile = os.environ.get("HERMES_PROFILE") or None
@@ -1903,7 +1912,8 @@ def _handle_create(args: dict, **kw) -> str:
             # local/TUI/Telegram front doors.
             subscribed = _maybe_auto_subscribe(conn, new_tid)
             notification_state = _auto_subscribe_gateway_source(
-                kb, conn, new_tid, kw.get("gateway_source")
+                kb, conn, new_tid, kw.get("gateway_source"),
+                session_subscribed=subscribed,
             )
             if not subscribed and isinstance(notification_state, dict):
                 subscribed = bool(notification_state.get("subscribed"))
@@ -1991,10 +2001,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
       are intentionally cleared (TUI is a single-channel local UI, not
       a multi-tenant chat surface), but the agent subprocess inherits
       ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
-      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
-      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
-      for these rows and posts the completion message into the running
-      session.
+      ``platform="tui"`` and ``chat_id=<key>``; the
+      ``tui_gateway.server._poll_kanban_tui_subs`` consumer reads these
+      ``kanban_notify_subs`` rows and posts completion messages into the
+      running session.
 
     - **CLI / cron / test / unattached**: no persistent delivery channel,
       no-op.

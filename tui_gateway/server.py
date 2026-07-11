@@ -2935,6 +2935,8 @@ def _sync_session_key_after_compress(
             unregister_gateway_notify(old_key)
         except Exception:
             pass
+        if old_key and old_key not in session.setdefault("_stale_session_keys", []):
+            session["_stale_session_keys"].append(old_key)
         session["session_key"] = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
@@ -2957,6 +2959,8 @@ def _sync_session_key_after_compress(
         # Even if the approval module fails to import, still anchor the
         # session_key on the new continuation id so downstream lookups
         # don't keep targeting the ended row.
+        if old_key and old_key not in session.setdefault("_stale_session_keys", []):
+            session["_stale_session_keys"].append(old_key)
         session["session_key"] = new_session_id
 
     if clear_pending_title:
@@ -8391,6 +8395,106 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+TERMINAL_KINDS = (
+    "completed", "blocked", "gave_up", "crashed", "timed_out", "status",
+    "archived", "unblocked",
+)
+
+
+def _poll_kanban_tui_subs(sid: str, session: dict) -> None:
+    """Claim terminal Kanban events addressed to this TUI session."""
+    keys = {str(session.get("session_key") or "")}
+    keys.update(str(key) for key in session.get("_stale_session_keys", []) if key)
+    keys.discard("")
+    if not keys:
+        return
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        try:
+            boards = _kb.list_boards(include_archived=False)
+        except Exception:
+            boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+        seen_db_paths: set[str] = set()
+        for board_meta in boards:
+            slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+            db_path = board_meta.get("db_path")
+            try:
+                resolved_db_path = (
+                    str(Path(db_path).expanduser().resolve()) if db_path
+                    else str(_kb.kanban_db_path(slug).resolve())
+                )
+            except Exception:
+                resolved_db_path = f"slug:{slug}"
+            if resolved_db_path in seen_db_paths:
+                continue
+            seen_db_paths.add(resolved_db_path)
+            try:
+                conn = _kb.connect(board=slug)
+            except Exception as exc:
+                logger.debug("kanban tui notifier: cannot open board %s: %s", slug, exc)
+                continue
+            try:
+                for sub in _kb.list_notify_subs(conn):
+                    if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") not in keys:
+                        continue
+                    old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                        conn,
+                        task_id=sub["task_id"],
+                        platform=sub["platform"],
+                        chat_id=sub["chat_id"],
+                        thread_id=sub.get("thread_id") or "",
+                        kinds=TERMINAL_KINDS,
+                    )
+                    if not events:
+                        continue
+                    emitted = False
+                    try:
+                        task = _kb.get_task(conn, sub["task_id"])
+                        title = getattr(task, "title", None) or sub["task_id"]
+                        for event in events:
+                            summary = ""
+                            if event.run_id is not None:
+                                run = _kb.get_run(conn, int(event.run_id))
+                                summary = getattr(run, "summary", None) or getattr(run, "handoff", None) or ""
+                            text = f"[kanban] {title}: {event.kind}"
+                            if summary:
+                                text += f" — {str(summary)[:500]}"
+                            _emit("status.update", sid, {"kind": "process", "text": text})
+                            emitted = True
+                            with session["history_lock"]:
+                                if session.get("running"):
+                                    continue
+                                session["running"] = True
+                            try:
+                                _emit("message.start", sid)
+                                _run_prompt_submit(
+                                    f"__kanban__{int(time.time() * 1000)}", sid, session, text
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "kanban tui notifier: dispatch failed: %s", exc, exc_info=True
+                                )
+                                with session["history_lock"]:
+                                    session["running"] = False
+                    except Exception as exc:
+                        logger.warning("kanban tui notifier: delivery failed: %s", exc, exc_info=True)
+                        if not emitted:
+                            _kb.rewind_notify_cursor(
+                                conn,
+                                task_id=sub["task_id"],
+                                platform=sub["platform"],
+                                chat_id=sub["chat_id"],
+                                thread_id=sub.get("thread_id") or "",
+                                claimed_cursor=cursor,
+                                old_cursor=old_cursor,
+                            )
+            finally:
+                conn.close()
+    except Exception as exc:
+        logger.warning("kanban tui notifier: poll failed: %s", exc, exc_info=True)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -8408,10 +8512,17 @@ def _notification_poller_loop(
     from tools.process_registry import process_registry, format_process_notification
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    poll_count = 0
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            evt = None
+        poll_count += 1
+        # ponytail: fixed four-poll cadence keeps this in the existing loop without another knob/thread.
+        if poll_count % 4 == 0:
+            _poll_kanban_tui_subs(sid, session)
+        if evt is None:
             continue
 
         # Multiple desktop sessions share this one process-wide queue. Only

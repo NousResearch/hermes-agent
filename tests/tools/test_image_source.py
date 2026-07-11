@@ -28,6 +28,16 @@ def _reload(monkeypatch, hermes_home: Path):
     return isrc
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sandbox_bringup(monkeypatch):
+    """Neutralize the resolver's lazy sandbox bring-up (issue #62825) so unit
+    tests never spawn a real ssh/docker env. Patched on terminal_tool (which
+    _reload does not touch) and resolved at call time, so it survives the
+    per-test image_source reload. The bring-up tests override it."""
+    import tools.terminal_tool as tt
+    monkeypatch.setattr(tt, "ensure_task_env", lambda *a, **k: None)
+
+
 class TestDataUrl:
     @pytest.mark.asyncio
     async def test_valid_data_url_resolves_to_bytes(self, tmp_path, monkeypatch):
@@ -280,3 +290,53 @@ class TestSvgNormalization:
             path, mime, err = vt._normalize_to_supported_image(svg, "image/svg+xml")
         assert path is None
         assert "rasterizer" in err
+
+
+class TestLazySandboxBringUp:
+    """Issue #62825: under a non-local backend, the FIRST vision_analyze of a
+    session (before any terminal command) must bring the sandbox up itself
+    instead of failing with 'no active sandbox session'."""
+
+    @pytest.mark.asyncio
+    async def test_first_read_brings_up_sandbox_then_reads(self, tmp_path, monkeypatch):
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+
+        brought_up = []
+        fake_env = SimpleNamespace(
+            execute=lambda cmd, **kw: {"returncode": 0, "output": base64.b64encode(PNG).decode()}
+        )
+
+        def fake_ensure(task_id):
+            brought_up.append(task_id)
+
+        # Env is absent until the lazy bring-up runs, then available — exactly
+        # the SSH-handshake ordering the bug was about.
+        def fake_get_active(task_id):
+            return fake_env if brought_up else None
+
+        import tools.terminal_tool as tt
+        monkeypatch.setattr(tt, "ensure_task_env", fake_ensure)
+        monkeypatch.setattr(isrc, "_get_active_env", fake_get_active)
+
+        res = await isrc.resolve_image_source("/tmp/test.png", isrc.ResolveContext(task_id="t1"))
+
+        assert brought_up == ["t1"]  # bring-up was triggered before the read
+        assert res.origin == "container"
+        assert res.data == PNG
+
+    @pytest.mark.asyncio
+    async def test_bringup_that_yields_no_env_still_fails_closed(self, tmp_path, monkeypatch):
+        """If the bring-up can't produce an env, the resolver still refuses
+        rather than falling back to a host read."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        secret = tmp_path / "id_rsa"
+        secret.write_bytes(b"HOST-PRIVATE-KEY")
+
+        import tools.terminal_tool as tt
+        monkeypatch.setattr(tt, "ensure_task_env", lambda *_a, **_k: None)
+        monkeypatch.setattr(isrc, "_get_active_env", lambda *_a, **_k: None)
+
+        with pytest.raises(isrc.SourceNotFound):
+            await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))

@@ -1387,6 +1387,46 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     )
 
 
+def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
+    """Build the ``ssh_config`` dict passed to :func:`_create_environment`.
+
+    Shared by the terminal tool's own get-or-create path and the lazy
+    :func:`ensure_task_env` bring-up so both derive SSH connection settings
+    from the resolved config identically.
+    """
+    return {
+        "host": config.get("ssh_host", ""),
+        "user": config.get("ssh_user", ""),
+        "port": config.get("ssh_port", 22),
+        "key": config.get("ssh_key", ""),
+        "persistent": config.get("ssh_persistent", False),
+    }
+
+
+def _container_config_from_config(config: Dict[str, Any]) -> dict:
+    """Build the ``container_config`` dict passed to :func:`_create_environment`.
+
+    Shared by the terminal tool's own get-or-create path and the lazy
+    :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
+    """
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+        "docker_extra_args": config.get("docker_extra_args", []),
+        "docker_network": config.get("docker_network", True),
+        "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+    }
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
@@ -1643,6 +1683,90 @@ def get_active_env(task_id: str):
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
         return _active_environments.get(lookup) or _active_environments.get(task_id)
+
+
+def ensure_task_env(task_id: Optional[str] = None):
+    """Lazily create and cache the sandbox env for *task_id* if none is active.
+
+    :func:`terminal_tool` creates the environment on the first terminal command,
+    but nothing else did — so under a non-local backend (ssh, docker, …) a
+    session whose first action is ``vision_analyze`` on a container-only path hit
+    "no active sandbox session" because the SSH/Docker handshake never ran
+    (issue #62825). vision reads such paths inside the sandbox (see
+    ``tools.image_source``), so it calls this to bring the env up on demand,
+    reusing the same creation machinery as the terminal tool.
+
+    No-op on the local backend (images are read host-side). Returns the env
+    instance, or ``None`` when local or when creation fails (best-effort: a
+    failure leaves the caller's fail-closed error path intact).
+    """
+    config = _get_env_config()
+    env_type = config["env_type"]
+    if env_type == "local":
+        return None
+
+    effective_task_id = _resolve_container_task_id(task_id)
+
+    # Fast path: already active — mirror terminal_tool and refresh activity.
+    existing = get_active_env(effective_task_id)
+    if existing is not None:
+        with _env_lock:
+            _last_activity[effective_task_id] = time.time()
+        return existing
+
+    overrides = resolve_task_overrides(task_id)
+    if env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+    else:
+        image = ""
+
+    _start_cleanup_thread()
+
+    # Per-task creation lock so a concurrent terminal_tool call and this helper
+    # don't each spawn a sandbox for the same task.
+    with _creation_locks_lock:
+        task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
+
+    with task_lock:
+        existing = get_active_env(effective_task_id)
+        if existing is not None:
+            return existing
+        try:
+            new_env = _create_environment(
+                env_type=env_type,
+                image=image,
+                cwd=config["cwd"],
+                timeout=config["timeout"],
+                ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
+                container_config=(
+                    _container_config_from_config(config)
+                    if env_type in _CONTAINER_BACKENDS else None
+                ),
+                local_config=None,
+                task_id=effective_task_id,
+                host_cwd=config.get("host_cwd"),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
+            logger.warning(
+                "Lazy %s environment init failed for task %s: %s",
+                env_type, effective_task_id[:8], exc,
+            )
+            return None
+
+        with _env_lock:
+            _active_environments[effective_task_id] = new_env
+            _last_activity[effective_task_id] = time.time()
+        logger.info(
+            "%s environment lazily initialized for task %s",
+            env_type, effective_task_id[:8],
+        )
+        return new_env
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -2187,34 +2311,11 @@ def terminal_tool(
                         _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
-                        ssh_config = None
-                        if env_type == "ssh":
-                            ssh_config = {
-                                "host": config.get("ssh_host", ""),
-                                "user": config.get("ssh_user", ""),
-                                "port": config.get("ssh_port", 22),
-                                "key": config.get("ssh_key", ""),
-                                "persistent": config.get("ssh_persistent", False),
-                            }
-
-                        container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_network": config.get("docker_network", True),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
+                        ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
+                        container_config = (
+                            _container_config_from_config(config)
+                            if env_type in _CONTAINER_BACKENDS else None
+                        )
 
                         local_config = None
                         if env_type == "local":

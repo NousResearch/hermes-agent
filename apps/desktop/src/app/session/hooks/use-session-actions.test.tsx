@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { chatMessageText } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { markSessionTerminalEvent } from '@/lib/session-event-freshness'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -401,6 +402,66 @@ describe('resumeSession failure recovery', () => {
       ['assistant', 'previous answer', undefined],
       ['user', 'keep working', undefined],
       ['assistant', 'partial answer', true]
+    ])
+  })
+
+  it('ignores stale running state when completion arrives before resume resolves', async () => {
+    setSessions([storedSession({ message_count: 2 })])
+    let releaseResume: ((value: unknown) => void) | null = null
+    let resumedState: ClientSessionState | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return (await new Promise<unknown>(resolve => {
+          releaseResume = resolve
+        })) as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'completed answer', role: 'assistant', timestamp: 2 }],
+      session_id: 'stored-1'
+    } as never)
+
+    const resuming = runResume(requestGateway, {
+      onState: (_sessionId, state) => {
+        resumedState = state
+      }
+    })
+
+    await waitFor(() => expect(releaseResume).not.toBeNull())
+
+    // The live terminal event wins before the older point-in-time snapshot is
+    // released from the worker-backed RPC response.
+    setMessages([{ id: 'final', parts: [{ text: 'completed answer', type: 'text' }], role: 'assistant' }])
+    markSessionTerminalEvent('runtime-live')
+    releaseResume!({
+      session_id: 'runtime-live',
+      resumed: 'stored-1',
+      messages: [],
+      info: {},
+      running: true,
+      inflight: {
+        assistant: 'stale partial answer',
+        started_at: 1_720_000_000,
+        streaming: true,
+        user: 'keep working'
+      }
+    })
+
+    await resuming
+
+    expect(resumedState).toMatchObject({
+      awaitingResponse: false,
+      busy: false,
+      sawAssistantPayload: false,
+      streamId: null,
+      turnStartedAt: null
+    })
+    expect(resumedState?.messages.map(message => [chatMessageText(message), message.pending])).toEqual([
+      ['completed answer', undefined]
     ])
   })
 

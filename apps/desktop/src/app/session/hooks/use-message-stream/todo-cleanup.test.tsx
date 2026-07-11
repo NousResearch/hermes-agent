@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { getTerminalEventGeneration, sessionTerminatedAfter } from '@/lib/session-event-freshness'
 import type { TodoItem } from '@/lib/todos'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { $todosBySession, clearSessionTodos, setSessionTodos } from '@/store/todos'
@@ -102,7 +103,9 @@ describe('useMessageStream turn-end todo cleanup', () => {
   it('uses the existing completion haptic only for the active conversation', async () => {
     await mountStream()
 
+    const generation = getTerminalEventGeneration()
     complete()
+    expect(sessionTerminatedAfter(SID, generation)).toBe(true)
     expect(playCompletionSound).toHaveBeenCalledOnce()
     expect(triggerHaptic).toHaveBeenCalledWith('streamDone')
 

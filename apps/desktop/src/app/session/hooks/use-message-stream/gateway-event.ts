@@ -12,6 +12,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { markSessionTerminalEvent } from '@/lib/session-event-freshness'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -316,6 +317,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
+        markSessionTerminalEvent(sessionId)
+
         // Turn ended — drop any blocking prompt still open for THIS session
         // (e.g. interrupted, or the approval already resolved). Scoped to the
         // session so a background turn finishing can't wipe the active chat's
@@ -605,6 +608,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // for this session so an approval/sudo/secret overlay can't linger past
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
+          markSessionTerminalEvent(sessionId)
           clearAllPrompts(sessionId)
           clearClarifyRequest(undefined, sessionId)
           clearActiveSessionTodos(sessionId)

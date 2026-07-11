@@ -5,6 +5,7 @@ import type { NavigateFunction } from 'react-router-dom'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { getTerminalEventGeneration, sessionTerminatedAfter } from '@/lib/session-event-freshness'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -459,6 +460,7 @@ export function useSessionActions({
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
         const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
+        const terminalGenerationAtResumeStart = getTerminalEventGeneration()
 
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
@@ -545,7 +547,15 @@ export function useSessionActions({
             ? currentMessages
             : preserveLocalAssistantErrors(preferredMessages, currentMessages)
 
-        resumedRunning = Boolean(resumed.running)
+        // A terminal event can overtake this worker-backed RPC response. Never
+        // let an older running snapshot resurrect busy/timer/live-tail state
+        // after completion or error already finalized the same runtime session.
+        const resumeSupersededByTerminalEvent = sessionTerminatedAfter(
+          resumed.session_id,
+          terminalGenerationAtResumeStart
+        )
+
+        resumedRunning = Boolean(resumed.running) && !resumeSupersededByTerminalEvent
 
         const liveTail = reconcileResumeInflight(
           messagesForView,

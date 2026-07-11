@@ -124,10 +124,11 @@ The existing default-home `auth.json` was copied, not moved, into the actual iso
 32ba1d08a87a7a75bc49c68540ccb497cbb62871f9d1723ba4a8f8b3394b3f38
 ```
 
-After the successful proof:
+After the successful proof and immediately after removing the isolated copy:
 
 - `C:\Users\fallo\orch000-home\auth.json` was deleted.
-- The original `C:\Users\fallo\AppData\Local\hermes\auth.json` still had the same SHA-256, byte size (`23466`), and recorded modification time as immediately before the copy.
+- The original `C:\Users\fallo\AppData\Local\hermes\auth.json` still had the pre-copy SHA-256, byte size (`23466`), and recorded modification time.
+- A later read-only-looking `hermes status --all` verification refreshed the live Nous credential as part of normal auth status resolution. This changed the default auth file hash from `32ba1d08a87a7a75bc49c68540ccb497cbb62871f9d1723ba4a8f8b3394b3f38` to `7e153b144c82b34289f75ba9f2d9a7e7b717997b8dca5ea95d8b49adef31470f` at `2026-07-11 03:33:08 -0600`, while retaining byte size `23466`. The original file was not moved, deleted, manually edited, or restored. This automatic token refresh is an operational side effect and means the stronger claim that the default Hermes home was byte-for-byte unchanged at final handback is false.
 - No credential value is reproduced in this report.
 
 ## Tiny worker proof

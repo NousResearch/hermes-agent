@@ -9,19 +9,11 @@ that was never made.
 
 Fix: post-validation helper ``_strip_fabricated_user_asks`` scans every
 ``User asked: '<quote>'`` line in the LLM's summary and checks whether
-the quoted substring appears in the source turns. Unverifiable quotes
-get rewritten to a safe ``None`` fallback so the agent sees "no
-outstanding ask" instead of a fabricated one.
-
-Tests below pin:
-  1. Verifiable quotes are kept verbatim.
-  2. Fabricated quotes (text not in source) get replaced with the fallback.
-  3. Whitespace and quote-mark drift is tolerated (real user typos).
-  4. Non-quote ``User asked:`` prose (no quoted phrase) is not touched.
-  5. Empty source turns or empty summary short-circuit cleanly.
-  6. Multiple fabricated lines in one summary are all stripped.
-  7. Quoted phrases from tool-call args are detected (full source corpus).
-  8. Trivial quotes (< 4 chars) are kept as-is to avoid mangling "ok".
+the quoted substring appears in user-role source turns. Unverifiable
+quotes get rewritten to a safe ``None`` fallback so the agent sees "no
+outstanding ask" instead of a fabricated one. On iterative compaction the
+previously validated summary is accepted as provenance so a legitimate
+prior active task is preserved.
 """
 
 from __future__ import annotations
@@ -112,12 +104,12 @@ class TestStripFabricatedUserAsks:
         # Prose line is preserved — the helper is regex-scoped to quoted phrases
         assert "User asked: for clarification" in out
 
-    def test_empty_source_returns_summary_unchanged(self):
-        """No source turns → we have nothing to verify against. Pass through
-        rather than strip everything (would mask legitimate None cases)."""
+    def test_empty_source_strips_unverifiable_quotes(self):
+        """No user-role source → nothing can prove a User asked quote."""
         summary = 'User asked: "anything at all"'
         out = _strip_fabricated_user_asks(summary, [])
-        assert 'User asked: "anything at all"' in out
+        assert "anything at all" not in out
+        assert "no verifiable outstanding user request" in out
 
     def test_empty_summary_returns_empty(self):
         assert _strip_fabricated_user_asks("", [{"role": "user", "content": "x"}]) == ""
@@ -153,11 +145,9 @@ class TestStripFabricatedUserAsks:
         assert "send the analytics report" not in out
         assert "no verifiable outstanding user request" in out
 
-    def test_quote_from_tool_call_args_detected(self):
-        """The source-side corpus must include tool-call args. Otherwise a
-        verbatim quote the user wrote inside a tool_call.arguments dict
-        (e.g. browser_submit with text=...) would be treated as fabricated
-        even though it really happened."""
+    def test_assistant_and_tool_text_do_not_validate_user_asked(self):
+        """Assistant content / tool-call args are model-authored and must
+        never prove a claim labeled ``User asked:``."""
         summary = 'User asked: "click the blue button in the top-right"'
         source = [
             {
@@ -167,16 +157,52 @@ class TestStripFabricatedUserAsks:
                     {
                         "function": {
                             "name": "browser_click",
-                            "arguments": 'click the blue button in the top-right',
+                            "arguments": "click the blue button in the top-right",
                         }
                     }
                 ],
             },
         ]
         out = _strip_fabricated_user_asks(summary, source)
-        assert "click the blue button in the top-right" in out, (
-            "Tool-call argument quotes must be locatable in the source corpus"
+        assert "click the blue button in the top-right" not in out
+        assert "no verifiable outstanding user request" in out
+
+    def test_prior_summary_preserves_validated_active_task(self):
+        """Iterative compaction only re-summarizes new turns. A previously
+        validated active task must survive via prior_summary provenance."""
+        prior = 'User asked: "please refactor the auth module"'
+        summary = (
+            "User asked: \"please refactor the auth module\"\n"
+            "Recent work: added tests."
         )
+        new_turns = [
+            {"role": "user", "content": "also add unit tests"},
+            {"role": "assistant", "content": "Added tests."},
+        ]
+        out = _strip_fabricated_user_asks(
+            summary,
+            new_turns,
+            prior_summary=prior,
+        )
+        assert 'User asked: "please refactor the auth module"' in out
+
+    def test_prior_summary_does_not_keep_new_fabrication(self):
+        """A brand-new fabricated ask in the updated summary is still stripped
+        even when a prior validated ask exists."""
+        prior = 'User asked: "please refactor the auth module"'
+        summary = (
+            "User asked: \"please refactor the auth module\"\n"
+            "User asked: \"send the analytics report to investors\"\n"
+        )
+        new_turns = [{"role": "user", "content": "also add unit tests"}]
+        out = _strip_fabricated_user_asks(
+            summary,
+            new_turns,
+            prior_summary=prior,
+        )
+        assert 'User asked: "please refactor the auth module"' in out
+        assert "send the analytics report" not in out
+        assert "no verifiable outstanding user request" in out
 
     def test_trivial_short_quote_kept_as_is(self):
         """Quotes shorter than 4 chars are too brittle to verify reliably.

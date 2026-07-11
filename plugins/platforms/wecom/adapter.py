@@ -516,7 +516,8 @@ class WeComAdapter(BasePlatformAdapter):
         """Parse a deduplicated callback and dispatch it to the gateway."""
         self._remember_reply_req_id(msg_id, self._payload_req_id(payload))
 
-        sender = body.get("from") if isinstance(body.get("from"), dict) else {}
+        raw_from = body.get("from")
+        sender = raw_from if isinstance(raw_from, dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
         chat_id = str(body.get("chatid") or sender_id).strip()
         if not chat_id:
@@ -572,6 +573,9 @@ class WeComAdapter(BasePlatformAdapter):
             reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None,
             reply_to_text=reply_text if has_reply_context else None,
             timestamp=datetime.now(tz=timezone.utc),
+            # Carried so every later failure point — the batch flush and the
+            # background processing hook — can release this claim.
+            metadata={"dedup_msg_ids": [msg_id]},
         )
 
         # Only batch plain text messages — commands, media, etc. dispatch
@@ -580,6 +584,27 @@ class WeComAdapter(BasePlatformAdapter):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
+
+    async def on_handler_failure(self, event: MessageEvent) -> None:
+        """Release dedup claims when the message handler fails before completing.
+
+        THE claim contract, in one place: `_on_message` marks each msgid as a
+        claim before processing; whichever site owns the failure window
+        releases it so WeCom's redelivery (sent when no reply frame acks the
+        callback) is retried instead of dropped as a duplicate for the TTL.
+        The sites are disjoint: the `_on_message` except owns synchronous
+        intake failures, the `_flush_text_batch` except owns batched dispatch
+        failures, and this hook owns the background pipeline — base fires it
+        only when the handler raised or was unexpectedly cancelled BEFORE
+        completing.  Completed turns (including delivery failures after them)
+        and expected cancellations (/stop, session reset) keep their claims:
+        re-processing those would duplicate side effects or resurrect an
+        aborted message.
+        """
+        # .get(): events synthesized outside _process_message (gateway
+        # command replays) may not carry claim ids.
+        for stale_id in event.metadata.get("dedup_msg_ids", ()):
+            self._dedup.remove(stale_id)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles WeCom client-side splits)
@@ -606,7 +631,13 @@ class WeComAdapter(BasePlatformAdapter):
         chunk_len = len(event.text or "")
         if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            event._dedup_msg_ids = [event.message_id]  # type: ignore[attr-defined]
+            # Enforce the claim-tracking invariant at the storage boundary:
+            # every event in the registry carries its claim ids, even if it
+            # did not come through _process_message (tests build raw events).
+            event.metadata.setdefault(
+                "dedup_msg_ids",
+                [event.message_id] if event.message_id else [],
+            )
             self._pending_text_batches[key] = event
         else:
             if event.text:
@@ -614,9 +645,7 @@ class WeComAdapter(BasePlatformAdapter):
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             # Track every merged msgid so a failed flush can release all of
             # their dedup claims, not just the first chunk's.
-            merged_ids = getattr(existing, "_dedup_msg_ids", [existing.message_id])
-            merged_ids.append(event.message_id)
-            existing._dedup_msg_ids = merged_ids  # type: ignore[attr-defined]
+            existing.metadata["dedup_msg_ids"].append(event.message_id)
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -664,16 +693,31 @@ class WeComAdapter(BasePlatformAdapter):
                 "[WeCom] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
+            dispatch = asyncio.ensure_future(self.handle_message(event))
             try:
-                await self.handle_message(event)
+                # Shielded: a supersede-cancel (new chunk cancels this flush)
+                # must not kill an in-flight dispatch — before gateway
+                # acceptance that would lose the popped batch, after it a
+                # release would double-process on redelivery.  The dispatch
+                # runs to completion either way; claims stay held.
+                await asyncio.shield(dispatch)
+            except asyncio.CancelledError:
+                if not dispatch.done():
+                    # If the surviving dispatch still fails before the
+                    # background pipeline takes over (which reports through
+                    # on_handler_failure), release its claims then.
+                    def _release_if_dispatch_failed(task: "asyncio.Task[None]") -> None:
+                        if not task.cancelled() and task.exception() is not None:
+                            for stale_id in event.metadata.get("dedup_msg_ids", ()):
+                                self._dedup.remove(stale_id)
+
+                    dispatch.add_done_callback(_release_if_dispatch_failed)
+                raise
             except BaseException:
-                # Dispatch failed after the dedup mark(s).  Release the claims
-                # for every merged chunk so WeCom's redelivery is retried
-                # instead of dropped as a duplicate (same contract as
-                # _on_message for the non-batched path).
-                for stale_id in getattr(event, "_dedup_msg_ids", None) or (
-                    [event.message_id] if event.message_id else []
-                ):
+                # Synchronous dispatch failure (before the background
+                # pipeline): release so the redelivery retries (contract:
+                # on_handler_failure).
+                for stale_id in event.metadata.get("dedup_msg_ids", ()):
                     self._dedup.remove(stale_id)
                 raise
         finally:

@@ -133,6 +133,7 @@ export interface Translations {
       retry: string
       repairInstall: string
       useLocalGateway: string
+      openSettings: string
       openLogs: string
       repairHint: string
       remoteSignInHint: string

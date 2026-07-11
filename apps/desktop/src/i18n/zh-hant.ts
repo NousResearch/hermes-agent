@@ -88,6 +88,7 @@ export const zhHant = defineLocale({
       retry: '重試',
       repairInstall: '修復安裝',
       useLocalGateway: '使用本機閘道',
+      openSettings: '開啟設定',
       openLogs: '開啟記錄',
       repairHint: '修復會重新執行安裝程式，在新機器上可能需要幾分鐘。',
       remoteSignInHint: '開啟閘道登入視窗。使用本機閘道可切換至內建後端。',

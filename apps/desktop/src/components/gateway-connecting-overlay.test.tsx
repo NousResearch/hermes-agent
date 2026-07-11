@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -81,6 +81,51 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(true)
     // Connecting overlay bows out when boot.error is set.
     expect(isConnectingShown()).toBe(false)
+  })
+
+  it('lets the user dismiss a hard boot failure and open settings', () => {
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Hermes backend did not become ready',
+      running: false,
+      visible: true
+    })
+    setGatewayState('error')
+    const openSettings = vi.fn()
+
+    render(<BootFailureOverlay onOpenGatewaySettings={openSettings} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /open settings/i }))
+
+    expect(openSettings).toHaveBeenCalledOnce()
+    expect(isRecoveryShown()).toBe(false)
+  })
+
+  it('can be closed without choosing a recovery action', () => {
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Hermes backend did not become ready',
+      running: false,
+      visible: true
+    })
+    setGatewayState('error')
+
+    const { rerender } = render(<BootFailureOverlay />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(isRecoveryShown()).toBe(false)
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'A different startup failure' })
+    rerender(<BootFailureOverlay />)
+
+    expect(isRecoveryShown()).toBe(true)
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: null })
+    rerender(<BootFailureOverlay />)
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'Hermes backend did not become ready' })
+    rerender(<BootFailureOverlay />)
+
+    expect(isRecoveryShown()).toBe(true)
   })
 
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', () => {

@@ -2,10 +2,12 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
+  - **local_server** — local HTTP STT bridge, usually
+    ``http://127.0.0.1:8765/transcribe``.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
@@ -229,7 +231,7 @@ def _try_lazy_install_stt() -> bool:
     return False
 
 
-# Names of the 6 STT providers with native handlers in this module.
+# Names of the STT providers with native handlers in this module.
 # Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES`` —
 # a regression test fails if they drift. The plugin hook from
 # issue #30398-style follow-up rejects plugins registering under any
@@ -238,6 +240,7 @@ def _try_lazy_install_stt() -> bool:
 BUILTIN_STT_PROVIDERS = frozenset({
     "local",
     "local_command",
+    "local_server",
     "groq",
     "openai",
     "mistral",
@@ -754,7 +757,7 @@ def _get_provider(stt_config: dict) -> str:
         return "none"
 
     explicit = "provider" in stt_config
-    provider = stt_config.get("provider", DEFAULT_PROVIDER)
+    provider = str(stt_config.get("provider", DEFAULT_PROVIDER)).lower().strip()
 
     # --- Explicit provider: respect the user's choice ----------------------
 
@@ -781,6 +784,15 @@ def _get_provider(stt_config: dict) -> str:
                 return "local"
             logger.warning(
                 "STT provider 'local_command' configured but unavailable"
+            )
+            return "none"
+
+        if provider == "local_server":
+            local_server_cfg = stt_config.get("local_server", {})
+            if isinstance(local_server_cfg, dict) and local_server_cfg.get("url"):
+                return "local_server"
+            logger.warning(
+                "STT provider 'local_server' configured but stt.local_server.url is missing"
             )
             return "none"
 
@@ -1270,6 +1282,102 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
+
+# ---------------------------------------------------------------------------
+# Provider: local_server (HTTP STT bridge)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_local_server(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using a local HTTP STT bridge.
+
+    Expected endpoint shape matches Harrison's Telegram STT bridge:
+    ``POST multipart/form-data file=@audio`` returning JSON with either
+    ``text`` or ``transcript`` plus optional ``ok`` / ``error`` fields.
+    """
+    stt_config = _load_stt_config()
+    local_server_cfg = stt_config.get("local_server", {})
+    if not isinstance(local_server_cfg, dict):
+        local_server_cfg = {}
+
+    url = str(local_server_cfg.get("url") or "").strip()
+    if not url:
+        return {
+            "success": False,
+            "transcript": "",
+            "provider": "local_server",
+            "error": "stt.local_server.url is not configured",
+        }
+
+    try:
+        timeout = float(local_server_cfg.get("timeout", 120))
+    except (TypeError, ValueError):
+        timeout = 120.0
+
+    try:
+        import requests
+
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                url,
+                files={"file": (Path(file_path).name, audio_file)},
+                timeout=timeout,
+            )
+
+        if response.status_code != 200:
+            detail = response.text[:500].strip()
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "local_server",
+                "error": f"local_server STT error (HTTP {response.status_code}): {detail}",
+            }
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"text": response.text}
+
+        if not isinstance(payload, dict):
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "local_server",
+                "error": "local_server STT returned a non-object response",
+            }
+
+        transcript_text = _extract_transcript_text(payload)
+        if not transcript_text:
+            detail = str(payload.get("error") or payload.get("message") or "empty transcript")
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "local_server",
+                "error": f"local_server STT returned no transcript: {detail}",
+            }
+
+        if payload.get("ok") is False:
+            return {
+                "success": False,
+                "transcript": "",
+                "provider": "local_server",
+                "error": str(payload.get("error") or payload.get("message") or "local_server STT failed"),
+            }
+
+        logger.info(
+            "Transcribed %s via local_server STT (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "local_server"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "provider": "local_server", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("local_server STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "provider": "local_server", "error": f"local_server STT transcription failed: {e}"}
+
 # ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
 # ---------------------------------------------------------------------------
@@ -1669,6 +1777,14 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local_command(file_path, model_name)
+
+    if provider == "local_server":
+        local_server_cfg = stt_config.get("local_server", {})
+        if isinstance(local_server_cfg, dict):
+            model_name = model or local_server_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        else:
+            model_name = model or DEFAULT_LOCAL_MODEL
+        return _transcribe_local_server(file_path, str(model_name))
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL

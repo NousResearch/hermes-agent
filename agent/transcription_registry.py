@@ -11,7 +11,8 @@ the configured ``stt.provider`` name is not a built-in.
 Built-ins-always-win
 --------------------
 Plugin names that collide with a built-in STT provider (``local``,
-``local_command``, ``groq``, ``openai``, ``mistral``, ``xai``) are
+``local_command``, ``local_server``, ``groq``, ``openai``, ``mistral``,
+``xai``) are
 rejected at registration with a warning. This invariant is also
 re-checked at dispatch time in
 :func:`tools.transcription_tools._dispatch_to_plugin_provider`.
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 _BUILTIN_NAMES = frozenset({
     "local",
     "local_command",
+    "local_server",
     "groq",
     "openai",
     "mistral",

@@ -183,7 +183,7 @@ async def test_unexpected_signal_writes_home_startup_marker(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_external_signal_replies_to_sole_active_session_not_home(tmp_path, monkeypatch):
+async def test_external_signal_notifies_active_session_and_writes_home_startup_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
@@ -204,7 +204,11 @@ async def test_external_signal_replies_to_sole_active_session_not_home(tmp_path,
         "chat_type": "dm",
         "thread_id": "current-topic",
     }
-    assert not (tmp_path / ".restart_pending.json").exists()
+    marker = tmp_path / ".restart_pending.json"
+    assert marker.exists()
+    payload = json.loads(marker.read_text())
+    assert payload["reason"] == "external_signal"
+    assert payload["via_service"] is True
 
 
 @pytest.mark.asyncio

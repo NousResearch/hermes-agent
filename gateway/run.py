@@ -6799,14 +6799,11 @@ class GatewayRunner:
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
-            active_origin_notification_queued = False
             if (
                 getattr(self, "_signal_initiated_shutdown", False)
                 and not self._restart_requested
             ):
-                active_origin_notification_queued = (
-                    self._queue_restart_notification_for_active_origin(active_agents)
-                )
+                self._queue_restart_notification_for_active_origin(active_agents)
 
             should_notify_home_on_next_boot = (
                 # Normal Hermes-managed restarts with no specific originating
@@ -6814,12 +6811,12 @@ class GatewayRunner:
                 (self._restart_requested and self._restart_command_source is None)
                 # External SIGTERM under supervisors such as systemd also comes
                 # back automatically, but it bypasses request_restart() and used
-                # to send only the shutdown half of the lifecycle. Persist the
-                # same marker so the next process can say it is back online.
+                # to send only the shutdown half of the lifecycle. Always persist
+                # the home-channel marker, even when a specific active session is
+                # also queued for a reply, so the restart cannot go unannounced.
                 or (
                     getattr(self, "_signal_initiated_shutdown", False)
                     and not self._restart_requested
-                    and not active_origin_notification_queued
                 )
             )
             if should_notify_home_on_next_boot:

@@ -395,9 +395,13 @@ def _compute_tool_definitions(
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like hermes-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly
-    # stripped out. See issue #17309.
+    # stripped out. See issue #17309. Task-scoped Kanban workers are the one
+    # exception: their check_fns still constrain them to the scoped worker
+    # lifecycle surface (including child-task creation/dependency linking).
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
+            if os.environ.get("HERMES_KANBAN_TASK") and toolset_name == "kanban":
+                continue
             if validate_toolset(toolset_name):
                 from toolsets import bundle_non_core_tools, get_toolset
                 if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):

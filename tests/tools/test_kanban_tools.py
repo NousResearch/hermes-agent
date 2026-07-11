@@ -1434,6 +1434,87 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
 
+def test_worker_kanban_guidance_survives_disabled_kanban_toolset(monkeypatch, tmp_path):
+    """Task scope overrides a profile's ordinary-chat Kanban restriction."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    defs = get_tool_definitions(
+        enabled_toolsets=["file"],
+        disabled_toolsets=["kanban"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    expected_worker_surface = {
+        "kanban_show",
+        "kanban_complete",
+        "kanban_block",
+        "kanban_heartbeat",
+        "kanban_comment",
+        "kanban_create",
+        "kanban_link",
+    }
+    direct_names = {tool["function"]["name"] for tool in defs}
+    assert {name for name in direct_names if name.startswith("kanban_")} == (
+        expected_worker_surface
+    )
+
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        enabled_toolsets=["file"],
+        disabled_toolsets=["kanban"],
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent_names = {tool["function"]["name"] for tool in getattr(agent, "tools")}
+    assert {name for name in agent_names if name.startswith("kanban_")} == (
+        expected_worker_surface
+    )
+
+    prompt = agent._build_system_prompt()
+    assert "Kanban task execution protocol" in prompt
+    assert "kanban_show()" in prompt
+    assert "kanban_complete" in prompt
+
+
+def test_normal_chat_still_honors_disabled_kanban_toolset(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    defs = get_tool_definitions(
+        enabled_toolsets=["kanban"],
+        disabled_toolsets=["kanban"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    names = {tool["function"]["name"] for tool in defs}
+    assert not any(name.startswith("kanban_") for name in names)
+
+
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     """Sanity: the guidance block stays lean so it doesn't blow up the
     cached prompt.

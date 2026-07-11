@@ -1776,12 +1776,15 @@ class SessionStore:
         self,
         source: SessionSource,
         force_new: bool = False,
+        touch_activity: bool = True,
     ) -> SessionEntry:
         """Single-flight session lookup/create per routing key.
 
         Calls for different keys remain concurrent. Overlapping calls for the
         same key share the owner's result, including concurrent ``force_new``
         deliveries, so only one routing transition and SQLite row is created.
+        ``touch_activity=False`` still evaluates reset policy but preserves the
+        prior user-activity clock when an internal/system event reuses a session.
         """
         session_key = self._generate_session_key(source)
         inflight_lock = getattr(self, "_inflight_lock", None)
@@ -1804,10 +1807,16 @@ class SessionStore:
             if slot.error is not None:
                 raise slot.error
             assert slot.result is not None
+            if touch_activity:
+                self.update_session(slot.result.session_key)
             return slot.result
 
         try:
-            result = self._get_or_create_session_impl(source, force_new=force_new)
+            result = self._get_or_create_session_impl(
+                source,
+                force_new=force_new,
+                touch_activity=touch_activity,
+            )
             slot.result = result
             return result
         except BaseException as exc:
@@ -1822,6 +1831,7 @@ class SessionStore:
         self,
         source: SessionSource,
         force_new: bool = False,
+        touch_activity: bool = True,
     ) -> SessionEntry:
         """Perform one session routing transition for the single-flight owner.
 
@@ -1896,7 +1906,7 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-                self._heal_compression_tip_locked(
+                healed_compression_tip = self._heal_compression_tip_locked(
                     entry, existing_session_id, canonical_existing_session_id
                 )
 
@@ -1919,9 +1929,11 @@ class SessionStore:
                     _needs_recover = True
                 elif entry.session_id != _stale_session_id:
                     # Another thread handled this entry during our lock-free
-                    # window.  Treat as healthy -- bump updated_at and save.
-                    entry.updated_at = now
-                    _needs_save = True
+                    # window. Treat as healthy; internal/system events preserve
+                    # the prior user-activity clock used by reset policy.
+                    if touch_activity:
+                        entry.updated_at = now
+                    _needs_save = touch_activity or healed_compression_tip
                 else:
                     # Stale check clean.  Apply reset decision.
                     if _reset_reason:
@@ -1933,8 +1945,9 @@ class SessionStore:
                         entry = None
                         _needs_recover = True
                     else:
-                        entry.updated_at = now
-                        _needs_save = True
+                        if touch_activity:
+                            entry.updated_at = now
+                        _needs_save = touch_activity or healed_compression_tip
             else:
                 if not force_new:
                     _needs_recover = True
@@ -2022,14 +2035,20 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        touch_activity: bool = True,
     ) -> None:
-        """Update lightweight session metadata after an interaction."""
+        """Update lightweight session metadata after an interaction.
+
+        Internal/system turns can persist token metadata without advancing the
+        user-activity clock that drives idle and daily reset policy.
+        """
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries:
                 entry = self._entries[session_key]
-                entry.updated_at = _now()
+                if touch_activity:
+                    entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()

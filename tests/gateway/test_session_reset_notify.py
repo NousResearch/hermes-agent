@@ -164,6 +164,46 @@ class TestSessionEntryReason:
         assert entry2.reset_had_activity is True
 
 
+class TestInternalActivityResetPolicy:
+    def test_internal_turn_does_not_advance_activity_clock(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=60),
+            tmp_path,
+        )
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        prior_activity = datetime.now() - timedelta(minutes=10)
+        entry.updated_at = prior_activity
+        store._save()
+
+        reused = store.get_or_create_session(source, touch_activity=False)
+        store.update_session(
+            reused.session_key,
+            last_prompt_tokens=123,
+            touch_activity=False,
+        )
+
+        assert reused.session_id == entry.session_id
+        assert reused.updated_at == prior_activity
+        assert reused.last_prompt_tokens == 123
+
+    def test_internal_turn_still_triggers_due_reset(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        entry.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        reset = store.get_or_create_session(source, touch_activity=False)
+
+        assert reset.session_id != entry.session_id
+        assert reset.was_auto_reset is True
+        assert reset.auto_reset_reason == "idle"
+
+
 # ---------------------------------------------------------------------------
 # SessionResetPolicy notify config
 # ---------------------------------------------------------------------------

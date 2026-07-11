@@ -12,7 +12,7 @@ export function isIgnorablePipeError(error: NodeJS.ErrnoException | null | undef
     return true
   }
 
-  return /\b(?:broken pipe|EPIPE|ERR_STREAM_DESTROYED)\b/i.test(error?.message || '')
+  return false
 }
 
 function attachPipeGuard(stream: ErrorStream | null | undefined): boolean {

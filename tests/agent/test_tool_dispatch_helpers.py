@@ -183,6 +183,12 @@ class TestMakeToolResultMessage:
             "tool_call_id": "call_1",
         }
 
+    def test_effect_disposition_is_internal_message_metadata(self):
+        msg = make_tool_result_message(
+            "terminal", "timed out", "call_effect", effect_disposition="unknown"
+        )
+        assert msg["effect_disposition"] == "unknown"
+
     def test_high_risk_message_content_wrapped(self):
         msg = make_tool_result_message("web_extract", SAMPLE_LONG_TEXT, "call_2")
         assert msg["role"] == "tool"

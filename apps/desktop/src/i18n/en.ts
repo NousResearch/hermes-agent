@@ -1929,6 +1929,10 @@ export const en: Translations = {
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
+      fireworks: {
+        short: 'direct model API',
+        description: 'Direct access to models hosted by Fireworks AI.'
+      },
       openrouter: {
         short: 'one key, many models',
         description: 'Hosts hundreds of models behind a single key. Good default for new installs.'

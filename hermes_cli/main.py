@@ -519,6 +519,9 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # Keep the resolved named identity in sync with HERMES_HOME. A stale
+        # inherited HERMES_PROFILE must not mis-bind exact external approvals.
+        os.environ["HERMES_PROFILE"] = profile_name
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0 and profile_index is not None:
             start = profile_index + 1  # +1 because argv is sys.argv[1:]

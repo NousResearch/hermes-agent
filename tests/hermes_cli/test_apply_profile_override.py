@@ -85,6 +85,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         assert result.endswith("coder"), (
             f"Expected HERMES_HOME to end with 'coder', got: {result!r}"
         )
+        assert os.environ.get("HERMES_PROFILE") == "coder"
 
     def test_hermes_home_already_profile_dir_is_trusted(self, tmp_path, monkeypatch):
         """HERMES_HOME=.../profiles/coder must not be overridden even when

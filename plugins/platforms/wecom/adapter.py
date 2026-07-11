@@ -173,7 +173,15 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
         self._group_policy = str(extra.get("group_policy") or os.getenv("WECOM_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        # group_policy already honors WECOM_GROUP_POLICY, so the group allowlist
+        # must honor WECOM_GROUP_ALLOWED_USERS too. Without the env fallback an
+        # env-only setup (group_policy=allowlist via env, no config extra) runs
+        # with an empty allowlist and drops every authorized group at intake.
+        self._group_allow_from = _coerce_list(
+            extra.get("group_allow_from")
+            or extra.get("groupAllowFrom")
+            or os.getenv("WECOM_GROUP_ALLOWED_USERS", "")
+        )
         self._groups = extra.get("groups") if isinstance(extra.get("groups"), dict) else {}
 
         self._session: Optional["aiohttp.ClientSession"] = None

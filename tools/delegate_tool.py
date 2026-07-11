@@ -3086,9 +3086,26 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _NATIVE_SDK_PROVIDERS = {"bedrock", "vertex", "google", "google-genai"}
     _provider_lower = (configured_provider or "").strip().lower()
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
-    _requires_runtime_provider_auth = _provider_lower in {"nous", "nous-research"}
 
-    if configured_base_url and not _is_native_sdk_provider and not _requires_runtime_provider_auth:
+    # Direct endpoints remain authoritative: an explicit delegation.api_key
+    # always wins. For credential-managed provider endpoints, though, allow a
+    # provider name to supply the key when base_url is configured without
+    # api_key. This preserves the user's endpoint while avoiding inheritance of
+    # an unrelated parent key (for example a Nous child spawned by an OpenRouter
+    # or Codex parent).
+    _DIRECT_ENDPOINT_RUNTIME_KEY_PROVIDERS = {
+        "nous",
+        "nous-portal",
+        "nousresearch",
+        "nous-research",
+    }
+    _direct_endpoint_needs_runtime_key = (
+        bool(configured_base_url)
+        and not configured_api_key
+        and _provider_lower in _DIRECT_ENDPOINT_RUNTIME_KEY_PROVIDERS
+    )
+
+    if configured_base_url and not _is_native_sdk_provider and not _direct_endpoint_needs_runtime_key:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -3166,12 +3183,26 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    resolved_base_url = runtime.get("base_url")
+    resolved_api_mode = runtime.get("api_mode")
+    if _direct_endpoint_needs_runtime_key:
+        assert configured_base_url is not None
+        resolved_base_url = configured_base_url
+
+        from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+        detected_api_mode = _detect_api_mode_for_url(configured_base_url)
+        if detected_api_mode:
+            resolved_api_mode = detected_api_mode
+        if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+            resolved_api_mode = configured_api_mode
+
     return {
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
-        "base_url": runtime.get("base_url"),
+        "base_url": resolved_base_url,
         "api_key": api_key,
-        "api_mode": runtime.get("api_mode"),
+        "api_mode": resolved_api_mode,
         "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),

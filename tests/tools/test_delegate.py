@@ -1119,19 +1119,32 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_mode"], "chat_completions")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_nous_provider_wins_over_base_url_for_runtime_auth(self, mock_resolve):
-        """provider=nous must use runtime auth even when base_url is configured.
+    def test_nous_direct_endpoint_explicit_api_key_wins(self, mock_resolve):
+        """Explicit base_url/api_key remains the documented direct endpoint path."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "tencent/hy3:free",
+            "provider": "nous",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "explicit-direct-key",
+        }
 
-        Reverse-engineer had delegation.provider=nous plus the Nous inference
-        base_url and a stale delegation.api_key. Treating that as a direct
-        custom endpoint bypassed the valid Nous credential resolver and made
-        subagents 401 while the default profile could call hy3 normally.
-        """
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        mock_resolve.assert_not_called()
+        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
+        self.assertEqual(creds["api_key"], "explicit-direct-key")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_nous_direct_endpoint_without_api_key_uses_runtime_key(self, mock_resolve):
+        """provider=nous can supply credentials while preserving base_url."""
         parent = _make_mock_parent(depth=0)
         mock_resolve.return_value = {
             "model": "tencent/hy3:free",
             "provider": "nous",
-            "base_url": "https://inference-api.nousresearch.com/v1",
+            "base_url": "https://runtime.example.invalid/v1",
             "api_key": "fresh-runtime-key",
             "api_mode": "chat_completions",
         }
@@ -1139,7 +1152,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "tencent/hy3:free",
             "provider": "nous",
             "base_url": "https://inference-api.nousresearch.com/v1",
-            "api_key": "stale-explicit-key",
         }
 
         creds = _resolve_delegation_credentials(cfg, parent)
@@ -1151,6 +1163,35 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
         self.assertEqual(creds["api_key"], "fresh-runtime-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_nous_direct_endpoint_aliases_without_api_key_use_runtime_key(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        mock_resolve.return_value = {
+            "model": "tencent/hy3:free",
+            "provider": "nous",
+            "base_url": "https://runtime.example.invalid/v1",
+            "api_key": "fresh-runtime-key",
+            "api_mode": "chat_completions",
+        }
+
+        for provider in ("nous-portal", "nousresearch", "nous-research"):
+            with self.subTest(provider=provider):
+                mock_resolve.reset_mock()
+                creds = _resolve_delegation_credentials(
+                    {
+                        "model": "tencent/hy3:free",
+                        "provider": provider,
+                        "base_url": "https://inference-api.nousresearch.com/v1",
+                    },
+                    parent,
+                )
+                mock_resolve.assert_called_once_with(
+                    requested=provider, target_model="tencent/hy3:free"
+                )
+                self.assertEqual(creds["provider"], "nous")
+                self.assertEqual(creds["base_url"], "https://inference-api.nousresearch.com/v1")
+                self.assertEqual(creds["api_key"], "fresh-runtime-key")
 
     def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
         # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at

@@ -94,15 +94,13 @@ class CronScheduler(ABC):
         Returns True if THIS caller claimed and ran the job, False if the claim
         was lost (another machine/retry won it) or the job no longer exists.
         """
-        from cron.jobs import claim_job_for_fire, get_job
-        from cron.scheduler import run_one_job
+        from cron.jobs import claim_job_for_fire_snapshot
+        from cron.scheduler import run_claimed_job
 
-        if not claim_job_for_fire(job_id):
-            return False  # another machine already claimed this fire
-        job = get_job(job_id)
+        job = claim_job_for_fire_snapshot(job_id)
         if job is None:
-            return False  # job removed (e.g. repeat-N exhausted) between arm and fire
-        return run_one_job(job, adapters=adapters, loop=loop)
+            return False  # another machine already claimed this fire
+        return run_claimed_job(job, adapters=adapters, loop=loop)
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (the desired state):

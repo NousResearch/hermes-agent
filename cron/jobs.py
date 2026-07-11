@@ -7,6 +7,8 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 
 import contextlib
 import copy
+import functools
+import hashlib
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -1465,13 +1467,21 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+def mark_job_run(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    fire_claim_token: Optional[str] = None,
+    completion_token: Optional[str] = None,
+) -> bool:
     """
     Mark a job as having been run.
     
-    Updates last_run_at, last_status, increments completed count,
-    computes next_run_at, and auto-deletes if repeat limit reached.
+    Updates last_run_at, last_status, increments completed count, computes
+    next_run_at, and auto-deletes if the repeat limit is reached. Tokenized
+    fire claims are completed only by their owner; stale completion attempts
+    return False without mutating the job.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
@@ -1480,10 +1490,26 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
+                current_claim = job.get("fire_claim")
+                current_token = (
+                    current_claim.get("token")
+                    if isinstance(current_claim, dict)
+                    and isinstance(current_claim.get("token"), str)
+                    else None
+                )
+                if (
+                    current_token is not None or fire_claim_token is not None
+                ) and current_token != fire_claim_token:
+                    logger.info(
+                        "Job '%s': stale completion did not match the active fire claim",
+                        job_id,
+                    )
+                    return False
                 now = _hermes_now().isoformat()
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                job["last_completion_token"] = completion_token
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 # Clear any external-fire claim so a re-armed recurring job can
@@ -1520,7 +1546,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         # Remove the job (limit reached)
                         jobs.pop(i)
                         save_jobs(jobs)
-                        return
+                        return True
                 
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
@@ -1555,9 +1581,35 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
-                return
+                return True
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+        return False
+
+
+def update_job_run_post_completion(
+    job_id: str,
+    completion_token: str,
+    delivery_error: Optional[str],
+    interrupted_error: Optional[str] = None,
+) -> bool:
+    """CAS-update delivery/interruption state for the run that finalized."""
+    if not completion_token:
+        return False
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+            if job.get("last_completion_token") != completion_token:
+                return False
+            job["last_delivery_error"] = delivery_error
+            if interrupted_error is not None:
+                job["last_status"] = "error"
+                job["last_error"] = interrupted_error
+            save_jobs(jobs)
+            return True
+    return False
 
 
 def claim_dispatch(job_id: str) -> bool:
@@ -1701,26 +1753,148 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
+FIRE_CLAIM_MAX_LIVE_HOLDER_SECONDS = 4 * 3600
 
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
+
+@functools.lru_cache(maxsize=1)
+def _local_fire_claim_machine_fingerprint() -> str:
+    """Return a hashed, process-independent identity for this local runtime.
+
+    Linux ``/proc`` facts identify the boot and PID namespace. Other platforms
+    fall back only to deterministic node identities; process-random UUID
+    fallbacks are rejected so unverifiable claims retain TTL-only semantics.
+    """
+    boot_id = ""
+    pid1_start = ""
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    try:
+        pid1_stat = Path("/proc/1/stat").read_text(encoding="utf-8")
+        _, separator, pid1_tail = pid1_stat.rpartition(")")
+        pid1_fields = pid1_tail.split()
+        if separator and len(pid1_fields) > 19:
+            pid1_start = pid1_fields[19]
+    except OSError:
+        pass
+    if boot_id and pid1_start:
+        proc_identity = f"boot:{boot_id}\x1fpid1:{pid1_start}"
+        return hashlib.sha256(proc_identity.encode("utf-8")).hexdigest()
+    components: List[str] = []
+    try:
+        node = uuid.getnode()
+        if not node & (1 << 40):
+            components.append(f"node:{node:012x}")
+    except Exception:
+        pass
+    if not components:
+        return ""
+    return hashlib.sha256("\x1f".join(components).encode("utf-8")).hexdigest()
+
+
+def _fire_claim_holder_provenance() -> Dict[str, Any]:
+    """Build provenance used only for safe same-machine PID liveness checks."""
+    if os.getenv("HERMES_MACHINE_ID", "").strip():
+        return {"kind": "opaque-machine-id-v1"}
+    machine = _local_fire_claim_machine_fingerprint()
+    if not machine:
+        return {"kind": "unverifiable-v1"}
+    return {"kind": "local-process-v1", "machine": machine, "pid": os.getpid()}
+
+
+def _build_fire_claim(now: datetime) -> Dict[str, Any]:
+    return {
+        "at": now.isoformat(),
+        "by": _machine_id(),
+        "token": uuid.uuid4().hex,
+        "holder": _fire_claim_holder_provenance(),
+    }
+
+
+def fire_claim_token(job: Dict[str, Any]) -> Optional[str]:
+    """Return a job's non-empty fire-claim ownership token, if present."""
+    claim = job.get("fire_claim")
+    if not isinstance(claim, dict):
+        return None
+    token = claim.get("token")
+    return token if isinstance(token, str) and token else None
+
+
+def _fire_claim_holder_is_alive(claim: Dict[str, Any]) -> bool:
+    """Return whether a proven same-machine claim has a live local holder.
+
+    Legacy claims, cross-machine claims, and explicit ``HERMES_MACHINE_ID``
+    claims have no unambiguous local provenance and retain TTL-only semantics.
+    """
+    holder = claim.get("holder")
+    if not isinstance(holder, dict) or holder.get("kind") != "local-process-v1":
+        return False
+    machine = _local_fire_claim_machine_fingerprint()
+    if not machine or holder.get("machine") != machine:
+        return False
+    pid_value = holder.get("pid")
+    if isinstance(pid_value, bool) or not isinstance(pid_value, (int, str)):
+        return False
+    try:
+        pid = int(pid_value)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    from gateway.status import _pid_exists
+
+    return _pid_exists(pid)
+
+
+def _fire_claim_is_active(
+    claim: Any,
+    now: datetime,
+    *,
+    claim_ttl_seconds: int = 300,
+) -> bool:
+    """Return whether a persisted fire claim still owns its execution slot."""
+    if not isinstance(claim, dict):
+        return False
+    try:
+        claimed_at = _ensure_aware(datetime.fromisoformat(claim["at"]))
+        age = (now - claimed_at).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not 0 <= age < FIRE_CLAIM_MAX_LIVE_HOLDER_SECONDS:
+        return False
+    if age < claim_ttl_seconds:
+        return True
+    return _fire_claim_holder_is_alive(claim)
+
+
+def claim_job_for_fire_snapshot(
+    job_id: str,
+    *,
+    claim_ttl_seconds: int = 300,
+) -> Optional[Dict[str, Any]]:
+    """Atomically claim a job for a single fire (multi-machine
+    at-most-once) and return the persisted claimed snapshot.
+
+    Used by built-in ticks, manual runs, and external-provider fires. When an
+    external scheduler signals a job across N gateway replicas, exactly one
+    wins the shared store claim.
 
     Under the file lock: reject if the job is missing/disabled/paused. If a
-    fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
-    Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
+    fresh claim (younger than ``claim_ttl_seconds`` and the absolute hold cap)
+    already exists, lose. Otherwise stamp a ``fire_claim`` and, for recurring
+    jobs, advance
     ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
     re-delivery for the old time can't re-fire). One-shots keep ``next_run_at``
     but the fresh ``fire_claim`` blocks a duplicate retry for the same fire.
-    ``mark_job_run`` clears the claim on completion so a re-armed recurring job
-    is claimable again next fire.
+    ``mark_job_run`` clears the claim only when the completion token matches,
+    so an older execution cannot erase a replacement claimant's ownership.
 
     The stale-claim TTL means a machine that crashed after claiming but before
     completing doesn't wedge the job forever — after the TTL another fire can
-    reclaim it.
+    reclaim it. A live same-machine holder keeps its claim beyond that TTL so a
+    long-running job cannot be fired twice. The absolute hold limit bounds PID
+    reuse and still guarantees eventual recovery.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1728,32 +1902,100 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
             if job["id"] != job_id:
                 continue
             if not job.get("enabled", True) or job.get("state") == "paused":
-                return False
+                return None
             now = _hermes_now()
             existing = job.get("fire_claim")
-            if existing:
-                try:
-                    claimed_at = _ensure_aware(datetime.fromisoformat(existing["at"]))
-                    # Bounded on BOTH sides (#60703): a claim stamped in the
-                    # future (clock/TZ skew across a restart, or a corrupted
-                    # timestamp) would otherwise have a negative age and stay
-                    # "fresh" forever — the job becomes permanently unfireable
-                    # and every manual `cron run` reports "already being
-                    # fired". Treat future-dated claims as stale/overwritable.
-                    _age = (now - claimed_at).total_seconds()
-                    if 0 <= _age < claim_ttl_seconds:
-                        return False  # someone holds a fresh claim
-                except Exception:
-                    pass  # malformed claim → overwrite
-            job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
+            if _fire_claim_is_active(
+                existing,
+                now,
+                claim_ttl_seconds=claim_ttl_seconds,
+            ):
+                return None
+            previous_next_run_at = job.get("next_run_at")
+            job["fire_claim"] = _build_fire_claim(now)
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
             save_jobs(jobs)
-            return True
+            claimed_job = copy.deepcopy(job)
+            claimed_job["_fire_claim_previous_next_run_at"] = previous_next_run_at
+            return claimed_job
+        return None
+
+
+def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
+    """Atomically claim a fire, preserving the historical boolean API."""
+    return (
+        claim_job_for_fire_snapshot(
+            job_id,
+            claim_ttl_seconds=claim_ttl_seconds,
+        )
+        is not None
+    )
+
+
+def release_fire_claim(
+    job_id: str,
+    token: str,
+    *,
+    restore_next_run_at: Optional[str] = None,
+    expected_next_run_at: Optional[str] = None,
+    expected_run_claim_owner: Optional[str] = None,
+) -> bool:
+    """Clear only the fire claim owned by *token*.
+
+    A caller that aborts before submitting the claimed run may also restore
+    the pre-claim schedule position. The restore is conditional on the job
+    still carrying the next-run value written by the claim, so a concurrent
+    schedule edit is never overwritten. A pre-submit one-shot ``run_claim``
+    can also be cleared by owner compare-and-set so rejection does not strand
+    the job while preserving any replacement owner's claim.
+    """
+    if not token:
         return False
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+            if fire_claim_token(job) != token:
+                return False
+            job["fire_claim"] = None
+            if (
+                restore_next_run_at is not None
+                and job.get("next_run_at") == expected_next_run_at
+            ):
+                job["next_run_at"] = restore_next_run_at
+            run_claim = job.get("run_claim")
+            if (
+                expected_run_claim_owner is not None
+                and isinstance(run_claim, dict)
+                and run_claim.get("by") == expected_run_claim_owner
+            ):
+                job["run_claim"] = None
+            save_jobs(jobs)
+            return True
+    return False
+
+
+def release_run_claim(job_id: str, expected_owner: str) -> bool:
+    """Clear only the due-selection run claim owned by *expected_owner*."""
+    if not expected_owner:
+        return False
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+            run_claim = job.get("run_claim")
+            if not isinstance(run_claim, dict) or run_claim.get("by") != expected_owner:
+                return False
+            job["run_claim"] = None
+            save_jobs(jobs)
+            return True
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
@@ -1884,6 +2126,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         # state still reaches save_jobs() below.
         try:
             if not job.get("enabled", True):
+                continue
+
+            # Manual and external-provider fires claim before run_one_job stamps
+            # a finite one-shot's dispatch count. Keep that active record out of
+            # stale one-shot cleanup so its owner can persist the final outcome.
+            if (
+                job.get("schedule", {}).get("kind") == "once"
+                and _fire_claim_is_active(job.get("fire_claim"), now)
+            ):
                 continue
 
             # Cross-process running-claim guard (#59229): if another scheduler

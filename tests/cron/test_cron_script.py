@@ -181,6 +181,7 @@ class TestRunJobScript:
         assert success is True
         assert output == ""
 
+    @pytest.mark.live_system_guard_bypass
     def test_script_timeout(self, cron_env, monkeypatch):
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script

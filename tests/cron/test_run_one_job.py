@@ -1,6 +1,6 @@
 """Characterization + unit tests for the `run_one_job` shared helper (Phase 4A).
 
-`tick`'s per-job body (`_process_job`) is the execute → save → deliver → mark
+`tick`'s per-job body (`_process_job`) is the execute → save → mark → deliver
 sequence that fires ONE due job. Phase 4A extracts it into a module-level
 `run_one_job(job, *, adapters=None, loop=None, verbose=False)` so the external
 Chronos provider's `fire_due` can reuse the IDENTICAL body — no duplicated
@@ -31,39 +31,52 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(
+        jid,
+        ok,
+        err=None,
+        delivery_error=None,
+        fire_claim_token=None,
+        completion_token=None,
+    ):
         calls.append(("mark", jid, ok))
+        return True
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", fake_save)
     monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    monkeypatch.setattr(s, "update_job_run_post_completion", lambda *args, **kwargs: True)
     return calls
 
 
 def test_tick_process_job_sequence(monkeypatch):
     """Characterization: a single due job driven through tick() runs the
-    sequence run_job → save → deliver → mark, in that order."""
+    sequence run_job → save → mark → deliver, in that order."""
     calls = _patch_pipeline(monkeypatch)
     monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "advance_next_run", lambda jid: True)
+    monkeypatch.setattr(
+        s,
+        "_claim_job_for_tick",
+        lambda job: {**job, "fire_claim": {"token": f"test-{job['id']}"}},
+    )
 
     s.tick(verbose=False, sync=True)
 
-    assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
-    assert calls[-1] == ("mark", "j1", True)
+    assert [c[0] for c in calls] == ["run_job", "save", "mark", "deliver"]
+    assert calls[-2] == ("mark", "j1", True)
 
 
 def test_run_one_job_success_sequence(monkeypatch):
-    """The extracted helper runs the same execute→save→deliver→mark sequence
+    """The extracted helper runs the same execute→save→mark→deliver sequence
     for a successful job."""
     calls = _patch_pipeline(monkeypatch)
 
     ok = s.run_one_job({"id": "j2", "name": "t"})
 
     assert ok is True
-    assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
-    assert calls[-1] == ("mark", "j2", True)
+    assert [c[0] for c in calls] == ["run_job", "save", "mark", "deliver"]
+    assert calls[-2] == ("mark", "j2", True)
 
 
 def test_run_one_job_silent_skips_delivery(monkeypatch):
@@ -110,7 +123,7 @@ def test_run_one_job_exception_marks_failure(monkeypatch):
     marks = []
     monkeypatch.setattr(
         s, "mark_job_run",
-        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
+        lambda jid, ok, err=None, **kwargs: marks.append((jid, ok)),
     )
 
     ok = s.run_one_job({"id": "j6", "name": "t"})

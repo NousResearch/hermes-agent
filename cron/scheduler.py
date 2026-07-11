@@ -10,6 +10,7 @@ runs at a time if multiple processes overlap.
 
 import asyncio
 import atexit
+import copy
 import concurrent.futures
 import contextvars
 import json
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -238,7 +240,18 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    claim_dispatch,
+    claim_job_for_fire_snapshot,
+    fire_claim_token,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    release_fire_claim,
+    release_run_claim,
+    save_job_output,
+    update_job_run_post_completion,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -297,9 +310,13 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_job_claim_tokens: dict = {}
+_running_job_claim_snapshots: dict = {}
+_running_job_started_tokens: set = set()
 _running_lock = threading.Lock()
+_shutdown_started = False
 
-# Job IDs the gateway shutdown path force-killed the tool subprocess of
+# Job/token pairs whose tool subprocess the gateway shutdown path force-killed
 # while still in ``_running_job_ids`` (see ``mark_running_jobs_interrupted``
 # below). ``run_one_job``'s own completion path checks this set before
 # writing its own ``last_status`` so a cron agent thread that keeps running
@@ -338,7 +355,7 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     same process and may go on to produce a plausible-looking final
     response from the now-truncated tool output.
 
-    Records the job IDs in ``_interrupted_job_ids`` BEFORE writing
+    Records each job's fire-claim incarnation in ``_interrupted_job_ids`` BEFORE writing
     ``last_status`` so ``run_one_job``'s own eventual completion for the
     same job (racing in its own thread) sees the flag and skips its normal
     write instead of clobbering this one — see the check near the end of
@@ -352,20 +369,44 @@ def mark_running_jobs_interrupted(reason: str) -> list:
 
     Returns the list of job IDs marked, for the caller to log.
     """
+    global _shutdown_started
     with _running_lock:
-        job_ids = list(_running_job_ids)
-        _interrupted_job_ids.update(job_ids)
-    marked = []
-    for job_id in job_ids:
+        _shutdown_started = True
+        job_claims = list(_running_job_started_tokens)
+        unstarted_claims = [
+            (key, snapshot)
+            for key, snapshot in _running_job_claim_snapshots.items()
+            if key not in _running_job_started_tokens
+        ]
+        for (job_id, claim_token), _snapshot in unstarted_claims:
+            _running_job_claim_snapshots.pop((job_id, claim_token), None)
+            if _running_job_claim_tokens.get(job_id) == claim_token:
+                _running_job_claim_tokens.pop(job_id, None)
+                _running_job_ids.discard(job_id)
+        _interrupted_job_ids.update(job_claims)
+    for _key, snapshot in unstarted_claims:
         try:
-            mark_job_run(job_id, False, reason)
-            marked.append(job_id)
+            _release_unstarted_claimed_job(snapshot)
+        except Exception as e:
+            logger.warning(
+                "Failed to release unstarted job %s during shutdown: %s",
+                snapshot.get("id"),
+                e,
+            )
+    marked = []
+    for job_id, claim_token in job_claims:
+        try:
+            mark_kwargs = {}
+            if claim_token is not None:
+                mark_kwargs["fire_claim_token"] = claim_token
+            if mark_job_run(job_id, False, reason, **mark_kwargs) is not False:
+                marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked
 
 
-def _is_interrupted(job_id: str) -> bool:
+def _is_interrupted(job_id: str, claim_token: Optional[str] = None) -> bool:
     """Non-destructive peek at whether the shutdown path has marked
     ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
 
@@ -377,20 +418,20 @@ def _is_interrupted(job_id: str) -> bool:
     flag: the later, authoritative check (right before ``last_status`` is
     written) still needs to see it."""
     with _running_lock:
-        return job_id in _interrupted_job_ids
+        return (job_id, claim_token) in _interrupted_job_ids
 
 
-def _consume_interrupted_flag(job_id: str) -> bool:
+def _consume_interrupted_flag(job_id: str, claim_token: Optional[str] = None) -> bool:
     """Return True and clear the flag if the shutdown path already marked
     ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
 
     Called by ``run_one_job`` right before it would otherwise write its own
-    ``last_status``. Consuming (discarding) rather than just checking keeps
-    the flag from leaking across a later, unrelated run of the same job ID
-    (recurring jobs reuse their ID every fire)."""
+    ``last_status``. The fire-claim token scopes the flag to one execution so
+    a replacement run with the same recurring job ID cannot consume it."""
+    key = (job_id, claim_token)
     with _running_lock:
-        if job_id in _interrupted_job_ids:
-            _interrupted_job_ids.discard(job_id)
+        if key in _interrupted_job_ids:
+            _interrupted_job_ids.discard(key)
             return True
         return False
 
@@ -3395,26 +3436,27 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
 
 
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
-    """Run ONE due job end-to-end: execute → save output → deliver → mark.
+    """Run ONE due job end-to-end: execute → save → finalize → deliver.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
     that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
     Chronos) run the identical sequence — no duplicated correctness.
 
     It does NOT decide whether the job is due, claim it, or compute the next
-    run — those are the caller's concern (``tick`` advances ``next_run_at``
-    under the file lock before dispatch; an external provider claims via the
-    store CAS). This function only fires the given job once.
+    run — those are the caller's concern. Built-in, manual, and external paths
+    all claim through the store CAS before calling this function.
 
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
+    claim_token = fire_claim_token(job)
+    completion_token = uuid.uuid4().hex
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
         # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
-        # re-fire the job forever on restart. No-op for recurring jobs (they
-        # use advance_next_run) and infinite/no-repeat jobs. This lives here in
+        # re-fire the job forever on restart. No-op for recurring jobs (their
+        # fire claim advances the schedule) and infinite/no-repeat jobs. This lives here in
         # the shared body so BOTH the built-in ticker and the external provider
         # (Chronos fire_due) get at-most-times semantics.
         if not claim_dispatch(job["id"]):
@@ -3476,67 +3518,244 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             if verbose:
                 logger.info("Output saved to: %s", output_file)
 
-            # If the gateway shutdown killed this job's tool subprocess
-            # mid-flight (#60432), the agent may still have produced a
-            # plausible-looking final_response from the truncated output --
-            # force the failure path so the delivered message is an honest
-            # "this run was interrupted" summary instead of that response.
-            # Peek-only: the flag stays set for the authoritative check
-            # right before mark_job_run below.
-            if success and _is_interrupted(job["id"]):
+            interrupted_error = (
+                "Interrupted by gateway shutdown before the run finished "
+                "(tool subprocess was killed mid-flight)."
+            )
+            if _is_interrupted(job["id"], claim_token):
+                success = False
+                error = interrupted_error
+
+            # Treat empty final_response as a soft failure so last_status is
+            # not "ok" — the agent ran but produced nothing useful (#8585).
+            empty_response = success and not final_response.strip()
+            if empty_response:
                 success = False
                 error = (
-                    "Interrupted by gateway shutdown before the run finished "
-                    "(tool subprocess was killed mid-flight)."
+                    "Agent completed but produced empty response "
+                    "(model error, timeout, or misconfiguration)"
                 )
 
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-            # Treat whitespace-only final responses the same as empty
-            # responses: do not deliver a blank message, and let the
-            # empty-response guard below mark the run as a soft failure.
-            should_deliver = bool(deliver_content.strip())
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            # Finalize ownership before any user-visible delivery. If a newer
+            # incarnation replaced this token at the absolute cap, its CAS wins
+            # and the stale runner must remain completely silent.
+            mark_kwargs = {
+                "delivery_error": None,
+                "completion_token": completion_token,
+            }
+            if claim_token is not None:
+                mark_kwargs["fire_claim_token"] = claim_token
+            finalized = mark_job_run(job["id"], success, error, **mark_kwargs)
+            if finalized is False:
+                _consume_interrupted_flag(job["id"], claim_token)
+                logger.info(
+                    "Job '%s': stale completion lost ownership — suppressing delivery",
+                    job["id"],
+                )
+                return True
+
+            # A drain can race the completion CAS. If this exact incarnation was
+            # interrupted, correct its finalized status by completion-token CAS
+            # without touching a replacement run, then deliver only the honest
+            # interruption summary.
+            if _consume_interrupted_flag(job["id"], claim_token):
+                success = False
+                error = interrupted_error
+                update_job_run_post_completion(
+                    job["id"],
+                    completion_token,
+                    None,
+                    interrupted_error,
+                )
+
+            # Deliver only after this run has atomically finalized ownership.
+            deliver_content = (
+                final_response
+                if success
+                else _summarize_cron_failure_for_delivery(job, error)
+            )
+            should_deliver = not empty_response and bool(deliver_content.strip())
+            if (
+                should_deliver
+                and success
+                and _is_cron_silence_response(deliver_content)
+            ):
+                logger.info(
+                    "Job '%s': agent returned %s — skipping delivery",
+                    job["id"],
+                    SILENT_MARKER,
+                )
                 should_deliver = False
 
             if should_deliver:
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(
+                        job,
+                        deliver_content,
+                        adapters=adapters,
+                        loop=loop,
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
+            try:
+                update_job_run_post_completion(
+                    job["id"],
+                    completion_token,
+                    delivery_error,
+                )
+            except Exception as update_error:
+                logger.warning(
+                    "Job '%s': failed to record delivery outcome: %s",
+                    job["id"],
+                    update_error,
+                )
         finally:
             # Tear down the deferred agent(s) now that save + delivery have run
             # (or raised). Must happen on every path so cron agents never leak
             # their subprocesses/clients (#10200).
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
-
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
-            success = False
-            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
-
-        if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], False, str(e))
+        if not _consume_interrupted_flag(job["id"], claim_token):
+            mark_kwargs = {"completion_token": completion_token}
+            if claim_token is not None:
+                mark_kwargs["fire_claim_token"] = claim_token
+            mark_job_run(job["id"], False, str(e), **mark_kwargs)
         return False
+
+
+def _claim_job_for_tick(job: dict) -> Optional[dict]:
+    """Acquire the shared fire claim and return its persisted job snapshot."""
+    job_id = job["id"]
+    claimed_job = claim_job_for_fire_snapshot(job_id)
+    if claimed_job is None:
+        return None
+    if fire_claim_token(claimed_job) is None:
+        logger.error(
+            "Job '%s' was claimed without an ownership token",
+            job.get("name", job_id),
+        )
+        return None
+    return claimed_job
+
+
+def _release_unstarted_tick_claim(
+    original_job: dict,
+    claimed_job: Optional[dict],
+    claim_token: str,
+) -> bool:
+    """Release a pre-submit claim without consuming its scheduled fire."""
+    if claimed_job is None:
+        return False
+    return _release_unstarted_claimed_job(
+        claimed_job,
+        restore_next_run_at=original_job.get("next_run_at"),
+    )
+
+
+def _release_unstarted_claimed_job(
+    claimed_job: dict,
+    *,
+    restore_next_run_at: Optional[str] = None,
+) -> bool:
+    """Token-CAS release for a claimed run that never started."""
+    claim_token = fire_claim_token(claimed_job)
+    if claim_token is None:
+        return False
+    if restore_next_run_at is None:
+        restore_next_run_at = claimed_job.get("_fire_claim_previous_next_run_at")
+    run_claim = claimed_job.get("run_claim")
+    run_claim_owner = (
+        run_claim.get("by") if isinstance(run_claim, dict) else None
+    )
+    return release_fire_claim(
+        claimed_job["id"],
+        claim_token,
+        restore_next_run_at=(
+            restore_next_run_at if isinstance(restore_next_run_at, str) else None
+        ),
+        expected_next_run_at=claimed_job.get("next_run_at"),
+        expected_run_claim_owner=(
+            run_claim_owner if isinstance(run_claim_owner, str) else None
+        ),
+    )
+
+
+def _release_due_run_claim(job: dict) -> bool:
+    """Release a one-shot due-selection claim when drain skips dispatch."""
+    run_claim = job.get("run_claim")
+    owner = run_claim.get("by") if isinstance(run_claim, dict) else None
+    if not isinstance(owner, str):
+        return False
+    return release_run_claim(job["id"], owner)
+
+
+def _register_running_claim(
+    job_id: str,
+    claim_token: str,
+    claimed_job: Optional[dict] = None,
+) -> str:
+    """Publish one run incarnation, superseding only a different stale token."""
+    with _running_lock:
+        if _shutdown_started:
+            return "shutdown"
+        previous_token = _running_job_claim_tokens.get(job_id)
+        if previous_token == claim_token:
+            return "duplicate"
+        if previous_token is not None:
+            _interrupted_job_ids.add((job_id, previous_token))
+        _running_job_ids.add(job_id)
+        _running_job_claim_tokens[job_id] = claim_token
+        if claimed_job is not None:
+            _running_job_claim_snapshots[(job_id, claim_token)] = copy.deepcopy(
+                claimed_job
+            )
+        return "published"
+
+
+def _begin_running_claim(job_id: str, claim_token: str) -> bool:
+    """Atomically cross the shutdown boundary before entering the run body."""
+    with _running_lock:
+        if _shutdown_started or _running_job_claim_tokens.get(job_id) != claim_token:
+            return False
+        _running_job_started_tokens.add((job_id, claim_token))
+        return True
+
+
+def _unregister_running_claim(job_id: str, claim_token: str) -> None:
+    """Remove local visibility only when this exact incarnation still owns it."""
+    with _running_lock:
+        _running_job_started_tokens.discard((job_id, claim_token))
+        _running_job_claim_snapshots.pop((job_id, claim_token), None)
+        _interrupted_job_ids.discard((job_id, claim_token))
+        if _running_job_claim_tokens.get(job_id) == claim_token:
+            _running_job_claim_tokens.pop(job_id, None)
+            _running_job_ids.discard(job_id)
+
+
+def run_claimed_job(job: dict, adapters=None, loop=None, verbose: bool = True) -> bool:
+    """Run an already claimed manual/external fire with shutdown visibility."""
+    claim_token = fire_claim_token(job)
+    if claim_token is None:
+        logger.error("Refusing to run claimed job %r without an ownership token", job.get("id"))
+        return False
+    registration = _register_running_claim(job["id"], claim_token, job)
+    if registration == "shutdown":
+        _release_unstarted_claimed_job(job)
+        return False
+    if registration == "duplicate":
+        return False
+    try:
+        if not _begin_running_claim(job["id"], claim_token):
+            _release_unstarted_claimed_job(job)
+            return False
+        return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+    finally:
+        _unregister_running_claim(job["id"], claim_token)
 
 
 def _notify_provider_jobs_changed() -> None:
@@ -3590,6 +3809,13 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        with _running_lock:
+            if _shutdown_started:
+                logger.info("Tick skipped — gateway shutdown has begun")
+                return 0
+        if _interpreter_shutting_down():
+            logger.warning("Tick skipped — interpreter is shutting down")
+            return 0
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -3598,14 +3824,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
-
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, advance_next_run keeps
-        # bumping next_run_at forward so the grace window never expires.
-        # mark_job_run() overwrites next_run_at on completion.
-        for job in due_jobs:
-            advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -3654,46 +3872,92 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         _all_futures: list = []
 
         def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor):
-            """Submit a job fire-and-forget with the in-flight dedup guard.
+            """Claim and submit one job with local and store-level dedup guards.
 
             Returns the future, or None if the job was skipped because a prior
-            tick's run of the same job is still in flight.  The running-set
-            membership is released in the worker's finally block.
+            local or cross-process fire still owns it. The running-set membership
+            is released in the worker's finally block.
             """
             job_id = job["id"]
-            # A tick can race gateway teardown: once the interpreter is
-            # finalizing, ``pool.submit`` raises "cannot schedule new futures
-            # after interpreter shutdown" and crashes the tick. Skip cleanly —
-            # the job stays due and will fire on the next healthy tick
-            # (#58720, #55924).
-            if _interpreter_shutting_down():
-                logger.warning(
-                    "Job '%s' not dispatched — interpreter is shutting down",
+            with _running_lock:
+                drain_started = _shutdown_started
+            if drain_started:
+                _release_due_run_claim(job)
+                logger.info(
+                    "Job '%s' not claimed — gateway shutdown has begun",
                     job.get("name", job_id),
                 )
                 return None
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+            claim_token = None
+            claimed_job = None
+            try:
+                claimed_job = _claim_job_for_tick(job)
+                if claimed_job is None:
+                    logger.info(
+                        "Job '%s' already claimed by another fire — skipping",
+                        job.get("name", job_id),
+                    )
                     return None
-                _running_job_ids.add(job_id)
+                claim_token = fire_claim_token(claimed_job)
+                if claim_token is None:
+                    raise RuntimeError(f"Job {job_id!r} persisted a fire claim without a token")
+                if _interpreter_shutting_down():
+                    _release_unstarted_tick_claim(job, claimed_job, claim_token)
+                    logger.warning(
+                        "Job '%s' not dispatched — interpreter began shutting down",
+                        job.get("name", job_id),
+                    )
+                    return None
+                registration = _register_running_claim(
+                    job_id,
+                    claim_token,
+                    claimed_job,
+                )
+                if registration != "published":
+                    _release_unstarted_tick_claim(job, claimed_job, claim_token)
+                    reason = (
+                        "gateway shutdown began"
+                        if registration == "shutdown"
+                        else "the same local run was already published"
+                    )
+                    logger.info(
+                        "Job '%s' not dispatched — %s during claim acquisition",
+                        job.get("name", job_id),
+                        reason,
+                    )
+                    return None
+            except BaseException:
+                if claim_token is not None:
+                    _unregister_running_claim(job_id, claim_token)
+                if claim_token is not None:
+                    _release_unstarted_tick_claim(job, claimed_job, claim_token)
+                raise
+
             _ctx = contextvars.copy_context()
 
-            def _run_and_release(j=job, ctx=_ctx):
+            def _run_and_release(
+                j=claimed_job,
+                original=job,
+                ctx=_ctx,
+                token=claim_token,
+            ):
                 try:
+                    if not _begin_running_claim(j["id"], token):
+                        _release_unstarted_tick_claim(original, j, token)
+                        return False
                     return ctx.run(_process_job, j)
                 finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
+                    _unregister_running_claim(j["id"], token)
 
             try:
                 return pool.submit(_run_and_release)
-            except RuntimeError as submit_err:
-                # Interpreter began finalizing between the guard above and the
-                # submit — release the in-flight claim we just took and skip.
-                if _interpreter_shutting_down(submit_err):
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
+            except BaseException as submit_err:
+                _unregister_running_claim(job_id, claim_token)
+                if claim_token is not None:
+                    _release_unstarted_tick_claim(job, claimed_job, claim_token)
+                if isinstance(submit_err, RuntimeError) and _interpreter_shutting_down(
+                    submit_err
+                ):
                     logger.warning(
                         "Job '%s' not dispatched — interpreter is shutting down",
                         job.get("name", job_id),

@@ -14,6 +14,7 @@ from tools.cronjob_tools import cronjob, _execute_job_now
 
 _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
+_CLAIMED_JOB = {**_JOB, "fire_claim": {"token": "test-claim"}}
 
 
 class TestCronjobRunExecutesImmediately:
@@ -21,7 +22,7 @@ class TestCronjobRunExecutesImmediately:
         """action='run' must claim the job then fire it through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True) as m_claim, \
+             patch("tools.cronjob_tools.claim_job_for_fire_snapshot", return_value=dict(_CLAIMED_JOB)) as m_claim, \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=ran):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
@@ -35,7 +36,7 @@ class TestCronjobRunExecutesImmediately:
     def test_run_skips_when_claim_lost(self):
         """If the scheduler already holds the fire claim, do NOT double-run."""
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
+             patch("tools.cronjob_tools.claim_job_for_fire_snapshot", return_value=None), \
              patch("cron.scheduler.run_one_job") as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
@@ -50,7 +51,7 @@ class TestCronjobRunExecutesImmediately:
         """A failed run is reported via the re-read job's last_status/last_error."""
         failed = {"id": "job-run-1", "last_status": "error", "last_error": "provider 500"}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+             patch("tools.cronjob_tools.claim_job_for_fire_snapshot", return_value=dict(_CLAIMED_JOB)), \
              patch("cron.scheduler.run_one_job", return_value=True), \
              patch("tools.cronjob_tools.get_job", return_value=failed):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
@@ -61,7 +62,7 @@ class TestCronjobRunExecutesImmediately:
 
     def test_execute_job_now_bails_without_claim(self):
         """_execute_job_now never calls run_one_job when the claim is lost."""
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
+        with patch("tools.cronjob_tools.claim_job_for_fire_snapshot", return_value=None), \
              patch("cron.scheduler.run_one_job") as m_run:
             res = _execute_job_now(dict(_JOB))
         assert res["claimed"] is False
@@ -70,7 +71,7 @@ class TestCronjobRunExecutesImmediately:
 
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+        with patch("tools.cronjob_tools.claim_job_for_fire_snapshot", return_value=dict(_CLAIMED_JOB)), \
              patch("cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
              patch("tools.cronjob_tools.mark_job_run") as m_mark, \
              patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):

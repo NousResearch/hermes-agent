@@ -213,7 +213,11 @@ class TestTickWorkdirPartition:
         parallel_job = {"id": "c", "name": "C", "workdir": None}
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [workdir_a, workdir_b, parallel_job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            sched,
+            "_claim_job_for_tick",
+            lambda job: {**job, "fire_claim": {"token": f"test-{job['id']}"}},
+        )
 
         # Record call order / thread context.
         import threading

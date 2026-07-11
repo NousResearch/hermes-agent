@@ -12,6 +12,15 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _stub_tick_fire_claim(monkeypatch):
+    """Pool tests use synthetic due jobs outside the jobs store."""
+    monkeypatch.setattr(
+        "cron.scheduler._claim_job_for_tick",
+        lambda job: {**job, "fire_claim": {"token": f"test-{job['id']}"}},
+    )
+
+
 class TestPersistentPool:
     """_get_parallel_pool returns a persistent ThreadPoolExecutor."""
 
@@ -80,10 +89,10 @@ class TestRunningJobGuard:
 
         # Simulate the job already running.
         sched._running_job_ids.add("guard-job")
+        sched._running_job_claim_tokens["guard-job"] = "test-guard-job"
 
         dispatched = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -94,6 +103,7 @@ class TestRunningJobGuard:
         assert dispatched == []
 
         sched._running_job_ids.discard("guard-job")
+        sched._running_job_claim_tokens.pop("guard-job", None)
         sched._shutdown_parallel_pool()
 
 
@@ -116,7 +126,6 @@ class TestSyncMode:
         ]
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -152,7 +161,6 @@ class TestSyncMode:
             return True, "out", "resp", None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -206,7 +214,6 @@ class TestSequentialPool:
             return True, "out", "resp", None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -245,10 +252,10 @@ class TestSequentialPool:
 
         # Simulate the job already running.
         sched._running_job_ids.add("guard-seq")
+        sched._running_job_claim_tokens["guard-seq"] = "test-guard-seq"
 
         dispatched = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
@@ -259,6 +266,7 @@ class TestSequentialPool:
         assert dispatched == []
 
         sched._running_job_ids.discard("guard-seq")
+        sched._running_job_claim_tokens.pop("guard-seq", None)
         sched._shutdown_parallel_pool()
 
     def test_get_sequential_pool_is_persistent(self):

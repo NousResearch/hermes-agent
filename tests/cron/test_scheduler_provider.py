@@ -338,12 +338,50 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire_snapshot",
+        lambda jid: {"id": jid, "name": "t", "fire_claim": {"token": "test"}},
+    )
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("j1") is True
     assert ran == ["j1"]
+
+
+def test_fire_due_registers_claimed_run_for_shutdown(monkeypatch):
+    """External-provider runs must be visible to shutdown with their claim token."""
+    import cron.jobs as jobs
+    import cron.scheduler as sched
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    claimed = {"id": "j1", "name": "t", "fire_claim": {"token": "external-token"}}
+    with sched._running_lock:
+        sched._running_job_ids.clear()
+        sched._running_job_claim_tokens.clear()
+        sched._running_job_claim_snapshots.clear()
+        sched._running_job_started_tokens.clear()
+        sched._interrupted_job_ids.clear()
+        sched._shutdown_started = False
+        sched._running_job_ids.add("j1")
+        sched._running_job_claim_tokens["j1"] = "superseded-token"
+
+    def run_visible(job, **_kwargs):
+        assert sched.get_running_job_ids() == frozenset({"j1"})
+        assert sched._running_job_claim_tokens["j1"] == "external-token"
+        assert sched._is_interrupted("j1", "superseded-token") is True
+        with patch("cron.scheduler.mark_job_run", return_value=True):
+            assert sched.mark_running_jobs_interrupted("shutdown") == ["j1"]
+        return True
+
+    monkeypatch.setattr(jobs, "claim_job_for_fire_snapshot", lambda jid: dict(claimed))
+    monkeypatch.setattr(sched, "run_one_job", run_visible)
+
+    assert InProcessCronScheduler().fire_due("j1") is True
+    assert sched.get_running_job_ids() == frozenset()
+    assert sched._consume_interrupted_flag("j1", "external-token") is False
+    assert sched._consume_interrupted_flag("j1", "superseded-token") is True
+    sched._shutdown_started = False
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
@@ -354,7 +392,7 @@ def test_fire_due_lost_claim_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: False, raising=False)
+    monkeypatch.setattr(jobs, "claim_job_for_fire_snapshot", lambda jid: None)
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("j1") is False
@@ -369,8 +407,7 @@ def test_fire_due_missing_job_does_not_run(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
-    monkeypatch.setattr(jobs, "get_job", lambda jid: None)
+    monkeypatch.setattr(jobs, "claim_job_for_fire_snapshot", lambda jid: None)
     monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
 
     assert InProcessCronScheduler().fire_due("gone") is False

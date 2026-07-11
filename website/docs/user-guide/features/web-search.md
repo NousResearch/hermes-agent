@@ -251,6 +251,45 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 ---
 
+#### Advanced: `web.searxng` config
+
+For users who prefer config over env vars, or need to configure method, params, or headers, set `web.searxng` in `~/.hermes/config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  backend: "searxng"
+  searxng:
+    url: "https://search.example.com"       # overrides SEARXNG_URL env var
+    method: "get"                            # "get" (default) or "post"
+    params:                                  # additional query params sent with every search
+      categories: "general"
+      language: "en-US"
+      safesearch: 0
+    headers:                                 # additional HTTP headers (merged with Accept: application/json)
+      Accept-Language: "en-US,en;q=0.9"
+```
+
+The `web.searxng` section supports these keys:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `url` | string | `SEARXNG_URL` env var | Overrides the `SEARXNG_URL` environment variable. If set, takes priority over the env var. |
+| `method` | string | `"get"` | HTTP method for the search endpoint. Set to `"post"` when your SearXNG instance has `server.method = "post"` in `settings.yml`. |
+| `params` | object | `{}` | Additional query parameters sent with every search request. Useful values: `categories` (e.g. `"general,news"`), `language` (e.g. `"en-US"`), `safesearch` (0, 1, or 2). Cannot override `q`, `format`, or `pageno`. |
+| `headers` | object | `{}` | Additional HTTP headers merged into every request. The `Accept: application/json` header is always set by default. |
+
+**Priority order for URL resolution:**
+1. `web.searxng.url` in config.yaml (highest priority)
+2. `SEARXNG_URL` in `~/.hermes/.env`
+3. `SEARXNG_URL` in process environment (lowest priority)
+
+:::tip Config-only setup
+If you use `web.searxng.url`, you do **not** need `SEARXNG_URL` in `.env` or process env — the config value alone is sufficient for Hermes to detect and use SearXNG.
+:::
+
+---
+
 ### Tavily
 
 AI-optimised search and extract with a generous free tier.
@@ -377,7 +416,7 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `PARALLEL_API_KEY` | parallel |
 | `TAVILY_API_KEY` | tavily |
 | `EXA_API_KEY` | exa |
-| `SEARXNG_URL` | searxng |
+| `SEARXNG_URL` or `web.searxng.url` in config | searxng |
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

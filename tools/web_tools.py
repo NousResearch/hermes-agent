@@ -225,7 +225,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
-        ("searxng", _has_env("SEARXNG_URL")),
+        ("searxng", _is_backend_available("searxng")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
     )
@@ -315,7 +315,12 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
     if backend == "searxng":
-        return _has_env("SEARXNG_URL")
+        if _has_env("SEARXNG_URL"):
+            return True
+        registered = _registered_web_provider_available(backend)
+        if registered is not None:
+            return registered
+        return False
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":

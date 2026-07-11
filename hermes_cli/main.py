@@ -11416,7 +11416,12 @@ def _render_distribution_plan(plan) -> None:
                 env_path = plan.target_dir / ".env"
                 if env_path.is_file():
                     try:
-                        for raw in env_path.read_text().splitlines():
+                        # .env is written as UTF-8 everywhere in the codebase,
+                        # but Path.read_text() defaults to the system locale
+                        # (cp1251/GBK on Windows), which raises UnicodeDecodeError
+                        # on any non-ASCII byte. Read as utf-8-sig so a
+                        # Notepad-added BOM doesn't corrupt the first key either.
+                        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
                             line = raw.strip()
                             if not line or line.startswith("#"):
                                 continue
@@ -11424,7 +11429,10 @@ def _render_distribution_plan(plan) -> None:
                             if key == er.name:
                                 already = True
                                 break
-                    except OSError:
+                    except (OSError, UnicodeDecodeError):
+                        # UnicodeDecodeError is a ValueError, not an OSError, so
+                        # the old guard let a mis-encoded .env abort the whole
+                        # install preview. Skip the pre-check instead.
                         pass
             status = "✓ set" if already else ("needs setting" if er.required else "—")
             line = f"    • {er.name} ({tag}, {status})"

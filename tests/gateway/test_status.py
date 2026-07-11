@@ -293,6 +293,81 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    # ── Bare hermes entrypoint tests (systemd-managed gateways) ──────────────
+
+    def test_record_matches_bare_hermes_with_matching_environ(self, monkeypatch):
+        """Bare ``hermes`` with matching ``HERMES_HOME`` => accepted."""
+        profile_home = Path("/home/hermes/test-profile")
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes"
+        )
+        # Environ matches
+        monkeypatch.setattr(
+            status, "_read_process_environ",
+            lambda pid: {"HERMES_HOME": str(profile_home)},
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=profile_home
+        ) is True
+
+    def test_record_matches_bare_hermes_with_mismatched_environ(self, monkeypatch):
+        """Bare ``hermes`` with mismatching ``HERMES_HOME`` => rejected."""
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes"
+        )
+        monkeypatch.setattr(
+            status, "_read_process_environ",
+            lambda pid: {"HERMES_HOME": "/some/other/profile"},
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=Path("/home/hermes/test-profile")
+        ) is False
+
+    def test_record_matches_bare_hermes_with_unreadable_environ(self, monkeypatch):
+        """Bare ``hermes`` when /proc/PID/environ is unreadable => rejected."""
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes"
+        )
+        monkeypatch.setattr(
+            status, "_read_process_environ", lambda pid: None
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=Path("/home/hermes/test-profile")
+        ) is False
+
+    def test_record_matches_bare_hermes_without_expected_home(self, monkeypatch):
+        """Bare ``hermes`` without ``expected_home`` => rejected (no environ
+        validation possible)."""
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes"
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999
+        ) is False
+
+    def test_record_bare_hermes_with_gateway_subcommand_goes_normal_path(self, monkeypatch):
+        """``hermes gateway run`` should still go through the normal path, not
+        the bare-entrypoint fallback.  The fallback must only trigger for
+        truly bare entry-point binaries."""
+        profile_home = Path("/home/hermes/test-profile")
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "hermes -p test_profile gateway run",
+        )
+        # This goes through the normal looks_like_gateway_runtime_command_line
+        # path, so _command_line_belongs_to_profile handles it.
+        monkeypatch.setattr(
+            status, "_command_line_belongs_to_profile", lambda cmd, home: True
+        )
+        record = {"pid": 9999, "kind": "hermes-gateway"}
+        assert status._record_matches_live_gateway_pid(
+            record, 9999, expected_home=profile_home
+        ) is True
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):

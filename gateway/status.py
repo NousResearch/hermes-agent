@@ -295,14 +295,6 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if i + 1 >= len(filtered):
             return "run"  # bare `hermes gateway` defaults to `run`
         return filtered[i + 1]
-    # When the remaining token is just the bare `hermes`/`hermes.exe` entry-point
-    # binary (no `gateway` subcommand visible — common for systemd-managed
-    # gateways where `--profile` is set via the service file), treat it as a
-    # gateway run process.  Callers validate the profile via
-    # ``_command_line_belongs_to_profile`` (which checks HERMES_HOME in
-    # /proc/PID/environ), preventing false positives.
-    if len(filtered) == 1 and filtered[0] in ("hermes", "hermes.exe"):
-        return "run"
     return None
 
 
@@ -419,6 +411,13 @@ def _record_matches_live_gateway_pid(
     live_cmdline = _read_process_cmdline(pid)
     if live_cmdline:
         if not looks_like_gateway_runtime_command_line(live_cmdline):
+            # Bare hermes entrypoint fallback for systemd-managed gateways.
+            # These appear as just ``hermes``/``hermes.exe`` in
+            # /proc/PID/cmdline with no ``gateway`` subcommand.  Only accept
+            # with HERMES_HOME validation to prevent false positive matches
+            # on unrelated hermes CLI processes.
+            if expected_home is not None and _is_bare_hermes_command(live_cmdline):
+                return _pid_environ_matches_profile(pid, expected_home)
             return False
         if expected_home is not None and not _command_line_belongs_to_profile(
             live_cmdline, expected_home
@@ -431,6 +430,44 @@ def _record_matches_live_gateway_pid(
                 return False
         return True
     return _record_looks_like_gateway(record)
+
+
+def _is_bare_hermes_command(command: str) -> bool:
+    """Return True when the command is a bare ``hermes`` entry-point binary.
+
+    Systemd-managed gateways show only ``hermes`` (or ``hermes.exe``) in
+    /proc/PID/cmdline — no path, no ``gateway`` subcommand, no ``--profile``
+    flag.  This fast check detects that pattern so the caller can fall back
+    to /proc/PID/environ for profile validation.
+    """
+    if not command:
+        return False
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return False
+    # Normalize each token (same as _gateway_command_subcommand).
+    normalized = [t.strip("\"'").replace("\\", "/").lower() for t in tokens]
+    # Must not contain the ``gateway`` subcommand — real gateway processes
+    # would have been caught by looks_like_gateway_runtime_command_line.
+    if "gateway" in normalized:
+        return False
+    # Extract basenames and drop profile selectors.
+    basenames: list[str] = []
+    skip_next = False
+    for t in normalized:
+        if skip_next:
+            skip_next = False
+            continue
+        if t in ("--profile", "-p"):
+            skip_next = True
+            continue
+        if t.startswith(("--profile=", "-p=")):
+            continue
+        basenames.append(t.rsplit("/", 1)[-1])
+    return len(basenames) == 1 and basenames[0] in ("hermes", "hermes.exe")
 
 
 def _pid_environ_matches_profile(pid: int, profile_home: Path) -> bool:

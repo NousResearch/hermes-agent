@@ -193,8 +193,10 @@ _HISTORICAL_SUMMARY_PREFIXES = (
 _MIN_SUMMARY_TOKENS = 2000
 # Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
-# Absolute ceiling for summary tokens (even on very large context windows)
-_SUMMARY_TOKENS_CEILING = 12_000
+# Absolute ceiling for summary tokens (even on very large context windows).
+# Summaries must stay within a 1K-10K token envelope — anything larger is
+# itself a context-pressure source and slows every compaction.
+_SUMMARY_TOKENS_CEILING = 10_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -226,6 +228,16 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+
+# Models with context windows below this get their compression threshold
+# floored at ``_SMALL_CTX_THRESHOLD_PERCENT`` (raise-only — an explicitly
+# higher user/model threshold always wins).  At the default 50% trigger a
+# 128K-262K model compacts with only ~64-131K consumed; the incompressible
+# floor (system prompt + tool schemas + protected tail + rolling summary)
+# eats most of the reclaimed headroom, so compaction re-fires every 1-2
+# turns and the session spends most of its wall-clock summarizing.
+_SMALL_CTX_WINDOW_LIMIT = 512_000
+_SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -298,6 +310,32 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _serialized_length_for_budget(value: Any) -> int:
+    """Return a stable char-length for non-content replay/metadata fields."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+# Provider replay/metadata fields that ride the wire on every request but are
+# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
+# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
+# ``encrypted_content`` that can dominate the serialized session (a measured
+# 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+_REPLAY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+
+
 def _estimate_msg_budget_tokens(msg: dict) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
@@ -308,12 +346,23 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
+
+    Also counts provider replay fields (``codex_reasoning_items`` etc. —
+    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
+    estimator sees the full message shape, so the tail walk must use the
+    same size class; otherwise an assistant message with tiny visible
+    content but large hidden replay blobs is protected as if it were small,
+    the post-compression session stays near the context limit, and
+    compaction re-fires continuously (#55572).  Accounting-only: replay
+    fields are never mutated or pruned here.
     """
     content_len = _content_length_for_budget(msg.get("content") or "")
     tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    for key in _REPLAY_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     return tokens
 
 
@@ -687,6 +736,8 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
         self._last_compress_aborted = False
@@ -722,6 +773,8 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
         self._last_compress_aborted = False
         self._context_probed = False
@@ -846,6 +899,18 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        # Re-apply the small-context threshold floor for the NEW window,
+        # starting from the originally-configured percent (not the possibly
+        # floored live value) so a small -> large switch drops back to the
+        # configured threshold and a large -> small switch gains the floor.
+        # Guard with getattr: compressors unpickled/constructed before this
+        # attribute existed fall back to the live value.
+        _configured_pct = getattr(
+            self, "_configured_threshold_percent", self.threshold_percent,
+        )
+        self.threshold_percent = self._effective_threshold_percent(
+            context_length, _configured_pct,
+        )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
         # passes the new value explicitly. (#43547)
@@ -883,6 +948,8 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -907,6 +974,23 @@ class ContextCompressor(ContextEngine):
         except (TypeError, ValueError):
             return None
         return ivalue if ivalue > 0 else None
+
+    @staticmethod
+    def _effective_threshold_percent(
+        context_length: int, threshold_percent: float,
+    ) -> float:
+        """Apply the small-context threshold floor (raise-only).
+
+        Models under ``_SMALL_CTX_WINDOW_LIMIT`` (512K) trigger at no less
+        than ``_SMALL_CTX_THRESHOLD_PERCENT`` (75%) of the window.  An
+        explicitly higher threshold (user config or per-model autoraise,
+        e.g. Codex gpt-5.5's 85%) always wins; only lower values are raised.
+        Large-context models keep the configured value — at 512K+ the default
+        50% trigger already leaves ample post-compaction headroom.
+        """
+        if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
+            return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
+        return threshold_percent
 
     @staticmethod
     def _compute_threshold_tokens(
@@ -995,6 +1079,18 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
+        # Small-context threshold floor: models under 512K trigger at >=75%
+        # so compaction doesn't fire with half the window still free (the
+        # incompressible floor makes 50%-triggered compaction thrash on
+        # 128K-262K models). Raise-only; must run AFTER context_length is
+        # resolved and BEFORE threshold_tokens is derived. The pre-floor
+        # value is kept so update_model() can re-derive for a new window
+        # (switching small -> large must drop back to the configured value).
+        self._configured_threshold_percent = self.threshold_percent
+        self.threshold_percent = self._effective_threshold_percent(
+            self.context_length, self.threshold_percent,
+        )
+        threshold_percent = self.threshold_percent
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
@@ -1041,6 +1137,12 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Set after a completed compression boundary; consumed by the next
+        # provider-reported prompt count in update_from_response().
+        self._verify_compaction_cleared_threshold: bool = False
+        # Lets the boundary wrapper distinguish a completed rewrite from a
+        # no-op/abort without inferring progress from message-list length.
+        self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -1087,8 +1189,48 @@ class ContextCompressor(ContextEngine):
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                # Any real provider reading below the trigger proves the prompt
+                # fits again. Clear the episode latch even when this response was
+                # not the one immediately following compaction.
+                self._ineffective_compression_count = 0
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
+
+            # Anti-thrashing verdict, judged HERE because this is the only place
+            # that sees the provider's real prompt count for the just-compacted
+            # conversation. Effectiveness is "did the prompt get under the
+            # threshold?", not "did the message list shrink?": compaction can
+            # only shrink messages, while the system prompt and tool schemas are
+            # an incompressible floor (with 50+ tools, 20-30K tokens — see
+            # #14695). When that floor alone meets the threshold, every pass
+            # shrinks messages by a healthy margin yet leaves the prompt over the
+            # line, so the next turn compacts again, forever.
+            #
+            # It must NOT live in should_compress(): that runs twice per turn
+            # with two different measures (a rough preflight estimate and the
+            # real post-response count, #36718), and the rough one can dip below
+            # the threshold and reset the strike every turn, re-opening the loop.
+            # Keying on real usage compares like with like and fires exactly once
+            # per compaction.
+            if self._verify_compaction_cleared_threshold:
+                if self.last_prompt_tokens >= self.threshold_tokens:
+                    self._ineffective_compression_count += 1
+                    if not self.quiet_mode:
+                        logger.warning(
+                            "Compaction did not clear the threshold: %d real "
+                            "tokens still >= %d. The incompressible prompt "
+                            "(system prompt + tool schemas) may already exceed "
+                            "it, in which case shrinking messages cannot help. "
+                            "ineffective_compression_count=%d",
+                            self.last_prompt_tokens, self.threshold_tokens,
+                            self._ineffective_compression_count,
+                        )
+                else:
+                    self._ineffective_compression_count = 0
+        # Consume the pending-verification flag once real usage arrives, whether
+        # or not prompt_tokens was reported, so a usage-less response can't leave
+        # it armed for a later, unrelated reading.
+        self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
@@ -1164,9 +1306,9 @@ class ContextCompressor(ContextEngine):
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
+                    "Compression skipped — last %d compaction attempts did not "
+                    "restore enough context headroom. Consider /new to start a "
+                    "fresh session, or /compress <topic> for focused compression.",
                     self._ineffective_compression_count,
                 )
             return False
@@ -1373,11 +1515,26 @@ class ContextCompressor(ContextEngine):
         (API keys, tokens, passwords) from leaking into the summary that
         gets sent to the auxiliary model and persisted across compactions.
         """
+        # Lazy import (matches title_generator.py) — agent_runtime_helpers
+        # pulls in heavy transitive imports we don't want at module load.
+        from agent.agent_runtime_helpers import strip_think_blocks
+
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = redact_sensitive_text(msg.get("content") or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
+            # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
+            # assistant content before it reaches the summarizer. Reasoning
+            # traces are transient scratch work — feeding them to the aux
+            # model wastes summarizer context and risks scratch-work
+            # conclusions being preserved as facts in the summary. The native
+            # ``reasoning`` message field is already excluded (only
+            # ``content`` is serialized); this closes the inline-tag path
+            # used when native thinking is disabled or the provider inlines
+            # traces into content.
+            if role == "assistant" and content:
+                content = strip_think_blocks(None, content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -1843,7 +2000,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "api_mode": self.api_mode,
                 },
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(summary_budget * 1.3),
+                # NO max_tokens: the output cap must never truncate a summary.
+                # ``summary_budget`` is prompt-level guidance only ("Target ~N
+                # tokens" above). Most OpenAI-compatible wires already omit the
+                # param (see _build_call_kwargs), but the Anthropic Messages
+                # wire and NVIDIA NIM forward it — a hard cap there cut
+                # summaries mid-section (thinking models burn the cap on
+                # reasoning first), producing truncated/thinking-only
+                # summaries and compaction loops. Omitting lets the adapter
+                # fall back to the model's native output ceiling.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
@@ -1883,6 +2048,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                     f"(provider={self.provider or 'auto'} "
                     f"model={self.summary_model or self.model})"
                 )
+            # Strip reasoning blocks the summarizer model may have emitted
+            # (<think>...</think> etc. from thinking models like MiniMax,
+            # DeepSeek, QwQ). Without this the trace is stored in
+            # _previous_summary, injected into the conversation, AND fed back
+            # into every subsequent iterative-update prompt — compounding
+            # token bloat across compactions. Mirrors title_generator.py.
+            from agent.agent_runtime_helpers import strip_think_blocks
+            stripped = strip_think_blocks(None, content).strip()
+            if stripped:
+                content = stripped
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
@@ -2697,6 +2872,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compression_made_progress = False
         # NOTE: do NOT reset _last_summary_auth_failure or
         # _last_summary_network_failure here.  These flags are set by
         # _generate_summary() on a terminal failure and are already cleared on
@@ -2717,10 +2893,21 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
+            # Record the no-op, exactly as the sibling "no compressable window"
+            # branch below does (#40803). Returning without touching the
+            # anti-thrashing counter leaves should_compress() saying True on a
+            # transcript that can never shrink: when the prompt sits above the
+            # threshold because of the incompressible floor (system prompt +
+            # tool schemas), every subsequent turn re-fires a compaction that
+            # returns here unchanged, and the CLI appears frozen.
+            self._ineffective_compression_count += 1
+            self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(
-                    "Cannot compress: only %d messages (need > %d)",
+                    "Cannot compress: only %d messages (need > %d). "
+                    "ineffective_compression_count=%d",
                     n_messages, _min_for_compress,
+                    self._ineffective_compression_count,
                 )
             return messages
 
@@ -2910,6 +3097,33 @@ This compaction should PRIORITISE preserving all information related to the focu
         # is not role=user, so we must pin the summary to "user" and
         # prevent the flip logic below from reverting it (#52160).
         _force_user_leading = last_head_role == "system"
+        # Zero-user-turn guard (#58753). The #52160 guard above only fires
+        # when the system prompt sits *inside* ``messages`` (the gateway
+        # ``/compress`` path). The main auto-compression path passes the
+        # transcript WITHOUT the system prompt (it is prepended at
+        # request-build time), so ``last_head_role`` defaults to "user" and
+        # the summary is emitted as role="assistant". On a session whose only
+        # genuine user turn falls into the compressed middle — e.g. a
+        # ``hermes kanban`` worker seeded with a single short
+        # ``"work kanban task <id>"`` prompt followed by nothing but
+        # assistant/tool turns — that leaves the compressed transcript with
+        # ZERO user-role messages. OpenAI-compatible backends (vLLM/Qwen)
+        # reject such a request with a non-retryable
+        # ``400 No user query found in messages``, crashing the worker with no
+        # possible recovery (every resume replays the same poisoned history).
+        # If no user-role message survives in either the protected head or the
+        # preserved tail, the summary MUST carry role="user" so the request
+        # always has at least one user turn.
+        if not _force_user_leading:
+            _user_survives = any(
+                messages[i].get("role") == "user"
+                for i in range(0, compress_start)
+            ) or any(
+                messages[i].get("role") == "user"
+                for i in range(compress_end, n_messages)
+            )
+            if not _user_survives:
+                _force_user_leading = True
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.
         if last_head_role in {"assistant", "tool"} or _force_user_leading:
@@ -2989,15 +3203,26 @@ This compaction should PRIORITISE preserving all information related to the focu
         compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)
-        saved_estimate = display_tokens - new_estimate
 
-        # Anti-thrashing: track compression effectiveness
-        savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+        # Anti-thrashing: measure effectiveness on a like-for-like basis.
+        #
+        # ``display_tokens`` is usually ``current_tokens`` — the provider's real
+        # prompt count, which includes the system prompt and tool schemas.
+        # ``new_estimate`` covers the messages ONLY. Comparing the two makes a
+        # compaction that freed almost nothing look like it saved ~96%, so the
+        # counter below resets every pass and the anti-thrashing guard is dead
+        # code. Compaction can only shrink messages, so score it against the
+        # messages it was given.
+        pre_estimate = estimate_messages_tokens_rough(messages)
+        saved_estimate = pre_estimate - new_estimate
+        savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
         self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
-            self._ineffective_compression_count += 1
-        else:
-            self._ineffective_compression_count = 0
+
+        # Message-only savings are diagnostic. The anti-thrashing verdict is
+        # owned by the next provider-reported prompt count, which answers the
+        # actual question: did this completed boundary get under the threshold?
+        # Counting a low message-savings estimate here as well would give one
+        # compaction two strikes when that real reading remains over threshold.
 
         if not self.quiet_mode:
             logger.info(
@@ -3014,5 +3239,6 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        self._last_compression_made_progress = True
 
         return compressed

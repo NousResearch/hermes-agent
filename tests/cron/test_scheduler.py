@@ -1,6 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import itertools
 import json
 import logging
 import os
@@ -1623,6 +1624,63 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
+    @pytest.mark.parametrize("timeout_value", ["600", "0"])
+    def test_run_job_heartbeats_oneshot_claim_in_both_wait_modes(
+        self, tmp_path, monkeypatch, timeout_value
+    ):
+        """Timed and unlimited one-shot monitors both refresh their owned claim."""
+        job = {
+            "id": "heartbeat-job",
+            "name": "heartbeat",
+            "prompt": "hello",
+            "schedule": {"kind": "once", "run_at": "2026-07-10T12:00:00Z"},
+            "run_claim": {"at": "2026-07-10T12:00:00Z", "by": "owner-token"},
+        }
+        fake_db = MagicMock()
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                return {"final_response": "ok"}
+
+        class FakeFuture:
+            def result(self):
+                return {"final_response": "ok"}
+
+        fake_future = FakeFuture()
+        fake_pool = MagicMock()
+        fake_pool.submit.return_value = fake_future
+        wait_results = [(set(), set()), ({fake_future}, set())]
+        monotonic_ticks = itertools.count(step=61.0)
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", timeout_value)
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent), \
+             patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=fake_pool), \
+             patch("cron.scheduler.concurrent.futures.wait", side_effect=wait_results), \
+             patch("cron.scheduler.time.monotonic", side_effect=monotonic_ticks.__next__), \
+             patch("cron.scheduler.heartbeat_run_claim", return_value=True) as heartbeat:
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        heartbeat.assert_called_once_with(
+            "heartbeat-job", expected_owner="owner-token"
+        )
+
     def test_run_job_resets_secret_source_cache_before_reload(self, tmp_path, monkeypatch):
         """Each run must clear the secret-source cache before re-reading the
         env, so a long-running gateway re-resolves Bitwarden/BSM-backed secrets
@@ -2589,7 +2647,7 @@ class TestOneShotDispatchClaim:
         order = []
         with patch("cron.scheduler.get_due_jobs", return_value=[self._oneshot()]), \
              patch("cron.scheduler.claim_dispatch", side_effect=lambda _id: order.append("claim") or True), \
-             patch("cron.scheduler.run_job", side_effect=lambda _j: order.append("run") or (True, "# out", "ok", None)), \
+             patch("cron.scheduler.run_job", side_effect=lambda _j, **_kw: order.append("run") or (True, "# out", "ok", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result"), \
              patch("cron.scheduler.mark_job_run"):
@@ -2885,6 +2943,31 @@ class TestBuildJobPromptMissingSkill:
         assert "go" in result
 
 
+class TestBuildJobPromptAbsoluteSkillPath:
+    """Cron jobs may store absolute skill paths; normalize before skill_view."""
+
+    def test_absolute_skill_path_normalized_before_skill_view(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "alpha-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
+        absolute_path = str(skill_dir)
+        seen_names: list[str] = []
+
+        def _skill_view(name: str) -> str:
+            seen_names.append(name)
+            if name == "alpha-skill":
+                return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
+            return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view):
+            result = _build_job_prompt({"skills": [absolute_path], "prompt": "go"})
+
+        assert seen_names == ["alpha-skill"]
+        assert "Do alpha." in result
+
+
 class TestBuildJobPromptBumpUse:
     """Verify that cron jobs bump skill usage counters so the curator sees them as active."""
 
@@ -3010,7 +3093,7 @@ class TestParallelTick:
         barrier = threading.Barrier(2, timeout=5)
         call_order = []
 
-        def mock_run_job(job):
+        def mock_run_job(job, *, defer_agent_teardown=None):
             """Each job hits a barrier — both must be active simultaneously."""
             call_order.append(("start", job["id"]))
             barrier.wait()  # blocks until both threads reach here
@@ -3044,7 +3127,7 @@ class TestParallelTick:
         from gateway.session_context import get_session_env
         seen = {}
 
-        def mock_run_job(job):
+        def mock_run_job(job, *, defer_agent_teardown=None):
             origin = job.get("origin", {})
             # run_job sets ContextVars — verify each job sees its own
             from gateway.session_context import set_session_vars, clear_session_vars
@@ -3084,7 +3167,7 @@ class TestParallelTick:
         monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")
         call_times = []
 
-        def mock_run_job(job):
+        def mock_run_job(job, *, defer_agent_teardown=None):
             import time
             call_times.append(("start", job["id"], time.monotonic()))
             time.sleep(0.05)

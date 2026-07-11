@@ -9982,6 +9982,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "footer":
             return await self._handle_footer_command(event)
 
+        if canonical == "auth-relay":
+            return await self._handle_auth_relay_command(event)
+
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 

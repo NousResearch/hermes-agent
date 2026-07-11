@@ -1088,9 +1088,129 @@ class TestSignalStreamingCapabilities:
 
         assert adapter.SUPPORTS_MESSAGE_EDITING is False
 
+    def test_signal_declares_long_message_chunking(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert getattr(adapter, "splits_long_messages", False) is True
+
 
 class TestSignalSendReturnsMessageId:
     """Signal send() should not pretend sent messages are editable."""
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_messages_without_truncation_footer(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1712345678000}
+
+        adapter._rpc = mock_rpc
+
+        long_content = "x" * (adapter.MAX_MESSAGE_LENGTH + 500)
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is True
+        assert len(captured) >= 2
+        assert all(call["method"] == "send" for call in captured)
+        assert all(
+            len(call["params"]["message"]) <= adapter.MAX_MESSAGE_LENGTH
+            for call in captured
+        )
+        assert all(
+            "truncated, full output saved to" not in call["params"]["message"]
+            for call in captured
+        )
+        assert "".join(
+            call["params"]["message"].rsplit(" (", 1)[0]
+            for call in captured
+        ) == long_content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("open_marker", "close_marker", "style_type"),
+        [
+            ("**", "**", "BOLD"),
+            ("*", "*", "ITALIC"),
+            ("~~", "~~", "STRIKETHROUGH"),
+            ("`", "`", "MONOSPACE"),
+        ],
+    )
+    async def test_send_preserves_formatting_that_crosses_chunk_boundary(
+        self, monkeypatch, open_marker, close_marker, style_type
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1712345678000 + len(captured)}
+
+        adapter._rpc = mock_rpc
+
+        long_content = (
+            "a" * (adapter.MAX_MESSAGE_LENGTH - 100)
+            + open_marker
+            + "b" * 240
+            + close_marker
+        )
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is True
+        assert len(captured) == 2
+        assert all(open_marker not in call["params"]["message"] for call in captured)
+        assert all(close_marker not in call["params"]["message"] for call in captured)
+        assert captured[0]["params"]["message"].endswith("b" * 90 + " (1/2)")
+        assert captured[1]["params"]["message"].startswith("b" * 150)
+        assert captured[0]["params"]["textStyle"] == (
+            f"{adapter.MAX_MESSAGE_LENGTH - 100}:90:{style_type}"
+        )
+        assert captured[1]["params"]["textStyle"] == f"0:150:{style_type}"
+
+    @pytest.mark.asyncio
+    async def test_send_returns_failure_if_later_chunk_rpc_fails(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+        responses = iter([
+            {"timestamp": 1712345678000},
+            None,
+        ])
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return next(responses)
+
+        adapter._rpc = mock_rpc
+
+        long_content = "x" * (adapter.MAX_MESSAGE_LENGTH + 500)
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is False
+        assert result.error == "RPC send failed"
+        assert len(captured) == 2
+        assert "".join(
+            call["params"]["message"].rsplit(" (", 1)[0]
+            for call in captured
+        ) == long_content
+
+    @pytest.mark.asyncio
+    async def test_send_treats_whitespace_only_content_as_noop_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._rpc = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="   \n\t  ")
+
+        assert result.success is True
+        assert result.message_id is None
+        adapter._rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):

@@ -41,6 +41,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_url,
+    utf16_len,
 )
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.signal_format import markdown_to_signal
@@ -256,6 +257,8 @@ class SignalAdapter(BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    splits_long_messages = True  # send() chunks after markdown → Signal formatting conversion
     # Signal has no real edit API for already-sent messages. Mark it explicitly
     # so streaming suppresses the visible cursor instead of leaving a stale tofu
     # square behind in chat clients when edit attempts fail.
@@ -1052,6 +1055,89 @@ class SignalAdapter(BasePlatformAdapter):
     # Sending
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _utf16_offsets(text: str) -> list[int]:
+        """Return cumulative UTF-16 offsets for every Python character boundary."""
+        offsets = [0]
+        total = 0
+        for char in text:
+            total += utf16_len(char)
+            offsets.append(total)
+        return offsets
+
+    @staticmethod
+    def _styles_for_chunk(
+        text_styles: list[str],
+        chunk_start: int,
+        chunk_end: int,
+    ) -> list[str]:
+        """Translate full-message Signal styles into a chunk-local range list."""
+        adjusted: list[str] = []
+        for style_string in text_styles:
+            try:
+                start_s, length_s, style_type = style_string.split(":", 2)
+                style_start = int(start_s)
+                style_end = style_start + int(length_s)
+            except (TypeError, ValueError):
+                logger.debug("[Signal] Ignoring malformed textStyle range: %r", style_string)
+                continue
+            overlap_start = max(style_start, chunk_start)
+            overlap_end = min(style_end, chunk_end)
+            if overlap_start < overlap_end:
+                adjusted.append(
+                    f"{overlap_start - chunk_start}:{overlap_end - overlap_start}:{style_type}"
+                )
+        return adjusted
+
+    @classmethod
+    def _split_signal_formatted_message(
+        cls,
+        plain_text: str,
+        text_styles: list[str],
+        max_length: int,
+    ) -> list[tuple[str, list[str]]]:
+        """Split formatted Signal text without breaking markdown before conversion.
+
+        ``markdown_to_signal`` emits UTF-16 body ranges for the fully converted
+        plain text. Split that plain text afterwards and translate overlapping
+        ranges into each chunk so styles that cross a chunk boundary are
+        preserved instead of leaking literal Markdown markers.
+        """
+        if utf16_len(plain_text) <= max_length:
+            return [(plain_text, text_styles)]
+
+        indicator_reserve = 10  # Mirrors BasePlatformAdapter.truncate_message().
+        body_limit = max(1, max_length - indicator_reserve)
+        offsets = cls._utf16_offsets(plain_text)
+        chunks: list[tuple[str, list[str], int, int]] = []
+        start_idx = 0
+        total_u16 = offsets[-1]
+        while offsets[start_idx] < total_u16:
+            start_u16 = offsets[start_idx]
+            end_budget = min(total_u16, start_u16 + body_limit)
+            end_idx = start_idx + 1
+            while end_idx < len(offsets) and offsets[end_idx] <= end_budget:
+                end_idx += 1
+            end_idx -= 1
+            if end_idx <= start_idx:
+                end_idx = start_idx + 1
+            chunk_start = offsets[start_idx]
+            chunk_end = offsets[end_idx]
+            chunk_text = plain_text[start_idx:end_idx]
+            chunk_styles = cls._styles_for_chunk(text_styles, chunk_start, chunk_end)
+            chunks.append((chunk_text, chunk_styles, chunk_start, chunk_end))
+            start_idx = end_idx
+
+        if len(chunks) == 1:
+            chunk_text, chunk_styles, _, _ = chunks[0]
+            return [(chunk_text, chunk_styles)]
+
+        total = len(chunks)
+        return [
+            (f"{chunk_text} ({idx}/{total})", chunk_styles)
+            for idx, (chunk_text, chunk_styles, _, _) in enumerate(chunks, start=1)
+        ]
+
     async def send(
         self,
         chat_id: str,
@@ -1061,38 +1147,52 @@ class SignalAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
 
-        plain_text, text_styles = self._markdown_to_signal(content)
-
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": plain_text,
-        }
-
-        if text_styles:
-            if len(text_styles) == 1:
-                params["textStyle"] = text_styles[0]
-            else:
-                params["textStyles"] = text_styles
-
+        base_params: Dict[str, Any] = {"account": self.account}
         if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
+            base_params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            base_params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
-        result = await self._rpc("send", params)
+        plain_message, message_styles = self._markdown_to_signal(content)
+        chunks = self._split_signal_formatted_message(
+            plain_message,
+            message_styles,
+            self.MAX_MESSAGE_LENGTH,
+        )
+        last_result = None
 
-        if result is not None:
+        for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
+            params: Dict[str, Any] = dict(base_params, message=plain_text)
+
+            if text_styles:
+                if len(text_styles) == 1:
+                    params["textStyle"] = text_styles[0]
+                else:
+                    params["textStyles"] = text_styles
+
+            logger.info(
+                "[Signal] Sending response chunk %d/%d (%d chars) to %s",
+                idx,
+                len(chunks),
+                len(plain_text),
+                chat_id,
+            )
+            result = await self._rpc("send", params)
+            if result is None:
+                return SendResult(success=False, error="RPC send failed")
             success, err_msg = self._validate_send_result(result)
             if not success:
                 return SendResult(success=False, error=err_msg, raw_response=result)
             self._track_sent_timestamp(result)
-            # Signal has no editable message identifier. Returning None keeps the
-            # stream consumer on the non-edit fallback path instead of pretending
-            # future edits can remove an in-progress cursor from the chat thread.
-            return SendResult(success=True, message_id=None)
-        return SendResult(success=False, error="RPC send failed")
+            last_result = result
+
+        # Signal has no editable message identifier. Returning None keeps the
+        # stream consumer on the non-edit fallback path instead of pretending
+        # future edits can remove an in-progress cursor from the chat thread.
+        return SendResult(success=True, message_id=None, raw_response=last_result)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

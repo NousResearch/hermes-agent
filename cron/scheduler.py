@@ -2510,6 +2510,40 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
 
 
+def _bind_cron_delivery_target_hint(prompt: str, target: Optional[dict]) -> str:
+    """Tell a cron worker where nested status emitters must report.
+
+    Cron execution deliberately has no ``HERMES_SESSION_*`` sender identity;
+    delivery metadata lives in the separate ``HERMES_CRON_AUTO_DELIVER_*``
+    ContextVars. Surface that distinction to the model so a helper process
+    emitting ACKs or heartbeats cannot infer a foreign chat from task text.
+    """
+    if not target:
+        return prompt
+    # thread_id: use "" (never null) so the JSON hint matches the
+    # HERMES_CRON_AUTO_DELIVER_THREAD_ID ContextVar representation exactly —
+    # a worker echoing either form must produce the same value (Greptile P2,
+    # PR #278).
+    target_json = json.dumps(
+        {
+            "platform": str(target.get("platform") or ""),
+            "chat_id": str(target.get("chat_id") or ""),
+            "thread_id": str(target.get("thread_id") or ""),
+        },
+        separators=(",", ":"),
+    )
+    routing = (
+        f"CRON DELIVERY TARGET (authoritative): {target_json}. "
+        "If this task launches a subprocess or helper that emits status, ACK, "
+        "heartbeat, failure, or completion messages, route those messages only "
+        "to this target. In shell commands, read the same target from "
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM, HERMES_CRON_AUTO_DELIVER_CHAT_ID, "
+        "and HERMES_CRON_AUTO_DELIVER_THREAD_ID. Never infer or hardcode a "
+        "delivery target from task content or referenced work."
+    )
+    return f"[IMPORTANT: {routing}]\n\n{prompt}"
+
+
 def _scan_assembled_cron_prompt(
     assembled: str,
     job: dict,
@@ -3037,6 +3071,7 @@ def run_job(
                 if delivery_target.get("thread_id") is None
                 else str(delivery_target["thread_id"])
             )
+        prompt = _bind_cron_delivery_target_hint(prompt, delivery_target)
 
         # Model resolution precedence: per-job override > HERMES_MODEL env >
         # config.yaml ``model:`` (string or ``{default: ...}``). The per-job

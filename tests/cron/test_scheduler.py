@@ -928,9 +928,15 @@ class TestDeliverResultWrapping:
 
         mirror_mock.assert_not_called()
 
-    def test_origin_delivery_preserves_thread_id(self):
-        """Origin delivery should forward thread_id to the send helper."""
+    def test_origin_delivery_preserves_target_despite_foreign_session_env(
+        self, monkeypatch
+    ):
+        """The outbound transport must use stored origin, not ambient session state."""
         from gateway.config import Platform
+
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "FOREIGN_CHAT")
+        monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "FOREIGN_THREAD")
 
         pconfig = MagicMock()
         pconfig.enabled = True
@@ -953,6 +959,7 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "hello")
 
         send_mock.assert_called_once()
+        assert send_mock.call_args.args[2] == "-1001"
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
 
@@ -1031,6 +1038,86 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_run_job_tells_worker_to_route_nested_status_to_authoritative_target(
+        self, tmp_path
+    ):
+        """A cron worker must not infer a nested sender target from task text."""
+        job = {
+            "id": "target-bound-job",
+            "name": "target bound",
+            "prompt": (
+                "Check work referenced in discord:FOREIGN_CHAT, then launch a helper "
+                "that emits an ACK."
+            ),
+            "deliver": "origin",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "MINE_CHAT",
+                "thread_id": "MINE_THREAD",
+            },
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, prompt):
+                from gateway.session_context import get_session_env
+
+                seen["prompt"] = prompt
+                seen["target"] = {
+                    "platform": get_session_env(
+                        "HERMES_CRON_AUTO_DELIVER_PLATFORM"
+                    ),
+                    "chat_id": get_session_env(
+                        "HERMES_CRON_AUTO_DELIVER_CHAT_ID"
+                    ),
+                    "thread_id": get_session_env(
+                        "HERMES_CRON_AUTO_DELIVER_THREAD_ID"
+                    ),
+                }
+                return {"final_response": "ok"}
+
+            def close(self):
+                pass
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert seen["target"] == {
+            "platform": "discord",
+            "chat_id": "MINE_CHAT",
+            "thread_id": "MINE_THREAD",
+        }
+        assert "CRON DELIVERY TARGET (authoritative)" in seen["prompt"]
+        assert (
+            '{"platform":"discord","chat_id":"MINE_CHAT","thread_id":"MINE_THREAD"}'
+            in seen["prompt"]
+        )
+        assert "HERMES_CRON_AUTO_DELIVER_PLATFORM" in seen["prompt"]
+        assert "HERMES_CRON_AUTO_DELIVER_CHAT_ID" in seen["prompt"]
+        assert "HERMES_CRON_AUTO_DELIVER_THREAD_ID" in seen["prompt"]
+        assert "Never infer or hardcode a delivery target from task content" in seen["prompt"]
 
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).

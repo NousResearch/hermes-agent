@@ -913,6 +913,17 @@ def _auth_file_path() -> Path:
     return path
 
 
+def _credential_pool_global_fallback_enabled() -> bool:
+    """Return whether this profile may inherit credentials from the root store."""
+    try:
+        credential_pool = read_raw_config().get("credential_pool")
+        if isinstance(credential_pool, dict) and credential_pool.get("global_fallback") is False:
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _global_auth_file_path() -> Optional[Path]:
     """Return the global-root auth.json when the process is in profile mode.
 
@@ -1320,7 +1331,7 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         pool = {}
 
     global_pool: Dict[str, Any] = {}
-    global_store = _load_global_auth_store()
+    global_store = _load_global_auth_store() if _credential_pool_global_fallback_enabled() else {}
     maybe_global_pool = global_store.get("credential_pool") if global_store else None
     if isinstance(maybe_global_pool, dict):
         global_pool = maybe_global_pool

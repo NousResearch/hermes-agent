@@ -24,7 +24,7 @@ def _fake_get_model_context_length(*args, config_context_length=None, **kwargs):
     return 372_000
 
 
-def _build_agent(model_cfg, model, base_url="http://localhost:8090/v1"):
+def _build_agent(model_cfg, model, base_url="http://localhost:8090/v1", provider=None):
     """Build a real AIAgent with the given model config, mirroring the
     pattern in tests/run_agent/test_invalid_context_length_warning.py."""
     cfg = {"model": model_cfg}
@@ -51,6 +51,7 @@ def _build_agent(model_cfg, model, base_url="http://localhost:8090/v1"):
             model=model,
             api_key="test-key-1234567890",
             base_url=base_url,
+            provider=provider,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -101,6 +102,52 @@ def test_plain_string_model_config_unchanged():
     begin with — behavior is unchanged by the scoping."""
     agent = _build_agent("Qwen3.6-27B-NVFP4-MTP-GGUF.gguf", model="Qwen3.6-27B-NVFP4-MTP-GGUF.gguf")
     assert agent._config_context_length is None
+
+
+def test_override_applies_when_default_has_provider_prefix_agent_model_normalized():
+    """A legitimately-configured ``default: zai/glm-4.6`` must not lose its
+    override just because init_agent's own provider-aware normalization
+    (agent/agent_init.py, near the top of init_agent) strips the matching
+    ``zai/`` prefix from agent.model before this scoping runs. The config
+    default and the normalized agent.model refer to the same model and the
+    override must be kept."""
+    model_cfg = {
+        "default": "zai/glm-4.6",
+        "provider": "zai",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
+        "context_length": 131072,
+    }
+    agent = _build_agent(
+        model_cfg,
+        model="zai/glm-4.6",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        provider="zai",
+    )
+    # init_agent's own normalization strips the provider prefix for
+    # non-aggregator providers.
+    assert agent.model == "glm-4.6"
+    assert agent._config_context_length == 131072
+    assert agent.context_compressor.context_length == 131072
+
+
+def test_override_drops_for_genuinely_different_model_with_provider_prefix():
+    """A per-session override to a genuinely different model on the same
+    provider must still drop the config default's context_length."""
+    model_cfg = {
+        "default": "zai/glm-4.6",
+        "provider": "zai",
+        "base_url": "https://api.z.ai/api/coding/paas/v4",
+        "context_length": 131072,
+    }
+    agent = _build_agent(
+        model_cfg,
+        model="zai/glm-4.5-air",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        provider="zai",
+    )
+    assert agent.model == "glm-4.5-air"
+    assert agent._config_context_length is None
+    assert agent.context_compressor.context_length == 372_000
 
 
 # ── unit tests for the pure scoping helper ───────────────────────────────
@@ -156,4 +203,33 @@ def test_scope_helper_no_default_name_keeps_override():
 def test_scope_helper_no_agent_model_keeps_override():
     assert _scope_config_context_length_to_default_model(
         {"default": "model-a"}, None, 131072
+    ) == 131072
+
+
+def test_scope_helper_normalizes_provider_prefixed_default():
+    """config default `zai/glm-4.6` compared against the already-normalized
+    agent.model `glm-4.6` (same provider-aware normalization init_agent
+    applies to agent.model for non-aggregator providers) must be treated as
+    the same model and keep the override."""
+    assert _scope_config_context_length_to_default_model(
+        {"default": "zai/glm-4.6"}, "glm-4.6", 131072, "zai"
+    ) == 131072
+
+
+def test_scope_helper_normalized_default_still_drops_for_different_model():
+    assert _scope_config_context_length_to_default_model(
+        {"default": "zai/glm-4.6"}, "glm-4.5-air", 131072, "zai"
+    ) is None
+
+
+def test_scope_helper_aggregator_provider_keeps_vendor_prefix_form():
+    """Aggregator providers (openrouter/nous/kilocode) consume vendor/model
+    slugs, so init_agent does not strip the prefix from agent.model for
+    them; the helper must not strip it from the default either, or a
+    genuinely aggregator-qualified default would spuriously match."""
+    assert _scope_config_context_length_to_default_model(
+        {"default": "anthropic/claude-sonnet-4.6"},
+        "anthropic/claude-sonnet-4.6",
+        131072,
+        "openrouter",
     ) == 131072

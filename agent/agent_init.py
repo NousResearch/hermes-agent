@@ -258,7 +258,7 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
 
 
 def _scope_config_context_length_to_default_model(
-    model_cfg: Any, agent_model: Any, config_context_length: Optional[int]
+    model_cfg: Any, agent_model: Any, config_context_length: Optional[int], provider: Any = None
 ) -> Optional[int]:
     """Drop model.context_length unless it was written for this session's model.
 
@@ -272,13 +272,35 @@ def _scope_config_context_length_to_default_model(
     model instead. Mirrors the /model switch guard in
     agent_runtime_helpers.py, which clears _config_context_length on swap
     for the same reason.
+
+    ``agent_model`` has already gone through the provider-aware
+    normalization applied near the top of ``init_agent`` (stripping a
+    matching provider prefix, e.g. ``zai/glm-4.6`` -> ``glm-4.6``) for
+    non-aggregator providers. The raw config default has not, so a
+    legitimately-configured ``default: zai/glm-4.6`` would otherwise
+    compare unequal to the normalized ``glm-4.6`` and lose its override.
+    Run the config default through the same normalization here so the
+    comparison is apples-to-apples.
     """
     if config_context_length is None or not isinstance(model_cfg, dict):
         return config_context_length
     _default_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "").strip()
     _agent_model = str(agent_model or "").strip()
-    if _default_model and _agent_model and _agent_model != _default_model:
-        return None
+    if _default_model and _agent_model:
+        _normalized_default = _default_model
+        try:
+            from hermes_cli.model_normalize import (
+                _AGGREGATOR_PROVIDERS,
+                normalize_model_for_provider,
+            )
+
+            _provider = str(provider or "").strip().lower()
+            if _provider not in _AGGREGATOR_PROVIDERS:
+                _normalized_default = normalize_model_for_provider(_default_model, _provider)
+        except Exception:
+            pass
+        if _agent_model != _normalized_default:
+            return None
     return config_context_length
 
 
@@ -1680,7 +1702,7 @@ def init_agent(
     # Scope the override to the config's default model — see
     # _scope_config_context_length_to_default_model for why.
     _config_context_length = _scope_config_context_length_to_default_model(
-        _model_cfg, agent.model, _config_context_length
+        _model_cfg, agent.model, _config_context_length, agent.provider
     )
 
     # Resolve custom_providers list once for reuse below (startup

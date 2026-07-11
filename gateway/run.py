@@ -11038,11 +11038,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_base_url = None
             _hyg_api_key = None
             _hyg_data = {}
+            _hyg_model_cfg = None
             try:
                 _hyg_data = _load_gateway_config()
                 if _hyg_data:
                     # Resolve model name (same logic as run_sync)
                     _model_cfg = _hyg_data.get("model", {})
+                    # Keep the raw config model block around (past this `if`)
+                    # so it can be re-consulted after session-runtime
+                    # resolution below, to scope _hyg_config_context_length
+                    # to whichever model the session actually ends up on.
+                    _hyg_model_cfg = _model_cfg
                     if isinstance(_model_cfg, str):
                         _hyg_model = _model_cfg
                     elif isinstance(_model_cfg, dict):
@@ -11085,6 +11091,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
                     _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
+                except Exception:
+                    pass
+
+                # Scope the config's model.context_length override to the
+                # resolved SESSION model, not the config's default model.
+                # The override read above comes from the raw config's model
+                # block (config.yaml's model.default), but a session can be
+                # running a different model via a per-session /model
+                # override or channel override — _resolve_session_agent_runtime
+                # just resolved that above. Without this, pre-agent hygiene
+                # compression for an overridden session was sized against the
+                # DEFAULT model's context window instead of the model the
+                # session is actually on. Mirrors the same scoping applied at
+                # agent build time in agent.agent_init.init_agent.
+                try:
+                    from agent.agent_init import _scope_config_context_length_to_default_model
+                    _hyg_config_context_length = _scope_config_context_length_to_default_model(
+                        _hyg_model_cfg, _hyg_model, _hyg_config_context_length, _hyg_provider
+                    )
                 except Exception:
                     pass
 

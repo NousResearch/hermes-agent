@@ -812,6 +812,36 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_reloads_with_load_enable_on_macos_26(self, tmp_path, monkeypatch):
+        """On macOS 26+, the unloaded-job recovery uses launchctl load/enable."""
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "load", str(plist_path)],
+            ["launchctl", "enable", target],
+            ["launchctl", "kickstart", target],
+        ]
+
     def test_launchd_start_reloads_on_kickstart_exit_code_113(self, tmp_path, monkeypatch):
         """Exit code 113 (\"Could not find service\") should also trigger bootstrap recovery."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -1164,6 +1194,53 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
             ["launchctl", "bootout", target],
             ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_restart_reloads_using_launchctl_bootstrap_on_macos_26(
+        self, tmp_path, monkeypatch
+    ):
+        """On macOS 26+, the unloaded-job recovery uses _launchctl_bootstrap (load/enable).
+
+        The existing test exercises the bootout-first + bootstrap flow for macOS < 26.
+        This test verifies that on macOS 26+ the recovery delegates to
+        _launchctl_bootstrap (which uses load/enable internally) and then kickstarts.
+        """
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
+        )
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    3, cmd, stderr="Could not find service"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "load", str(plist_path)],
+            ["launchctl", "enable", target],
             ["launchctl", "kickstart", target],
         ]
 
@@ -2590,13 +2667,21 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
-    def test_launchd_plist_supports_aqua_and_background_sessions(self):
-        # macOS 26+ only loads the agent in non-Aqua sessions when the plist
-        # opts into Background as well (issue #23387).
+    def test_launchd_plist_supports_aqua_and_background_sessions(self, monkeypatch):
+        # Pre-macOS 26: plist must opt into both Aqua and Background sessions
+        # for SSH / non-Aqua logins (issue #23387).
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: False)
         plist = gateway_cli.generate_launchd_plist()
         assert "<key>LimitLoadToSessionType</key>" in plist
         assert "<string>Aqua</string>" in plist
         assert "<string>Background</string>" in plist
+
+    def test_launchd_plist_omits_limit_load_on_macos_26(self, monkeypatch):
+        # On macOS 26+, LimitLoadToSessionType causes silent load failures
+        # during login auto-load (#23387), so it should be omitted.
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: True)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>LimitLoadToSessionType</key>" not in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -3586,6 +3671,16 @@ class TestLaunchctlBootstrapEioRetry:
     DOMAIN = "gui/501"
     LABEL = "ai.hermes.gateway"
 
+    @pytest.fixture(autouse=True)
+    def _patch_macos_version(self, monkeypatch):
+        """These tests exercise the macOS < 26 (``launchctl bootstrap``) path.
+
+        On macOS 26+ the tested function takes a different code path
+        (``launchctl load/enable``), tested separately in
+        :class:`TestLaunchctlBootstrapMacOs26`.
+        """
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: False)
+
     def test_bootstrap_succeeds_first_try_without_bootout(self, monkeypatch):
         calls = []
 
@@ -3652,6 +3747,61 @@ class TestLaunchctlBootstrapEioRetry:
         assert calls == [["launchctl", "bootstrap", self.DOMAIN, self.PLIST]]
 
 
+class TestLaunchctlBootstrapMacOs26:
+    """`_launchctl_bootstrap` on macOS 26+ uses ``launchctl load/enable``.
+
+    On macOS 26+, ``launchctl bootstrap`` is broken (exit 5, #23387) so
+    ``_launchctl_bootstrap`` falls back to ``launchctl load`` +
+    ``launchctl enable`` instead.
+    """
+
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    DOMAIN = "gui/501"
+    LABEL = "ai.hermes.gateway"
+
+    @pytest.fixture(autouse=True)
+    def _patch_macos_version(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: True)
+
+    def test_loads_plist_and_enables_label(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+        assert calls == [
+            ["launchctl", "load", self.PLIST],
+            ["launchctl", "enable", f"{self.DOMAIN}/{self.LABEL}"],
+        ]
+
+    def test_load_failure_propagates(self, monkeypatch):
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[1] == "load":
+                raise subprocess.CalledProcessError(1, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+    def test_enable_failure_propagates(self, monkeypatch):
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[1] == "enable":
+                raise subprocess.CalledProcessError(1, cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
+
+
 class TestRetryLaunchctlBootstrapUntilRegistered:
     """`_retry_launchctl_bootstrap_until_registered` — salvage of #53277.
 
@@ -3659,11 +3809,19 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
     label is actually LISTED (not just a zero bootstrap exit), TimeoutExpired
     is retried (not escaped leaving the service unloaded), and the retry is
     bounded by a wall-clock deadline rather than a fixed short window.
+
+    These tests exercise the macOS < 26 (``launchctl bootstrap``) path.
+    The macOS 26+ path (``launchctl load/enable``) is tested in
+    :class:`TestRetryLaunchctlBootstrapUntilRegisteredMacOs26`.
     """
 
     DOMAIN = "gui/501"
     PLIST = "/tmp/ai.hermes.gateway.plist"
     LABEL = "ai.hermes.gateway"
+
+    @pytest.fixture(autouse=True)
+    def _patch_macos_version(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: False)
 
     def test_returns_true_once_label_is_registered(self, monkeypatch):
         """Success requires launchctl list to confirm registration, not just
@@ -3729,3 +3887,61 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             deadline=gateway_cli.time.monotonic() - 1,
         )
         assert ok is False
+
+
+class TestRetryLaunchctlBootstrapUntilRegisteredMacOs26:
+    """`_retry_launchctl_bootstrap_until_registered` on macOS 26+.
+
+    Same retry/verify semantics as the macOS < 26 path, but internally
+    ``_launchctl_bootstrap`` uses ``launchctl load/enable`` instead of
+    ``launchctl bootstrap``.
+    """
+
+    DOMAIN = "gui/501"
+    PLIST = "/tmp/ai.hermes.gateway.plist"
+    LABEL = "ai.hermes.gateway"
+
+    @pytest.fixture(autouse=True)
+    def _patch_macos_version(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_is_macos_26_or_later", lambda: True)
+
+    def test_retries_until_registered_using_load_enable(self, monkeypatch):
+        list_results = iter([1, 0])  # first: not registered, second: registered
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=next(list_results))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+
+    def test_timeout_expired_retried_on_macos_26(self, monkeypatch):
+        """A bootstrap-category timeout is still retried even on macOS 26+."""
+        attempts = {"bootstrap": 0}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "load":
+                attempts["bootstrap"] += 1
+                if attempts["bootstrap"] == 1:
+                    raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=0 if attempts["bootstrap"] >= 2 else 1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+
+        ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
+            self.DOMAIN, self.PLIST, self.LABEL,
+            deadline=gateway_cli.time.monotonic() + 60,
+        )
+        assert ok is True
+        assert attempts["bootstrap"] >= 2

@@ -3652,6 +3652,26 @@ def _is_macos_26_or_later() -> bool:
     return False
 
 
+def _limit_load_section() -> str:
+    """Return the ``LimitLoadToSessionType`` plist XML, version-dependent.
+
+    On macOS 26+, ``LimitLoadToSessionType`` causes silent load failures
+    during login auto-load (#23387), so it is omitted.  On older macOS it is
+    required for Background-session support (SSH / non-Aqua logins).
+    """
+    if _is_macos_26_or_later():
+        return ""
+    return (
+        '<key>LimitLoadToSessionType</key>\n'
+        '    <array>\n'
+        '        <string>Aqua</string>\n'
+        '        <string>Background</string>\n'
+        '    </array>\n'
+        '    \n'
+        '    '
+    )
+
+
 def _launchctl_bootstrap(
     domain: str, plist_path, label: str, *, timeout: int = 30
 ) -> None:
@@ -3980,6 +4000,7 @@ def generate_launchd_plist() -> str:
         <string>{hermes_home}</string>
     </dict>
 
+    {_limit_load_section()}
     <key>RunAtLoad</key>
     <true/>
     
@@ -4071,15 +4092,27 @@ def refresh_launchd_plist_if_needed() -> bool:
         # gateway is still draining (default agent.restart_drain_timeout=180s),
         # so a fixed ~10s window is too short — bound by that budget instead.
         _reload_budget = int(max(30.0, _get_restart_drain_timeout()))
+        if _is_macos_26_or_later():
+            _load_cmd = (
+                f"launchctl load {shlex.quote(str(plist_path))} 2>/dev/null; "
+                f"launchctl enable {shlex.quote(target)} 2>/dev/null"
+            )
+            _action_label = "load"
+        else:
+            _load_cmd = (
+                f"launchctl bootstrap {shlex.quote(domain)} "
+                f"{shlex.quote(str(plist_path))} 2>/dev/null"
+            )
+            _action_label = "bootstrap"
         reload_script = (
             f"sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
             f"sleep 1; "
             f"_deadline=$(($(date +%s) + {_reload_budget})); "
             f"while :; do "
-            f"  launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null; "
+            f"  {_load_cmd}; "
             f"  if launchctl list {shlex.quote(label)} >/dev/null 2>&1; then break; fi; "
-            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] bootstrap not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
+            f"  echo \"[$(date '+%Y-%m-%d %H:%M:%S %z')] {_action_label} not yet registered for {shlex.quote(target)} — retrying\" >> {shlex.quote(str(reload_log_path))}; "
             f"  if [ $(date +%s) -ge $_deadline ]; then break; fi; "
             f"  sleep 2; "
             f"done; "
@@ -4389,21 +4422,28 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
-            # Restart is the one path where the job is almost always still
-            # registered (we just drained it), so a plain bootstrap would hit
-            # EIO on the common case. Boot the stale label out first — cheaper
-            # and clearer here than routing through _launchctl_bootstrap's
-            # bootstrap-first/retry-on-EIO flow. See #23387, #42914.
-            subprocess.run(
-                ["launchctl", "bootout", target],
-                check=False,
-                timeout=90,
-            )
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
+            if _is_macos_26_or_later():
+                # On macOS 26+, ``launchctl bootstrap`` is broken, so use the
+                # version-aware helper which falls back to load/enable.
+                _launchctl_bootstrap(
+                    _launchd_domain(), plist_path, get_launchd_label(), timeout=30
+                )
+            else:
+                # Restart is the one path where the job is almost always still
+                # registered (we just drained it), so a plain bootstrap would hit
+                # EIO on the common case. Boot the stale label out first — cheaper
+                # and clearer here than routing through _launchctl_bootstrap's
+                # bootstrap-first/retry-on-EIO flow. See #23387, #42914.
+                subprocess.run(
+                    ["launchctl", "bootout", target],
+                    check=False,
+                    timeout=90,
+                )
+                subprocess.run(
+                    ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                    check=True,
+                    timeout=30,
+                )
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):

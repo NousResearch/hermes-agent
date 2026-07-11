@@ -2810,6 +2810,14 @@ def _persist_model_switch(result) -> None:
         # removal without needing a key-delete. Leaving the old value would
         # route the new model at the previous custom host (#48305).
         save_config_value("model.base_url", None)
+    if result.api_mode:
+        save_config_value("model.api_mode", result.api_mode)
+    else:
+        # Same coalesce pattern as base_url: api_mode in config.yaml is only
+        # read by _provider_supports_explicit_api_mode when it matches the
+        # configured provider, and _parse_api_mode returns None for None/null,
+        # so null is equivalent to absent (GitHub #62470).
+        save_config_value("model.api_mode", None)
 
 
 def _apply_model_switch(

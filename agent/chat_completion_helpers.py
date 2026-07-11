@@ -2376,12 +2376,25 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # reasoning display.  Non-reasoning text is harmlessly
                 # suppressed by the CLI's _stream_delta when the stream
                 # box is already closed (tool boundary flush).
-                elif agent.stream_delta_callback:
-                    try:
-                        agent.stream_delta_callback(delta.content)
-                        agent._record_streamed_assistant_text(delta.content)
-                    except Exception:
-                        pass
+                else:
+                    # Always record the text into the streamed-text buffer
+                    # so the conversation-loop recovery paths (partial
+                    # stream recovery, prior-turn fallback) can use it even
+                    # when no display consumer is registered.  In quiet mode
+                    # (-Q) the CLI nulls stream_delta_callback, so the
+                    # previous guard skipped this branch entirely and the
+                    # buffer stayed empty — making a tool-using turn that
+                    # delivered text (but was later seen as "empty") lose
+                    # its content and surface as an empty response (#62480).
+                    # The callback is fired only when registered; the
+                    # buffer update is unconditional so recovery works
+                    # regardless of display state.
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(delta.content)
+                        except Exception:
+                            pass
+                    agent._record_streamed_assistant_text(delta.content)
 
             # Accumulate tool call deltas — notify display on first name
             if delta and delta.tool_calls:

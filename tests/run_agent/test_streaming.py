@@ -363,6 +363,55 @@ class TestStreamingAccumulator:
         assert len(response.choices[0].message.tool_calls) == 1
 
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_quiet_mode_records_streamed_text_with_tool_calls(self, mock_close, mock_create):
+        """#62480: quiet mode (-Q) must still buffer streamed text delivered
+        alongside tool calls so the conversation-loop recovery paths can use
+        it.  The CLI nulls stream_delta_callback in -Q mode, which previously
+        (via the `elif agent.stream_delta_callback:` guard) skipped the buffer
+        update entirely, leaving `_current_streamed_assistant_text` empty and
+        surfacing an empty final response on tool-using turns.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="Here is the partial answer"),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_456", name="web_search")
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"query": "test"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        # Mirror the CLI's quiet-mode setup: no display consumer registered.
+        agent.stream_delta_callback = None
+        agent.tool_gen_callback = None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        # Content is still returned via the response object...
+        assert response.choices[0].message.content == "Here is the partial answer"
+        # ...and it must ALSO be buffered for recovery, even without a callback.
+        assert agent._current_streamed_assistant_text == "Here is the partial answer"
+
+
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 

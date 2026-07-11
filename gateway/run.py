@@ -7311,6 +7311,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             finally:
                 _clear_planned_restart_notification()
+        elif not _restart_notification_pending():
+        
+        # Also notify on manual start / crash recovery / service restart
+            try:
+            await self._send_home_channel_startup_notifications(
+                skip_targets=None,
+            )
+            except Exception as exc:
+                logger.warning("Startup notification (non-planned) failed: %s", exc)
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

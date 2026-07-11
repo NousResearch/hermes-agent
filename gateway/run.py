@@ -20729,6 +20729,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     if runner.should_exit_cleanly:
         if runner.exit_reason:
+            print(f"Gateway startup failed: {runner.exit_reason}", file=sys.stderr)
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         # A clean exit that carries an explicit exit code (e.g. a fatal
         # config error stamped with GATEWAY_FATAL_CONFIG_EXIT_CODE) must

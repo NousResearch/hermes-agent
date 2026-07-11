@@ -11,6 +11,7 @@ Events:
   - session:start       -- New session created (first message of a new session)
   - session:end         -- Session ends (user ran /new or /reset)
   - session:reset       -- Session reset completed (new session entry created)
+  - message:received    -- Inbound message prepared; handlers may mutate message
   - agent:start         -- Agent begins processing a message
   - agent:step          -- Each turn in the tool-calling loop
   - agent:end           -- Agent finishes processing
@@ -18,7 +19,7 @@ Events:
 
 Errors in hooks are caught and logged but never block the main pipeline.
 
-Context dict passed to ``agent:start`` / ``agent:end`` handlers:
+Context dict passed to ``message:received`` / ``agent:start`` / ``agent:end`` handlers:
   platform     -- source platform name (e.g. "telegram", "matrix", "slack")
   user_id      -- platform user id of the sender
   chat_id      -- platform chat id (group/DM identifier)
@@ -26,7 +27,9 @@ Context dict passed to ``agent:start`` / ``agent:end`` handlers:
                   when not in a thread / topic)
   chat_type    -- "dm" | "group" | "forum" (empty if unknown)
   session_id   -- Hermes session id
-  message      -- inbound message text (truncated to 500 chars)
+  message      -- inbound message text. ``message:received`` receives the full
+                  prepared text and may replace this value before agent dispatch;
+                  ``agent:start`` receives a 500-character preview.
 
 ``agent:end`` adds:
   response     -- agent response text (truncated to 500 chars)

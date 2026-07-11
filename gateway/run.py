@@ -10649,6 +10649,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return message_text
 
+    async def _emit_message_received_hook(
+        self,
+        *,
+        source: SessionSource,
+        session_id: str,
+        message_text: str,
+    ) -> str:
+        """Emit the mutable pre-agent inbound-message hook."""
+        hook_ctx = {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "chat_id": source.chat_id or "",
+            "thread_id": str(getattr(source, "thread_id", None)) if getattr(source, "thread_id", None) else "",
+            "chat_type": getattr(source, "chat_type", "") or "",
+            "session_id": session_id,
+            "message": message_text,
+        }
+        await self.hooks.emit("message:received", hook_ctx)
+        updated_message = hook_ctx.get("message")
+        if isinstance(updated_message, str) and updated_message != message_text:
+            return updated_message
+        return message_text
+
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
         if not pending_native:
@@ -11546,6 +11569,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         try:
+            message_text = await self._emit_message_received_hook(
+                source=source,
+                session_id=session_entry.session_id,
+                message_text=message_text,
+            )
+
             # Emit agent:start hook
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",

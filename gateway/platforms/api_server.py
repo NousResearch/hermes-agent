@@ -61,6 +61,7 @@ from gateway.platforms.base import (
     validate_media_delivery_path,
 )
 from agent.redact import redact_sensitive_text
+from gateway.readiness import collect_runtime_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -901,6 +902,29 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
 
+    def _readiness_work_counts(self) -> tuple[int, int, int]:
+        """Return bounded work counts from each subsystem's public state."""
+        active_api_runs = sum(
+            1
+            for status in self._run_statuses.values()
+            if status.get("status") in {"queued", "running", "waiting_for_approval"}
+        )
+        process_depth = 0
+        active_delegations = 0
+        try:
+            from tools.process_registry import process_registry
+
+            process_depth = process_registry.completion_queue.qsize()
+        except Exception:
+            pass
+        try:
+            from tools.async_delegation import active_count
+
+            active_delegations = active_count()
+        except Exception:
+            pass
+        return active_api_runs, process_depth, active_delegations
+
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
         """Normalize configured CORS origins into a stable tuple."""
@@ -1397,8 +1421,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # This endpoint is served BY the gateway process, so it is by definition
         # alive — gateway_running is True. Derive busy/drainable from the same
         # shared contract /api/status uses so the two surfaces never disagree.
+        active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
+        from gateway.run import _resolve_gateway_model
+
+        readiness = collect_runtime_readiness(
+            configured_model=_resolve_gateway_model(),
+            runtime_status=runtime,
+            active_api_runs=active_api_runs,
+            process_completion_queue_depth=process_depth,
+            active_delegations=active_delegations,
+        )
         return web.json_response({
-            "status": "ok",
+            "status": readiness["status"],
+            "readiness": readiness,
             "platform": "hermes-agent",
             "version": _hermes_version(),
             "gateway_state": gw_state,

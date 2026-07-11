@@ -266,6 +266,63 @@ ANTHROPIC_UNIFIED_UTILIZATION_HEADERS = (
 # under 1.0 so rounding in the reported values can't flip the classification.
 _MODEL_SCOPED_429_UTILIZATION_CEILING = 0.98
 
+# Process-local cooldown registry shared by every CredentialPool instance.
+# Auxiliary clients deliberately reload pools after eviction, so instance
+# state is too short-lived.  Keeping this outside PooledCredential avoids an
+# auth.json schema change while preserving the cooldown across those reloads.
+# The profile namespace prevents equal entry ids in separate HERMES_HOME roots
+# from contaminating each other.
+_MODEL_COOLDOWN_LOCK = threading.RLock()
+_MODEL_COOLDOWNS: Dict[Tuple[str, str, str, str], float] = {}
+
+
+def _model_cooldown_namespace() -> str:
+    configured = os.environ.get("HERMES_HOME")
+    root = configured if configured else os.path.join(str(Path.home()), ".hermes")
+    return os.path.abspath(os.path.expanduser(root))
+
+
+def _normalize_model_cooldown_key(provider: str, model: Optional[str]) -> str:
+    """Return one stable key for equivalent provider/model spellings."""
+    raw = str(model or "").strip()
+    if not raw:
+        return ""
+    try:
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        normalized = normalize_model_for_provider(raw, provider)
+    except Exception:
+        normalized = raw
+    return str(normalized or raw).strip().casefold()
+
+
+def _model_cooldown_key(provider: str, entry_id: str, model: Optional[str]) -> Tuple[str, str, str, str]:
+    return (
+        _model_cooldown_namespace(),
+        str(provider or "").strip().casefold(),
+        str(entry_id),
+        _normalize_model_cooldown_key(provider, model),
+    )
+
+
+def _get_model_cooldown(provider: str, entry_id: str, model: Optional[str], now: float) -> Optional[float]:
+    key = _model_cooldown_key(provider, entry_id, model)
+    if not key[-1]:
+        return None
+    with _MODEL_COOLDOWN_LOCK:
+        cooldown_until = _MODEL_COOLDOWNS.get(key)
+        if cooldown_until is not None and now >= cooldown_until:
+            _MODEL_COOLDOWNS.pop(key, None)
+            return None
+        return cooldown_until
+
+
+def _set_model_cooldown(provider: str, entry_id: str, model: str, cooldown_until: float) -> str:
+    key = _model_cooldown_key(provider, entry_id, model)
+    with _MODEL_COOLDOWN_LOCK:
+        _MODEL_COOLDOWNS[key] = float(cooldown_until)
+    return key[-1]
+
 
 def _parse_utilization_value(raw: Any) -> Optional[float]:
     """Parse a utilization header value; tolerates percent-style values."""
@@ -589,19 +646,14 @@ class CredentialPool:
         self._lock = threading.Lock()
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
-        # Model-scoped 429 cooldowns: (entry_id, model) -> epoch seconds when
-        # the cooldown lifts.  Deliberately in-memory only (no PooledCredential
-        # schema change): these windows are short-lived relative to the
-        # process, and losing them on restart only costs one extra 429 before
-        # the cooldown is re-learned (issue #61451).
-        self._model_cooldowns: Dict[Tuple[str, str], float] = {}
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
 
-    def has_available(self) -> bool:
+    def has_available(self, model: Optional[str] = None) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown."""
-        return bool(self._available_entries())
+        with self._lock:
+            return bool(self._available_entries(model=model))
 
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
@@ -1443,9 +1495,9 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
     def _available_entries(
         self,
@@ -1562,12 +1614,8 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
-            if model:
-                cooldown_until = self._model_cooldowns.get((entry.id, model))
-                if cooldown_until is not None:
-                    if now < cooldown_until:
-                        continue
-                    self._model_cooldowns.pop((entry.id, model), None)
+            if model and _get_model_cooldown(self.provider, entry.id, model, now) is not None:
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)
@@ -1609,11 +1657,13 @@ class CredentialPool:
         self._current_id = entry.id
         return entry
 
-    def peek(self) -> Optional[PooledCredential]:
+    def peek(self, model: Optional[str] = None) -> Optional[PooledCredential]:
         current = self.current()
-        if current is not None:
+        if current is not None and _get_model_cooldown(
+            self.provider, current.id, model, time.time()
+        ) is None:
             return current
-        available = self._available_entries()
+        available = self._available_entries(model=model)
         return available[0] if available else None
 
     def mark_exhausted_and_rotate(
@@ -1658,13 +1708,15 @@ class CredentialPool:
                 cooldown_until = normalized_error.get("reset_at")
                 if cooldown_until is None:
                     cooldown_until = time.time() + _exhausted_ttl(429)
-                self._model_cooldowns[(entry.id, model)] = float(cooldown_until)
+                normalized_model = _set_model_cooldown(
+                    self.provider, entry.id, model, float(cooldown_until)
+                )
                 logger.info(
                     "credential pool: %s hit a model-scoped 429 for %s — "
                     "cooling only that model until %s; credential stays "
                     "available for other models",
                     _label,
-                    model,
+                    normalized_model,
                     datetime.fromtimestamp(
                         float(cooldown_until), tz=timezone.utc
                     ).isoformat(timespec="seconds"),

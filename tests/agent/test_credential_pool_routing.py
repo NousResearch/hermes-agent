@@ -222,7 +222,11 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=402,
+            error_context=None,
+            model=None,
+        )
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""

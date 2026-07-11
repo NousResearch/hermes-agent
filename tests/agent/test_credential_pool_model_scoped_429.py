@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,6 +24,10 @@ def _clean_anthropic_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     # A real ~/.claude/.credentials.json would seed an extra claude_code entry.
     monkeypatch.setenv("HOME", str(tmp_path))
+    from agent import credential_pool
+
+    with credential_pool._MODEL_COOLDOWN_LOCK:
+        credential_pool._MODEL_COOLDOWNS.clear()
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -87,7 +93,7 @@ def test_model_scoped_429_cools_only_that_model(tmp_path, monkeypatch):
     assert [e.id for e in fable_available] == ["cred-2"]
 
 
-def test_model_scoped_cooldown_not_persisted(tmp_path, monkeypatch):
+def test_model_scoped_cooldown_survives_pool_reload(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _two_entry_anthropic_store(tmp_path)
 
@@ -102,10 +108,17 @@ def test_model_scoped_cooldown_not_persisted(tmp_path, monkeypatch):
         model_scoped=True,
     )
 
-    # A freshly loaded pool (e.g. another process) sees no exhaustion at all —
-    # the cooldown is in-memory by design, no PooledCredential schema change.
+    # Auxiliary client eviction reloads the pool.  The process-local registry
+    # must keep the attributed cooldown without changing auth.json's schema.
     reloaded = load_pool("anthropic")
     assert all(e.last_status is None for e in reloaded.entries())
+    assert [
+        e.id for e in reloaded._available_entries(model="anthropic/CLAUDE-FABLE-5")
+    ] == ["cred-2"]
+    assert [e.id for e in reloaded._available_entries(model="claude-opus-4-8")] == [
+        "cred-1",
+        "cred-2",
+    ]
 
 
 def test_model_scoped_cooldown_expires(tmp_path, monkeypatch):
@@ -124,7 +137,122 @@ def test_model_scoped_cooldown_expires(tmp_path, monkeypatch):
     )
     available = pool._available_entries(model="claude-fable-5")
     assert [e.id for e in available] == ["cred-1", "cred-2"]
-    assert not pool._model_cooldowns
+    from agent.credential_pool import _MODEL_COOLDOWNS
+
+    assert not _MODEL_COOLDOWNS
+
+
+def test_public_selection_seams_honor_canonical_model_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _two_entry_anthropic_store(tmp_path)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    assert pool.select(model="Anthropic/Claude-Fable-5").id == "cred-1"
+    pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reset_at": time.time() + 3600},
+        model="Anthropic/Claude-Fable-5",
+        model_scoped=True,
+    )
+
+    reloaded = load_pool("anthropic")
+    assert reloaded.has_available(model="claude-fable-5") is True
+    assert reloaded.select(model="claude-fable-5").id == "cred-2"
+    assert reloaded.peek(model="CLAUDE-FABLE-5").id == "cred-2"
+
+
+def test_main_recovery_attributes_anthropic_429_and_survives_reload(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _two_entry_anthropic_store(tmp_path)
+
+    from agent.agent_runtime_helpers import recover_with_credential_pool
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    first = pool.select(model="claude-fable-5")
+    agent = SimpleNamespace(
+        _credential_pool=pool,
+        provider="anthropic",
+        model="anthropic/claude-fable-5",
+        _swap_credential=MagicMock(),
+    )
+
+    recovered, retried = recover_with_credential_pool(
+        agent,
+        status_code=429,
+        has_retried_429=True,
+        error_context={
+            "reset_at": time.time() + 3600,
+            "anthropic_unified_utilizations": [0.1, 0.4],
+        },
+    )
+
+    assert recovered is True
+    assert retried is False
+    assert first.id == "cred-1"
+    assert agent._swap_credential.call_args.args[0].id == "cred-2"
+    reloaded = load_pool("anthropic")
+    assert reloaded.select(model="claude-fable-5").id == "cred-2"
+
+
+def test_auxiliary_recovery_evicts_client_without_losing_model_cooldown(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _two_entry_anthropic_store(tmp_path)
+
+    from agent import auxiliary_client
+    from agent.credential_pool import load_pool
+
+    class _Response:
+        headers = {
+            "anthropic-ratelimit-unified-5h-utilization": "0.10",
+            "anthropic-ratelimit-unified-7d-utilization": "0.40",
+            "x-ratelimit-reset": str(time.time() + 7200),
+        }
+
+    class _RateLimitError(Exception):
+        status_code = 429
+        response = _Response()
+
+    with patch.object(auxiliary_client, "_evict_cached_clients") as evict:
+        assert auxiliary_client._recover_provider_pool(
+            "anthropic",
+            _RateLimitError("rate limited"),
+            model="Anthropic/Claude-Fable-5",
+        ) is True
+
+    evict.assert_called_once_with("anthropic")
+    from agent.credential_pool import _MODEL_COOLDOWNS
+
+    assert next(iter(_MODEL_COOLDOWNS.values())) > time.time() + 7100
+    # The client rebuild loads a new pool instance. It must choose cred-2 for
+    # the same canonical model while leaving cred-1 usable by Opus.
+    reloaded = load_pool("anthropic")
+    assert reloaded.select(model="claude-fable-5").id == "cred-2"
+    other_model_pool = load_pool("anthropic")
+    assert other_model_pool.select(model="claude-opus-4-8").id == "cred-1"
+
+
+@pytest.mark.parametrize("status_code", [401, 402, 403])
+def test_non_429_failures_remain_credential_wide(tmp_path, monkeypatch, status_code):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _two_entry_anthropic_store(tmp_path)
+
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    pool = load_pool("anthropic")
+    pool.select(model="claude-fable-5")
+    pool.mark_exhausted_and_rotate(
+        status_code=status_code,
+        error_context=None,
+        model="claude-fable-5",
+        model_scoped=True,
+    )
+    first = next(entry for entry in pool.entries() if entry.id == "cred-1")
+    assert first.last_status == STATUS_EXHAUSTED
 
 
 def test_all_credentials_cooled_for_model_returns_none(tmp_path, monkeypatch):

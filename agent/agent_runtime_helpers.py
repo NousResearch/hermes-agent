@@ -774,6 +774,8 @@ def recover_with_credential_pool(
         elif status_code in {401, 403}:
             effective_reason = FailoverReason.auth
 
+    active_model = (getattr(agent, "model", "") or "").strip() or None
+
     if effective_reason == FailoverReason.upstream_rate_limit:
         # An upstream provider (e.g. DeepSeek behind OpenRouter) is
         # rate-limiting the aggregator's traffic — the user's credential is
@@ -795,7 +797,11 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            model=active_model,
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -814,7 +820,7 @@ def recover_with_credential_pool(
         # instead of parking the whole credential (issue #61451).
         from agent.credential_pool import is_model_scoped_429_context
 
-        rate_limited_model = (getattr(agent, "model", "") or "").strip() or None
+        rate_limited_model = active_model
         model_scoped = (
             current_provider == "anthropic"
             and rate_limited_model is not None
@@ -966,7 +972,11 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            model=active_model,
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",
@@ -1276,8 +1286,9 @@ def restore_primary_runtime(agent) -> bool:
         # When the pool is absent, empty, or the entry has no usable key, we
         # keep the snapshot key (the existing behavior).  Fixes #25205.
         pool = getattr(agent, "_credential_pool", None)
-        if pool is not None and pool.has_available():
-            entry = pool.select()
+        restored_model = (getattr(agent, "model", "") or "").strip() or None
+        if pool is not None and pool.has_available(model=restored_model):
+            entry = pool.select(model=restored_model)
             if entry is not None:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
                 entry_matches_primary = entry_provider == primary_provider

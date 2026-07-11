@@ -215,10 +215,10 @@ class TestRestorePrimaryRuntime:
         class _Pool:
             provider = "openrouter"
 
-            def has_available(self):
+            def has_available(self, model=None):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         agent = _make_agent(
@@ -263,10 +263,10 @@ class TestRestorePrimaryRuntime:
         class _DeepseekPool:
             provider = "deepseek"
 
-            def has_available(self):
+            def has_available(self, model=None):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _DeepseekEntry()
 
         agent = _make_agent(
@@ -342,10 +342,10 @@ class TestRestorePrimaryRuntime:
         class _Pool:
             provider = "custom:myllm"
 
-            def has_available(self):
+            def has_available(self, model=None):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")
@@ -381,10 +381,10 @@ class TestRestorePrimaryRuntime:
         class _Pool:
             provider = "custom:otherllm"
 
-            def has_available(self):
+            def has_available(self, model=None):
                 return True
 
-            def select(self):
+            def select(self, model=None):
                 return _Entry()
 
         agent = _make_agent(provider="custom", base_url="https://my-llm.example.com/v1")

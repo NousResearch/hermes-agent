@@ -741,7 +741,10 @@ def _to_openai_base_url(base_url: str) -> str:
     return url
 
 
-def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
+def _select_pool_entry(
+    provider: str,
+    model: Optional[str] = None,
+) -> Tuple[bool, Optional[Any]]:
     """Return (pool_exists_for_provider, selected_entry)."""
     try:
         pool = load_pool(provider)
@@ -751,6 +754,8 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
     if not pool or not pool.has_credentials():
         return False, None
     try:
+        if model:
+            return True, pool.select(model=model)
         return True, pool.select()
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
@@ -2469,7 +2474,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _select_pool_entry("openai-codex", model=model)
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
         if codex_token:
@@ -2607,13 +2612,16 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(
+    explicit_api_key: str = None,
+    model: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
         return None, None
 
-    pool_present, entry = _select_pool_entry("anthropic")
+    pool_present, entry = _select_pool_entry("anthropic", model=model)
     if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
@@ -3287,6 +3295,23 @@ def _pool_error_context(exc: Exception) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"message": str(exc)}
     if status is not None:
         payload["status_code"] = status
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers:
+        try:
+            reset_at = headers.get("x-ratelimit-reset")
+            retry_after = headers.get("retry-after")
+        except Exception:
+            reset_at = None
+            retry_after = None
+        if reset_at:
+            payload["reset_at"] = reset_at
+        elif retry_after:
+            # _normalize_error_context understands reset timestamps directly;
+            # convert Retry-After seconds to the same absolute form.
+            try:
+                payload["reset_at"] = time.time() + float(retry_after)
+            except (TypeError, ValueError):
+                pass
     return payload
 
 
@@ -3374,6 +3399,7 @@ def _recover_provider_pool(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
             api_key_hint=hint,
+            model=model or None,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -4903,7 +4929,10 @@ def resolve_provider_client(
 
     if pconfig.auth_type == "api_key":
         if provider == "anthropic":
-            client, default_model = _try_anthropic(explicit_api_key=explicit_api_key)
+            client, default_model = _try_anthropic(
+                explicit_api_key=explicit_api_key,
+                model=model,
+            )
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
@@ -5258,7 +5287,7 @@ def _resolve_strict_vision_backend(
         # allow-list); callers must specify via auxiliary.<task>.model.
         return resolve_provider_client("openai-codex", model, is_vision=True)
     if provider == "anthropic":
-        return _try_anthropic()
+        return _try_anthropic(model=model)
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None
@@ -6858,7 +6887,11 @@ def call_llm(
                     # alternative providers can still serve the request.
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
+                        _recover_provider_pool(
+                            pool_provider,
+                            retry2_err,
+                            model=str(final_model or ""),
+                        )
                         first_err = retry2_err
                     else:
                         raise
@@ -7395,7 +7428,11 @@ async def async_call_llm(
                 except Exception as retry2_err:
                     if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                             or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
+                        _recover_provider_pool(
+                            pool_provider,
+                            retry2_err,
+                            model=str(final_model or ""),
+                        )
                         first_err = retry2_err
                     else:
                         raise

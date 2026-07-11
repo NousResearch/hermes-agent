@@ -288,7 +288,7 @@ def _routermint_headers() -> dict:
     }
 
 
-def _pool_may_recover_from_rate_limit(pool) -> bool:
+def _pool_may_recover_from_rate_limit(pool, model: Optional[str] = None) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
     The existing pool-rotation path requires the pool to (1) exist and (2) have
@@ -308,7 +308,7 @@ def _pool_may_recover_from_rate_limit(pool) -> bool:
     """
     if pool is None:
         return False
-    if not pool.has_available():
+    if not pool.has_available(model=model):
         return False
     return len(pool.entries()) > 1
 
@@ -4560,7 +4560,7 @@ class AIAgent:
         pool = self._credential_pool
         if pool is None:
             return False
-        return pool.has_available()
+        return pool.has_available(model=self.model)
 
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":

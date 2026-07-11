@@ -545,6 +545,11 @@ async def test_compress_command_emits_in_progress_status():
     """
     history = _make_history()
     runner = _make_runner(history)
+    # The handler bridges tmp_agent.status_callback -> platform adapter via
+    # _send_or_update_status_coro; give it a fake adapter so the delivery path
+    # actually fires (otherwise _adapter_for_source returns None and the
+    # bridge early-returns).
+    runner._adapter_for_source = lambda *a, **kw: _adapter
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
     agent_instance.close = MagicMock()
@@ -553,20 +558,44 @@ async def test_compress_command_emits_in_progress_status():
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
+    # Mirror the real AIAgent._emit_status: it forwards to status_callback,
+    # which the handler bridges to the platform adapter. Without this the
+    # MagicMock would swallow the callback and we'd only be proving invocation,
+    # not adapter-visible delivery.
+    def _emit_status(message: str) -> None:
+        cb = agent_instance.status_callback
+        if cb:
+            cb("lifecycle", message)
+
+    agent_instance._emit_status = _emit_status
+    # The handler bridges tmp_agent.status_callback -> platform adapter via
+    # _send_or_update_status_coro. Assert the indicator reaches that delivery
+    # call (adapter-visible), not just that _emit_status was invoked on the
+    # agent and dropped.
+    _adapter = MagicMock()
+
+    def _fake_send(adapter, chat_id, status_key, content, metadata):
+        # Mirror the real coroutine's adapter.send delivery so we can assert
+        # the in-progress text actually reaches the platform adapter.
+        adapter.send(chat_id, content)
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+        patch("gateway.run._send_or_update_status_coro", _fake_send),
+        patch("agent.async_utils.safe_schedule_threadsafe", lambda *a, **kw: None),
     ):
         await runner._handle_compress_command(_make_event())
 
-    # A "Compressing context" status was emitted before the summary call ran.
-    assert agent_instance._emit_status.called
-    _status_texts = [c.args[0] for c in agent_instance._emit_status.call_args_list]
-    assert any("Compressing context" in t for t in _status_texts), (
-        f"expected an in-progress 'Compressing context' status, got: {_status_texts}"
-    )
+    # A "Compressing context" status was delivered to the platform adapter
+    # BEFORE the summary call ran (adapter-visible, not just invoked on the
+    # agent and dropped).
+    assert _adapter.send.called
+    _delivered = [c.args[1] for c in _adapter.send.call_args_list]
+    assert any(
+        "Compressing context" in (t or "") for t in _delivered
+    ), f"expected an in-progress 'Compressing context' delivery via adapter, got: {_delivered}"
     # The compression call itself still happened.
     agent_instance._compress_context.assert_called_once()

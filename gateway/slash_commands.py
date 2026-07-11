@@ -3209,6 +3209,41 @@ class GatewaySlashCommandsMixin:
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),
             )
+            # Bridge status → platform adapter so the in-progress "Compressing
+            # context…" indicator actually reaches the gateway user. The temp
+            # agent has no status_callback by default (unlike the live agent in
+            # gateway/run.py:18238), so _emit_status would otherwise go nowhere.
+            # Mirrors gateway/run.py's _status_callback_sync bridge.
+            try:
+                from agent.async_utils import safe_schedule_threadsafe
+                from gateway.run import (
+                    _prepare_gateway_status_message,
+                    _send_or_update_status_coro,
+                )
+
+                _status_adapter = self._adapter_for_source(source)
+                _status_chat_id = source.chat_id
+                _status_loop = asyncio.get_running_loop()
+
+                def _status_cb(event_type: str, message: str) -> None:
+                    if not _status_adapter:
+                        return
+                    _prepared = _prepare_gateway_status_message(
+                        source.platform, event_type, message
+                    )
+                    if _prepared is None:
+                        return
+                    safe_schedule_threadsafe(
+                        _send_or_update_status_coro(
+                            _status_adapter, _status_chat_id, event_type, _prepared, None
+                        ),
+                        _status_loop,
+                        logger=logger,
+                    )
+
+                tmp_agent.status_callback = _status_cb
+            except Exception:
+                pass
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
                 # Prevent close() from ending the newly rotated session —

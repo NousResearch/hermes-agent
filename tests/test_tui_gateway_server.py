@@ -4029,6 +4029,55 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     emit.assert_any_call("status.update", "sid", {"kind": "status", "text": "ready"})
 
 
+def test_slash_exec_compress_emits_progress(monkeypatch):
+    """Regression guard: the /compress side-effect mirror (the path
+    `slash.exec` actually takes for /compress) must surface an in-progress
+    'compressing' status BEFORE _compress_session_history runs, and clear it
+    (ready) afterwards.
+
+    This is the live route the sweeper review flagged after routing moved away
+    from the stale slash.exec-compress branch; without this test the indicator
+    could silently regress.
+    """
+    import types
+
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+    session["history"] = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": "d"},
+    ]
+
+    _order = []
+
+    def _fake_status_update(sid, kind, text=None):
+        _order.append(("status_update", kind, text))
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        _order.append(("compress", None, None))
+        return (1, {"total": 10})
+
+    monkeypatch.setattr(server, "_status_update", _fake_status_update)
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **kw: None)
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress")
+
+    # No busy warning, and the in-progress status fired before compression.
+    assert "session busy" not in warning
+    assert any(
+        k == "compressing" and "compressing" in (t or "")
+        for (_s, k, t) in _order
+    ), f"expected an in-progress 'compressing' status, got: {_order}"
+    assert ("compress", None, None) in _order
+    assert any(k == "ready" for (_s, k, t) in _order), f"expected 'ready' clear, got: {_order}"
+    # compressing must come BEFORE the compress call, ready AFTER.
+    assert _order.index(next(o for o in _order if o[1] == "compressing")) < _order.index(("compress", None, None))
+    assert _order.index(("compress", None, None)) < _order.index(next(o for o in _order if o[1] == "ready"))
+
+
 def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
     """When AIAgent._compress_context rotates session_id (compression split),
     the gateway session_key must follow so subsequent approval routing,

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -43,6 +44,59 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_verify_public_message_receipt_checks_bot_author_and_content():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    message = SimpleNamespace(
+        id=1234,
+        author=SimpleNamespace(id=42),
+        content="verified delivery",
+    )
+    channel = SimpleNamespace(
+        id=555,
+        guild=SimpleNamespace(id=1),
+        fetch_message=AsyncMock(return_value=message),
+    )
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    digest = hashlib.sha256(message.content.encode()).hexdigest()
+
+    receipt = await adapter.verify_public_message_receipt(
+        channel_id="555",
+        message_id="1234",
+        expected_content_sha256=digest,
+    )
+
+    assert receipt["verified"] is True
+    assert receipt["content_sha256"] == digest
+
+
+@pytest.mark.asyncio
+async def test_verify_public_message_receipt_rejects_content_mismatch():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    message = SimpleNamespace(id=1234, author=SimpleNamespace(id=42), content="actual")
+    channel = SimpleNamespace(
+        id=555,
+        guild=SimpleNamespace(id=1),
+        fetch_message=AsyncMock(return_value=message),
+    )
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    with pytest.raises(RuntimeError, match="content hash mismatch"):
+        await adapter.verify_public_message_receipt(
+            channel_id="555",
+            message_id="1234",
+            expected_content_sha256="a" * 64,
+        )
 
 
 @pytest.mark.asyncio
@@ -163,6 +217,67 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_single_receipt_send_rejects_format_expansion_before_any_post():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        type=0,
+        guild=SimpleNamespace(id=1),
+        send=AsyncMock(return_value=SimpleNamespace(id=1234)),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    content = (
+        "| Column Alpha | Column Beta | Column Gamma |\n"
+        "|---|---|---|\n"
+        + "".join(
+            f"| row{index} | value{index} | detail{index} |\n"
+            for index in range(50)
+        )
+    )
+    assert len(content) < adapter.MAX_MESSAGE_LENGTH
+    assert len(adapter.format_message(content)) > adapter.MAX_MESSAGE_LENGTH
+
+    result = await adapter.send(
+        "555",
+        content,
+        metadata={"require_single_public_receipt": True},
+    )
+
+    assert result.success is False
+    assert "exactly one formatted public message" in (result.error or "")
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_single_receipt_send_allows_exactly_one_formatted_public_post():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        type=0,
+        guild=SimpleNamespace(id=1),
+        send=AsyncMock(return_value=SimpleNamespace(id=1234)),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "555",
+        "One receipt-bound post",
+        metadata={"require_single_public_receipt": True},
+    )
+
+    assert result.success is True
+    assert result.message_id == "1234"
+    channel.send.assert_awaited_once_with(
+        content="One receipt-bound post",
+        reference=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------
@@ -199,6 +314,29 @@ class TestIsForumParent:
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
         ch = SimpleNamespace(type=11)  # public thread
         assert adapter._is_forum_parent(ch) is False
+
+
+@pytest.mark.asyncio
+async def test_single_receipt_send_rejects_forum_parent_before_thread_creation():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    forum_channel = _discord_mod.ForumChannel()
+    forum_channel.id = 999
+    forum_channel.guild = SimpleNamespace(id=1)
+    forum_channel.create_thread = AsyncMock()
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: forum_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "999",
+        "Receipt-bound route-back",
+        metadata={"require_single_public_receipt": True},
+    )
+
+    assert result.success is False
+    assert "forum parents are not supported" in (result.error or "")
+    forum_channel.create_thread.assert_not_awaited()
 
 
 @pytest.mark.asyncio

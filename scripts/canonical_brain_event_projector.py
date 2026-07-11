@@ -41,8 +41,8 @@ def read_events(helper_path: pathlib.Path, *, limit: int) -> list[dict[str, Any]
         sock = helper.connect(password)
         try:
             result = helper.query(sock, f"""
-SELECT event_id::text, event_type, case_id, occurred_at::text,
-       source, status, next_action, payload
+SELECT event_id::text, schema_version, event_type, case_id, occurred_at::text,
+       source, actor, subject, evidence, decision, status, next_action, safety, payload
 FROM {EVENT_TABLE}
 WHERE event_type <> 'runtime.lease.renewed'
 ORDER BY occurred_at DESC, event_id DESC
@@ -58,8 +58,9 @@ LIMIT {int(limit)};
         password = ""
 
     columns = [
-        "event_id", "event_type", "case_id", "occurred_at",
-        "source", "status", "next_action", "payload",
+        "event_id", "schema_version", "event_type", "case_id", "occurred_at",
+        "source", "actor", "subject", "evidence", "decision", "status",
+        "next_action", "safety", "payload",
     ]
     return [
         row if isinstance(row, dict) else dict(zip(columns, row))
@@ -82,17 +83,17 @@ def projection_documents(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]
     ]
     return {
         "cases.json": {
-            "schema": "canonical_brain.projection.cases.v2",
+            "schema": "canonical_brain.projection.cases.v3",
             "created_at": created_at,
             "items": cases,
         },
         "route_backs.json": {
-            "schema": "canonical_brain.projection.route_backs.v2",
+            "schema": "canonical_brain.projection.route_backs.v3",
             "created_at": created_at,
             "items": route_backs,
         },
         "index.json": {
-            "schema": "canonical_brain.projection.index.v2",
+            "schema": "canonical_brain.projection.index.v3",
             "created_at": created_at,
             "source": "canonical_event_log",
             "event_count": len(rows),

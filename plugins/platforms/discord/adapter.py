@@ -2025,6 +2025,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+            require_single_public_receipt = bool(
+                metadata and metadata.get("require_single_public_receipt")
+            )
+
             dm_types = tuple(
                 t for t in (
                     getattr(discord, "DMChannel", None),
@@ -2040,11 +2044,27 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
+                if require_single_public_receipt:
+                    return SendResult(
+                        success=False,
+                        error=(
+                            "Discord forum parents are not supported for "
+                            "single-message receipt delivery"
+                        ),
+                    )
                 return await self._send_to_forum(channel, content)
 
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            if require_single_public_receipt and len(chunks) != 1:
+                return SendResult(
+                    success=False,
+                    error=(
+                        "Discord receipt delivery requires exactly one formatted "
+                        f"public message; formatting produced {len(chunks)} chunks"
+                    ),
+                )
 
             message_ids = []
             reference = None
@@ -2113,6 +2133,56 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def verify_public_message_receipt(
+        self,
+        *,
+        channel_id: str,
+        message_id: str,
+        expected_content_sha256: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read back one bot-authored public message as delivery evidence.
+
+        This is a mechanical adapter receipt check. It does not interpret the
+        message or choose a target. DMs/group DMs and non-bot-authored messages
+        fail closed.
+        """
+        if not self._client or not getattr(self._client, "user", None):
+            raise RuntimeError("Discord client is not connected")
+        channel = self._client.get_channel(int(channel_id))
+        if channel is None:
+            channel = await self._client.fetch_channel(int(channel_id))
+        dm_types = tuple(
+            cls for cls in (
+                getattr(discord, "DMChannel", None),
+                getattr(discord, "GroupChannel", None),
+            )
+            if isinstance(cls, type)
+        )
+        if (
+            channel is None
+            or (dm_types and isinstance(channel, dm_types))
+            or getattr(channel, "guild", None) is None
+        ):
+            raise RuntimeError("Discord receipt target is not a public guild channel/thread")
+        message = await channel.fetch_message(int(message_id))
+        author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
+        bot_id = str(getattr(self._client.user, "id", "") or "")
+        if not author_id or author_id != bot_id:
+            raise RuntimeError("Discord receipt message was not authored by this bot")
+        actual_sha256 = hashlib.sha256(
+            str(getattr(message, "content", "") or "").encode("utf-8")
+        ).hexdigest()
+        if expected_content_sha256 and actual_sha256 != expected_content_sha256:
+            raise RuntimeError("Discord receipt content hash mismatch")
+        return {
+            "verified": True,
+            "platform": "discord",
+            "channel_id": str(getattr(channel, "id", channel_id)),
+            "message_id": str(getattr(message, "id", message_id)),
+            "content_sha256": actual_sha256,
+            "bot_user_id": bot_id,
+        }
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.

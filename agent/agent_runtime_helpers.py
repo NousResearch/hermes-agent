@@ -2254,6 +2254,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     todos=next_args.get("todos"),
                     merge=next_args.get("merge", False),
                     store=agent._todo_store,
+                    plan_approval=next_args.get("plan_approval"),
+                    goal_outcome=next_args.get("goal_outcome"),
+                    session_key=str(
+                        getattr(agent, "_gateway_session_key", None)
+                        or agent.session_id
+                        or ""
+                    ),
+                    user_id=str(getattr(agent, "user_id", None) or ""),
                 ),
                 next_args,
             )

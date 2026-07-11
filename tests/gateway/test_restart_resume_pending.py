@@ -38,6 +38,7 @@ from gateway.run import (
     _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
+    _canonical_workspace_failure_result,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
@@ -69,6 +70,19 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"failed": True}) is False
     assert _should_clear_resume_pending_after_turn({"partial": True}) is False
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
+    assert _should_clear_resume_pending_after_turn({
+        "final_response": "Brain unavailable",
+        "canonical_workspace_recovery_incomplete": True,
+    }) is False
+
+
+def test_unexpected_workspace_exception_is_fail_closed_incomplete():
+    result = _canonical_workspace_failure_result()
+
+    assert result["status"] == "incomplete"
+    assert result["reason"] == "workspace_recovery_exception"
+    assert result["todo_hydrated"] is False
+    assert "Do not treat recovery as complete" in result["note"]
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

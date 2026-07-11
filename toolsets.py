@@ -67,6 +67,7 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Canonical Brain operational persistence (private/runtime-gated on Cloud SQL helper + profile config)
     "canonical_brain_query", "canonical_event_append", "route_back_state",
+    "route_back_execute",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -191,7 +192,10 @@ TOOLSETS = {
 
     "canonical_brain": {
         "description": "Canonical Brain operational persistence: append Cloud SQL events and record route-back state. Hermes decides meaning; these tools only validate/persist/receipt state.",
-        "tools": ["canonical_brain_query", "canonical_event_append", "route_back_state"],
+        "tools": [
+            "canonical_brain_query", "canonical_event_append",
+            "route_back_state", "route_back_execute",
+        ],
         "includes": []
     },
     

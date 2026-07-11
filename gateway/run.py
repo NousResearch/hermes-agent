@@ -2701,7 +2701,27 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
         return False
     if agent_result.get("completed") is False:
         return False
+    if agent_result.get("canonical_workspace_recovery_incomplete"):
+        return False
     return True
+
+
+def _canonical_workspace_failure_result(
+    reason: str = "workspace_recovery_exception",
+) -> dict:
+    """Return a fail-closed recovery result for unexpected workspace errors."""
+    return {
+        "status": "incomplete",
+        "reason": reason,
+        "note": (
+            "[Canonical Task Workspace — incomplete restart resume]\n"
+            "Runtime recovery raised an internal exception before it could establish "
+            "one exact active plan. Do not treat recovery as complete or blindly replay "
+            "old tool calls. Retry exact Canonical Brain reads and report a concrete "
+            "blocker if the state remains unavailable."
+        ),
+        "todo_hydrated": False,
+    }
 
 
 def _preserve_queued_followup_history_offset(
@@ -11110,14 +11130,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
 
+        _routeback_context_prompt = ""
         try:
             from gateway.canonical_brain_routeback_context import (
                 build_routeback_context_prompt_for_session,
             )
 
-            _routeback_context_prompt = build_routeback_context_prompt_for_session(context)
-            if _routeback_context_prompt:
-                context_prompt += "\n\n" + _routeback_context_prompt
+            # Cloud SQL access is synchronous; keep it off the gateway event
+            # loop so a slow Canonical Brain cannot stall Discord heartbeats.
+            _routeback_context_prompt = await asyncio.wait_for(
+                asyncio.to_thread(
+                    build_routeback_context_prompt_for_session,
+                    context,
+                ),
+                timeout=15.0,
+            )
         except Exception as exc:
             logger.debug("Canonical Brain route-back context prompt failed: %s", exc)
 
@@ -11696,6 +11723,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
 
+        _real_user_message_present = bool(
+            (
+                persist_user_message
+                if persist_user_message is not None
+                else message_text
+            ).strip()
+            if isinstance(
+                persist_user_message
+                if persist_user_message is not None
+                else message_text,
+                str,
+            )
+            else (
+                persist_user_message
+                if persist_user_message is not None
+                else message_text
+            )
+        )
+
+        # Canonical route-back state changes over time. Put it in this
+        # replayable current user turn, not
+        # in ``context_prompt``: that value participates in the cached-agent
+        # signature and dynamic Brain state there would destroy prompt-cache
+        # continuity on every lifecycle update. Persist the exact snapshot the
+        # API sees so the next turn's cached history prefix stays byte-stable.
+        if _routeback_context_prompt and isinstance(message_text, str):
+            from gateway.canonical_brain_routeback_context import (
+                attach_routeback_context_to_user_turn,
+            )
+            message_text, persist_user_message = attach_routeback_context_to_user_turn(
+                message_text,
+                persist_user_message,
+                _routeback_context_prompt,
+            )
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -11736,6 +11798,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                real_user_message_present=_real_user_message_present,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -17316,6 +17379,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        real_user_message_present: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -17334,6 +17398,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                real_user_message_present=real_user_message_present,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -17345,6 +17410,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                real_user_message_present=real_user_message_present,
             )
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -17377,6 +17443,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        real_user_message_present: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -19106,10 +19173,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
-            # Keep real user text separate from API-only recovery guidance.  If
-            # an auto-continue note is prepended below, persist the original
-            # message so stale guidance never replays as user-authored text.
+            # Capture whether this event carried a real user message before
+            # any recovery snapshot is added. Canonical recovery snapshots are
+            # persisted exactly for cache replay; generic tool-tail guidance
+            # retains its existing raw-message persistence behavior.
             _persist_user_message_override: Optional[Any] = persist_user_message
+            if real_user_message_present is None:
+                _real_user_message = (
+                    persist_user_message
+                    if persist_user_message is not None
+                    else message
+                )
+                _has_real_user_message = bool(
+                    _real_user_message.strip()
+                    if isinstance(_real_user_message, str)
+                    else _real_user_message
+                )
+            else:
+                _has_real_user_message = bool(real_user_message_present)
             _persist_user_timestamp_override: Optional[float] = persist_user_timestamp
 
             # Prepend pending model switch note so the model knows about the switch
@@ -19183,6 +19264,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and _interruption_is_fresh
             )
 
+            _canonical_workspace_recovery_incomplete = False
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _reason_phrase = (
@@ -19192,29 +19274,89 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _reason == "shutdown_timeout"
                     else "a gateway interruption"
                 )
-                _persist_user_message_override = message
+                if _persist_user_message_override is None:
+                    _persist_user_message_override = message
+                _task_workspace_resume: Dict[str, Any] = {"status": "none", "note": ""}
+                if getattr(source, "platform", None) == Platform.DISCORD:
+                    try:
+                        from gateway.canonical_brain_task_workspace import (
+                            prepare_task_workspace_resume,
+                        )
+
+                        _task_workspace_resume = prepare_task_workspace_resume(
+                            thread_id=str(
+                                getattr(source, "thread_id", None)
+                                or getattr(source, "chat_id", None)
+                                or ""
+                            ),
+                            session_key=str(session_key or ""),
+                            todo_store=getattr(agent, "_todo_store", None),
+                            hydrate_local_state=not _has_real_user_message,
+                        )
+                    except Exception as _workspace_exc:
+                        logger.debug(
+                            "Canonical Task Workspace restart recovery failed soft: %s",
+                            _workspace_exc,
+                        )
+                        _task_workspace_resume = _canonical_workspace_failure_result()
+                _workspace_status = str(_task_workspace_resume.get("status") or "none")
+                _workspace_note = str(_task_workspace_resume.get("note") or "")
                 # The empty-message case is the auto-resume startup turn
                 # synthesized by _schedule_resume_pending_sessions — there is
                 # no NEW user message to address, so tell the model to report
                 # recovery instead of the (nonexistent) "new message".
-                if message:
+                if _has_real_user_message:
                     _resume_guidance = (
                         "Address the user's NEW message below FIRST and focus "
-                        "on what the user is asking now."
+                        "on what the user is asking now. If an exact Canonical "
+                        "Task Workspace follows, GPT decides whether the new "
+                        "message changes, supersedes, or continues that plan."
+                    )
+                elif _workspace_status == "exact":
+                    _resume_guidance = (
+                        "An exact active Canonical Task Workspace was recovered. "
+                        "Continue it from the next unverified step through its "
+                        "explicit completion or blocker contract."
+                    )
+                elif _workspace_status in {"ambiguous", "incomplete"}:
+                    _resume_guidance = (
+                        "Canonical Task Workspace recovery did not establish one "
+                        "complete, unambiguous active plan. GPT must inspect the "
+                        "structured state, retry exact reads when appropriate, report "
+                        "a concrete blocker, or ask a focused clarification only if "
+                        "ambiguity remains."
                     )
                 else:
                     _resume_guidance = (
                         "Report to the user that the session was restored "
                         "successfully and ask what they would like to do next."
                     )
+                if _workspace_status in {"exact", "ambiguous", "incomplete"}:
+                    _history_guidance = (
+                        "Do NOT blindly replay old tool calls. Use the durable structured "
+                        "workspace below, re-check live external state where needed, and "
+                        "continue only the remaining explicit work."
+                    )
+                else:
+                    _history_guidance = (
+                        "Do NOT re-execute old tool calls — skip any unfinished "
+                        "work from the conversation history."
+                    )
                 message = (
                     f"[System note: The previous turn was interrupted by "
                     f"{_reason_phrase}; the gateway is now back online. "
                     f"Any restart/shutdown command in the history has already "
                     f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
+                    f"{_history_guidance}]"
+                    + (f"\n\n{_workspace_note}" if _workspace_note else "")
                     + (f"\n\n{message}" if message else "")
+                )
+                # Preserve the exact API-visible recovery snapshot. Replacing
+                # it with only the raw user text on the next turn would mutate
+                # the cached conversation prefix.
+                _persist_user_message_override = message
+                _canonical_workspace_recovery_incomplete = (
+                    _workspace_status == "incomplete"
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -19599,6 +19741,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # self-persisted (it didn't — see codex_runtime.py).  Default
                 # True preserves the skip-db behaviour for the standard runtime.
                 "agent_persisted": (result_holder[0].get("agent_persisted", True) if result_holder[0] else True),
+                "canonical_workspace_recovery_incomplete": (
+                    _canonical_workspace_recovery_incomplete
+                ),
             }
         
         # Start progress message sender if enabled. Gate on needs_progress_queue

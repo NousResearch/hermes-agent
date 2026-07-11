@@ -279,6 +279,8 @@ def todo_tool(
                 approved_by_user_id=user_id,
                 ttl_seconds=plan_approval.get("ttl_seconds", 3600),
                 max_uses_per_command=plan_approval.get("max_uses_per_command", 3),
+                canonical_case_id=plan_approval.get("canonical_case_id", ""),
+                source_refs=plan_approval.get("source_refs") or {},
             )
         except Exception as exc:
             return tool_error(f"plan capability not granted: {exc}")
@@ -360,7 +362,6 @@ TODO_SCHEMA = {
                     "false (default): replace the entire list."
                 ),
                 "default": False
-            }
             },
             "plan_approval": {
                 "type": "object",
@@ -373,6 +374,17 @@ TODO_SCHEMA = {
                     "exact_commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64},
                     "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 28800},
                     "max_uses_per_command": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "canonical_case_id": {
+                        "type": "string",
+                        "description": (
+                            "Exact case: id for a durable Canonical Brain approval receipt. "
+                            "Omit only when Canonical Brain is unavailable."
+                        ),
+                    },
+                    "source_refs": {
+                        "type": "object",
+                        "description": "Exact approval message/session refs; runtime fills observed refs when omitted.",
+                    },
                 },
                 "required": ["plan_id", "exact_commands"],
             },
@@ -389,6 +401,7 @@ TODO_SCHEMA = {
                 },
                 "required": ["status", "reason"],
             },
+        },
         "required": []
     }
 }
@@ -403,8 +416,10 @@ registry.register(
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(
         todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store"),
+        plan_approval=args.get("plan_approval"),
         goal_outcome=args.get("goal_outcome"),
-        session_key=str(kw.get("session_key") or "")),
+        session_key=str(kw.get("session_key") or ""),
+        user_id=str(kw.get("user_id") or "")),
     check_fn=check_todo_requirements,
     emoji="📋",
 )

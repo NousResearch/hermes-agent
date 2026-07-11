@@ -9,9 +9,11 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import datetime as dt
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -20,6 +22,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -1406,6 +1409,13 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _plan_capabilities: dict[str, dict[str, dict]] = {}
+_plan_capability_consume_locks: dict[tuple[str, str, str], threading.Lock] = {}
+# Process-lifetime replay ledger for runtime-observed approval messages.  It is
+# intentionally not cleared with a session: clearing/restarting an agent task
+# must not turn the same owner message into fresh authority.  Cross-process
+# restoration remains deliberately unsupported until there is an atomic
+# durable lease/consume protocol.
+_plan_approval_source_states: dict[str, str] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
@@ -1574,6 +1584,167 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
         return any(alias in session_approvals for alias in aliases)
 
 
+def _observed_session_value(name: str) -> str:
+    """Read one runtime-bound session value with the legacy env fallback."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return str(get_session_env(name, "") or "").strip()
+    except Exception:
+        return str(os.getenv(name, "") or "").strip()
+
+
+def _observed_session_user_id() -> str:
+    """Return only the runtime-bound identity for the current agent turn."""
+    return _observed_session_value("HERMES_SESSION_USER_ID")
+
+
+def _observed_session_platform() -> str:
+    """Return the normalized runtime-bound source platform."""
+    return _observed_session_value("HERMES_SESSION_PLATFORM").casefold()
+
+
+def _observed_session_message_id() -> str:
+    """Return the current inbound message receipt id, never a model ref."""
+    return _observed_session_value("HERMES_SESSION_MESSAGE_ID")
+
+
+def _runtime_observed_approval_source_refs() -> dict[str, str]:
+    """Build approval linkage solely from immutable runtime session context."""
+    values = {
+        "platform": _observed_session_platform(),
+        "user_id": _observed_session_user_id(),
+        "message_id": _observed_session_message_id(),
+        "thread_id": _observed_session_value("HERMES_SESSION_THREAD_ID"),
+        "chat_id": _observed_session_value("HERMES_SESSION_CHAT_ID"),
+    }
+    return {key: value for key, value in values.items() if value}
+
+
+def _plan_approval_source_sha256(
+    source_refs: Optional[dict],
+    *,
+    require_runtime_observed: bool = False,
+    observed_platform: str = "",
+    observed_user_id: str = "",
+    observed_message_id: str = "",
+) -> str:
+    """Hash one approval turn without storing its raw content.
+
+    Canonical/gateway authority is derived only from the current immutable
+    runtime receipt.  ``source_refs`` remains a local/CLI compatibility input
+    and is never an authority fallback in a scoped runtime.
+    """
+    if require_runtime_observed:
+        if not observed_message_id:
+            raise PermissionError(
+                "plan capability requires the current runtime-observed owner message_id"
+            )
+        stable_ref = json.dumps(
+            {
+                "platform": observed_platform,
+                "user_id": observed_user_id,
+                "message_id": observed_message_id,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(stable_ref.encode("utf-8")).hexdigest()
+
+    observed_message_id = _observed_session_message_id()
+    refs = source_refs if isinstance(source_refs, dict) else {}
+    stable_ref = (
+        observed_message_id
+        or str(refs.get("message_id") or refs.get("event_ref") or refs.get("manual_ref") or "").strip()
+        or _approval_turn_id.get()
+        or "unscoped-approval-turn"
+    )
+    return hashlib.sha256(stable_ref.encode("utf-8")).hexdigest()
+
+
+def _canonical_brain_required() -> bool:
+    """Return explicit Canonical policy, independent of helper availability.
+
+    Once configuration enables Canonical Brain, missing code/credentials/DB
+    access must fail later validation closed; it must never downgrade the
+    approval path into a local capability.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return False
+    canonical = cfg.get("canonical_brain") if isinstance(cfg, dict) else None
+    if not isinstance(canonical, dict):
+        return False
+    audit = canonical.get("audit_bridge")
+    return bool(
+        canonical.get("tools_enabled")
+        or (isinstance(audit, dict) and audit.get("enabled"))
+    )
+
+
+def _canonical_active_plan_matches(*, case_id: str, plan_id: str) -> bool:
+    """Mechanically verify the exact active plan in Canonical Brain.
+
+    No free-form field is interpreted here.  Authority is bound only to the
+    exact case id, exact plan id, and explicit ``state == active`` projection.
+    Any query or shape failure is fail-closed.
+    """
+    try:
+        from tools.canonical_brain_tool import canonical_active_plan_matches
+
+        return bool(canonical_active_plan_matches(case_id=case_id, plan_id=plan_id))
+    except Exception as exc:
+        logger.warning("Canonical Brain active-plan validation failed: %s", exc)
+        return False
+
+
+def _canonical_receipt_committed(result: object) -> bool:
+    """Require a newly inserted row and verified readback for authority."""
+    return bool(
+        isinstance(result, dict)
+        and result.get("success") is True
+        and result.get("inserted") is True
+        and result.get("readback_verified") is True
+    )
+
+
+def _reserve_plan_approval_source(approval_source_sha256: str) -> str:
+    """Reserve one observed owner message against concurrent/replayed grants."""
+    reservation = f"pending:{uuid.uuid4()}"
+    with _lock:
+        if approval_source_sha256 in _plan_approval_source_states:
+            raise PermissionError(
+                "runtime-observed approval message was already used for a plan capability"
+            )
+        _plan_approval_source_states[approval_source_sha256] = reservation
+    return reservation
+
+
+def _release_plan_approval_source(
+    approval_source_sha256: str,
+    reservation: str,
+) -> None:
+    """Release only this failed, not-yet-granted reservation."""
+    with _lock:
+        if _plan_approval_source_states.get(approval_source_sha256) == reservation:
+            _plan_approval_source_states.pop(approval_source_sha256, None)
+
+
+def _plan_capability_consume_lock(
+    session_key: str,
+    plan_id: str,
+    command_sha256: str,
+) -> threading.Lock:
+    """Return the stable lock serializing one exact capability counter."""
+    key = (session_key, plan_id, command_sha256)
+    with _lock:
+        return _plan_capability_consume_locks.setdefault(key, threading.Lock())
+
+
 def grant_plan_capability(
     *,
     session_key: str,
@@ -1582,6 +1753,8 @@ def grant_plan_capability(
     approved_by_user_id: str,
     ttl_seconds: int = 3600,
     max_uses_per_command: int = 3,
+    canonical_case_id: str = "",
+    source_refs: Optional[dict] = None,
 ) -> dict:
     """Grant an expiring exact-command capability for an owner-approved plan.
 
@@ -1604,8 +1777,52 @@ def grant_plan_capability(
         raise PermissionError("plan capability requires an authenticated configured owner")
     session_key = str(session_key or "").strip()
     plan_id = str(plan_id or "").strip()
+    canonical_case_id = str(canonical_case_id or "").strip()
     if not session_key or not plan_id:
         raise ValueError("session_key and plan_id are required")
+    if canonical_case_id and not canonical_case_id.startswith("case:"):
+        raise ValueError("canonical_case_id must start with case:")
+    if source_refs is not None and not isinstance(source_refs, dict):
+        raise ValueError("source_refs must be an object")
+    observed_user_id = _observed_session_user_id()
+    observed_platform = _observed_session_platform()
+    observed_message_id = _observed_session_message_id()
+    # Gateway-scoped dangerous plan authority always depends on Canonical
+    # Task Workspace in this fork. A transient config/helper outage must not
+    # downgrade a live messaging turn into a local-only grant.
+    canonical_required = _canonical_brain_required() or bool(observed_platform)
+    runtime_scoped = (
+        canonical_required
+        or bool(canonical_case_id)
+        or bool(observed_platform)
+    )
+    if observed_user_id and observed_user_id != approved_by_user_id:
+        raise PermissionError(
+            "plan capability owner does not match the runtime-observed user"
+        )
+    if runtime_scoped and not observed_user_id:
+        raise PermissionError(
+            "plan capability requires a runtime-observed owner identity"
+        )
+    if runtime_scoped and observed_platform != "discord":
+        raise PermissionError(
+            "configured plan owner IDs are bound to the observed Discord platform"
+        )
+    if runtime_scoped and not observed_message_id:
+        raise PermissionError(
+            "plan capability requires the current runtime-observed owner message_id"
+        )
+    if canonical_required and not canonical_case_id:
+        raise PermissionError(
+            "Canonical Brain plan capability requires an exact canonical_case_id"
+        )
+    if canonical_required and not _canonical_active_plan_matches(
+        case_id=canonical_case_id,
+        plan_id=plan_id,
+    ):
+        raise PermissionError(
+            "Canonical Brain case does not contain the exact active plan_id"
+        )
     if not isinstance(exact_commands, list) or not 1 <= len(exact_commands) <= 64:
         raise ValueError("exact_commands must contain 1..64 commands")
     ttl_seconds = max(60, min(int(ttl_seconds), 8 * 3600))
@@ -1617,37 +1834,277 @@ def grant_plan_capability(
             raise ValueError("exact_commands cannot contain empty commands")
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         command_uses[digest] = max_uses_per_command
+    now = time.time()
+    authority_source_refs = (
+        _runtime_observed_approval_source_refs()
+        if runtime_scoped
+        else dict(source_refs or {})
+    )
+    approval_source_sha256 = _plan_approval_source_sha256(
+        source_refs,
+        require_runtime_observed=runtime_scoped,
+        observed_platform=observed_platform,
+        observed_user_id=observed_user_id,
+        observed_message_id=observed_message_id,
+    )
+    with _lock:
+        existing = _plan_capabilities.get(session_key, {}).get(plan_id)
+        if (
+            existing
+            and float(existing.get("expires_at") or 0) > now
+            and existing.get("approved_by_user_id") == approved_by_user_id
+            and set((existing.get("command_uses") or {}).keys()) == set(command_uses)
+            and int(existing.get("max_uses_per_command") or 0) == max_uses_per_command
+            and str(existing.get("canonical_case_id") or "") == canonical_case_id
+            and existing.get("approval_source_sha256") == approval_source_sha256
+            and existing.get("durably_granted") is True
+        ):
+            return {
+                "approval_id": existing["approval_id"],
+                "plan_id": plan_id,
+                "state": "granted",
+                "approved_by_user_id": approved_by_user_id,
+                "session_key_sha256": existing["session_key_sha256"],
+                "command_hashes": sorted(command_uses),
+                "command_count": len(command_uses),
+                "granted_at": existing["granted_at"],
+                "expires_at": dt.datetime.fromtimestamp(
+                    existing["expires_at"], dt.timezone.utc
+                ).replace(microsecond=0).isoformat(),
+                "expires_at_epoch": existing["expires_at"],
+                "expires_in_seconds": max(0, int(existing["expires_at"] - now)),
+                "max_uses_per_command": max_uses_per_command,
+                "approval_source_sha256": approval_source_sha256,
+                "existing_capability": True,
+            }
+    approval_source_reservation = (
+        _reserve_plan_approval_source(approval_source_sha256)
+        if runtime_scoped
+        else ""
+    )
+    expires_at = now + ttl_seconds
+    approval_id = str(uuid.uuid4())
     capability = {
+        "approval_id": approval_id,
         "plan_id": plan_id,
         "approved_by_user_id": approved_by_user_id,
-        "expires_at": time.time() + ttl_seconds,
+        "session_key_sha256": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
+        "expires_at": expires_at,
+        "granted_at": dt.datetime.fromtimestamp(now, dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "approval_source_sha256": approval_source_sha256,
         "command_uses": command_uses,
+        "max_uses_per_command": max_uses_per_command,
+        "canonical_case_id": canonical_case_id,
+        "source_refs": authority_source_refs,
+        "durably_granted": not canonical_case_id,
     }
     with _lock:
-        _plan_capabilities.setdefault(session_key, {})[plan_id] = capability
-    return {
+        session_plans = _plan_capabilities.setdefault(session_key, {})
+        previous_capability = session_plans.get(plan_id)
+        session_plans[plan_id] = capability
+        if approval_source_reservation and not canonical_case_id:
+            _plan_approval_source_states[approval_source_sha256] = (
+                f"used:{approval_id}"
+            )
+    receipt = {
+        "approval_id": approval_id,
         "plan_id": plan_id,
+        "state": "granted",
+        "approved_by_user_id": approved_by_user_id,
+        "session_key_sha256": capability["session_key_sha256"],
+        "command_hashes": sorted(command_uses),
         "command_count": len(command_uses),
+        "granted_at": capability["granted_at"],
+        "expires_at": dt.datetime.fromtimestamp(expires_at, dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "expires_at_epoch": expires_at,
         "expires_in_seconds": ttl_seconds,
         "max_uses_per_command": max_uses_per_command,
+        "approval_source_sha256": approval_source_sha256,
     }
+    if canonical_case_id:
+        try:
+            from tools.canonical_brain_tool import record_plan_approval_receipt
+
+            recorded = json.loads(record_plan_approval_receipt(
+                case_id=canonical_case_id,
+                receipt=receipt,
+                source_refs=authority_source_refs,
+            ))
+        except Exception as exc:
+            recorded = {"success": False, "error": str(exc)}
+        if not _canonical_receipt_committed(recorded):
+            with _lock:
+                session_plans = _plan_capabilities.get(session_key, {})
+                if session_plans.get(plan_id) is capability:
+                    if previous_capability is None:
+                        session_plans.pop(plan_id, None)
+                    else:
+                        session_plans[plan_id] = previous_capability
+            if approval_source_reservation:
+                _release_plan_approval_source(
+                    approval_source_sha256,
+                    approval_source_reservation,
+                )
+            raise RuntimeError(
+                "canonical approval receipt was not durably verified; capability revoked"
+            )
+        with _lock:
+            current = _plan_capabilities.get(session_key, {}).get(plan_id)
+            if current is not capability:
+                if approval_source_reservation:
+                    _plan_approval_source_states[approval_source_sha256] = (
+                        f"used:{approval_id}"
+                    )
+                raise RuntimeError(
+                    "canonical approval capability changed before durable grant completed"
+                )
+            capability["durably_granted"] = True
+            if approval_source_reservation:
+                _plan_approval_source_states[approval_source_sha256] = (
+                    f"used:{approval_id}"
+                )
+        receipt["canonical_event_id"] = recorded.get("event_id")
+        receipt["canonical_readback_verified"] = bool(recorded.get("readback_verified"))
+    return receipt
 
 
 def consume_plan_capability(session_key: str, command: str) -> str | None:
     """Consume one exact-command use and return the authorizing plan id."""
+    session_key = str(session_key or "")
     digest = hashlib.sha256(str(command or "").strip().encode("utf-8")).hexdigest()
-    now = time.time()
+    observed_user_id = _observed_session_user_id()
+    observed_platform = _observed_session_platform()
+    canonical_required = _canonical_brain_required() or bool(observed_platform)
+
+    with _lock:
+        plans = _plan_capabilities.get(session_key, {})
+        for plan_id, capability in list(plans.items()):
+            if float(capability.get("expires_at") or 0) <= time.time():
+                plans.pop(plan_id, None)
+        candidate_plan_ids = [
+            plan_id
+            for plan_id, capability in plans.items()
+            if capability.get("durably_granted") is True
+            and int((capability.get("command_uses") or {}).get(digest, 0)) > 0
+        ]
+
+    for plan_id in candidate_plan_ids:
+        consume_lock = _plan_capability_consume_lock(session_key, plan_id, digest)
+        with consume_lock:
+            with _lock:
+                capability = _plan_capabilities.get(session_key, {}).get(plan_id)
+                if not capability or capability.get("durably_granted") is not True:
+                    continue
+                if float(capability.get("expires_at") or 0) <= time.time():
+                    _plan_capabilities.get(session_key, {}).pop(plan_id, None)
+                    continue
+                if int((capability.get("command_uses") or {}).get(digest, 0)) <= 0:
+                    continue
+                approved_by = str(capability.get("approved_by_user_id") or "")
+                canonical_case_id = str(capability.get("canonical_case_id") or "")
+
+            runtime_scoped = (
+                canonical_required
+                or bool(canonical_case_id)
+                or bool(observed_platform)
+            )
+            if runtime_scoped and observed_platform != "discord":
+                logger.warning(
+                    "Plan capability %s rejected: configured owner IDs require Discord",
+                    plan_id,
+                )
+                continue
+            if runtime_scoped and not observed_user_id:
+                logger.warning(
+                    "Plan capability %s rejected: runtime-observed owner is missing",
+                    plan_id,
+                )
+                continue
+            if observed_user_id and observed_user_id != approved_by:
+                logger.warning(
+                    "Plan capability %s rejected: runtime-observed user mismatch",
+                    plan_id,
+                )
+                continue
+            if canonical_required:
+                if not canonical_case_id or not _canonical_active_plan_matches(
+                    case_id=canonical_case_id,
+                    plan_id=plan_id,
+                ):
+                    logger.warning(
+                        "Plan capability %s rejected: no exact active Canonical Brain plan",
+                        plan_id,
+                    )
+                    continue
+
+            # Re-read after the durable plan check: a concurrent revoke/grant
+            # must not let us consume a stale capability generation.
+            with _lock:
+                current = _plan_capabilities.get(session_key, {}).get(plan_id)
+                if current is not capability:
+                    continue
+                remaining_before = int(
+                    (capability.get("command_uses") or {}).get(digest, 0)
+                )
+                if (
+                    capability.get("durably_granted") is not True
+                    or float(capability.get("expires_at") or 0) <= time.time()
+                    or remaining_before <= 0
+                ):
+                    continue
+                remaining_after = remaining_before - 1
+                capability["command_uses"][digest] = remaining_after
+
+            if canonical_case_id:
+                receipt = {
+                    "approval_id": capability["approval_id"],
+                    "plan_id": plan_id,
+                    "state": "authorized",
+                    "session_key_sha256": capability["session_key_sha256"],
+                    "command_sha256": digest,
+                    "remaining_uses_for_command": remaining_after,
+                    "checked_at": dt.datetime.now(dt.timezone.utc).replace(
+                        microsecond=0
+                    ).isoformat(),
+                    "expires_at": dt.datetime.fromtimestamp(
+                        capability["expires_at"], dt.timezone.utc
+                    ).replace(microsecond=0).isoformat(),
+                }
+                try:
+                    from tools.canonical_brain_tool import record_plan_capability_check
+
+                    recorded = json.loads(record_plan_capability_check(
+                        case_id=canonical_case_id,
+                        receipt=receipt,
+                        source_refs=capability.get("source_refs") or {},
+                    ))
+                except Exception as exc:
+                    recorded = {"success": False, "error": str(exc)}
+                if not _canonical_receipt_committed(recorded):
+                    with _lock:
+                        current = _plan_capabilities.get(session_key, {}).get(plan_id)
+                        current_remaining = (
+                            int((current.get("command_uses") or {}).get(digest, 0))
+                            if current is capability
+                            else None
+                        )
+                        if current is capability and current_remaining == remaining_after:
+                            current["command_uses"][digest] = remaining_before
+                    logger.warning(
+                        "Plan capability %s was not consumed because a new, "
+                        "verified Canonical Brain receipt was not inserted",
+                        plan_id,
+                    )
+                    return None
+            return str(plan_id)
+    return None
+
+
+def revoke_plan_capability(session_key: str, plan_id: str) -> bool:
+    """Remove one exact plan capability from its session."""
     with _lock:
         plans = _plan_capabilities.get(str(session_key or ""), {})
-        for plan_id, capability in list(plans.items()):
-            if float(capability.get("expires_at") or 0) <= now:
-                plans.pop(plan_id, None)
-                continue
-            remaining = int((capability.get("command_uses") or {}).get(digest, 0))
-            if remaining > 0:
-                capability["command_uses"][digest] = remaining - 1
-                return plan_id
-    return None
+        return plans.pop(str(plan_id or ""), None) is not None
 
 
 def approve_permanent(pattern_key: str):

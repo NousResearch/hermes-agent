@@ -227,7 +227,15 @@ Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** f
 
 ### GET /health/detailed
 
-Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
+Authenticated readiness check for monitoring and control planes. It reports
+bounded status for the active profile's config, state database, configured
+model, disk space, gateway/platform state, active API runs, pending process
+completions, and active delegations. The response exposes status and counts,
+not config values, credentials, paths, commands, queue payloads, or raw errors.
+
+The public `/health` route remains a cheap liveness probe and does not run
+readiness checks. A degraded readiness result still uses HTTP 200; inspect the
+top-level `status` and `readiness.checks` fields.
 
 ## Runs API (streaming-friendly alternative)
 

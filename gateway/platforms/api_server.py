@@ -902,10 +902,15 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via _run_streams).
         self._inflight_agent_runs: int = 0
 
-    def _readiness_queue_depths(self) -> tuple[int, int, int]:
-        """Return queue counts only; readiness must never inspect payloads."""
+    def _readiness_work_counts(self) -> tuple[int, int, int]:
+        """Return bounded work counts from each subsystem's public state."""
+        active_api_runs = sum(
+            1
+            for status in self._run_statuses.values()
+            if status.get("status") in {"queued", "running", "waiting_for_approval"}
+        )
         process_depth = 0
-        delegation_depth = 0
+        active_delegations = 0
         try:
             from tools.process_registry import process_registry
 
@@ -913,16 +918,12 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         try:
-            from tools.async_delegation import list_async_delegations
+            from tools.async_delegation import active_count
 
-            delegation_depth = sum(
-                1
-                for record in list_async_delegations()
-                if record.get("status") in {"queued", "running"}
-            )
+            active_delegations = active_count()
         except Exception:
             pass
-        return len(self._run_streams), process_depth, delegation_depth
+        return active_api_runs, process_depth, active_delegations
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1420,13 +1421,15 @@ class APIServerAdapter(BasePlatformAdapter):
         # This endpoint is served BY the gateway process, so it is by definition
         # alive — gateway_running is True. Derive busy/drainable from the same
         # shared contract /api/status uses so the two surfaces never disagree.
-        api_depth, process_depth, delegation_depth = self._readiness_queue_depths()
+        active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
+        from gateway.run import _resolve_gateway_model
+
         readiness = collect_runtime_readiness(
-            model_name=self._model_name,
+            configured_model=_resolve_gateway_model(),
             runtime_status=runtime,
-            api_run_queue_depth=api_depth,
+            active_api_runs=active_api_runs,
             process_completion_queue_depth=process_depth,
-            delegation_completion_queue_depth=delegation_depth,
+            active_delegations=active_delegations,
         )
         return web.json_response({
             "status": readiness["status"],

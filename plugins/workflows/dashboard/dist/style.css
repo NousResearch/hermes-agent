@@ -646,6 +646,152 @@
   }
 }
 
+/* Build/Run/History workspace modes — Task 4 */
+
+.hermes-workflows .hermes-workflows-workspace-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.35rem;
+  background: color-mix(in srgb, var(--color-card) 88%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-workspace-tab {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.hermes-workflows .hermes-workflows-workspace-tab:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-workspace-tab.is-active {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground, #fff);
+}
+
+.hermes-workflows .hermes-workflows-workspace-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.hermes-workflows .hermes-workflows-build-mode,
+.hermes-workflows .hermes-workflows-run-mode,
+.hermes-workflows .hermes-workflows-history-mode {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.hermes-workflows .hermes-workflows-build-mode {
+  flex-direction: column;
+  min-height: 240px;
+}
+
+.hermes-workflows .hermes-workflows-run-mode,
+.hermes-workflows .hermes-workflows-history-mode {
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+  gap: 0.75rem;
+}
+
+.hermes-workflows .hermes-workflows-history-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.5rem;
+}
+
+.hermes-workflows .hermes-workflows-history-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 0.6rem);
+  padding: 0.5rem 0.75rem;
+  background: color-mix(in srgb, var(--color-card) 92%, transparent);
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.hermes-workflows .hermes-workflows-history-row.is-selected {
+  border-color: var(--color-primary);
+}
+
+.hermes-workflows .hermes-workflows-history-row-status.is-succeeded {
+  color: #1a7f37;
+}
+
+.hermes-workflows .hermes-workflows-history-row-status.is-failed {
+  color: #b42318;
+}
+
+.hermes-workflows .hermes-workflows-diagnostics {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 0.6rem);
+  padding: 0.5rem 0.75rem;
+  background: color-mix(in srgb, var(--color-card) 88%, transparent);
+}
+
+.hermes-workflows .hermes-workflows-diagnostics-toggle {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Workspace mode responsive rules — Task 4 plan lines 749–756 */
+
+@media (max-width: 1279px) {
+  .hermes-workflows .hermes-workflows-topbar {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .hermes-workflows .hermes-workflows-workspace-tabs {
+    margin: 0;
+  }
+  .hermes-workflows .hermes-workflows-topbar-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 767px) {
+  .hermes-workflows .hermes-workflows-workspace-tabs {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .hermes-workflows .hermes-workflows-history-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 600px) {
+  .hermes-workflows .hermes-workflows-build-mode {
+    min-height: 240px;
+  }
+  .hermes-workflows .hermes-workflows-run-mode,
+  .hermes-workflows .hermes-workflows-history-mode {
+    /* ponytail: short-viewport scroll isolation — Run/History grow their own
+       scroll context so the editor above never gets pushed off-screen. */
+    max-height: calc(100vh - 12rem);
+    overflow-y: auto;
+  }
+}
+
 .hermes-workflows .hermes-workflows-panel {
   border: 1px solid var(--color-border);
   border-radius: var(--radius, 0.75rem);

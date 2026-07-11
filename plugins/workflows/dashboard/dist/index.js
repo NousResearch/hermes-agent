@@ -48,6 +48,61 @@
 		};
 	}
 	//#endregion
+	//#region ../plugins/workflows/dashboard/src/workspace.js
+	var WORKSPACE_MODES = [
+		"build",
+		"run",
+		"history"
+	];
+	var WORKSPACE_PATH_PREFIX = "/workflows/";
+	var MODE_TO_QUERY_KEY = {
+		run: "feed",
+		history: "execution"
+	};
+	function isMode(value) {
+		return WORKSPACE_MODES.indexOf(value) !== -1;
+	}
+	function trimSlashes(value) {
+		return String(value || "").replace(/^\/+|\/+$/g, "");
+	}
+	function parseLocation(location) {
+		if (!location || typeof location !== "object") return {
+			workflowId: "",
+			mode: "build",
+			search: ""
+		};
+		const segments = trimSlashes(String(location.pathname || "")).replace(/^\/+/, "").split("/").filter(Boolean);
+		let workflowId = "";
+		let modeSegment = "";
+		if (segments.length >= 2 && segments[0] === "workflows") {
+			workflowId = segments[1];
+			modeSegment = segments[2] || "";
+		}
+		const search = String(location.search || "");
+		const mode = isMode(modeSegment) ? modeSegment : "build";
+		return {
+			workflowId,
+			mode,
+			search
+		};
+	}
+	function modeForLocation(location) {
+		return parseLocation(location).mode;
+	}
+	function selectionForMode(mode, selection) {
+		const key = MODE_TO_QUERY_KEY[mode];
+		if (!key) return "";
+		const value = selection && typeof selection === "object" ? selection[key] : "";
+		return value ? String(value) : "";
+	}
+	function locationForMode(workflowId, mode, selection) {
+		const id = trimSlashes(workflowId);
+		const safeMode = isMode(mode) ? mode : "build";
+		const base = WORKSPACE_PATH_PREFIX + id + (safeMode === "build" ? "" : "/" + safeMode);
+		const value = selectionForMode(safeMode, selection);
+		return value ? base + "?" + MODE_TO_QUERY_KEY[safeMode] + "=" + encodeURIComponent(value) : base;
+	}
+	//#endregion
 	//#region ../plugins/workflows/dashboard/src/app.js
 	(function() {
 		"use strict";
@@ -171,6 +226,28 @@
 		function initialExecutionIdFromLocation() {
 			if (typeof URLSearchParams === "undefined" || !window.location) return "";
 			return new URLSearchParams(window.location.search || "").get("execution") || "";
+		}
+		function currentLocationShape() {
+			if (typeof window === "undefined" || !window.location) return {
+				pathname: "",
+				search: ""
+			};
+			return {
+				pathname: window.location.pathname || "",
+				search: window.location.search || ""
+			};
+		}
+		function workflowIdFromLocation() {
+			if (typeof window === "undefined" || !window.location) return "";
+			const match = String(window.location.pathname || "").match(/^\/workflows\/([^\/]+)/);
+			return match ? decodeURIComponent(match[1]) : "";
+		}
+		function pushMode(nextMode, selection) {
+			if (typeof window === "undefined" || !window.history) return;
+			if (nextMode === modeForLocation(currentLocationShape())) return;
+			const target = locationForMode(workflowIdFromLocation() || "__draft__", nextMode, selection || {});
+			if (typeof window.history.pushState === "function") window.history.pushState({ workspaceMode: nextMode }, "", target);
+			else window.location.href = target;
 		}
 		function nodeList(spec) {
 			const nodes = spec && spec.nodes ? spec.nodes : {};
@@ -1218,9 +1295,12 @@
 			const stateShowAdvancedYaml = useState(false);
 			const showAdvancedYaml = stateShowAdvancedYaml[0];
 			const setShowAdvancedYaml = stateShowAdvancedYaml[1];
-			const stateBottomTab = useState("checklist");
-			const bottomTab = stateBottomTab[0];
-			const setBottomTab = stateBottomTab[1];
+			const stateWorkspaceMode = useState(modeForLocation(currentLocationShape()));
+			const workspaceMode = stateWorkspaceMode[0];
+			const setWorkspaceMode = stateWorkspaceMode[1];
+			const stateDiagnosticsOpen = useState(false);
+			const diagnosticsOpen = stateDiagnosticsOpen[0];
+			const setDiagnosticsOpen = stateDiagnosticsOpen[1];
 			const stateBottomCollapsed = useState(true);
 			const bottomCollapsed = stateBottomCollapsed[0];
 			const setBottomCollapsed = stateBottomCollapsed[1];
@@ -1704,6 +1784,18 @@
 			}
 			useEffect(function() {
 				refresh(initialExecutionId);
+			}, []);
+			useEffect(function() {
+				function handlePopState() {
+					const next = modeForLocation(currentLocationShape());
+					setWorkspaceMode(WORKSPACE_MODES.indexOf(next) === -1 ? "build" : next);
+				}
+				if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+					window.addEventListener("popstate", handlePopState);
+					return function() {
+						window.removeEventListener("popstate", handlePopState);
+					};
+				}
 			}, []);
 			useEffect(function() {
 				const spec = activeSpec();
@@ -2944,7 +3036,7 @@
 				var wfName = spec ? safeString(spec.name || spec.id || spec.workflow_id) : "Untitled workflow";
 				var hasDraft = !!spec;
 				var persisted = !!(selectedDefinition && workflowIdForDefinition(selectedDefinition) && versionForDefinition(selectedDefinition));
-				return h("div", { className: "hermes-workflows-topbar" }, h("div", { className: "hermes-workflows-topbar-left" }, h("span", { className: "hermes-workflows-topbar-name" }, wfName), h("span", { className: "hermes-workflows-topbar-status" }, persisted ? "v" + safeString(selectedDefinition.version) + " · enabled" : "draft")), h("div", { className: "hermes-workflows-topbar-actions" }, h("button", {
+				return h("div", { className: "hermes-workflows-topbar" }, h("div", { className: "hermes-workflows-topbar-left" }, h("span", { className: "hermes-workflows-topbar-name" }, wfName), h("span", { className: "hermes-workflows-topbar-status" }, persisted ? "v" + safeString(selectedDefinition.version) + " · enabled" : "draft")), renderWorkspaceTabsBar(), h("div", { className: "hermes-workflows-topbar-actions" }, h("button", {
 					type: "button",
 					disabled: validating || !hasDraft,
 					onClick: validateDefinition
@@ -2967,10 +3059,6 @@
 					}
 				}, running ? "Running…" : "Run") : null, h("button", {
 					type: "button",
-					disabled: ticking,
-					onClick: manualTick
-				}, ticking ? "Ticking…" : "Manual Tick"), h("button", {
-					type: "button",
 					disabled: loading,
 					onClick: function() {
 						refresh();
@@ -2981,6 +3069,62 @@
 						setShowAdvancedYaml(!showAdvancedYaml);
 					}
 				}, showAdvancedYaml ? "Hide YAML" : "YAML")));
+			}
+			function renderWorkspaceTabsBar() {
+				workflowIdFromLocation() || selectedDefinition && workflowIdForDefinition(selectedDefinition);
+				const runDisabled = !selectedDefinition || !persistedRunCapable();
+				return h("div", {
+					role: "tablist",
+					"aria-label": "Workflow workspace modes",
+					className: "hermes-workflows-workspace-tabs"
+				}, WORKSPACE_MODES.map(function(mode) {
+					return h("button", {
+						key: mode,
+						type: "button",
+						role: "tab",
+						"data-workspace-mode": mode,
+						"aria-selected": workspaceMode === mode ? "true" : "false",
+						"aria-controls": "hermes-workflows-mode-" + mode,
+						disabled: mode === "run" && runDisabled,
+						...mode === "run" && runDisabled ? {
+							"aria-disabled": "true",
+							title: "Run is disabled until the workflow is published"
+						} : {},
+						className: "hermes-workflows-workspace-tab" + (workspaceMode === mode ? " is-active" : ""),
+						onClick: function() {
+							if (workspaceMode === mode) return;
+							setWorkspaceMode(mode);
+							pushMode(mode, mode === "run" ? { feed: selectedFeedId } : mode === "history" ? { execution: selectedExecution && selectedExecution.execution_id } : {});
+						}
+					}, mode === "build" ? "Build" : mode === "run" ? "Run" : "History");
+				}));
+			}
+			function persistedRunCapable() {
+				return !!(selectedDefinition && workflowIdForDefinition(selectedDefinition) && versionForDefinition(selectedDefinition));
+			}
+			function renderDiagnosticsPanel() {
+				return h("section", { className: "hermes-workflows-diagnostics" }, h("button", {
+					type: "button",
+					className: "hermes-workflows-diagnostics-toggle",
+					"aria-expanded": diagnosticsOpen ? "true" : "false",
+					"aria-controls": "hermes-workflows-diagnostics-body",
+					onClick: function() {
+						setDiagnosticsOpen(!diagnosticsOpen);
+					}
+				}, diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"), diagnosticsOpen ? h("div", {
+					id: "hermes-workflows-diagnostics-body",
+					className: "hermes-workflows-diagnostics-body"
+				}, h("p", { className: "hermes-workflows-muted" }, "Manual advance for queued workflows and dispatcher status."), renderExecutionStallWarning(), h("div", { className: "hermes-workflows-row" }, h("button", {
+					type: "button",
+					disabled: ticking,
+					onClick: manualTick
+				}, ticking ? "Ticking…" : "Manual Tick"), h("button", {
+					type: "button",
+					disabled: loading,
+					onClick: function() {
+						refresh();
+					}
+				}, loading ? "Refreshing…" : "Refresh"))) : null);
 			}
 			function renderSidebar() {
 				var spec = activeSpec();
@@ -3373,25 +3517,75 @@
 				}, running ? "Running…" : "Start Run"))));
 			}
 			function renderBottomPanel() {
-				return h("div", { className: "hermes-workflows-bottom-panel" + (bottomCollapsed ? " is-collapsed" : "") }, h("div", { className: "hermes-workflows-bottom-tabs" }, [["checklist", "Validation"], ["timeline", "Execution"]].map(function(tab) {
-					return h("button", {
-						key: tab[0],
-						type: "button",
-						className: "hermes-workflows-bottom-tab" + (bottomTab === tab[0] ? " is-active" : ""),
-						onClick: function() {
-							if (bottomCollapsed) setBottomCollapsed(false);
-							setBottomTab(tab[0]);
-						}
-					}, tab[1]);
-				}), h("button", {
+				return h("div", { className: "hermes-workflows-bottom-panel" + (bottomCollapsed ? " is-collapsed" : "") }, h("div", { className: "hermes-workflows-bottom-tabs" }, h("button", {
+					type: "button",
+					className: "hermes-workflows-bottom-tab is-active",
+					role: "tab",
+					"aria-selected": "true"
+				}, "Validation"), h("button", {
 					type: "button",
 					className: "hermes-workflows-bottom-toggle",
 					onClick: function() {
 						setBottomCollapsed(!bottomCollapsed);
 					}
-				}, bottomCollapsed ? "▴ Expand" : "▾ Collapse")), h("div", { className: "hermes-workflows-bottom-content" }, bottomTab === "checklist" ? renderValidationChecklist() : bottomTab === "timeline" ? h("div", { className: "hermes-workflows-stack" }, renderTimeline()) : null));
+				}, bottomCollapsed ? "▴ Expand" : "▾ Collapse")), h("div", { className: "hermes-workflows-bottom-content" }, bottomCollapsed ? null : renderValidationChecklist()));
 			}
-			var spec = activeSpec();
+			function renderBuildMode() {
+				return h("section", {
+					id: "hermes-workflows-mode-build",
+					role: "tabpanel",
+					"aria-label": "Build workflow",
+					className: "hermes-workflows-build-mode"
+				}, h("div", { className: "hermes-workflows-canvas-area" }, renderBuilderToolbar(activeSpec()), h("div", { className: "hermes-workflows-canvas-main" }, h("div", { className: "hermes-workflows-canvas-wrap" }, activeSpec() ? renderReactFlowGraph(activeSpec()) : h("div", {
+					className: "hermes-workflows-muted",
+					style: {
+						padding: "2rem",
+						textAlign: "center"
+					}
+				}, "No workflow loaded. Use the sidebar to draft a new workflow or select an existing one.")), activeSpec() ? h("div", { className: "hermes-workflows-inspector-panel" }, renderInspector(activeSpec())) : null)));
+			}
+			function renderRunMode() {
+				return h("section", {
+					id: "hermes-workflows-mode-run",
+					role: "tabpanel",
+					"aria-label": "Run workflow",
+					className: "hermes-workflows-run-mode"
+				}, renderInputFeedPanel(), renderDiagnosticsPanel());
+			}
+			function renderHistoryMode() {
+				return h("section", {
+					id: "hermes-workflows-mode-history",
+					role: "tabpanel",
+					"aria-label": "Workflow execution history",
+					className: "hermes-workflows-history-mode"
+				}, h("div", { className: "hermes-workflows-history-toolbar" }, h("button", {
+					type: "button",
+					disabled: loading,
+					onClick: function() {
+						refresh();
+					}
+				}, loading ? "Refreshing…" : "Refresh executions")), h("div", { className: "hermes-workflows-history-list" }, executions.length ? executions.slice(0, 50).map(function(execution) {
+					var eid = safeString(execution.execution_id || execution.id);
+					var execStatus = safeString(execution.status);
+					var statusClass = execStatus === "succeeded" ? " is-succeeded" : execStatus === "failed" ? " is-failed" : "";
+					return h("button", {
+						key: eid,
+						type: "button",
+						"data-execution-id": eid,
+						className: "hermes-workflows-history-row" + (selectedExecution && String(selectedExecution.execution_id || selectedExecution.id || "") === eid ? " is-selected" : ""),
+						onClick: function() {
+							loadExecution(eid).catch(fail);
+							pushMode("history", { execution: eid });
+						}
+					}, h("span", { className: "hermes-workflows-history-row-id" }, eid.slice(0, 16)), h("span", { className: "hermes-workflows-history-row-status" + statusClass }, execStatus));
+				}) : h("p", { className: "hermes-workflows-muted" }, "No executions yet.")), h("div", { className: "hermes-workflows-history-detail" }, renderTimeline()));
+			}
+			function renderActiveMode() {
+				if (workspaceMode === "run") return renderRunMode();
+				if (workspaceMode === "history") return renderHistoryMode();
+				return renderBuildMode();
+			}
+			activeSpec();
 			return h("div", { className: "hermes-workflows" }, h("div", { className: "hermes-workflows-app" }, renderTopBar(), error || status ? h("div", { className: "hermes-workflows-status-row" }, error ? h("div", {
 				className: "hermes-workflows-banner is-error",
 				role: "alert"
@@ -3408,13 +3602,7 @@
 				className: "hermes-workflows-banner-close",
 				"aria-label": "Dismiss alert",
 				onClick: clearBanners
-			}, "×")) : null) : null, h("div", { className: "hermes-workflows-body" }, renderSidebar(), h("div", { className: "hermes-workflows-canvas-area" }, renderBuilderToolbar(spec), h("div", { className: "hermes-workflows-canvas-main" }, h("div", { className: "hermes-workflows-canvas-wrap" }, spec ? renderReactFlowGraph(spec) : h("div", {
-				className: "hermes-workflows-muted",
-				style: {
-					padding: "2rem",
-					textAlign: "center"
-				}
-			}, "No workflow loaded. Use the sidebar to draft a new workflow or select an existing one.")), spec ? h("div", { className: "hermes-workflows-inspector-panel" }, renderInspector(spec)) : null))), renderRunStartPanel(), renderInputFeedPanel(), renderBottomPanel(), showAdvancedYaml ? renderAdvancedYaml() : null));
+			}, "×")) : null) : null, h("div", { className: "hermes-workflows-body" }, renderSidebar(), renderActiveMode(), workspaceMode === "build" ? renderBottomPanel() : null), renderRunStartPanel(), showAdvancedYaml ? renderAdvancedYaml() : null));
 		}
 		REG.register("workflows", WorkflowsPage);
 	})();

@@ -1,5 +1,10 @@
 import { graphItems as buildGraphItems, decorateGraphItems as decorateGraph } from "./graph.js";
 import { formatApiError as importedFormatApiError, createApi as buildApi } from "./api.js";
+import {
+  WORKSPACE_MODES,
+  locationForMode,
+  modeForLocation,
+} from "./workspace.js";
 
 (function () {
   "use strict";
@@ -111,6 +116,35 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
   function initialExecutionIdFromLocation() {
     if (typeof URLSearchParams === "undefined" || !window.location) return "";
     return new URLSearchParams(window.location.search || "").get("execution") || "";
+  }
+
+  function currentLocationShape() {
+    if (typeof window === "undefined" || !window.location) {
+      return { pathname: "", search: "" };
+    }
+    return { pathname: window.location.pathname || "", search: window.location.search || "" };
+  }
+
+  function workflowIdFromLocation() {
+    if (typeof window === "undefined" || !window.location) return "";
+    const match = String(window.location.pathname || "").match(/^\/workflows\/([^\/]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  // ponytail: URL is the single source of truth for the active workspace mode;
+  // setWorkspaceMode re-derives the path through locationForMode and only
+  // pushState's when it actually changes so we don't churn history on every
+  // re-render of the tab bar.
+  function pushMode(nextMode, selection) {
+    if (typeof window === "undefined" || !window.history) return;
+    const current = modeForLocation(currentLocationShape());
+    if (nextMode === current) return;
+    const target = locationForMode(workflowIdFromLocation() || "__draft__", nextMode, selection || {});
+    if (typeof window.history.pushState === "function") {
+      window.history.pushState({ workspaceMode: nextMode }, "", target);
+    } else {
+      window.location.href = target;
+    }
   }
 
   function nodeList(spec) {
@@ -1140,9 +1174,16 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
     const stateShowAdvancedYaml = useState(false);
     const showAdvancedYaml = stateShowAdvancedYaml[0];
     const setShowAdvancedYaml = stateShowAdvancedYaml[1];
-    const stateBottomTab = useState("checklist");
-    const bottomTab = stateBottomTab[0];
-    const setBottomTab = stateBottomTab[1];
+    // Workspace mode mirrors the URL; the popstate listener below is the only
+    // place that resyncs it after a back/forward. The tab bar pushes through
+    // pushMode so the two states stay in lockstep.
+    const initialMode = modeForLocation(currentLocationShape());
+    const stateWorkspaceMode = useState(initialMode);
+    const workspaceMode = stateWorkspaceMode[0];
+    const setWorkspaceMode = stateWorkspaceMode[1];
+    const stateDiagnosticsOpen = useState(false);
+    const diagnosticsOpen = stateDiagnosticsOpen[0];
+    const setDiagnosticsOpen = stateDiagnosticsOpen[1];
     const stateBottomCollapsed = useState(true);
     const bottomCollapsed = stateBottomCollapsed[0];
     const setBottomCollapsed = stateBottomCollapsed[1];
@@ -1636,6 +1677,21 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
 
     useEffect(function () {
       refresh(initialExecutionId);
+    }, []);
+
+    useEffect(function () {
+      // ponytail: popstate is the only place that re-syncs workspaceMode from
+      // the URL after back/forward; the tab bar's onClick already called
+      // pushState, so a listener here keeps React's state from drifting.
+      function handlePopState() {
+        const next = modeForLocation(currentLocationShape());
+        setWorkspaceMode(WORKSPACE_MODES.indexOf(next) === -1 ? "build" : next);
+      }
+      if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+        window.addEventListener("popstate", handlePopState);
+        return function () { window.removeEventListener("popstate", handlePopState); };
+      }
+      return undefined;
     }, []);
 
     useEffect(function () {
@@ -2833,15 +2889,70 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
           h("span", { className: "hermes-workflows-topbar-name" }, wfName),
           h("span", { className: "hermes-workflows-topbar-status" }, persisted ? "v" + safeString(selectedDefinition.version) + " · enabled" : "draft")
         ),
+        renderWorkspaceTabsBar(),
         h("div", { className: "hermes-workflows-topbar-actions" },
           h("button", { type: "button", disabled: validating || !hasDraft, onClick: validateDefinition }, validating ? "Validating…" : "Validate"),
           h("button", { type: "button", disabled: deploying || !hasDraft, onClick: deployDefinition, className: "hermes-workflows-primary" }, deploying ? "Deploying…" : "Deploy"),
           persisted ? h("button", { type: "button", disabled: deleting, onClick: deleteWorkflow, "aria-label": "Delete workflow" }, deleting ? "Deleting…" : "Delete") : null,
           persisted ? h("button", { type: "button", disabled: running, onClick: function () { setRunWorkflowId(workflowIdForDefinition(selectedDefinition)); setRunPanelOpen(true); } }, running ? "Running…" : "Run") : null,
-          h("button", { type: "button", disabled: ticking, onClick: manualTick }, ticking ? "Ticking…" : "Manual Tick"),
           h("button", { type: "button", disabled: loading, onClick: function () { refresh(); } }, loading ? "Refreshing…" : "Refresh"),
           h("button", { type: "button", onClick: function() { setShowAdvancedYaml(!showAdvancedYaml); } }, showAdvancedYaml ? "Hide YAML" : "YAML")
         )
+      );
+    }
+
+    function renderWorkspaceTabsBar() {
+      const workflowId = workflowIdFromLocation() || (selectedDefinition && workflowIdForDefinition(selectedDefinition)) || "";
+      const runDisabled = !selectedDefinition || !persistedRunCapable();
+      const tabs = WORKSPACE_MODES.map(function (mode) {
+        return h("button", {
+          key: mode,
+          type: "button",
+          role: "tab",
+          "data-workspace-mode": mode,
+          "aria-selected": workspaceMode === mode ? "true" : "false",
+          "aria-controls": "hermes-workflows-mode-" + mode,
+          disabled: mode === "run" && runDisabled,
+          ...(mode === "run" && runDisabled ? { "aria-disabled": "true", title: "Run is disabled until the workflow is published" } : {}),
+          className: "hermes-workflows-workspace-tab" + (workspaceMode === mode ? " is-active" : ""),
+          onClick: function () {
+            if (workspaceMode === mode) return;
+            setWorkspaceMode(mode);
+            const selection = mode === "run"
+              ? { feed: selectedFeedId }
+              : mode === "history"
+                ? { execution: selectedExecution && selectedExecution.execution_id }
+                : {};
+            pushMode(mode, selection);
+          },
+        }, mode === "build" ? "Build" : mode === "run" ? "Run" : "History");
+      });
+      return h("div", { role: "tablist", "aria-label": "Workflow workspace modes", className: "hermes-workflows-workspace-tabs" }, tabs);
+    }
+
+    function persistedRunCapable() {
+      // ponytail: a workflow only unlocks Run once it has a published version
+      // — drafts intentionally don't dispatch until they've been deployed.
+      return !!(selectedDefinition && workflowIdForDefinition(selectedDefinition) && versionForDefinition(selectedDefinition));
+    }
+
+    function renderDiagnosticsPanel() {
+      return h("section", { className: "hermes-workflows-diagnostics" },
+        h("button", {
+          type: "button",
+          className: "hermes-workflows-diagnostics-toggle",
+          "aria-expanded": diagnosticsOpen ? "true" : "false",
+          "aria-controls": "hermes-workflows-diagnostics-body",
+          onClick: function () { setDiagnosticsOpen(!diagnosticsOpen); },
+        }, diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"),
+        diagnosticsOpen ? h("div", { id: "hermes-workflows-diagnostics-body", className: "hermes-workflows-diagnostics-body" },
+          h("p", { className: "hermes-workflows-muted" }, "Manual advance for queued workflows and dispatcher status."),
+          renderExecutionStallWarning(),
+          h("div", { className: "hermes-workflows-row" },
+            h("button", { type: "button", disabled: ticking, onClick: manualTick }, ticking ? "Ticking…" : "Manual Tick"),
+            h("button", { type: "button", disabled: loading, onClick: function () { refresh(); } }, loading ? "Refreshing…" : "Refresh")
+          )
+        ) : null
       );
     }
 
@@ -3130,31 +3241,98 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
     }
 
     function renderBottomPanel() {
-      var tabs = [
-        ["checklist", "Validation"],
-        ["timeline", "Execution"],
-      ];
+      // ponytail: bottom panel now lives only inside Build mode. History
+      // owns the timeline; Run owns diagnostics; the Validation checklist is
+      // the only thing left under the canvas — kept collapsible so editors
+      // can keep it tucked out of the way.
       return h("div", { className: "hermes-workflows-bottom-panel" + (bottomCollapsed ? " is-collapsed" : "") },
         h("div", { className: "hermes-workflows-bottom-tabs" },
-          tabs.map(function (tab) {
-            return h("button", {
-              key: tab[0],
-              type: "button",
-              className: "hermes-workflows-bottom-tab" + (bottomTab === tab[0] ? " is-active" : ""),
-              onClick: function () {
-                if (bottomCollapsed) setBottomCollapsed(false);
-                setBottomTab(tab[0]);
-              },
-            }, tab[1]);
-          }),
+          h("button", {
+            type: "button",
+            className: "hermes-workflows-bottom-tab is-active",
+            role: "tab",
+            "aria-selected": "true",
+          }, "Validation"),
           h("button", { type: "button", className: "hermes-workflows-bottom-toggle", onClick: function () { setBottomCollapsed(!bottomCollapsed); } }, bottomCollapsed ? "▴ Expand" : "▾ Collapse")
         ),
         h("div", { className: "hermes-workflows-bottom-content" },
-          bottomTab === "checklist" ? renderValidationChecklist() :
-          bottomTab === "timeline" ? h("div", { className: "hermes-workflows-stack" }, renderTimeline()) :
-          null
+          bottomCollapsed ? null : renderValidationChecklist()
         )
       );
+    }
+
+    function renderBuildMode() {
+      return h("section", {
+        id: "hermes-workflows-mode-build",
+        role: "tabpanel",
+        "aria-label": "Build workflow",
+        className: "hermes-workflows-build-mode",
+      },
+        h("div", { className: "hermes-workflows-canvas-area" },
+          renderBuilderToolbar(activeSpec()),
+          h("div", { className: "hermes-workflows-canvas-main" },
+            h("div", { className: "hermes-workflows-canvas-wrap" },
+              activeSpec() ? renderReactFlowGraph(activeSpec()) : h("div", { className: "hermes-workflows-muted", style: {padding: "2rem", textAlign: "center"} }, "No workflow loaded. Use the sidebar to draft a new workflow or select an existing one.")
+            ),
+            activeSpec() ? h("div", { className: "hermes-workflows-inspector-panel" }, renderInspector(activeSpec())) : null
+          )
+        )
+      );
+    }
+
+    function renderRunMode() {
+      return h("section", {
+        id: "hermes-workflows-mode-run",
+        role: "tabpanel",
+        "aria-label": "Run workflow",
+        className: "hermes-workflows-run-mode",
+      },
+        renderInputFeedPanel(),
+        renderDiagnosticsPanel()
+      );
+    }
+
+    function renderHistoryMode() {
+      return h("section", {
+        id: "hermes-workflows-mode-history",
+        role: "tabpanel",
+        "aria-label": "Workflow execution history",
+        className: "hermes-workflows-history-mode",
+      },
+        h("div", { className: "hermes-workflows-history-toolbar" },
+          h("button", { type: "button", disabled: loading, onClick: function () { refresh(); } }, loading ? "Refreshing…" : "Refresh executions")
+        ),
+        h("div", { className: "hermes-workflows-history-list" },
+          executions.length ? executions.slice(0, 50).map(function (execution) {
+            var eid = safeString(execution.execution_id || execution.id);
+            var execStatus = safeString(execution.status);
+            var statusClass = execStatus === "succeeded" ? " is-succeeded" : execStatus === "failed" ? " is-failed" : "";
+            var isActive = selectedExecution && String(selectedExecution.execution_id || selectedExecution.id || "") === eid;
+            return h("button", {
+              key: eid,
+              type: "button",
+              "data-execution-id": eid,
+              className: "hermes-workflows-history-row" + (isActive ? " is-selected" : ""),
+              onClick: function () {
+                loadExecution(eid).catch(fail);
+                pushMode("history", { execution: eid });
+              },
+            },
+              h("span", { className: "hermes-workflows-history-row-id" }, eid.slice(0, 16)),
+              h("span", { className: "hermes-workflows-history-row-status" + statusClass }, execStatus)
+            );
+          }) : h("p", { className: "hermes-workflows-muted" }, "No executions yet.")
+        ),
+        h("div", { className: "hermes-workflows-history-detail" },
+          renderTimeline()
+        )
+      );
+    }
+
+    function renderActiveMode() {
+      if (workspaceMode === "run") return renderRunMode();
+      if (workspaceMode === "history") return renderHistoryMode();
+      return renderBuildMode();
     }
 
     var spec = activeSpec();
@@ -3173,19 +3351,10 @@ import { formatApiError as importedFormatApiError, createApi as buildApi } from 
         ) : null,
         h("div", { className: "hermes-workflows-body" },
           renderSidebar(),
-          h("div", { className: "hermes-workflows-canvas-area" },
-            renderBuilderToolbar(spec),
-            h("div", { className: "hermes-workflows-canvas-main" },
-              h("div", { className: "hermes-workflows-canvas-wrap" },
-                spec ? renderReactFlowGraph(spec) : h("div", { className: "hermes-workflows-muted", style: {padding: "2rem", textAlign: "center"} }, "No workflow loaded. Use the sidebar to draft a new workflow or select an existing one.")
-              ),
-              spec ? h("div", { className: "hermes-workflows-inspector-panel" }, renderInspector(spec)) : null
-            )
-          )
+          renderActiveMode(),
+          workspaceMode === "build" ? renderBottomPanel() : null
         ),
         renderRunStartPanel(),
-        renderInputFeedPanel(),
-        renderBottomPanel(),
         showAdvancedYaml ? renderAdvancedYaml() : null
       )
     );

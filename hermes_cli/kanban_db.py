@@ -151,6 +151,9 @@ ARCHITECTURE_GATE_POLICY_VERSION = "v1"
 ARCHITECTURE_GATE_CANONICALIZATION_VERSION = "v1"
 ARCHITECTURE_GATE_MODES = {"off", "shadow", "enforce"}
 ARCHITECTURE_GATE_REASON_OPEN = "architecture_gate_open"
+AUTHENTICATED_APPROVAL_SURFACES = frozenset({"cli", "dashboard", "api", "acp", "gateway"})
+READ_ONLY_DISCOVERY_PROFILES = frozenset({"scout", "researcher"})
+DISCOVERY_CAPABILITY_TTL_SECONDS = 300
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -934,6 +937,11 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Orthogonal to scheduler status: a policy quarantine cannot be released by
+    # recompute_ready, manual promotion, or dependency completion.
+    policy_quarantined: bool = False
+    policy_invalidated: bool = False
+    policy_quarantine_reason: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1030,6 +1038,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            policy_quarantined=bool(row["policy_quarantined"]) if "policy_quarantined" in keys else False,
+            policy_invalidated=bool(row["policy_invalidated"]) if "policy_invalidated" in keys else False,
+            policy_quarantine_reason=(
+                row["policy_quarantine_reason"] if "policy_quarantine_reason" in keys else None
             ),
         )
 
@@ -1138,6 +1151,11 @@ class MutationContext:
     gate_id: Optional[str] = None
     mode: str = "off"
     phase: str = "protected"
+    # Runtime-owned provenance. These fields are only accepted from boundary
+    # adapters, never from model-visible Kanban tool schemas.
+    surface: Optional[str] = None
+    profile: Optional[str] = None
+    discovery_capability: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -1155,6 +1173,11 @@ class ArchitectureGate:
     canonicalization_version: str
     accepted_snapshot: Optional[str]
     design_digest: Optional[str]
+    approval_actor_id: Optional[str]
+    approval_actor_type: Optional[str]
+    approval_surface: Optional[str]
+    approved_digest: Optional[str]
+    approved_at: Optional[int]
     enforcement_mode: str
     row_version: int
     created_at: int
@@ -1171,6 +1194,11 @@ class ArchitectureGate:
             policy_version=row["policy_version"],
             canonicalization_version=row["canonicalization_version"],
             accepted_snapshot=row["accepted_snapshot"], design_digest=row["design_digest"],
+            approval_actor_id=row["approval_actor_id"] if "approval_actor_id" in row.keys() else None,
+            approval_actor_type=row["approval_actor_type"] if "approval_actor_type" in row.keys() else None,
+            approval_surface=row["approval_surface"] if "approval_surface" in row.keys() else None,
+            approved_digest=row["approved_digest"] if "approved_digest" in row.keys() else None,
+            approved_at=(int(row["approved_at"]) if "approved_at" in row.keys() and row["approved_at"] is not None else None),
             enforcement_mode=row["enforcement_mode"], row_version=int(row["row_version"]),
             created_at=int(row["created_at"]), updated_at=int(row["updated_at"]),
         )
@@ -1182,6 +1210,26 @@ class ArchitectureGateError(ValueError):
     def __init__(self, code: str = ARCHITECTURE_GATE_REASON_OPEN):
         self.code = code
         super().__init__(code)
+
+
+@dataclass(frozen=True)
+class DiscoveryCapability:
+    token: str
+    gate_id: str
+    board_key: str
+    principal: str
+    session_id: str
+    request_scope_id: str
+    profile: str
+    issued_at: int
+    expires_at: int
+    used_at: Optional[int]
+
+
+@dataclass(frozen=True)
+class PolicyQuarantineClassification:
+    task_id: str
+    reason: str = "architecture_gate_premature_card"
 
 
 # ---------------------------------------------------------------------------
@@ -1279,7 +1327,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Sticky policy containment is independent of scheduler state. A nonzero
+    -- value is never released by automatic promotion or ordinary unblock.
+    policy_quarantined   INTEGER NOT NULL DEFAULT 0,
+    policy_invalidated   INTEGER NOT NULL DEFAULT 0,
+    policy_quarantine_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1383,10 +1436,28 @@ CREATE TABLE IF NOT EXISTS architecture_gates (
     canonicalization_version TEXT NOT NULL,
     accepted_snapshot        TEXT,
     design_digest            TEXT,
+    approval_actor_id        TEXT,
+    approval_actor_type      TEXT,
+    approval_surface         TEXT,
+    approved_digest          TEXT,
+    approved_at              INTEGER,
     enforcement_mode         TEXT NOT NULL DEFAULT 'off',
     row_version              INTEGER NOT NULL DEFAULT 0,
     created_at               INTEGER NOT NULL,
     updated_at               INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS discovery_capabilities (
+    token             TEXT PRIMARY KEY,
+    gate_id           TEXT NOT NULL,
+    board_key         TEXT NOT NULL,
+    principal         TEXT NOT NULL,
+    session_id        TEXT NOT NULL,
+    request_scope_id  TEXT NOT NULL,
+    profile           TEXT NOT NULL,
+    issued_at         INTEGER NOT NULL,
+    expires_at        INTEGER NOT NULL,
+    used_at           INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
@@ -2132,6 +2203,41 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+    if "policy_quarantined" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "policy_quarantined", "policy_quarantined INTEGER NOT NULL DEFAULT 0"
+        )
+    if "policy_invalidated" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "policy_invalidated", "policy_invalidated INTEGER NOT NULL DEFAULT 0"
+        )
+    if "policy_quarantine_reason" not in cols:
+        _add_column_if_missing(conn, "tasks", "policy_quarantine_reason", "policy_quarantine_reason TEXT")
+
+    discovery_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'discovery_capabilities'"
+    ).fetchone()
+    if discovery_table is not None:
+        discovery_cols = {row["name"] for row in conn.execute("PRAGMA table_info(discovery_capabilities)")}
+        if "expires_at" not in discovery_cols:
+            _add_column_if_missing(
+                conn, "discovery_capabilities", "expires_at", "expires_at INTEGER NOT NULL DEFAULT 0"
+            )
+
+    gate_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'architecture_gates'"
+    ).fetchone()
+    if gate_table is not None:
+        gate_cols = {row["name"] for row in conn.execute("PRAGMA table_info(architecture_gates)")}
+        for name, definition in (
+            ("approval_actor_id", "approval_actor_id TEXT"),
+            ("approval_actor_type", "approval_actor_type TEXT"),
+            ("approval_surface", "approval_surface TEXT"),
+            ("approved_digest", "approved_digest TEXT"),
+            ("approved_at", "approved_at INTEGER"),
+        ):
+            if name not in gate_cols:
+                _add_column_if_missing(conn, "architecture_gates", name, definition)
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3046,6 +3152,219 @@ def accept_architecture_handoff(conn: sqlite3.Connection, gate_id: str) -> Archi
         return accepted
 
 
+def approve_architecture_gate(
+    conn: sqlite3.Connection,
+    gate_id: str,
+    context: MutationContext,
+    digest: str,
+) -> ArchitectureGate:
+    """Record an authenticated exact-digest human approval.
+
+    This is deliberately a DB domain action rather than a dispatchable task:
+    scheduler status can never grant authority. Exact repeat submissions from
+    the same authenticated actor/surface are idempotent; all other replays deny.
+    """
+    if context.actor_type != "human":
+        raise ArchitectureGateError("approval_requires_human")
+    if context.surface not in AUTHENTICATED_APPROVAL_SURFACES:
+        raise ArchitectureGateError("approval_surface_not_authenticated")
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if gate is None or gate.board_key != context.board_key:
+            raise ArchitectureGateError("architecture_gate_scope_mismatch")
+        if gate.state == "human_approved":
+            if (
+                gate.approval_actor_id == context.principal
+                and gate.approval_surface == context.surface
+                and gate.approved_digest == digest
+            ):
+                return gate
+            raise ArchitectureGateError("approval_replay_mismatch")
+        if gate.state == "invalidated":
+            raise ArchitectureGateError("approval_invalidated")
+        if gate.state != "validated_awaiting_approval":
+            raise ArchitectureGateError("approval_wrong_state")
+        if not digest or digest != gate.design_digest:
+            raise ArchitectureGateError("approval_digest_mismatch")
+        now = int(time.time())
+        cur = conn.execute(
+            """UPDATE architecture_gates
+               SET state = 'human_approved', approval_actor_id = ?, approval_actor_type = ?,
+                   approval_surface = ?, approved_digest = ?, approved_at = ?,
+                   row_version = row_version + 1, updated_at = ?
+             WHERE gate_id = ? AND state = 'validated_awaiting_approval' AND row_version = ?""",
+            (context.principal, context.actor_type, context.surface, digest, now, now, gate_id, gate.row_version),
+        )
+        if cur.rowcount != 1:
+            raise ArchitectureGateError("architecture_gate_cas_conflict")
+        approved = get_architecture_gate(conn, gate_id)
+        assert approved is not None
+        _append_gate_audit(conn, approved, "approval_approved")
+        return approved
+
+
+def reject_architecture_gate(
+    conn: sqlite3.Connection, gate_id: str, context: MutationContext, digest: str,
+) -> ArchitectureGate:
+    """Record a human rejection without treating a UI projection as authority."""
+    if context.actor_type != "human":
+        raise ArchitectureGateError("approval_requires_human")
+    if context.surface not in AUTHENTICATED_APPROVAL_SURFACES:
+        raise ArchitectureGateError("approval_surface_not_authenticated")
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if gate is None or gate.board_key != context.board_key:
+            raise ArchitectureGateError("architecture_gate_scope_mismatch")
+        if gate.state != "validated_awaiting_approval":
+            raise ArchitectureGateError("approval_wrong_state")
+        if digest != gate.design_digest:
+            raise ArchitectureGateError("approval_digest_mismatch")
+        cur = conn.execute(
+            "UPDATE architecture_gates SET state = 'rejected', row_version = row_version + 1, updated_at = ? "
+            "WHERE gate_id = ? AND state = 'validated_awaiting_approval' AND row_version = ?",
+            (int(time.time()), gate_id, gate.row_version),
+        )
+        if cur.rowcount != 1:
+            raise ArchitectureGateError("architecture_gate_cas_conflict")
+        rejected = get_architecture_gate(conn, gate_id)
+        assert rejected is not None
+        _append_gate_audit(conn, rejected, "approval_rejected")
+        return rejected
+
+
+def issue_discovery_capability(
+    conn: sqlite3.Connection,
+    gate_id: str,
+    issuer: MutationContext,
+    *,
+    principal: str,
+    session_id: str,
+    request_scope_id: str,
+    profile: str,
+) -> DiscoveryCapability:
+    """Issue a one-purpose current-turn capability from an authenticated UI."""
+    if issuer.actor_type != "human" or issuer.surface not in AUTHENTICATED_APPROVAL_SURFACES:
+        raise ArchitectureGateError("discovery_capability_requires_human")
+    if profile not in READ_ONLY_DISCOVERY_PROFILES or not all((principal, session_id, request_scope_id)):
+        raise ArchitectureGateError("discovery_capability_invalid_binding")
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if gate is None or gate.board_key != issuer.board_key or gate.state not in ARCHITECTURE_GATE_ACTIVE_STATES:
+            raise ArchitectureGateError("discovery_capability_gate_unavailable")
+        token = secrets.token_urlsafe(24)
+        now = int(time.time())
+        expires_at = now + DISCOVERY_CAPABILITY_TTL_SECONDS
+        conn.execute(
+            """INSERT INTO discovery_capabilities
+               (token, gate_id, board_key, principal, session_id, request_scope_id, profile, issued_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (token, gate_id, gate.board_key, principal, session_id, request_scope_id, profile, now, expires_at),
+        )
+        _append_gate_audit(conn, gate, "discovery_capability_issued")
+        return DiscoveryCapability(token, gate_id, gate.board_key, principal, session_id, request_scope_id, profile, now, expires_at, None)
+
+
+def _consume_discovery_capability(
+    conn: sqlite3.Connection, gate: ArchitectureGate, context: MutationContext, assignee: Optional[str],
+) -> None:
+    if context.phase != "discovery":
+        raise ArchitectureGateError(ARCHITECTURE_GATE_REASON_OPEN)
+    if not context.discovery_capability:
+        raise ArchitectureGateError("discovery_capability_missing")
+    row = conn.execute(
+        "SELECT * FROM discovery_capabilities WHERE token = ?", (context.discovery_capability,)
+    ).fetchone()
+    if row is None:
+        raise ArchitectureGateError("discovery_capability_forged")
+    if row["used_at"] is not None:
+        raise ArchitectureGateError("discovery_capability_used")
+    if int(row["expires_at"] or 0) <= int(time.time()):
+        raise ArchitectureGateError("discovery_capability_expired")
+    if (
+        row["gate_id"] != gate.gate_id or row["board_key"] != context.board_key
+        or row["principal"] != context.principal or row["session_id"] != context.session_id
+        or row["request_scope_id"] != context.request_scope_id
+        or row["profile"] != context.profile or assignee != context.profile
+        or context.profile not in READ_ONLY_DISCOVERY_PROFILES
+    ):
+        raise ArchitectureGateError("discovery_capability_binding_mismatch")
+    cur = conn.execute(
+        "UPDATE discovery_capabilities SET used_at = ? WHERE token = ? AND used_at IS NULL",
+        (int(time.time()), context.discovery_capability),
+    )
+    if cur.rowcount != 1:
+        raise ArchitectureGateError("discovery_capability_used")
+    _append_gate_audit(conn, gate, "discovery_capability_used")
+
+
+def classify_policy_quarantine(
+    conn: sqlite3.Connection, gate_id: str,
+) -> list[PolicyQuarantineClassification]:
+    """Read-only deterministic containment report for premature descendants."""
+    gate = get_architecture_gate(conn, gate_id)
+    if gate is None:
+        raise ValueError("unknown architecture gate")
+    seen: set[str] = {gate.architect_task_id}
+    stack = [gate.architect_task_id]
+    classified: list[PolicyQuarantineClassification] = []
+    while stack:
+        parent = stack.pop()
+        for child in child_ids(conn, parent):
+            if child in seen:
+                continue
+            seen.add(child)
+            stack.append(child)
+            classified.append(PolicyQuarantineClassification(child))
+    return classified
+
+
+def apply_policy_quarantine(conn: sqlite3.Connection, gate_id: str) -> set[str]:
+    """Idempotently quarantine classified cards and invalidate active leases."""
+    classified = classify_policy_quarantine(conn, gate_id)
+    if not classified:
+        return set()
+    task_ids = {item.task_id for item in classified}
+    now = int(time.time())
+    with write_txn(conn):
+        gate = get_architecture_gate(conn, gate_id)
+        if gate is None:
+            raise ValueError("unknown architecture gate")
+        for task_id in task_ids:
+            row = conn.execute(
+                "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            running_run_id = row["current_run_id"] if row["status"] == "running" else None
+            conn.execute(
+                """UPDATE tasks
+                   SET policy_quarantined = 1, policy_invalidated = CASE WHEN status = 'done' THEN 1 ELSE policy_invalidated END,
+                       policy_quarantine_reason = ?, claim_lock = NULL, claim_expires = NULL,
+                       worker_pid = NULL, current_run_id = NULL,
+                       status = CASE WHEN status = 'done' THEN status ELSE 'blocked' END
+                 WHERE id = ? AND policy_quarantined = 0""",
+                ("architecture_gate_premature_card", task_id),
+            )
+            if running_run_id is not None:
+                conn.execute(
+                    """UPDATE task_runs
+                       SET status = 'policy_quarantined', outcome = 'policy_quarantined',
+                           summary = COALESCE(summary, 'policy quarantine'), ended_at = ?,
+                           claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+                     WHERE id = ? AND ended_at IS NULL""",
+                    (now, int(running_run_id)),
+                )
+            _append_event(
+                conn, task_id, "quarantined",
+                {"reason": "architecture_gate_premature_card", "gate_id": gate_id},
+                run_id=int(running_run_id) if running_run_id is not None else None,
+            )
+            if row["status"] in {"running", "done"}:
+                _append_event(conn, task_id, "human_review_required", {"gate_id": gate_id})
+        _append_gate_audit(conn, gate, "containment_quarantined")
+    return task_ids
+
+
 def invalidate_architecture_gate(conn: sqlite3.Connection, gate_id: str, *, reason: str) -> ArchitectureGate:
     with write_txn(conn):
         gate = get_architecture_gate(conn, gate_id)
@@ -3065,7 +3384,11 @@ def invalidate_architecture_gate(conn: sqlite3.Connection, gate_id: str, *, reas
 
 
 def _authorize_mutation(
-    conn: sqlite3.Connection, context: Optional[MutationContext], *, task_id: Optional[str] = None,
+    conn: sqlite3.Connection,
+    context: Optional[MutationContext],
+    *,
+    task_id: Optional[str] = None,
+    assignee: Optional[str] = None,
 ) -> Optional[ArchitectureGate]:
     if context is None or context.mode.strip().lower() == "off":
         return None
@@ -3079,8 +3402,11 @@ def _authorize_mutation(
     if context.mode.strip().lower() == "shadow" and gate.state not in ARCHITECTURE_GATE_APPROVED_STATES:
         _append_gate_audit(conn, gate, "create_allowed", ARCHITECTURE_GATE_REASON_OPEN)
         return gate
-    if _gate_requires_enforcement(gate) and context.phase != "architecture":
-        raise ArchitectureGateError(ARCHITECTURE_GATE_REASON_OPEN)
+    if _gate_requires_enforcement(gate):
+        if context.phase == "discovery":
+            _consume_discovery_capability(conn, gate, context, assignee)
+        elif context.phase != "architecture":
+            raise ArchitectureGateError(ARCHITECTURE_GATE_REASON_OPEN)
     return gate
 
 
@@ -3313,7 +3639,7 @@ def create_task(
                         if existing_gate is not None:
                             return existing_gate.architect_task_id
                     else:
-                        _authorize_mutation(conn, mutation_context)
+                        _authorize_mutation(conn, mutation_context, assignee=assignee)
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -4126,12 +4452,14 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, policy_quarantined "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if row["policy_quarantined"]:
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4143,12 +4471,16 @@ def recompute_ready(
                 # an explicit promote_task releases it; never auto-promote.
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.status, t.policy_quarantined, t.policy_invalidated FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(
+                p["status"] in ("done", "archived")
+                and not p["policy_quarantined"] and not p["policy_invalidated"]
+                for p in parents
+            ):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -4201,6 +4533,12 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        quarantined = conn.execute(
+            "SELECT policy_quarantined FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if quarantined and quarantined["policy_quarantined"]:
+            _append_event(conn, task_id, "claim_blocked", {"reason": "policy_quarantined"})
+            return None
         gate = get_architecture_gate_for_task(conn, task_id)
         if _gate_requires_enforcement(gate):
             assert gate is not None
@@ -4227,7 +4565,8 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND (p.status NOT IN ('done', 'archived') "
+            "OR p.policy_quarantined = 1 OR p.policy_invalidated = 1) LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -4569,7 +4908,7 @@ def release_stale_claims(
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "WHERE id = ? AND status = 'running' AND policy_quarantined = 0 AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (row["id"], row["claim_lock"], now),
             )
@@ -4906,6 +5245,12 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
+        quarantined = conn.execute(
+            "SELECT policy_quarantined FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if quarantined and quarantined["policy_quarantined"]:
+            _append_event(conn, task_id, "completion_blocked", {"reason": "policy_quarantined"})
+            return False
         gate = get_architecture_gate_for_task(conn, task_id)
         if gate is not None and gate.enforcement_mode == "enforce" and gate.architect_task_id != task_id:
             task = get_task(conn, task_id)
@@ -5615,10 +5960,12 @@ def promote_task(
     promotion would succeed without mutating state.
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT status, policy_quarantined FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
+    if row["policy_quarantined"]:
+        return False, "task is policy quarantined and requires human disposition"
 
     cur_status = row["status"]
     if cur_status not in ("todo", "blocked"):
@@ -5676,6 +6023,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     task = get_task(conn, task_id)
+    if task and task.policy_quarantined:
+        return False
     if task and task.status in ("blocked", "scheduled"):
         skill_validation_error = _forced_skill_validation_error(
             task.assignee,

@@ -280,6 +280,19 @@ def finalize_turn(
     # killing the turn.
     _cleanup_errors = []
 
+    # The canonical gate state is resolved in agent_init, before any stream
+    # callbacks are allowed. Replace both the returned answer and the current
+    # turn's persisted assistant content here; otherwise a transcript mirror
+    # could leak model prose even though the UI receives a withholding receipt.
+    _delivery_policy = getattr(agent, "_kanban_delivery_policy", None)
+    if _delivery_policy is not None and _delivery_policy.withholding:
+        final_response = _delivery_policy.final(final_response)
+        for _message in reversed(messages):
+            if _message.get("role") == "user":
+                break
+            if _message.get("role") == "assistant" and _message.get("content"):
+                _message["content"] = _delivery_policy.receipt
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
     try:
@@ -492,6 +505,11 @@ def finalize_turn(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # Plugins are not an authorization boundary. A transform result cannot
+    # replace the canonical withholding receipt for an unresolved gate.
+    if _delivery_policy is not None and _delivery_policy.withholding:
+        final_response = _delivery_policy.final(final_response)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

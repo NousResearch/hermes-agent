@@ -443,6 +443,34 @@ def init_agent(
     agent.event_callback = event_callback
     agent.tool_gen_callback = tool_gen_callback
 
+    # Defence in depth for architecture-gated Kanban turns: prevent partial
+    # model text and interim commentary from crossing transport callbacks
+    # before the finalizer can replace the terminal response with a receipt.
+    from agent.kanban_delivery_policy import policy_for_current_kanban_task
+    agent._kanban_delivery_policy = policy_for_current_kanban_task()
+    _delivery_policy = agent._kanban_delivery_policy
+    if _delivery_policy is not None and _delivery_policy.withholding:
+        _raw_stream_delta_callback = agent.stream_delta_callback
+        _raw_interim_callback = agent.interim_assistant_callback
+        _raw_tool_progress_callback = agent.tool_progress_callback
+
+        if _raw_stream_delta_callback is not None:
+            def _guarded_stream_delta(text):
+                safe = _delivery_policy.stream_delta(text)
+                if safe:
+                    _raw_stream_delta_callback(safe)
+            agent.stream_delta_callback = _guarded_stream_delta
+        if _raw_interim_callback is not None:
+            def _guarded_interim(text, **kwargs):
+                safe = _delivery_policy.interim(text)
+                if safe:
+                    _raw_interim_callback(safe, **kwargs)
+            agent.interim_assistant_callback = _guarded_interim
+        if _raw_tool_progress_callback is not None:
+            def _guarded_tool_progress(*args, **kwargs):
+                _delivery_policy.buffer("tool_progress")
+            agent.tool_progress_callback = _guarded_tool_progress
+
     
     # Tool execution state — allows _vprint during tool execution
     # even when stream consumers are registered (no tokens streaming then)

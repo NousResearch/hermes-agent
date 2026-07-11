@@ -93,15 +93,36 @@ export function reasoningPart(text: string): ChatMessagePart {
   return { type: 'reasoning', text }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?:[*`_]+[\t ]*)?(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?:[*`_]+[\t ]*)?(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)["']?/g
+
+// The path-scraping regex below captures any markdown emphasis the model
+// wraps around a bare `MEDIA:/path` tag into the path itself, producing an
+// invalid `#media:/x.png**` (or `**/x.png`) href that the desktop FS read
+// silently rejects — so the image never thumbnails (live or after refresh).
+// Real Hermes output shows both shapes (trailing `**`/`)`/backtick and the
+// leading form `MEDIA:** `/path``). Strip that wrapping on both ends before
+// building the link. Punctuation-only: a path never *ends* in )/]/`, and the
+// leading strip deliberately spares `~` so `MEDIA:~/x.png` (home-relative)
+// stays intact — only `*`/`_`/`~`/backtick emphasis is removed.
+const MEDIA_TRAILING_JUNK_RE = /[*`_~)\]`]+$/u
+const MEDIA_LEADING_JUNK_RE = /^[*`_~`]+/u
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  const unquoted =
+    quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+
+  // Drop a leading `~` only when it is emphasis, not the home-dir prefix: a
+  // real home-relative path is `~` followed by `/` or `\`.
+  const emphasisStripped = MEDIA_LEADING_JUNK_RE.test(unquoted) && !/^~[\\/]/.test(unquoted)
+    ? unquoted.replace(MEDIA_LEADING_JUNK_RE, '')
+    : unquoted
+
+  return emphasisStripped.replace(MEDIA_TRAILING_JUNK_RE, '')
 }
 
 function mediaLink(value: string): string {

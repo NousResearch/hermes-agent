@@ -1447,8 +1447,17 @@ class HonchoMemoryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register Honcho as a memory provider plugin."""
-    from plugins.memory.honcho.query_rewrite import rewrite_dialectic_query
+    from plugins.memory.honcho.query_rewrite import (
+        TASK_KEY,
+        rewrite_dialectic_query,
+    )
 
+    ctx.register_auxiliary_task(
+        key=TASK_KEY,
+        display_name="Honcho query rewrite",
+        description="Rewrite the latest user message for Honcho retrieval",
+        defaults={"timeout": 8},
+    )
     ctx.register_memory_provider(
         HonchoMemoryProvider(query_rewriter=rewrite_dialectic_query)
     )

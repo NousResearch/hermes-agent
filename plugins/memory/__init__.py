@@ -27,7 +27,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,10 @@ _MEMORY_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
 _USER_NAMESPACE = "_hermes_user_memory"
+
+# Auxiliary tasks declared through a memory provider's plugin-style register()
+# call. Only the active provider's declarations are exposed to the host.
+_PROVIDER_AUXILIARY_TASKS: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -294,9 +298,10 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 
     # Try register(ctx) pattern first (how our plugins are written)
     if hasattr(mod, "register"):
-        collector = _ProviderCollector()
+        collector = _ProviderCollector(name)
         try:
             mod.register(collector)
+            _PROVIDER_AUXILIARY_TASKS[name] = list(collector.auxiliary_tasks)
             if collector.provider:
                 return collector.provider
         except Exception as e:
@@ -317,13 +322,51 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 
 
 class _ProviderCollector:
-    """Fake plugin context that captures register_memory_provider calls."""
+    """Plugin context subset supported by exclusive memory providers."""
 
-    def __init__(self):
+    def __init__(self, provider_name: str):
+        self.provider_name = provider_name
         self.provider = None
+        self.auxiliary_tasks: List[Dict[str, Any]] = []
 
     def register_memory_provider(self, provider):
         self.provider = provider
+
+    def register_auxiliary_task(
+        self,
+        key: str,
+        *,
+        display_name: str,
+        description: str,
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Capture the same auxiliary-task declaration exposed by PluginContext."""
+        if not key or not isinstance(key, str) or not all(
+            c.isalnum() or c == "_" for c in key
+        ):
+            raise ValueError(
+                f"Memory provider '{self.provider_name}' registered invalid "
+                f"auxiliary task key {key!r}"
+            )
+        merged_defaults: Dict[str, Any] = {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        }
+        if defaults:
+            merged_defaults.update(defaults)
+        self.auxiliary_tasks.append(
+            {
+                "key": key,
+                "display_name": display_name,
+                "description": description,
+                "defaults": merged_defaults,
+                "plugin": f"memory/{self.provider_name}",
+            }
+        )
 
     # No-op for other registration methods
     def register_tool(self, *args, **kwargs):
@@ -334,6 +377,18 @@ class _ProviderCollector:
 
     def register_cli_command(self, *args, **kwargs):
         pass  # CLI registration happens via discover_plugin_cli_commands()
+
+
+def get_memory_provider_auxiliary_tasks(
+    provider_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return auxiliary tasks declared by the active memory provider."""
+    name = provider_name or _get_active_memory_provider()
+    if not name:
+        return []
+    if name not in _PROVIDER_AUXILIARY_TASKS:
+        load_memory_provider(name)
+    return [dict(entry) for entry in _PROVIDER_AUXILIARY_TASKS.get(name, [])]
 
 
 def _get_active_memory_provider() -> Optional[str]:

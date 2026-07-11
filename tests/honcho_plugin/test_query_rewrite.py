@@ -12,8 +12,7 @@ from plugins.memory.honcho.query_rewrite import (
     _normalize_rewrite,
     rewrite_dialectic_query,
 )
-from hermes_cli.config import DEFAULT_CONFIG
-from hermes_cli.main import _AUX_TASKS
+from plugins.memory import get_memory_provider_auxiliary_tasks
 
 
 def _response(text: str):
@@ -211,18 +210,48 @@ def test_first_user_message_is_not_shadowed_by_generic_dialectic_prewarm():
 
 def test_register_injects_query_rewriter():
     ctx = SimpleNamespace(
+        register_auxiliary_task=MagicMock(),
         register_memory_provider=MagicMock(),
     )
 
     register(ctx)
 
+    ctx.register_auxiliary_task.assert_called_once_with(
+        key=TASK_KEY,
+        display_name="Honcho query rewrite",
+        description="Rewrite the latest user message for Honcho retrieval",
+        defaults={"timeout": 8},
+    )
     provider = ctx.register_memory_provider.call_args.args[0]
     assert isinstance(provider, HonchoMemoryProvider)
     assert provider._query_rewriter is rewrite_dialectic_query
 
 
-def test_query_rewrite_has_an_independent_auxiliary_model_config():
-    task_config = DEFAULT_CONFIG["auxiliary"][TASK_KEY]
+def test_memory_loader_exposes_query_rewrite_auxiliary_defaults():
+    tasks = get_memory_provider_auxiliary_tasks("honcho")
+    task = next(entry for entry in tasks if entry["key"] == TASK_KEY)
+
+    assert task["plugin"] == "memory/honcho"
+    assert task["defaults"]["provider"] == "auto"
+    assert task["defaults"]["timeout"] == 8
+
+
+def test_auxiliary_client_layers_active_honcho_defaults(monkeypatch):
+    from agent.auxiliary_client import _get_auxiliary_task_config
+    from hermes_cli import config as config_mod
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginManager
+    from plugins import memory as memory_plugins
+
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", lambda: manager)
+    monkeypatch.setattr(
+        memory_plugins, "_get_active_memory_provider", lambda: "honcho"
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"auxiliary": {}})
+
+    task_config = _get_auxiliary_task_config(TASK_KEY)
+
     assert task_config["provider"] == "auto"
     assert task_config["timeout"] == 8
-    assert TASK_KEY in {key for key, _name, _description in _AUX_TASKS}

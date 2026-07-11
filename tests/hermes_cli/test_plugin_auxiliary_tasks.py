@@ -54,6 +54,12 @@ def patched_manager(monkeypatch):
 
     monkeypatch.setattr(plugins_mod, "get_plugin_manager", _stub_get_manager)
     monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", _stub_get_manager)
+    from plugins import memory as memory_plugins
+    monkeypatch.setattr(
+        memory_plugins,
+        "get_memory_provider_auxiliary_tasks",
+        lambda: [],
+    )
     yield fresh
 
 
@@ -196,6 +202,31 @@ def test_get_plugin_auxiliary_tasks_returns_sorted_list(patched_manager):
 
 def test_get_plugin_auxiliary_tasks_empty_when_none_registered(patched_manager):
     assert get_plugin_auxiliary_tasks() == []
+
+
+def test_get_plugin_auxiliary_tasks_includes_active_memory_provider(
+    patched_manager, monkeypatch
+):
+    from plugins import memory as memory_plugins
+
+    monkeypatch.setattr(
+        memory_plugins,
+        "get_memory_provider_auxiliary_tasks",
+        lambda: [
+            {
+                "key": "memory_query_rewrite",
+                "display_name": "Memory query rewrite",
+                "description": "rewrite memory queries",
+                "defaults": {"provider": "auto", "timeout": 8},
+                "plugin": "memory/example",
+            }
+        ],
+    )
+
+    tasks = get_plugin_auxiliary_tasks()
+
+    assert [task["key"] for task in tasks] == ["memory_query_rewrite"]
+    assert tasks[0]["defaults"]["timeout"] == 8
 
 
 # ── _all_aux_tasks merges built-in + plugin ──────────────────────────────────

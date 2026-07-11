@@ -293,6 +293,34 @@ def test_runtime_main_sync_happens_after_restore():
     )]
 
 
+def test_global_message_timestamps_decorate_model_context_but_persist_clean_text():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/Berlin")
+    prior_ts = datetime(2026, 4, 28, 13, 40, 53, tzinfo=tz).timestamp()
+    current_ts = datetime(2026, 4, 28, 13, 42, 10, tzinfo=tz).timestamp()
+    agent = _FakeAgent()
+    history = [{"role": "user", "content": "earlier", "timestamp": prior_ts}]
+
+    with (
+        patch(
+            "hermes_cli.config.load_config",
+            return_value={"message_timestamps": {"enabled": True}},
+        ),
+        patch("hermes_time.get_timezone", return_value=tz),
+        patch("agent.message_timestamps.time.time", return_value=current_ts),
+    ):
+        ctx = _build(agent, user_message="now", conversation_history=history)
+
+    assert history[0]["content"] == "earlier"
+    assert ctx.messages[0]["content"] == "[Tue 2026-04-28 13:40:53 CEST] earlier"
+    assert ctx.messages[-1]["content"] == "[Tue 2026-04-28 13:42:10 CEST] now"
+    assert ctx.original_user_message == "now"
+    assert agent._persist_user_message_override == "now"
+    assert agent._persist_user_message_timestamp == current_ts
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1

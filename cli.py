@@ -4862,6 +4862,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pet_event = state
         self._pet_event_until = time.monotonic() + secs
 
+    def _on_reaction(self, kind: str) -> None:
+        """User affection (ily / <3 / good bot), core-detected — the pet's share
+        of the vibe signal that plays hearts on the TUI/desktop. Flash a celebrate."""
+        if kind == "vibe":
+            self._pet_flash("jump")
+
     def _pet_react_turn_end(self) -> None:
         """Flash the end-of-turn beat: failed on error, jump on a finished plan, else wave."""
         if not self._pet_enabled:

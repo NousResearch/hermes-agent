@@ -456,6 +456,36 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     return host_only == bound_lc
 
 
+def _origin_matches_dashboard_public_url(origin: str) -> bool:
+    """True when a browser Origin matches dashboard.public_url exactly.
+
+    This is intentionally narrow and only used by WebSocket origin checks for
+    loopback-bound dashboards that are reached through a trusted reverse proxy
+    or Cloudflare Tunnel.  HTTP Host validation still rejects arbitrary hosts;
+    this helper only prevents the WS guard from rejecting the configured public
+    frontend origin (for example https://jarvis.sw-dev.uk) when the backend is
+    safely bound to 127.0.0.1.
+    """
+    public_url = (cfg_get(load_config(), "dashboard", "public_url", default="") or "").strip()
+    if not public_url or not origin:
+        return False
+
+    try:
+        origin_parts = urllib.parse.urlparse(origin)
+        public_parts = urllib.parse.urlparse(public_url)
+    except Exception:
+        return False
+
+    if origin_parts.scheme not in {"http", "https"}:
+        return False
+    if public_parts.scheme not in {"http", "https"}:
+        return False
+    return (
+        origin_parts.scheme == public_parts.scheme
+        and origin_parts.netloc.lower() == public_parts.netloc.lower()
+    )
+
+
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface.
@@ -14383,6 +14413,11 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
     if not _is_accepted_host(parsed.netloc, bound_host):
+        if (
+            bound_host.lower() in _LOOPBACK_HOST_VALUES
+            and _origin_matches_dashboard_public_url(origin)
+        ):
+            return None
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

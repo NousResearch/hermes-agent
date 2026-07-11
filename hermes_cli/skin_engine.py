@@ -891,23 +891,38 @@ def _clear_auto_skin_cache() -> None:
 
 
 def _appearance_watcher_loop(callback, poll_interval: float = 2.0) -> None:
-    """Background thread that polls OS appearance and fires callback on change."""
-    last_appearance = _get_os_appearance()
+    """Background thread that polls OS appearance and fires callback on change.
+
+    The OS-appearance probe shells out (``defaults`` / ``gsettings`` /
+    registry), so the loop checks the active skin FIRST and skips the probe
+    entirely while the skin is not ``auto`` — non-auto sessions pay nothing
+    per tick beyond an in-process name lookup.
+    """
+    last_appearance: Optional[str] = None
 
     while not _appearance_watcher_stop_event.is_set():
         _appearance_watcher_stop_event.wait(poll_interval)
         if _appearance_watcher_stop_event.is_set():
             break
 
+        if get_active_skin_name() != "auto":
+            # Drop the baseline so a later switch back to "auto" re-syncs
+            # silently on its first tick; set_active_skin("auto") already
+            # resolves the then-current appearance, so no callback is owed
+            # for changes that happened while the watcher was dormant.
+            last_appearance = None
+            continue
+
         current_appearance = _get_os_appearance()
+        if last_appearance is None:
+            last_appearance = current_appearance
+            continue
+
         if current_appearance != last_appearance:
             last_appearance = current_appearance
-
-            # Only fire callback when skin is "auto"
-            if get_active_skin_name() == "auto":
-                _clear_auto_skin_cache()
-                new_skin = resolve_auto_skin()
-                callback(new_skin)
+            _clear_auto_skin_cache()
+            new_skin = resolve_auto_skin()
+            callback(new_skin)
 
 
 def start_appearance_watcher(callback, poll_interval: float = 2.0) -> None:

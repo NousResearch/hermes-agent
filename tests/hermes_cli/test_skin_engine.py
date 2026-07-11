@@ -472,6 +472,22 @@ class TestAppearanceWatcher:
         stop_appearance_watcher()
         callback.assert_not_called()
 
+    def test_watcher_skips_os_probe_when_skin_not_auto(self):
+        """Non-auto sessions must not pay the subprocess probe per tick."""
+        import hermes_cli.skin_engine as se
+        callback = MagicMock()
+        se.set_active_skin("default")
+        se._appearance_watcher_stop_event.clear()
+        with patch.object(se, "_get_os_appearance") as probe:
+            se.start_appearance_watcher(callback, poll_interval=0.05)
+
+            import time
+            time.sleep(0.3)
+
+            se.stop_appearance_watcher()
+            probe.assert_not_called()
+        callback.assert_not_called()
+
     def test_start_stop_watcher_lifecycle(self):
         """start/stop should work cleanly."""
         import hermes_cli.skin_engine as se

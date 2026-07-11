@@ -649,6 +649,47 @@ class _ScriptedAcpProcess:
         return self.returncode
 
 
+class _ScriptedAcpProcessWithTrailingChunk(_ScriptedAcpProcess):
+    """Popen stand-in that returns the session/prompt end_turn before the assistant chunk."""
+
+    def write(self, data: str) -> int:
+        import json
+
+        line = data.strip()
+        if not line:
+            return 0
+        req = json.loads(line)
+        self.writes.append(req)
+        method = req.get("method")
+        req_id = req.get("id")
+        if method == "initialize":
+            result = {"protocolVersion": 1}
+        elif method == "session/new":
+            self.session_seq += 1
+            result = {"sessionId": f"sess-{self.session_seq}"}
+        elif method == "session/prompt":
+            result = {"stopReason": "end_turn"}
+            resp = {"jsonrpc": "2.0", "id": req_id, "result": result}
+            self.stdout.push(json.dumps(resp) + "\n")
+            chunk = {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": f"ok-{self.session_seq}"},
+                    }
+                },
+            }
+            self.stdout.push(json.dumps(chunk) + "\n")
+            return len(data)
+        else:
+            result = {}
+        resp = {"jsonrpc": "2.0", "id": req_id, "result": result}
+        self.stdout.push(json.dumps(resp) + "\n")
+        return len(data)
+
+
 class TestAcpProcessReuse(unittest.TestCase):
     def test_reuses_process_across_prompts(self):
         from agent.copilot_acp_client import CopilotACPClient
@@ -839,6 +880,30 @@ class TestAcpProcessReuse(unittest.TestCase):
             if getattr(delta, "content", None):
                 contents.append(delta.content)
         assert "".join(contents) == "ok-1" or any(c == "ok-1" for c in contents)
+
+
+    def test_session_prompt_drains_trailing_agent_message_chunk(self):
+        from agent.copilot_acp_client import CopilotACPClient
+
+        procs: list[_ScriptedAcpProcessWithTrailingChunk] = []
+
+        def _popen(*_a, **_k):
+            proc = _ScriptedAcpProcessWithTrailingChunk()
+            procs.append(proc)
+            return proc
+
+        with patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_popen):
+            client = CopilotACPClient(
+                command="fake-acp",
+                args=["--stdio"],
+                acp_cwd="/tmp",
+            )
+            client._reuse_enabled = True
+            client._session_reuse_enabled = False
+            r1, _ = client._run_prompt("first", timeout_seconds=5)
+            client.close()
+
+        assert r1 == "ok-1"
 
 
 if __name__ == "__main__":

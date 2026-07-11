@@ -1254,6 +1254,7 @@ class CopilotACPClient:
                 emit(msg)
         except Exception:
             pass
+        session_deadline = time.monotonic() + timeout_seconds
         self._rpc(
             "session/prompt",
             {
@@ -1271,7 +1272,72 @@ class CopilotACPClient:
             on_text_chunk=on_text_chunk,
             on_reasoning_chunk=on_reasoning_chunk,
         )
+        # session/prompt may return stopReason before the final
+        # session/update agent_message_chunk is flushed; drain trailing
+        # updates until the response text is stable.
+        self._drain_session_prompt_chunks(
+            text_parts,
+            reasoning_parts,
+            on_text_chunk=on_text_chunk,
+            on_reasoning_chunk=on_reasoning_chunk,
+            timeout_seconds=max(0.0, session_deadline - time.monotonic()),
+        )
         return "".join(text_parts), "".join(reasoning_parts)
+
+    def _drain_session_prompt_chunks(
+        self,
+        text_parts: list[str],
+        reasoning_parts: list[str],
+        *,
+        on_text_chunk: Any = None,
+        on_reasoning_chunk: Any = None,
+        timeout_seconds: float,
+    ) -> None:
+        """Drain trailing session/update chunks after session/prompt returns.
+
+        ACP servers (Grok, Devin, Copilot) may send the JSON-RPC response for
+        session/prompt before the final agent_message_chunk stream is flushed.
+        Wait until no new chunk arrives for a short stable window.
+        """
+        proc = self._active_process
+        inbox = self._inbox
+        if proc is None or inbox is None:
+            return
+
+        deadline = time.monotonic() + timeout_seconds
+        idle_seconds = 0.15
+        stable_checks = 2
+        stable_count = 0
+        while time.monotonic() < deadline:
+            remaining = min(idle_seconds, deadline - time.monotonic())
+            if remaining <= 0:
+                break
+            try:
+                msg = inbox.get(timeout=remaining)
+            except queue.Empty:
+                stable_count += 1
+                if stable_count >= stable_checks:
+                    break
+                continue
+
+            stable_count = 0
+            if self._handle_server_message(
+                msg,
+                process=proc,
+                cwd=self._acp_cwd,
+                text_parts=text_parts,
+                reasoning_parts=reasoning_parts,
+                on_text_chunk=on_text_chunk,
+                on_reasoning_chunk=on_reasoning_chunk,
+            ):
+                continue
+
+            # Not a notification we can drain; put it back for the next RPC.
+            try:
+                inbox.put(msg)
+            except Exception:
+                pass
+            break
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         """Low-level single-blob prompt (tests / callers that skip message lists)."""

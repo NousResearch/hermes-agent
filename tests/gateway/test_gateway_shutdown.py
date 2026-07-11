@@ -192,6 +192,28 @@ async def test_unexpected_signal_writes_home_startup_marker(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_shutdown_event_waits_for_external_restart_marker(tmp_path, monkeypatch):
+    """The process must not exit before the startup marker is durable."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._signal_initiated_shutdown = True
+    original_write = gateway_run.atomic_json_write
+
+    def assert_event_is_not_set(path, *args, **kwargs):
+        assert path == tmp_path / ".restart_pending.json"
+        assert runner._shutdown_event.is_set() is False
+        return original_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(gateway_run, "atomic_json_write", assert_event_is_not_set)
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert runner._shutdown_event.is_set() is True
+    assert (tmp_path / ".restart_pending.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_external_signal_notifies_active_session_and_writes_home_startup_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()

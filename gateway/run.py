@@ -6725,7 +6725,6 @@ class GatewayRunner:
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
-            self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
             # to a specific agent (catch-all for zombie prevention). On the
@@ -6862,6 +6861,10 @@ class GatewayRunner:
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
+            # Let start_gateway() continue only after lifecycle markers are
+            # durable. Otherwise a SIGTERM restart can exit the process before
+            # the next boot sees .restart_pending.json.
+            self._shutdown_event.set()
             self._update_runtime_status("stopped", self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 

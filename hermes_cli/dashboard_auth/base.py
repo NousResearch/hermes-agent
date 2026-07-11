@@ -178,6 +178,16 @@ class DashboardAuthProvider(ABC):
     # supports_token.
     supports_session: bool = True
 
+    # When True, this provider implements the interactive OAuth redirect flow
+    # (``start_login`` returns a real ``LoginStart`` / ``complete_login`` runs
+    # the auth-code exchange). The gate's silent auto-SSO optimization
+    # (``_auto_sso_response``) only fires for such providers; a password-only
+    # provider leaves this False so the gate falls through to the ``/login``
+    # credential form instead of bouncing the browser to ``/auth/login``
+    # (whose ``start_login`` would raise NotImplementedError → HTTP 500).
+    # Mirrors supports_password / supports_token / supports_session.
+    supports_oauth: bool = True
+
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
 

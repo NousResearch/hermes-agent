@@ -407,6 +407,69 @@ class TestAutoSsoRedirect:
         assert "/auth/login" not in r.headers["location"]
 
 
+class TestPasswordOnlyProviderNoAutoSso:
+    """Regression: a single PASSWORD-ONLY provider (``supports_oauth=False``)
+    must NOT be auto-SSO'd to ``/auth/login``.
+
+    ``/auth/login`` initiates the OAuth redirect flow by calling the
+    provider's ``start_login``. A password-only provider raises
+    ``NotImplementedError`` there, so auto-bouncing to it returned HTTP 500 —
+    a blank ("black") screen for self-hosters using basic-auth without OAuth.
+    The gate must instead fall through to the ``/login`` credential form.
+    """
+
+    @pytest.fixture
+    def gated_pw_app(self):
+        class _PasswordOnlyStub(StubAuthProvider):
+            name = "pwonly"
+            display_name = "Password Only (test)"
+            supports_password = True
+            supports_oauth = False
+
+            def start_login(self, *, redirect_uri: str):
+                # Mirrors the real BasicAuthProvider: no OAuth redirect flow.
+                raise NotImplementedError(
+                    "password-only provider has no OAuth redirect"
+                )
+
+        clear_providers()
+        register_provider(_PasswordOnlyStub())
+        prev_host = getattr(web_server.app.state, "bound_host", None)
+        prev_port = getattr(web_server.app.state, "bound_port", None)
+        prev_required = getattr(web_server.app.state, "auth_required", None)
+        web_server.app.state.bound_host = "fly-app.fly.dev"
+        web_server.app.state.bound_port = 443
+        web_server.app.state.auth_required = True
+        client = TestClient(
+            web_server.app, base_url="https://fly-app.fly.dev"
+        )
+        yield client
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.bound_port = prev_port
+        web_server.app.state.auth_required = prev_required
+
+    def test_unauth_html_load_falls_through_to_login_not_500(
+        self, gated_pw_app
+    ):
+        """The core regression: unauth HTML load with a lone password-only
+        provider redirects to ``/login`` (the credential form), never to
+        ``/auth/login`` (which would 500)."""
+        r = gated_pw_app.get("/sessions", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
+    def test_following_redirects_reaches_login_form_200(self, gated_pw_app):
+        """End-to-end: following the redirect chain lands on the rendered
+        login form (HTTP 200), not an Internal Server Error."""
+        r = gated_pw_app.get("/", follow_redirects=True)
+        assert r.status_code == 200
+        assert str(r.url).rstrip("/").endswith("/login") or "/login" in str(
+            r.url
+        )
+
+
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation
 # ---------------------------------------------------------------------------

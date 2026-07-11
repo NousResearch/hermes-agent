@@ -204,6 +204,9 @@ class BasicAuthProvider(DashboardAuthProvider):
     name = "basic"
     display_name = "Username & Password"
     supports_password = True
+    # Pure-password provider: no OAuth redirect flow (start_login raises).
+    # Tells the gate not to auto-SSO to /auth/login (which would 500).
+    supports_oauth = False
 
     def __init__(
         self,

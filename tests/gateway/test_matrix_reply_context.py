@@ -575,6 +575,50 @@ class TestMediaMessageReplySemantics:
 
 
 # ---------------------------------------------------------------------------
+# Inbound relation normalisation
+# ---------------------------------------------------------------------------
+
+class TestInboundRelationNormalisation:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._startup_ts = 0.0
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._handle_text_message = AsyncMock()
+
+    def _event(self, relates_to):
+        event = MagicMock()
+        event.room_id = "!room:ex.org"
+        event.sender = "@alice:ex.org"
+        event.event_id = "$malformed"
+        event.timestamp = 1_800_000_000_000
+        event.content = {
+            "msgtype": "m.text",
+            "body": "hello",
+            "m.relates_to": relates_to,
+        }
+        return event
+
+    @pytest.mark.asyncio
+    async def test_non_dict_relates_to_still_dispatches(self):
+        """A malformed (non-dict) m.relates_to must not crash the event
+        pipeline; the message dispatches with an empty relation."""
+        await self.adapter._on_room_message(self._event("bogus"))
+
+        self.adapter._handle_text_message.assert_awaited_once()
+        kwargs = self.adapter._handle_text_message.await_args.kwargs
+        args = self.adapter._handle_text_message.await_args.args
+        relates_to = kwargs.get("relates_to", args[-1] if args else None)
+        assert relates_to == {}
+
+    @pytest.mark.asyncio
+    async def test_list_relates_to_still_dispatches(self):
+        await self.adapter._on_room_message(self._event(["not", "a", "dict"]))
+
+        self.adapter._handle_text_message.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # Cache maintenance: edits and redactions
 # ---------------------------------------------------------------------------
 
@@ -949,3 +993,42 @@ class TestGatewayThreadBackfill:
 
         assert "should not appear" not in result
         adapter.fetch_thread_context.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# config.yaml plumbing for the backfill limit
+# ---------------------------------------------------------------------------
+
+class TestThreadBackfillLimitConfig:
+    """``matrix.thread_backfill_limit`` has no env var, so it reaches the
+    adapter only through the platform's YAML seed dict."""
+
+    def _load(self, tmp_path, monkeypatch, config_yaml):
+        from gateway.config import load_gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_USER_ID", "@bot:example.org")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test_token")
+
+        config = load_gateway_config()
+        return config.platforms[Platform.MATRIX]
+
+    def test_documented_config_key_reaches_the_adapter(self, tmp_path, monkeypatch):
+        platform_config = self._load(
+            tmp_path, monkeypatch, "matrix:\n  thread_backfill_limit: 5\n"
+        )
+
+        assert platform_config.extra["thread_backfill_limit"] == 5
+        assert MatrixAdapter(platform_config)._thread_backfill_limit == 5
+
+    def test_absent_key_falls_back_to_default(self, tmp_path, monkeypatch):
+        platform_config = self._load(
+            tmp_path, monkeypatch, "matrix:\n  require_mention: true\n"
+        )
+
+        assert "thread_backfill_limit" not in platform_config.extra
+        assert MatrixAdapter(platform_config)._thread_backfill_limit == 20

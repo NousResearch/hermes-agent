@@ -47,10 +47,9 @@ Environment variables:
                               when requester metadata is available (default: true)
     MATRIX_APPROVAL_TIMEOUT_SECONDS
                               Reaction approval/model-picker timeout (default: 300)
-    MATRIX_THREAD_BACKFILL_LIMIT
-                              Max prior thread messages fetched as context when a
-                              threaded message starts a fresh session; 0 disables
-                              (default: 20)
+
+Thread backfill depth is configured via ``matrix.thread_backfill_limit``
+in config.yaml (default: 20; 0 disables).
 """
 
 from __future__ import annotations
@@ -1328,10 +1327,10 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         )
         raw_backfill = config.extra.get("thread_backfill_limit")
-        if raw_backfill is None:
-            raw_backfill = os.getenv("MATRIX_THREAD_BACKFILL_LIMIT", "20")
         try:
-            self._thread_backfill_limit: int = max(0, int(raw_backfill))
+            self._thread_backfill_limit: int = (
+                max(0, int(raw_backfill)) if raw_backfill is not None else 20
+            )
         except (TypeError, ValueError):
             self._thread_backfill_limit = 20
         self._process_notices: bool = os.getenv(
@@ -3364,7 +3363,11 @@ class MatrixAdapter(BasePlatformAdapter):
         else:
             source_content = {}
 
+        # Normalise at the boundary: a malformed (non-dict) m.relates_to
+        # must not fault the pipeline before the relation parser runs.
         relates_to = source_content.get("m.relates_to", {})
+        if not isinstance(relates_to, dict):
+            relates_to = {}
 
         # Edits (m.replace) don't dispatch a new turn, but the replacement
         # text must refresh the seen-event cache so later replies to the
@@ -5660,7 +5663,11 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    take precedence over YAML.
+
+    Most settings flow through env. ``thread_backfill_limit`` has no env var,
+    so it is returned in the seed dict, which the loader merges into the
+    platform's ``extra``.
     """
     if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
         os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
@@ -5694,6 +5701,9 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
     if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
         os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
+
+    if "thread_backfill_limit" in matrix_cfg:
+        return {"thread_backfill_limit": matrix_cfg["thread_backfill_limit"]}
     return None
 
 

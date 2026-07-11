@@ -616,6 +616,9 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+    app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 
 
@@ -662,6 +665,62 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+
+class TestRunStopLifecycle:
+    @pytest.mark.asyncio
+    async def test_pre_start_stop_marker_cancels_before_agent_creation(self, adapter, monkeypatch):
+        run_hex = "a" * 32
+        run_id = f"run_{run_hex}"
+        adapter._stopping_run_ids.add(run_id)
+
+        fake_uuid = MagicMock()
+        fake_uuid.hex = run_hex
+        monkeypatch.setattr("gateway.platforms.api_server.uuid.uuid4", lambda: fake_uuid)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=AssertionError("agent should not start")) as create_agent:
+                resp = await cli.post("/v1/runs", json={"input": "stop before start"})
+                assert resp.status == 202
+                data = await resp.json()
+                assert data["run_id"] == run_id
+
+                for _ in range(20):
+                    if adapter._run_statuses.get(run_id, {}).get("status") == "cancelled":
+                        break
+                    await asyncio.sleep(0.01)
+
+                create_agent.assert_not_called()
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+                assert adapter._run_statuses[run_id]["last_event"] == "run.cancelled"
+
+    @pytest.mark.asyncio
+    async def test_orphan_sweep_keeps_active_stopped_worker_tracking(self, adapter):
+        run_id = "run_live_worker"
+        task = asyncio.create_task(asyncio.sleep(60))
+        agent = object()
+        q = asyncio.Queue()
+        try:
+            adapter._run_streams[run_id] = q
+            adapter._run_streams_created[run_id] = 1000.0
+            adapter._active_run_agents[run_id] = agent
+            adapter._active_run_tasks[run_id] = task
+            adapter._run_approval_sessions[run_id] = "approval-key"
+            adapter._stopping_run_ids.add(run_id)
+
+            adapter._sweep_orphaned_runs_once(now=1000.0 + adapter._RUN_STREAM_TTL + 1)
+
+            assert run_id not in adapter._run_streams
+            assert run_id not in adapter._run_streams_created
+            assert adapter._active_run_agents[run_id] is agent
+            assert adapter._active_run_tasks[run_id] is task
+            assert adapter._run_approval_sessions[run_id] == "approval-key"
+            assert run_id in adapter._stopping_run_ids
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
 
 # ---------------------------------------------------------------------------

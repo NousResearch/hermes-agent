@@ -2775,6 +2775,7 @@ class TestConcurrentToolExecution:
         assert "fast-result" in messages[0]["content"]
         assert messages[1]["tool_call_id"] == "c2"
         assert "timed out after" in messages[1]["content"]
+        assert messages[1]["effect_disposition"] == "unknown"
         assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
         assert "fast-result" in flushed[0][-1]["content"]
         assert "timed out after" in flushed[1][-1]["content"]

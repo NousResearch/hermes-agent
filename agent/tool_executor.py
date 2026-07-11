@@ -343,6 +343,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 tc.function.name,
                 f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                 tc.id,
+                effect_disposition="none",
             ))
             _flush_session_db_after_tool_progress(
                 agent,
@@ -827,9 +828,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # deadline snapshot (timed_out_indices, taken from not_done) and this
         # loop. Prefer that real result over a fabricated timeout message — the
         # tool genuinely succeeded, just slightly late.
+        effect_disposition = None
         if i in timed_out_indices and r is None:
             suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
             function_result = f"Error executing tool '{name}': timed out after {suffix}"
+            effect_disposition = "unknown"
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=name,
@@ -876,6 +879,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_duration = 0.0
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
+            if blocked:
+                effect_disposition = "none"
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -964,7 +969,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        tool_message = make_tool_result_message(name, _tool_content, tc.id)
+        tool_message = make_tool_result_message(
+            name,
+            _tool_content,
+            tc.id,
+            effect_disposition=effect_disposition,
+        )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if (
@@ -1027,6 +1037,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skipped_name,
                     f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
                     skipped_tc.id,
+                    effect_disposition="none",
                 ))
                 _flush_session_db_after_tool_progress(
                     agent,
@@ -1691,6 +1702,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skipped_name,
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                     skipped_tc.id,
+                    effect_disposition="none",
                 ))
                 _flush_session_db_after_tool_progress(
                     agent,

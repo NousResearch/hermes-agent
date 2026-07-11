@@ -562,10 +562,17 @@ class WeComAdapter(BasePlatformAdapter):
 
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the WeCom client.
-        if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
+        try:
+            if message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+                self._enqueue_text_event(event)
+            else:
+                await self.handle_message(event)
+        except Exception:
+            logger.exception(
+                "[%s] Failed to process message %s, releasing dedup claim",
+                self.name, msg_id,
+            )
+            self._dedup.remove(msg_id)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles WeCom client-side splits)
@@ -645,6 +652,13 @@ class WeComAdapter(BasePlatformAdapter):
                 key, len(event.text or ""),
             )
             await self.handle_message(event)
+        except Exception:
+            logger.exception(
+                "[%s] Failed processing text batch %s, releasing dedup claim",
+                self.name, key,
+            )
+            if event and event.message_id:
+                self._dedup.remove(event.message_id)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)

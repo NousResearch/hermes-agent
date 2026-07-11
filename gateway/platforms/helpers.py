@@ -70,6 +70,15 @@ class MessageDeduplicator:
                 self._seen = dict(newest)
         return False
 
+    def remove(self, msg_id: str) -> None:
+        """Remove a message id from the dedup cache so it can be re-processed.
+
+        Call this when message processing fails after is_duplicate() has
+        already marked the id as seen — otherwise the platform's redelivery
+        will be silently dropped for the duration of the TTL window.
+        """
+        self._seen.pop(msg_id, None)
+
     def clear(self):
         """Clear all tracked messages."""
         self._seen.clear()

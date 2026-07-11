@@ -2318,25 +2318,124 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 # Check if this model's base_url matches our custom provider
                 matched_key = get_custom_provider_pool_key(model_base_url)
                 if matched_key == pool_key:
-                    source = "model_config"
-                    if not _is_suppressed(pool_key, source):
-                        active_sources.add(source)
-                        changed |= _upsert_entry(
-                            entries,
-                            pool_key,
-                            source,
-                            {
-                                "source": source,
-                                "auth_type": AUTH_TYPE_API_KEY,
-                                "access_token": model_api_key,
-                                "base_url": model_base_url,
-                                "label": "model_config",
-                            },
-                        )
+                    # Skip seeding a duplicate entry when the same API key is
+                    # already present from the custom_providers config entry.
+                    # Without this, a standard setup (where custom_providers
+                    # and model.api_key point at the same key+URL) creates two
+                    # pool entries for one credential.  When that key hits a
+                    # 402/429, the first entry is marked exhausted, the pool
+                    # "rotates" to the second (identical) entry, which also
+                    # fails, and the user sees "all keys exhausted" despite
+                    # having only one key.  Compare by access_token value,
+                    # falling back to secret_fingerprint for entries loaded
+                    # from disk where the raw key was sanitized away.
+                    def _matches_existing(e: PooledCredential) -> bool:
+                        e_token = getattr(e, "access_token", "") or ""
+                        if e_token and e_token == model_api_key:
+                            return True
+                        # Disk-sanitized entries have empty access_token but
+                        # a secret_fingerprint — compute the fingerprint of
+                        # the candidate key and compare.
+                        e_fp = getattr(e, "secret_fingerprint", "") or ""
+                        if e_fp:
+                            from agent.credential_persistence import _fingerprint_value
+                            candidate_fp = _fingerprint_value(model_api_key)
+                            if candidate_fp and candidate_fp == e_fp:
+                                return True
+                        return False
+
+                    _already_seeded = any(_matches_existing(e) for e in entries)
+                    if not _already_seeded:
+                        source = "model_config"
+                        if not _is_suppressed(pool_key, source):
+                            active_sources.add(source)
+                            changed |= _upsert_entry(
+                                entries,
+                                pool_key,
+                                source,
+                                {
+                                    "source": source,
+                                    "auth_type": AUTH_TYPE_API_KEY,
+                                    "access_token": model_api_key,
+                                    "base_url": model_base_url,
+                                    "label": "model_config",
+                                },
+                            )
     except Exception:
         pass
 
     return changed, active_sources
+
+
+def _dedup_custom_pool_entries(entries: List[PooledCredential]) -> bool:
+    """Remove custom-pool entries that share the same API key.
+
+    When two entries have the same ``access_token`` or the same
+    ``secret_fingerprint`` (the on-disk hash when the raw key was sanitized
+    away), they are the same credential seeded from different sources.  Keeping
+    duplicates makes the pool appear to have N keys when it really has 1, and
+    exhausting that one key marks all N entries exhausted — the user sees "all
+    keys exhausted" despite only owning a single key.
+
+    Keeps the first entry per fingerprint.  If any duplicate is marked
+    exhausted/dead, propagates that status to the survivor so a known-bad key
+    doesn't silently revive after dedup.
+    """
+    if len(entries) <= 1:
+        return False
+
+    def _entry_key(entry: PooledCredential) -> str:
+        # Prefer the raw access_token when available (in-memory, pre-sanitize).
+        # Fall back to secret_fingerprint for entries loaded from disk where
+        # the raw key was stripped by sanitize_borrowed_credential_payload.
+        token = getattr(entry, "access_token", "") or ""
+        if token:
+            return f"token:{token}"
+        fp = getattr(entry, "secret_fingerprint", "") or ""
+        if fp:
+            return f"fp:{fp}"
+        # No comparable identity — never dedup entries we can't identify.
+        return f"id:{entry.id}"
+
+    seen: Dict[str, int] = {}
+    kept: List[PooledCredential] = []
+    removed_count = 0
+    for entry in entries:
+        key = _entry_key(entry)
+        if key not in seen:
+            seen[key] = len(kept)
+            kept.append(entry)
+        else:
+            survivor_idx = seen[key]
+            survivor = kept[survivor_idx]
+            # Propagate exhaustion status from the duplicate to the survivor.
+            # If the survivor is healthy but the duplicate is exhausted, the
+            # key is genuinely exhausted — marking the survivor healthy would
+            # send requests to a known-bad key.
+            if (
+                survivor.last_status not in {STATUS_EXHAUSTED, STATUS_DEAD}
+                and entry.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}
+            ):
+                kept[survivor_idx] = replace(
+                    survivor,
+                    last_status=entry.last_status,
+                    last_status_at=entry.last_status_at,
+                    last_error_code=entry.last_error_code,
+                    last_error_reason=entry.last_error_reason,
+                    last_error_message=entry.last_error_message,
+                    last_error_reset_at=entry.last_error_reset_at,
+                )
+            removed_count += 1
+    if removed_count:
+        entries[:] = kept
+        logger.info(
+            "credential pool: removed %d duplicate %s entr%s (same API key "
+            "seeded from multiple sources)",
+            removed_count,
+            kept[0].provider if kept else "custom",
+            "y" if removed_count == 1 else "ies",
+        )
+    return removed_count > 0
 
 
 def load_pool(provider: str) -> CredentialPool:
@@ -2358,6 +2457,12 @@ def load_pool(provider: str) -> CredentialPool:
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = raw_needs_sanitization or custom_changed
+        # Deduplicate BEFORE pruning: when two borrowed entries share the same
+        # key, pruning removes the one not in active_sources — but without
+        # dedup first, the exhaustion status on the pruned entry is lost and
+        # the surviving entry can silently revive a known-bad key.  Dedup
+        # merges that status into the survivor first.
+        changed |= _dedup_custom_pool_entries(entries)
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)

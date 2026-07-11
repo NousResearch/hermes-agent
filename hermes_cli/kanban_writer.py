@@ -25,6 +25,7 @@ import socket
 import sqlite3
 import stat
 import struct
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -228,7 +229,33 @@ def privileged_maintenance(db_path: Path) -> Iterator[None]:
 def writer_socket_path(db_path: Path) -> Path:
     path = Path(db_path).expanduser().resolve()
     digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
-    return path.parent / f".kanban-writer-{digest}.sock"
+    endpoint = path.parent / f".kanban-writer-{digest}.sock"
+    # sockaddr_un.sun_path is only 108 bytes on Linux (and shorter on some
+    # BSDs). Deep worktrees and pytest temp directories can exceed that even
+    # though the board path itself is valid. Keep the board-local endpoint
+    # when possible, otherwise use a private, deterministic runtime directory.
+    if len(os.fsencode(endpoint)) <= 100:
+        return endpoint
+    uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
+    runtime_dir = Path(tempfile.gettempdir()) / f"hermes-kanban-{uid}"
+    try:
+        runtime_dir.mkdir(mode=0o700, parents=False, exist_ok=True)
+        metadata = runtime_dir.lstat()
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise WriterUnavailableError(
+                f"writer runtime path is not a directory: {runtime_dir}"
+            )
+        if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+            raise WriterUnavailableError(
+                f"writer runtime directory has the wrong owner: {runtime_dir}"
+            )
+        if metadata.st_mode & 0o077:
+            os.chmod(runtime_dir, 0o700)
+    except OSError as exc:
+        raise WriterUnavailableError(
+            f"cannot prepare private writer runtime directory {runtime_dir}"
+        ) from exc
+    return runtime_dir / f"{digest}.sock"
 
 
 def writer_token_path(db_path: Path) -> Path:
@@ -490,6 +517,7 @@ class KanbanWriterService:
         if not hasattr(socket, "AF_UNIX"):
             raise WriterUnavailableError("local Unix sockets are unavailable")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._acquire_owner_lock()
         try:
             from hermes_cli import kanban_db as kb

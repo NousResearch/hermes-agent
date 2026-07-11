@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import socket
+import stat
 import struct
 import time
 from pathlib import Path
@@ -339,6 +340,27 @@ def test_service_refuses_to_unlink_non_socket_endpoint(tmp_path: Path) -> None:
     with pytest.raises(writer.WriterUnavailableError, match="non-socket"):
         instance.start()
     assert endpoint.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_long_board_path_uses_private_short_socket_and_serves(tmp_path: Path) -> None:
+    db_path = tmp_path / ("deep-" + "x" * 80) / "kanban.db"
+    with writer.privileged_maintenance(db_path):
+        kb.init_db(db_path)
+
+    endpoint = writer.writer_socket_path(db_path)
+    assert len(os.fsencode(endpoint)) <= 100
+    assert endpoint.parent != db_path.parent
+    assert stat.S_IMODE(endpoint.parent.stat().st_mode) == 0o700
+
+    instance = writer.KanbanWriterService(db_path)
+    instance.start()
+    try:
+        task_id = writer.KanbanWriterClient(db_path).mutate(
+            "create_task", {"title": "long-path"}
+        )
+        assert task_id
+    finally:
+        instance.stop()
 
 
 def test_runtime_has_no_kanban_dml_outside_canonical_writer_boundary() -> None:

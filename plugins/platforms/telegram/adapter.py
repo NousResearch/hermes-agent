@@ -35,6 +35,27 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+# Code points that render as nothing visible (zero-width / format controls /
+# soft hyphens / bidi marks). A message made only of these passes .strip()
+# but is delivered as a visually empty bubble — and can trip the Bot API's
+# empty-text 400. See #60848.
+_VISIBLE_TEXT_GUARD = str.maketrans("", "", "\u200b\u200c\u200d\u2060\u00ad\u180e\u200e\u200f\ufeff")
+
+
+def _is_visually_empty(text: str) -> bool:
+    """True when *text* carries no visible glyphs.
+
+    Whitespace-only and zero-width/invisible-only strings both qualify, so
+    the send guard rejects content that would otherwise appear as an empty
+    bubble in the chat. ponytail: set of invisible code points is the
+    documented Bot-API-relevant range; widen the translate table if a new
+    invisible codepoint shows up in the wild.
+    """
+    if not text:
+        return True
+    return not text.translate(_VISIBLE_TEXT_GUARD).strip()
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -3579,8 +3600,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
 
-        # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
-        if not content or not content.strip():
+        # Skip whitespace-only / zero-width-invisible text to prevent
+        # Telegram 400 empty-text errors and visually empty bubbles.
+        # .strip() alone misses invisible code points (U+200B etc.) — see #60848.
+        if _is_visually_empty(content):
             return SendResult(success=True, message_id=None)
         
         try:

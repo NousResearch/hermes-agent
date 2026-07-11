@@ -15,6 +15,7 @@ tests construct a real ``TelegramAdapter``.
 
 import pytest
 
+from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -147,3 +148,59 @@ class TestRichMessageTableProtection:
         # header/delimiter/data-row newlines stay bare.
         assert "Intro line two  \n| H1 | H2 |" in md
         assert "| a | b |  \nOutro line" in md
+
+
+class TestVisuallyEmptyGuard:
+    """The send guard must reject content that renders as an empty bubble.
+
+    .strip() alone passes zero-width / invisible code points (U+200B etc.),
+    which Telegram then delivers as a visually empty message. Regression for
+    #60848.
+    """
+
+    @pytest.fixture()
+    def send_adapter(self):
+        from unittest.mock import AsyncMock
+
+        a = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        a._bot = AsyncMock()
+        a._bot.send_message = AsyncMock()
+        a._set_status_indicator = AsyncMock()
+        a._send_path_degraded = False
+        return a
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_skipped(self, send_adapter):
+        from plugins.platforms.telegram.adapter import SendResult
+
+        res = await send_adapter.send("chat", "   \n\t  ")
+        assert isinstance(res, SendResult)
+        send_adapter._bot.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_zero_width_invisible_skipped(self, send_adapter):
+        # U+200B zero-width space + U+FEFF BOM + U+200C ZWNJ only.
+        invisible = "\u200b\u200c\u200d\u2060\ufeff\u00ad"
+        res = await send_adapter.send("chat", invisible)
+        send_adapter._bot.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_visible_text_sent(self, send_adapter):
+        res = await send_adapter.send("chat", "hello\u200bworld")
+        # Invisible char is mid-string, so it should still deliver.
+        send_adapter._bot.send_message.assert_called()
+
+
+def test_is_visually_empty_helper():
+    """Direct unit assertions on the adapter's invisible-text helper (#60848)."""
+    from plugins.platforms.telegram.adapter import _is_visually_empty
+
+    assert _is_visually_empty("") is True
+    assert _is_visually_empty("   \n\t  ") is True
+    # Zero-width / format-control only — delivers as an empty bubble.
+    assert _is_visually_empty("\u200b\u200c\u200d\u2060\ufeff\u00ad") is True
+    assert _is_visually_empty("\u200e\u200f\u180e") is True
+    # Real glyphs present — must NOT be rejected.
+    assert _is_visually_empty("hello") is False
+    assert _is_visually_empty("hello\u200bworld") is False
+

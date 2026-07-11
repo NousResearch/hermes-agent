@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 
@@ -581,11 +582,39 @@ def _sanitize_bank_segment(value: str) -> str:
     return "".join(out).strip("-_")
 
 
+def _resolve_project_name(cwd: str = "") -> str:
+    """Resolve the current project name from the working directory.
+
+    Mirrors the Hindsight Claude Code / Codex plugin's project derivation so a
+    ``{project}`` bank resolves to the SAME bank id across all three harnesses:
+    the basename of the main repository (git-common-dir), which collapses
+    worktrees of one repo onto a single bank, falling back to the plain cwd
+    basename outside a git repo.
+
+    Returns "" when the directory cannot be determined, which makes a
+    ``{project}`` template fall back to the static ``bank_id``.
+    """
+    cwd = cwd or os.getcwd()
+    if not cwd:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return os.path.basename(os.path.dirname(result.stdout.strip()))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return os.path.basename(cwd.rstrip(os.sep))
+
+
 def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str) -> str:
     """Resolve a bank_id template string with the given placeholders.
 
     Supported placeholders (each is sanitized before substitution):
       {profile}   — active Hermes profile name (from agent_identity)
+      {project}   — repo/directory name of the cwd (matches Claude Code + Codex)
       {workspace} — Hermes workspace name (from agent_workspace)
       {platform}  — "cli", "telegram", "discord", etc.
       {user}      — platform user id (gateway sessions)
@@ -659,6 +688,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
+        self._prefetch_query = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         # Single-writer model for retain. sync_turn() enqueues; the writer
@@ -712,6 +742,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
         self._bank_id_template = ""
+        self._recall_additional_banks: List[str] = []
 
     @property
     def name(self) -> str:
@@ -982,7 +1013,9 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
-            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
+            {"key": "prefetch_wait_seconds", "description": "Max seconds a turn waits for its memory recall before proceeding without it", "default": 15.0},
+            {"key": "recall_additional_banks", "description": "Extra banks merged into every recall, read-only (list or comma-separated). Writes always go to bank_id. Example: user-global", "default": ""},
+            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {project}, {workspace}, {platform}, {user}, {session}. Use {project} (repo name of the cwd) to share one bank per project with the Hindsight Claude Code / Codex plugins. Example: {project}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -1290,11 +1323,22 @@ class HindsightMemoryProvider(MemoryProvider):
             self._bank_id_template,
             fallback=static_bank_id,
             profile=self._agent_identity,
+            project=_resolve_project_name() if "{project}" in self._bank_id_template else "",
             workspace=self._agent_workspace,
             platform=self._platform,
             user=self._user_id,
             session=self._session_id,
         )
+        # Extra read-only banks merged into every recall (never written to).
+        # Parity with the Hindsight Claude Code / Codex plugins'
+        # `recallAdditionalBanks`: lets a per-project bank also see a durable
+        # cross-project bank (e.g. "user-global"). The writing bank stays
+        # self._bank_id — additional banks are recall-only by construction.
+        self._recall_additional_banks = [
+            b for b in _normalize_retain_tags(self._config.get("recall_additional_banks"))
+            if b != self._bank_id
+        ]
+
         budget = self._config.get("recall_budget") or self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
 
@@ -1351,6 +1395,10 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        # Bounded wait for a cold recall at turn time (see prefetch()). Long enough
+        # for a reranked recall on a loaded box, short enough that a wedged server
+        # costs the turn its memory rather than the turn itself.
+        self._prefetch_wait_seconds = float(self._config.get("prefetch_wait_seconds", 15.0))
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1463,13 +1511,50 @@ class HindsightMemoryProvider(MemoryProvider):
             f"hindsight_retain to store facts."
         )
 
+    def _clean_prefetch_query(self, query: str) -> str:
+        """The exact string queue_prefetch would send to the server."""
+        query = query or ""
+        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
+            query = query[:self._recall_max_input_chars]
+        return query
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        """Return recalled context for *query*, recalling now if it isn't warm.
+
+        The agent warms this cache by calling ``queue_prefetch`` at the END of a
+        turn (run_agent._mirror_turn_to_memory), so the warm entry answers the
+        PREVIOUS message, not the one the user just sent. Serving it verbatim
+        made every recall a turn late, and left the first message of any session
+        — the whole of a ``hermes -z`` run — with no memory at all.
+
+        So the cache is now keyed by the query it was warmed for: a hit is used
+        for free, and a miss recalls the current question and waits for it. The
+        wait is bounded by ``prefetch_wait_seconds`` — a wedged Hindsight must
+        cost the turn its memory, never the turn itself.
+        """
+        wanted = self._clean_prefetch_query(query)
+        with self._prefetch_lock:
+            warm_query = self._prefetch_query
+            warm_result = self._prefetch_result
+
+        if wanted and warm_query != wanted:
+            logger.debug("Prefetch: cache holds %r, need %r — recalling now",
+                         warm_query[:40], wanted[:40])
+            with self._prefetch_lock:
+                self._prefetch_result = ""
+                self._prefetch_query = ""
+            self.queue_prefetch(query, session_id=session_id)
+        elif warm_result:
+            logger.debug("Prefetch: cache hit for the current query")
+
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            logger.debug("Prefetch: waiting for background thread to complete")
-            self._prefetch_thread.join(timeout=3.0)
+            logger.debug("Prefetch: waiting up to %.1fs for recall", self._prefetch_wait_seconds)
+            self._prefetch_thread.join(timeout=self._prefetch_wait_seconds)
+
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
+            self._prefetch_query = ""
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -1481,6 +1566,61 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         return f"{header}\n\n{result}"
 
+    def _recall_text_for_bank(self, bank_id: str, query: str, *, method: str, numbered: bool = False) -> str:
+        """Read one bank and render it as text. Shared by prefetch and the tool.
+
+        ``method`` is "reflect" (LLM-composed narrative) or "recall" (ranked
+        fact list) — the same two shapes the prefetch path already supported,
+        factored out so every reader can run over several banks.
+
+        ``numbered`` renders the recall list as "1. …" (the tool's long-standing
+        output shape) instead of the prefetch path's "- …" bullets. Numbering
+        restarts per bank, since each bank is ranked independently.
+        """
+        if method == "reflect":
+            resp = self._run_hindsight_operation(
+                lambda client: client.areflect(bank_id=bank_id, query=query, budget=self._budget)
+            )
+            return resp.text or ""
+
+        recall_kwargs: dict = {
+            "bank_id": bank_id, "query": query,
+            "budget": self._budget, "max_tokens": self._recall_max_tokens,
+        }
+        if self._recall_tags:
+            recall_kwargs["tags"] = self._recall_tags
+            recall_kwargs["tags_match"] = self._recall_tags_match
+        if self._recall_types:
+            recall_kwargs["types"] = self._recall_types
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+        if not resp.results:
+            return ""
+        texts = [r.text for r in resp.results if r.text]
+        if numbered:
+            return "\n".join(f"{i}. {t}" for i, t in enumerate(texts, 1))
+        return "\n".join(f"- {t}" for t in texts)
+
+    def _recall_across_banks(self, query: str, *, method: str, numbered: bool = False) -> str:
+        """Read the writing bank plus every configured additional bank.
+
+        Additional banks are labelled so the model can tell project memory from
+        cross-project memory. A failing additional bank is logged and skipped —
+        it must never take down recall of the main bank.
+        """
+        sections: List[str] = []
+        for bank_id in [self._bank_id, *self._recall_additional_banks]:
+            try:
+                text = self._recall_text_for_bank(bank_id, query, method=method, numbered=numbered)
+            except Exception as e:
+                if bank_id == self._bank_id:
+                    raise
+                logger.debug("Recall from additional bank %s failed: %s", bank_id, e, exc_info=True)
+                continue
+            if not text:
+                continue
+            sections.append(text if bank_id == self._bank_id else f"## From bank: {bank_id}\n{text}")
+        return "\n\n".join(sections)
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if self._memory_mode == "tools":
             logger.debug("Prefetch: skipped (tools-only mode)")
@@ -1491,32 +1631,17 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._shutting_down.is_set():
             logger.debug("Prefetch: skipped (shutting down)")
             return
-        # Truncate query to max chars
-        if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
-            query = query[:self._recall_max_input_chars]
+        query = self._clean_prefetch_query(query)
+        with self._prefetch_lock:
+            self._prefetch_query = query
 
         def _run():
             try:
-                if self._prefetch_method == "reflect":
-                    logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
-                    text = resp.text or ""
-                else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
-                                 self._bank_id, len(query), self._budget)
-                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                    num_results = len(resp.results) if resp.results else 0
-                    logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                logger.debug("Prefetch: calling %s (banks=%s, query_len=%d, budget=%s)",
+                             self._prefetch_method,
+                             [self._bank_id, *self._recall_additional_banks], len(query), self._budget)
+                text = self._recall_across_banks(query, method=self._prefetch_method)
+                logger.debug("Prefetch: %s returned %d chars", self._prefetch_method, len(text))
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1731,24 +1856,12 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
-                logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
+                logger.debug("Tool hindsight_recall: banks=%s, query_len=%d, budget=%s",
+                             [self._bank_id, *self._recall_additional_banks], len(query), self._budget)
+                text = self._recall_across_banks(query, method="recall", numbered=True)
+                if not text:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                return json.dumps({"result": text})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")
@@ -1758,15 +1871,11 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(
-                    lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
-                    )
-                )
-                logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
-                return json.dumps({"result": resp.text or "No relevant memories found."})
+                logger.debug("Tool hindsight_reflect: banks=%s, query_len=%d, budget=%s",
+                             [self._bank_id, *self._recall_additional_banks], len(query), self._budget)
+                text = self._recall_across_banks(query, method="reflect")
+                logger.debug("Tool hindsight_reflect: response_len=%d", len(text))
+                return json.dumps({"result": text or "No relevant memories found."})
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to reflect: {e}")
@@ -1886,6 +1995,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
             self._prefetch_result = ""
+            self._prefetch_query = ""
 
         # 3. Now rotate to the new session.
         if parent_session_id:

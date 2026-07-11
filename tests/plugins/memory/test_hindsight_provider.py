@@ -8,6 +8,7 @@ turn counting, tags), and schema completeness.
 import json
 import os
 import re
+import subprocess
 import stat
 import sys
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from plugins.memory.hindsight import (
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
+    _resolve_project_name,
     _sanitize_bank_segment,
 )
 
@@ -790,11 +792,18 @@ class TestToolHandlers:
 
 
 class TestPrefetch:
-    def test_prefetch_returns_empty_when_no_result(self, provider):
+    def test_prefetch_with_a_cold_cache_recalls_the_current_query(self, provider):
+        # Was: "no warm cache -> empty". That WAS the bug: the cache is only warmed
+        # post-turn, so a cold read is every session's first message. Now it recalls.
+        assert "Memory 1" in provider.prefetch("test")
+
+    def test_prefetch_returns_empty_when_the_recall_finds_nothing(self, provider):
+        provider._recall_text_for_bank = lambda bank_id, query, *, method, numbered=False: ""
         assert provider.prefetch("test") == ""
 
     def test_prefetch_default_preamble(self, provider):
         provider._prefetch_result = "- some memory"
+        provider._prefetch_query = "test"
         result = provider.prefetch("test")
         assert "Hindsight Memory" in result
         assert "- some memory" in result
@@ -802,6 +811,7 @@ class TestPrefetch:
     def test_prefetch_custom_preamble(self, provider_with_config):
         p = provider_with_config(recall_prompt_preamble="Custom header:")
         p._prefetch_result = "- memory line"
+        p._prefetch_query = "test"
         result = p.prefetch("test")
         assert result.startswith("Custom header:")
         assert "- memory line" in result
@@ -1245,10 +1255,12 @@ class TestSessionSwitchBufferFlush:
         """Stale recall text from the old session must not leak into the
         next session's first prefetch read."""
         provider._prefetch_result = "old-session recall: User likes Rust"
+        provider._prefetch_query = "old question"
         provider.on_session_switch("new-sid")
         assert provider._prefetch_result == ""
-        # And subsequent prefetch() should now report empty, not the leftover.
-        assert provider.prefetch("anything") == ""
+        assert provider._prefetch_query == ""
+        # The next read must not serve the leftover: it recalls for the new session.
+        assert "old-session recall" not in provider.prefetch("anything")
 
     def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
         """on_session_switch must wait for an in-flight prefetch from the
@@ -1819,3 +1831,149 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+class TestProjectBank:
+    """{project} must resolve to the SAME bank id the Hindsight Claude Code /
+    Codex plugins derive (basename of the git main repo), so all three
+    harnesses share one bank per project."""
+
+    def test_project_name_is_git_repo_basename(self, tmp_path):
+        repo = tmp_path / "memory-brain"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        # A nested subdir must still resolve to the repo root's name.
+        nested = repo / "packages" / "schemas"
+        nested.mkdir(parents=True)
+        assert _resolve_project_name(str(repo)) == "memory-brain"
+        assert _resolve_project_name(str(nested)) == "memory-brain"
+
+    def test_project_name_falls_back_to_dir_basename_outside_git(self, tmp_path):
+        plain = tmp_path / "not-a-repo"
+        plain.mkdir()
+        assert _resolve_project_name(str(plain)) == "not-a-repo"
+
+    def test_template_resolves_project(self):
+        result = _resolve_bank_id_template(
+            "{project}", fallback="hermes",
+            profile="", project="memory-brain", workspace="", platform="", user="", session="",
+        )
+        assert result == "memory-brain"
+
+    def test_template_falls_back_when_project_unknown(self):
+        # Outside any directory we can name, "{project}" renders empty -> static bank_id.
+        result = _resolve_bank_id_template(
+            "{project}", fallback="hermes",
+            profile="", project="", workspace="", platform="", user="", session="",
+        )
+        assert result == "hermes"
+
+
+class TestRecallAdditionalBanks:
+    """Extra banks are recall-only: merged into reads, never written to."""
+
+    def _provider(self, additional, bank_id="memory-brain"):
+        p = HindsightMemoryProvider()
+        p._bank_id = bank_id
+        p._budget = "mid"
+        p._recall_max_tokens = 4096
+        p._recall_tags = []
+        p._recall_types = ["observation"]
+        p._recall_additional_banks = [b for b in additional if b != bank_id]
+        return p
+
+    def test_config_drops_the_main_bank_from_the_extras(self):
+        p = self._provider(["user-global", "memory-brain"])
+        assert p._recall_additional_banks == ["user-global"]
+
+    def test_recall_merges_banks_in_order_and_labels_the_extras(self, monkeypatch):
+        p = self._provider(["user-global"])
+        monkeypatch.setattr(p, "_recall_text_for_bank",
+                            lambda bank_id, query, *, method, numbered=False: f"fact from {bank_id}")
+        out = p._recall_across_banks("q", method="recall")
+        assert out.startswith("fact from memory-brain")
+        assert "## From bank: user-global" in out
+        assert "fact from user-global" in out
+
+    def test_failing_extra_bank_does_not_break_the_main_recall(self, monkeypatch):
+        def flaky(bank_id, query, *, method, numbered=False):
+            if bank_id == "user-global":
+                raise RuntimeError("bank is down")
+            return "fact from memory-brain"
+        p = self._provider(["user-global"])
+        monkeypatch.setattr(p, "_recall_text_for_bank", flaky)
+        assert p._recall_across_banks("q", method="recall") == "fact from memory-brain"
+
+    def test_failing_main_bank_still_raises(self, monkeypatch):
+        def broken(bank_id, query, *, method, numbered=False):
+            raise RuntimeError("bank is down")
+        p = self._provider(["user-global"])
+        monkeypatch.setattr(p, "_recall_text_for_bank", broken)
+        with pytest.raises(RuntimeError):
+            p._recall_across_banks("q", method="recall")
+
+    def test_writes_never_target_an_additional_bank(self):
+        p = self._provider(["user-global"])
+        p._turn_index = 1
+        p._retain_source = ""
+        p._session_id = "s1"
+        p._platform = p._user_id = p._user_name = ""
+        p._chat_id = p._chat_name = p._chat_type = p._thread_id = p._agent_identity = ""
+        p._observation_scopes = ""
+        p._retain_tags = []
+        kwargs = p._build_retain_kwargs("some content")
+        assert kwargs["bank_id"] == "memory-brain"
+
+
+class TestPrefetchRecallsCurrentQuery:
+    """The warm cache is filled post-turn (it answers the PREVIOUS message).
+    prefetch() must recall for the message the user just sent, not serve it."""
+
+    def test_stale_cache_is_discarded_and_the_current_query_is_recalled(self, provider_with_config):
+        p = provider_with_config()
+        recalled = []
+        p._prefetch_result = "- memory about the previous question"
+        p._prefetch_query = "what did we do yesterday?"
+
+        def _fake(bank_id, query, *, method, numbered=False):
+            recalled.append(query)
+            return "- memory about deploys"
+        p._recall_text_for_bank = _fake
+
+        out = p.prefetch("how do I deploy?")
+        assert recalled == ["how do I deploy?"], "recall must use the message just sent"
+        assert "memory about deploys" in out
+        assert "previous question" not in out
+
+    def test_warm_cache_for_the_same_query_is_reused_without_recalling(self, provider_with_config):
+        p = provider_with_config()
+        p._prefetch_result = "- cached memory"
+        p._prefetch_query = "how do I deploy?"
+
+        def _boom(*a, **k):
+            raise AssertionError("must not recall — the cache already answers this query")
+        p._recall_text_for_bank = _boom
+
+        assert "cached memory" in p.prefetch("how do I deploy?")
+
+    def test_first_turn_of_a_session_recalls_instead_of_returning_nothing(self, provider_with_config):
+        # Cold provider: no warm cache at all. This is every `hermes -z` run and
+        # the first message of every chat session.
+        p = provider_with_config()
+        p._recall_text_for_bank = lambda bank_id, query, *, method, numbered=False: "- a durable fact"
+        assert "a durable fact" in p.prefetch("qual e o meu codinome?")
+
+    def test_a_wedged_recall_costs_the_memory_not_the_turn(self, provider_with_config):
+        import threading as _t
+        p = provider_with_config()
+        p._prefetch_wait_seconds = 0.2
+        started = _t.Event()
+
+        def _hang(bank_id, query, *, method, numbered=False):
+            started.set()
+            _t.Event().wait(30)  # never returns within the bounded wait
+            return "too late"
+        p._recall_text_for_bank = _hang
+
+        assert p.prefetch("uma pergunta") == ""   # returns, does not hang
+        assert started.is_set()

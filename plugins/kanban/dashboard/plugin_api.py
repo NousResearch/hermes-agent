@@ -497,6 +497,18 @@ def get_board(
             )
         ]
 
+        # Surface the archived count for the same tenant slice as ``tasks`` so
+        # the UI never attributes a tenant-filtered empty board to archives
+        # that cannot appear when the user enables "Show archived" (#61897).
+        archived_sql = "SELECT COUNT(*) AS n FROM tasks WHERE status = 'archived'"
+        archived_params: list[str] = []
+        if tenant is not None:
+            archived_sql += " AND tenant = ?"
+            archived_params.append(tenant)
+        archived_count = int(
+            conn.execute(archived_sql, archived_params).fetchone()["n"]
+        )
+
         return {
             "columns": [
                 {"name": name, "tasks": columns[name]} for name in columns.keys()
@@ -505,6 +517,8 @@ def get_board(
             "assignees": assignees,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
+            "archived_count": archived_count,
+            "include_archived": bool(include_archived),
         }
     finally:
         conn.close()
@@ -2012,13 +2026,25 @@ def _board_counts(slug: str) -> dict[str, int]:
 
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
-    """Return every board on disk with task counts and the active slug."""
+    """Return every board on disk with task counts and the active slug.
+
+    ``total`` is the count of *visible* (non-archived) tasks so the board
+    switcher badge matches the cards rendered by default. ``archived`` is
+    the hidden archived count so the UI can still surface "N archived"
+    when the board body looks empty. Full per-status breakdown stays in
+    ``counts``. See #61897.
+    """
     boards = kanban_db.list_boards(include_archived=include_archived)
     current = kanban_db.get_current_board()
     for b in boards:
         b["is_current"] = (b["slug"] == current)
-        b["counts"] = _board_counts(b["slug"])
-        b["total"] = sum(b["counts"].values())
+        counts = _board_counts(b["slug"])
+        archived_n = int(counts.get("archived", 0) or 0)
+        b["counts"] = counts
+        b["archived"] = archived_n
+        # Badge default: match the board body (archived hidden).
+        b["total"] = sum(int(v) for v in counts.values()) - archived_n
+        b["total_all"] = b["total"] + archived_n
     return {"boards": boards, "current": current}
 
 

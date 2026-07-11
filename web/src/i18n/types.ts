@@ -701,6 +701,14 @@ export interface Translations {
     assignee: string;
     allProfiles: string;
     showArchived: string;
+    taskCountZero?: string;
+    taskCountOne?: string;
+    taskCountMany?: string;
+    archivedCountOne?: string;
+    archivedCountMany?: string;
+    archivedHiddenHint?: string;
+    archivedHiddenOne?: string;
+    archivedHiddenMany?: string;
     lanesByProfile: string;
     nudgeDispatcher: string;
     refresh: string;

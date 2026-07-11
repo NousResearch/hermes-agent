@@ -2854,12 +2854,6 @@ This compaction should PRIORITISE preserving all information related to the focu
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
         """
-        # A compaction attempt is running: have should_compress() verify, against
-        # the next real reading, that it actually cleared the threshold. Set on
-        # every path (including the early no-op returns below) so a pass that
-        # changed nothing is still held to account.
-        self._verify_compaction_cleared_threshold = True
-
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0

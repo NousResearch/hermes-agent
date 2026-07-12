@@ -688,3 +688,72 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "462",
     }
+
+
+# ── _notify_startup_channels (startup-flow orchestration) ─────────────
+
+
+def _make_notify_runner():
+    """Create a GatewayRunner partial instance for _notify_startup_channels tests."""
+    runner, adapter = make_restart_runner()
+    runner._booted_from_restart = False
+    runner._send_restart_notification = AsyncMock()
+    runner._send_home_channel_startup_notifications = AsyncMock(
+        return_value=set()
+    )
+    return runner, adapter
+
+
+@pytest.mark.asyncio
+async def test_notify_fresh_start_sends_home_notification(tmp_path, monkeypatch):
+    """No restart markers → home-channel notification is sent."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = _make_notify_runner()
+
+    await runner._notify_startup_channels()
+
+    runner._send_home_channel_startup_notifications.assert_awaited_once_with(
+        skip_targets=None,
+    )
+    assert runner._booted_from_restart is False
+
+
+@pytest.mark.asyncio
+async def test_notify_chat_restart_suppresses_home_notification(tmp_path, monkeypatch):
+    """.restart_notify.json exists → home-channel notification is suppressed."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_notify.json").write_text("{}")
+    runner, _adapter = _make_notify_runner()
+
+    await runner._notify_startup_channels()
+
+    runner._send_home_channel_startup_notifications.assert_not_awaited()
+    assert runner._booted_from_restart is True
+
+
+@pytest.mark.asyncio
+async def test_notify_planned_restart_sends_home_notification(tmp_path, monkeypatch):
+    """.restart_pending.json exists (terminal restart) → home notification is sent."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / ".restart_pending.json").write_text("{}")
+    runner, _adapter = _make_notify_runner()
+
+    await runner._notify_startup_channels()
+
+    runner._send_home_channel_startup_notifications.assert_awaited_once_with(
+        skip_targets=None,
+    )
+    assert runner._booted_from_restart is True
+
+
+@pytest.mark.asyncio
+async def test_notify_planned_restart_cleans_up_marker(tmp_path, monkeypatch):
+    """.restart_pending.json is removed after notification."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text("{}")
+    runner, _adapter = _make_notify_runner()
+
+    await runner._notify_startup_channels()
+
+    assert not marker.exists()

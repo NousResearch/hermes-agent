@@ -7288,31 +7288,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if connected_count > 0:
             await asyncio.sleep(1.0)
 
-        # Notify the chat that initiated /restart that the gateway is back.
-        planned_restart_notification_pending = _planned_restart_notification_pending()
-        # Capture, before _send_restart_notification() unlinks the marker,
-        # whether this process booted from a chat-originated /restart. Used as
-        # a one-shot signal by the /restart redelivery guard so a missing
-        # dedup marker only suppresses a /restart when we KNOW we just came out
-        # of a restart cycle (see _is_stale_restart_redelivery).
-        chat_originated_restart = _restart_notification_pending()
-        if chat_originated_restart or planned_restart_notification_pending:
-            self._booted_from_restart = True
-        await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels on every startup EXCEPT chat-originated /restart (which
-        # already has a precise reply target in .restart_notify.json so the
-        # reply notification is the lifecycle signal — no duplicate). Fresh
-        # starts and planned restarts (terminal/SIGUSR1/service paths) always
-        # notify the home channel so the operator knows the gateway is online.
-        if not chat_originated_restart:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+        await self._notify_startup_channels()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -14898,6 +14874,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         finally:
             notify_path.unlink(missing_ok=True)
+
+    async def _notify_startup_channels(self) -> None:
+        """Notify home channels that the gateway is back.
+
+        Sends a startup notification to configured home channels on every
+        gateway start, except when the start follows a chat-originated
+        /restart (which already has a precise reply target in
+        .restart_notify.json so the reply notification is the lifecycle
+        signal — no duplicate home-channel notification needed).  Fresh
+        starts and planned restarts (terminal/SIGUSR1/service paths) always
+        notify the home channel.
+        """
+        planned_restart = _planned_restart_notification_pending()
+        chat_restart = _restart_notification_pending()
+        if chat_restart or planned_restart:
+            self._booted_from_restart = True
+        await self._send_restart_notification()
+        if not chat_restart:
+            try:
+                await self._send_home_channel_startup_notifications(
+                    skip_targets=None,
+                )
+            finally:
+                if _planned_restart_notification_pending():
+                    _clear_planned_restart_notification()
 
     async def _send_home_channel_startup_notifications(
         self,

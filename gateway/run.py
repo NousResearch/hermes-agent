@@ -5347,6 +5347,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
+    def _telegram_group_busy_message_crosses_users(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> bool:
+        """Return whether a shared Telegram group turn belongs to another user."""
+        source = getattr(event, "source", None)
+        if (
+            source is None
+            or source.platform != Platform.TELEGRAM
+            or source.chat_type not in {"group", "supergroup"}
+        ):
+            return False
+
+        active_source = self._get_cached_session_source(session_key)
+        if active_source is None:
+            return False
+        if str(active_source.chat_id or "") != str(source.chat_id or ""):
+            return False
+
+        active_user_id = str(active_source.user_id or "").strip()
+        incoming_user_id = str(source.user_id or "").strip()
+        return bool(
+            active_user_id
+            and incoming_user_id
+            and active_user_id != incoming_user_id
+        )
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
@@ -5402,6 +5430,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             return True  # handled (silently dropped); do not fall through
+
+        # Telegram group sessions can be shared by multiple authorized users.
+        # A follow-up from a different user must not interrupt or steer the
+        # active user's turn. Return control to the adapter's established FIFO
+        # path so the message becomes the next turn instead.
+        if self._telegram_group_busy_message_crosses_users(event, session_key):
+            active_source = self._get_cached_session_source(session_key)
+            logger.info(
+                "Queueing cross-user Telegram group follow-up for session %s "
+                "(active_user=%s incoming_user=%s)",
+                session_key,
+                getattr(active_source, "user_id", None),
+                event.source.user_id,
+            )
+            return False
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
@@ -9383,6 +9426,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
+            # Most adapters consult _handle_active_session_busy_message before
+            # reaching this runner callback. Keep the same ownership boundary
+            # here for direct-dispatch adapters and tests: ordinary text from a
+            # second Telegram group user queues behind the active user's turn.
+            # Slash commands retain their dedicated control semantics below.
+            if (
+                not event.is_command()
+                and self._telegram_group_busy_message_crosses_users(
+                    event, _quick_key,
+                )
+            ):
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
+
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 

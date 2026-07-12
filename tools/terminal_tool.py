@@ -1919,6 +1919,31 @@ def _looks_like_help_or_version_command(command: str) -> bool:
     )
 
 
+
+def _long_foreground_sleep_rejection(command: str, *, background: bool) -> str | None:
+    """Reject pure long foreground `sleep N` that stalls the agent loop.
+
+    Interrupt is only checked between tool calls, so multi-minute foreground
+    sleeps hang the turn. Short sleeps and background sleeps are allowed.
+    Salvage of #8612 by @SHL0MS / issue #4162.
+    """
+    if background or not isinstance(command, str):
+        return None
+    match = re.match(r"^\s*sleep\s+(\d+)\s*$", command)
+    if not match:
+        return None
+    sleep_secs = int(match.group(1))
+    if sleep_secs <= 30:
+        return None
+    return (
+        f"Rejected: 'sleep {sleep_secs}' would block the agent for "
+        f"{sleep_secs}s, preventing user interaction. "
+        "Instead: run your long process with background=true, then "
+        "use process(action='poll', session_id=...) to check progress. "
+        "For short waits, use sleep values <= 30."
+    )
+
+
 def _foreground_background_guidance(command: str) -> str | None:
     """Suggest background mode when a foreground command looks long-lived.
 
@@ -2125,6 +2150,16 @@ def terminal_tool(
                     f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
                     f"notify_on_complete=true for long-running commands."
                 ),
+            }, ensure_ascii=False)
+
+        # Intercept long pure sleep commands that block the agent turn.
+        sleep_error = _long_foreground_sleep_rejection(command, background=background)
+        if sleep_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": sleep_error,
+                "status": "error",
             }, ensure_ascii=False)
 
         # Guardrail: long-lived server/watch commands should run as managed

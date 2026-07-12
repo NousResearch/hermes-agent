@@ -2583,6 +2583,20 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _sanitize_error_text(error_detail: Any) -> str:
+    """Collapse HTML error pages (Cloudflare, proxies) to a one-liner.
+
+    Defense-in-depth: the agent layer already summarizes API errors before
+    they reach the ``error`` field, but any path that misses it would
+    otherwise dump raw markup into chat platforms (Discord, Telegram, ...).
+    """
+    text = str(error_detail)
+    if "<!DOCTYPE" not in text and "<html" not in text:
+        return text
+    m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.IGNORECASE)
+    return m.group(1).strip() if m else "HTML error page from provider"
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -2618,7 +2632,7 @@ def _normalize_empty_agent_response(
                 "/reset to start fresh."
             )
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
+            f"The request failed: {_sanitize_error_text(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session."
         )
 
@@ -2641,7 +2655,7 @@ def _normalize_empty_agent_response(
     if api_calls > 0:
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            return f"⚠️ Processing stopped: {_sanitize_error_text(err)[:200]}. Try again."
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."

@@ -5274,6 +5274,11 @@ def run_conversation(
             
         except Exception as e:
             error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+            # HTML-free variant for anything user-facing or persisted into
+            # history: provider/proxy error pages (Cloudflare et al.) must
+            # never be injected verbatim into tool results or the final
+            # response, where chat platforms deliver them as raw markup.
+            clean_error_msg = agent._clean_error_message(error_msg)
             try:
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):
@@ -5309,7 +5314,7 @@ def run_conversation(
                                 "role": "tool",
                                 "name": _ra().AIAgent._get_tool_call_name_static(tc),
                                 "tool_call_id": tc["id"],
-                                "content": f"Error executing tool: {error_msg}",
+                                "content": f"Error executing tool: {clean_error_msg}",
                             }
                             messages.append(err_msg)
                 break
@@ -5322,8 +5327,8 @@ def run_conversation(
 
             # If we're near the limit, break to avoid infinite loops
             if api_call_count >= agent.max_iterations - 1:
-                _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-                final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+                _turn_exit_reason = f"error_near_max_iterations({clean_error_msg[:80]})"
+                final_response = f"I apologize, but I encountered repeated errors: {clean_error_msg}"
                 # Append as assistant so the history stays valid for
                 # session resume (avoids consecutive user messages).
                 messages.append({"role": "assistant", "content": final_response})

@@ -96,6 +96,7 @@ import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { PetGenerateOverlay } from './pet-generate/pet-generate-overlay'
 import { RightSidebarPane } from './right-sidebar'
+import { TaskPanel } from './right-sidebar/task-panel'
 import { FileActionDialogs } from './right-sidebar/file-actions'
 import { RemoteFolderPicker } from './right-sidebar/files/remote-picker'
 import { ReviewPane } from './right-sidebar/review'
@@ -1199,6 +1200,34 @@ export function DesktopController() {
     </Pane>
   )
 
+  const taskPane = (
+    <Pane
+      defaultOpen
+      disabled={!chatOpen}
+      forceCollapsed={narrowViewport}
+      hoverReveal
+      id="task-panel"
+      key="task-panel"
+      maxWidth={FILE_BROWSER_MAX_WIDTH}
+      minWidth={FILE_BROWSER_MIN_WIDTH}
+      resizable
+      side={railSide}
+      width={FILE_BROWSER_DEFAULT_WIDTH}
+    >
+      <aside
+        aria-label="Tasks"
+        className={cn(
+          'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
+          panesFlipped
+            ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+            : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+        )}
+      >
+        <TaskPanel />
+      </aside>
+    </Pane>
+  )
+
   const fileBrowserPane = (
     <Pane
       defaultOpen={false}
@@ -1353,6 +1382,7 @@ export function DesktopController() {
         mirror to file-browser | preview | terminal | main so terminal stays
         adjacent to the chat.
       */}
+      {taskPane}
       {panesFlipped ? fileBrowserPane : terminalPane}
       {previewPane}
       {reviewPane}

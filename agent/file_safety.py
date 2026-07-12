@@ -542,7 +542,15 @@ def classify_sandbox_mirror_target(path: str) -> Optional[dict]:
         return None
 
     mirror_root = str(Path(*parts[: inner_idx + 1]))
-    inner_path = str(Path(*parts[inner_idx + 1 :])) if inner_idx + 1 < len(parts) else ""
+    # ``inner_path`` is a logical HERMES_HOME-relative identifier surfaced to the
+    # model ("the authoritative file is likely <inner_path>"), not an on-disk
+    # path, so emit it POSIX-style. ``str(Path(...))`` leaks OS-native separators
+    # (``profiles\group1\SOUL.md`` on Windows), which diverges from the
+    # ``classify_container_mirror_target`` sibling below (already ``.as_posix()``)
+    # and mangles the hint. ``mirror_root`` stays native — it names a real host dir.
+    inner_path = (
+        Path(*parts[inner_idx + 1 :]).as_posix() if inner_idx + 1 < len(parts) else ""
+    )
 
     return {
         "target_path": str(target),

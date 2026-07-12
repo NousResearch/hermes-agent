@@ -41,7 +41,7 @@ class TestClassifySandboxMirrorTarget:
         result = classify_sandbox_mirror_target(str(target))
         assert result is not None
         assert result["target_path"] == str(target.resolve())
-        assert result["mirror_root"].endswith(
+        assert result["mirror_root"].replace("\\", "/").endswith(
             "sandboxes/docker/default/home/.hermes"
         )
         assert result["inner_path"] == "profiles/group1/SOUL.md"
@@ -70,6 +70,29 @@ class TestClassifySandboxMirrorTarget:
         assert result is not None
         assert result["inner_path"] == inner
         assert backend in result["mirror_root"]
+
+    def test_inner_path_uses_posix_separators(self, tmp_path):
+        """``inner_path`` is a logical HERMES_HOME-relative identifier (surfaced
+        to the model as "the authoritative file is likely <inner_path>"), not an
+        on-disk path, so it must be POSIX-style on every platform — matching the
+        ``classify_container_mirror_target`` sibling. Regression guard: on Windows
+        ``str(Path(...))`` leaked native separators (``profiles\\group1\\...``),
+        diverging from the sibling and mangling the hint.
+        """
+        from agent.file_safety import classify_sandbox_mirror_target
+
+        target = (
+            tmp_path
+            / "sandboxes" / "docker" / "task-1" / "home" / ".hermes"
+            / "profiles" / "group1" / "memories" / "MEMORY.md"
+        )
+        target.parent.mkdir(parents=True)
+        target.write_text("x")
+
+        result = classify_sandbox_mirror_target(str(target))
+        assert result is not None
+        assert result["inner_path"] == "profiles/group1/memories/MEMORY.md"
+        assert "\\" not in result["inner_path"]
 
     def test_path_outside_sandbox_returns_none(self, tmp_path):
         """A plain Hermes path is not a mirror."""
@@ -168,7 +191,10 @@ class TestGetSandboxMirrorWarning:
         warn = get_sandbox_mirror_warning(str(target))
         assert warn is not None
         # Must name the mirror root so the user can locate the sandbox.
-        assert "sandboxes/docker/default/home/.hermes" in warn
+        # ``mirror_root`` is a native host path (backslashes on Windows), so
+        # normalize separators before the substring check — same pattern the
+        # container-mirror tests use. ``inner_path`` below stays POSIX-exact.
+        assert "sandboxes/docker/default/home/.hermes" in warn.replace("\\", "/")
         # Must hint at what the agent likely meant.
         assert "profiles/group1/SOUL.md" in warn
         # Must name the bypass kwarg shared with the cross-profile guard.

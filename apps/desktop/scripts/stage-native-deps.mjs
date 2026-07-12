@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -63,6 +64,14 @@ function copyGlobByExt(srcDir, destDir, extensions) {
  * Directories are copied wholesale to also cover any nested native
  * payload (e.g. a conpty/ subfolder some build layouts produce).
  */
+export function copySpawnHelper(src, dest) {
+  cpSync(src, dest)
+  // npm/archive extraction can drop the executable bit from node-pty's
+  // Darwin helper. node-pty invokes this file via posix_spawnp, which then
+  // fails at terminal startup unless the staged copy is executable.
+  chmodSync(dest, 0o755)
+}
+
 function copyBuildRelease(srcDir, destDir) {
   if (!existsSync(srcDir)) return
   mkdirSync(destDir, { recursive: true })
@@ -71,7 +80,11 @@ function copyBuildRelease(srcDir, destDir) {
       cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
       continue
     }
-    if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
+    if (entry.name === 'spawn-helper') {
+      copySpawnHelper(join(srcDir, entry.name), join(destDir, entry.name))
+      continue
+    }
+    if (/\.(node|dll|exe)$/.test(entry.name)) {
       cpSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
@@ -114,7 +127,7 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        copySpawnHelper(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
       }
     }
   } else {

@@ -158,7 +158,7 @@ function extend(out: string[], lines: string[]) {
 }
 
 function pushProseFence(out: string[], indent: string, info: string, lines: string[]) {
-  if (info) {
+  if (info && info.toLowerCase() !== 'text') {
     out.push(`${indent}${info}`.trimEnd())
   }
 

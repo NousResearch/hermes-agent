@@ -37,6 +37,17 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
 
+  it('does not expose the text language tag when demoting closed prose fences', () => {
+    const fence = '```'
+    const input = [fence + 'text', 'First paragraph.', 'Second paragraph.', 'Third paragraph.', fence].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output.split('\n')).not.toContain('text')
+    expect(output).toContain('First paragraph.')
+    expect(output).toContain('Third paragraph.')
+  })
+
   it('drops fences around a preview-only URL block', () => {
     const fence = '```'
     const input = ['Server is back.', '', fence, 'http://localhost:8812/', fence].join('\n')

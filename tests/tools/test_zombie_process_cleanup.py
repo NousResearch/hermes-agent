@@ -342,3 +342,160 @@ class TestDelegationCleanup:
         child.close.assert_called_once()
         assert child not in parent._active_children
         assert result["status"] == "error"
+
+    def test_run_single_child_binds_parent_ui_return_address_in_worker(self):
+        """The child's executor thread must retain the commissioning WebUI tab."""
+        from unittest.mock import MagicMock
+
+        from gateway.session_context import get_session_env
+        from tools.delegate_tool import _run_single_child
+
+        observed = {}
+        parent = MagicMock()
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        parent._current_task_id = None
+
+        child = MagicMock()
+        child._credential_pool = None
+        child._delegate_saved_tool_names = ["tool1"]
+        child._origin_ui_session_id = "parent-tab"
+        child._subagent_id = None
+        child.tool_progress_callback = None
+
+        def run_conversation(**_kwargs):
+            observed["origin_ui_session_id"] = get_session_env(
+                "HERMES_UI_SESSION_ID", ""
+            )
+            raise RuntimeError("stop after capture")
+
+        child.run_conversation.side_effect = run_conversation
+        parent._active_children.append(child)
+
+        result = _run_single_child(
+            task_index=0,
+            goal="test goal",
+            child=child,
+            parent_agent=parent,
+        )
+
+        assert observed["origin_ui_session_id"] == "parent-tab"
+        assert result["status"] == "error"
+
+    def test_delegate_task_preserves_ui_origin_across_outer_and_inner_executors(
+        self, monkeypatch
+    ):
+        """A real background delegate path stamps its process completion for the parent tab."""
+        import json
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from gateway.session_context import bind_ui_session_id, get_session_env
+        from tools import delegate_tool
+        from tools.process_registry import ProcessRegistry, ProcessSession
+
+        registry = ProcessRegistry()
+        registry._write_checkpoint = MagicMock()
+        observed = {}
+
+        def run_conversation(**_kwargs):
+            worker_origin = get_session_env("HERMES_UI_SESSION_ID", "")
+            observed["worker_origin"] = worker_origin
+            process = ProcessSession(
+                id="proc_delegate_origin",
+                command="printf done",
+                session_key="child-execution-session",
+                origin_ui_session_id=worker_origin,
+                notify_on_complete=True,
+                output_buffer="done",
+            )
+            registry._running[process.id] = process
+            process.exited = True
+            process.exit_code = 0
+            registry._move_to_finished(process)
+            return {
+                "final_response": "child finished",
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child = SimpleNamespace(
+            _credential_pool=None,
+            _delegate_role="leaf",
+            _subagent_id=None,
+            tool_progress_callback=None,
+            run_conversation=run_conversation,
+            get_activity_summary=lambda: {"api_call_count": 1},
+            close=MagicMock(),
+            model="test-model",
+            session_id="child-durable-session",
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_reasoning_tokens=0,
+            session_estimated_cost_usd=0.0,
+        )
+        parent = SimpleNamespace(
+            _delegate_depth=0,
+            _active_children=[],
+            _active_children_lock=threading.Lock(),
+            _current_task_id=None,
+            _interrupt_requested=False,
+            _memory_manager=None,
+            session_id="parent-durable-session",
+            session_estimated_cost_usd=0.0,
+            session_cost_source="none",
+            session_cost_status="unknown",
+            _touch_activity=lambda *_args, **_kwargs: None,
+        )
+
+        monkeypatch.setattr(delegate_tool, "_load_config", lambda: {"max_iterations": 1})
+        monkeypatch.setattr(delegate_tool, "_get_max_spawn_depth", lambda: 2)
+        monkeypatch.setattr(
+            delegate_tool,
+            "_resolve_delegation_credentials",
+            lambda *_args, **_kwargs: {
+                "model": None,
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": None,
+                "args": None,
+            },
+        )
+        monkeypatch.setattr(delegate_tool, "_build_child_agent", lambda **_kwargs: child)
+        monkeypatch.setattr(
+            "tools.approval.get_current_session_key",
+            lambda default="": "parent-durable-session",
+        )
+
+        def dispatch_across_outer_executor(*, runner, origin_ui_session_id, **_kwargs):
+            observed["dispatch_origin"] = origin_ui_session_id
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                observed["outer_result"] = executor.submit(runner).result(timeout=5)
+            return {"status": "dispatched", "delegation_id": "deleg_origin_test"}
+
+        monkeypatch.setattr(
+            "tools.async_delegation.dispatch_async_delegation_batch",
+            dispatch_across_outer_executor,
+        )
+
+        with bind_ui_session_id("parent-tab"):
+            payload = json.loads(
+                delegate_tool.delegate_task(
+                    goal="launch a notified process",
+                    background=True,
+                    parent_agent=parent,
+                )
+            )
+
+        completion = registry.completion_queue.get_nowait()
+        assert payload["status"] == "dispatched"
+        assert observed["dispatch_origin"] == "parent-tab"
+        assert observed["worker_origin"] == "parent-tab"
+        assert observed["outer_result"]["results"][0]["status"] == "completed"
+        assert completion["session_key"] == "child-execution-session"
+        assert completion["origin_ui_session_id"] == "parent-tab"
+        child.close.assert_called_once()

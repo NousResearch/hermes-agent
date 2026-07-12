@@ -2180,6 +2180,262 @@ def test_async_delegation_event_prefers_origin_ui_session(monkeypatch):
     assert server._notification_event_belongs_elsewhere("origin-sid", mine, evt) is False
 
 
+def test_live_foreign_origin_is_authoritative_even_when_session_key_matches(monkeypatch):
+    """A live exact UI owner wins over an ambiguous shared durable key."""
+    origin = _session(session_key="shared-key")
+    wrong = _session(session_key="shared-key")
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"origin-sid": origin, "wrong-sid": wrong},
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    evt = {
+        "type": "completion",
+        "session_key": "shared-key",
+        "origin_ui_session_id": "origin-sid",
+    }
+
+    assert server._session_owns_notification_event("origin-sid", origin, evt) is True
+    assert server._session_owns_notification_event("wrong-sid", wrong, evt) is False
+    assert server._notification_event_belongs_elsewhere("wrong-sid", wrong, evt) is True
+
+
+def test_terminal_stream_prefers_exact_ui_origin_over_shared_session_key(monkeypatch):
+    """Live process chunks return to the commissioning tab, not the first key match."""
+    from tools.process_registry import process_registry
+
+    wrong = _session(session_key="shared-key")
+    origin = _session(session_key="shared-key")
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"wrong-sid": wrong, "origin-sid": origin},
+    )
+    monkeypatch.setattr(process_registry, "on_output", None)
+    monkeypatch.setattr(process_registry, "on_close", None)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    server._wire_agent_terminal_output()
+    process = types.SimpleNamespace(
+        id="proc-stream",
+        session_key="shared-key",
+        origin_ui_session_id="origin-sid",
+    )
+    process_registry.on_output(process, "private chunk")
+
+    assert emitted == [
+        (
+            "agent.terminal.output",
+            "origin-sid",
+            {"process_id": "proc-stream", "chunk": "private chunk"},
+        )
+    ]
+
+
+def test_terminal_stream_drops_ambiguous_legacy_session_key(monkeypatch):
+    """No exact origin plus multiple key matches must not fall through globally."""
+    from tools.process_registry import process_registry
+
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {
+            "first-sid": _session(session_key="shared-key"),
+            "second-sid": _session(session_key="shared-key"),
+        },
+    )
+    monkeypatch.setattr(process_registry, "on_output", None)
+    monkeypatch.setattr(process_registry, "on_close", None)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    server._wire_agent_terminal_output()
+    process = types.SimpleNamespace(
+        id="legacy-proc",
+        session_key="shared-key",
+        origin_ui_session_id="",
+    )
+    process_registry.on_output(process, "private chunk")
+
+    assert emitted == []
+
+
+def test_orphaned_process_completion_fails_closed(monkeypatch):
+    """A process completion with no provable owner must not enter another chat."""
+    mine = _session(session_key="mine")
+    monkeypatch.setattr(server, "_sessions", {"mine-sid": mine})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    orphan = {
+        "type": "completion",
+        "session_key": "dead-subagent-session",
+        "origin_ui_session_id": "closed-parent-tab",
+    }
+    owned = {
+        "type": "completion",
+        "session_key": "temporary-subagent-session",
+        "origin_ui_session_id": "mine-sid",
+    }
+    legacy_owned = {
+        "type": "completion",
+        "session_key": "mine",
+    }
+    legacy_orphan = {
+        "type": "completion",
+        "session_key": "",
+    }
+
+    assert server._notification_event_must_fail_closed("mine-sid", mine, orphan) is True
+    assert server._notification_event_must_fail_closed("mine-sid", mine, owned) is False
+    # Checkpoints written before origin_ui_session_id existed still route by
+    # their durable session key, but metadata-free legacy events are dropped.
+    assert server._notification_event_must_fail_closed("mine-sid", mine, legacy_owned) is False
+    assert server._notification_event_must_fail_closed("mine-sid", mine, legacy_orphan) is True
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"session_key": ""},
+        {"type": None, "session_key": ""},
+        {"type": 42, "session_key": ""},
+        {"type": "watch_overflow_future_variant", "session_key": ""},
+    ],
+)
+def test_malformed_or_future_process_event_fails_closed(event, monkeypatch):
+    """Anything formatted as a process notification needs positive ownership."""
+    mine = _session(session_key="mine")
+    monkeypatch.setattr(server, "_sessions", {"mine-sid": mine})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    assert server._notification_event_must_fail_closed("mine-sid", mine, event) is True
+    # Deduplication must be safe on the same malformed input.
+    assert isinstance(server._notification_event_dedup_key(event), tuple)
+
+
+@pytest.mark.parametrize("evt_type", ["watch_overflow_tripped", "watch_overflow_released"])
+def test_originless_watch_overflow_fails_closed(evt_type, monkeypatch):
+    """Process-global watch summaries must never be adopted by a random chat."""
+    mine = _session(session_key="mine")
+    monkeypatch.setattr(server, "_sessions", {"mine-sid": mine})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    assert server._notification_event_must_fail_closed(
+        "mine-sid",
+        mine,
+        {"type": evt_type, "session_key": "", "origin_ui_session_id": ""},
+    ) is True
+
+
+def test_originless_watch_overflow_cannot_trigger_either_session(monkeypatch):
+    """Whichever desktop poller wakes first must drop a global overflow summary."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    first = _session(session_key="first")
+    second = _session(session_key="second")
+    monkeypatch.setattr(server, "_sessions", {"first-sid": first, "second-sid": second})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    emitted = []
+    turns = []
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *args, **kwargs: turns.append(args),
+    )
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    isolated_queue.put(
+        {
+            "type": "watch_overflow_tripped",
+            "session_id": "",
+            "session_key": "",
+            "origin_ui_session_id": "",
+            "message": "Watch-pattern notifications suppressed globally.",
+        }
+    )
+
+    stop = threading.Event()
+    stop.set()
+    server._notification_poller_loop(stop, "first-sid", first)
+    server._notification_poller_loop(stop, "second-sid", second)
+
+    assert emitted == []
+    assert turns == []
+    assert isolated_queue.empty()
+
+
+def test_shutdown_drain_normalizes_malformed_completion_before_consumed_check(monkeypatch):
+    """Malformed legacy completions already consumed by the agent stay suppressed."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    mine = _session(session_key="mine")
+    monkeypatch.setattr(server, "_sessions", {"mine-sid": mine})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(process_registry, "is_completion_consumed", lambda sid: sid == "proc")
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    isolated_queue.put(
+        {
+            "type": None,
+            "session_id": "proc",
+            "session_key": "mine",
+            "origin_ui_session_id": "mine-sid",
+        }
+    )
+    emitted = []
+    turns = []
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *args, **kwargs: turns.append(args),
+    )
+
+    stop = threading.Event()
+    stop.set()
+    server._notification_poller_loop(stop, "mine-sid", mine)
+
+    assert emitted == []
+    assert turns == []
+    assert isolated_queue.empty()
+
+
+def test_busy_post_turn_requeues_current_and_remaining_notifications():
+    """A user-turn race must not discard the already-dequeued notification suffix."""
+    import queue as _queue_mod
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    registry = types.SimpleNamespace(completion_queue=isolated_queue)
+    session = _session(running=True)
+    drained = [
+        ({"session_id": "first"}, "first"),
+        ({"session_id": "second"}, "second"),
+        ({"session_id": "third"}, "third"),
+    ]
+
+    claimed = server._claim_post_turn_notification(
+        session,
+        registry,
+        drained,
+        index=1,
+    )
+
+    assert claimed is False
+    assert [isolated_queue.get_nowait()["session_id"] for _ in range(2)] == [
+        "second",
+        "third",
+    ]
+
+
 def test_notification_event_follows_compression_continuation(monkeypatch):
     """Events keyed to a compressed parent route to the live continuation."""
     old_parent = _session(session_key="old-parent")
@@ -2205,6 +2461,89 @@ def test_notification_event_follows_compression_continuation(monkeypatch):
     assert server._notification_event_belongs_elsewhere("third-sid", third, evt) is True
 
 
+def test_session_ownership_rejects_live_stale_parent_in_continuation(monkeypatch):
+    """A compressed parent tab cannot claim an event owned by its live tip."""
+    old_parent = _session(session_key="old-parent")
+    live_tip = _session(session_key="new-tip")
+    monkeypatch.setattr(server, "_sessions", {"old-sid": old_parent, "tip-sid": live_tip})
+
+    class _DB:
+        def resolve_resume_session_id(self, session_id):
+            return "new-tip" if session_id == "old-parent" else session_id
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    evt = {"type": "completion", "session_key": "old-parent"}
+
+    assert server._notification_event_belongs_elsewhere("old-sid", old_parent, evt) is True
+    assert server._session_owns_notification_event("old-sid", old_parent, evt) is False
+    assert server._session_owns_notification_event("tip-sid", live_tip, evt) is True
+
+
+def test_terminal_output_follows_compression_continuation(monkeypatch):
+    """Originless streaming output keyed to a parent routes only to the live tip."""
+    from tools.process_registry import process_registry
+
+    old_parent = _session(session_key="old-parent")
+    live_tip = _session(session_key="new-tip")
+    monkeypatch.setattr(server, "_sessions", {"old-sid": old_parent, "tip-sid": live_tip})
+
+    class _DB:
+        def resolve_resume_session_id(self, session_id):
+            return "new-tip" if session_id == "old-parent" else session_id
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(process_registry, "on_output", None)
+    monkeypatch.setattr(process_registry, "on_close", None)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    server._wire_agent_terminal_output()
+    proc = types.SimpleNamespace(
+        id="proc",
+        session_key="old-parent",
+        origin_ui_session_id="",
+    )
+    process_registry.on_output(proc, "private")
+
+    assert emitted == [
+        (
+            "agent.terminal.output",
+            "tip-sid",
+            {"process_id": "proc", "chunk": "private"},
+        )
+    ]
+
+
+def test_originless_duplicate_session_key_has_no_positive_owner(monkeypatch):
+    """Legacy originless events fail closed when two live tabs share one key."""
+    first = _session(session_key="shared")
+    second = _session(session_key="shared")
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"first-sid": first, "second-sid": second},
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    evt = {
+        "type": "completion",
+        "session_key": "shared",
+        "origin_ui_session_id": "",
+    }
+
+    owners = [
+        candidate_sid
+        for candidate_sid, candidate in (
+            ("first-sid", first),
+            ("second-sid", second),
+        )
+        if server._session_owns_notification_event(candidate_sid, candidate, evt)
+    ]
+
+    assert owners == []
+    assert server._notification_event_must_fail_closed("first-sid", first, evt) is True
+    assert server._notification_event_must_fail_closed("second-sid", second, evt) is True
+
+
 def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch):
     """A closed origin tab must not steal its resumed continuation's result."""
     finalized_origin = _session(session_key="old-parent", _finalized=True)
@@ -2228,6 +2567,8 @@ def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch
 
     assert server._notification_event_belongs_elsewhere("origin-sid", finalized_origin, evt) is True
     assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+    assert server._session_owns_notification_event("origin-sid", finalized_origin, evt) is False
+    assert server._session_owns_notification_event("tip-sid", live_tip, evt) is True
 
 
 def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
@@ -7688,10 +8029,12 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
     turns = []
     emitted = []
+    stop = threading.Event()
 
     class _Agent:
         def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
             turns.append(prompt)
+            stop.set()
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -7711,29 +8054,24 @@ def test_notification_poller_delivers_completion(monkeypatch):
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
     # Isolate the completion queue for the duration of this test. The poller
-    # reads process_registry.completion_queue by attribute at runtime; the
-    # event below carries no session_key, so any *other* poller (a leaked
-    # daemon thread from another test, or a concurrent one in the same xdist
-    # worker) is allowed to dequeue and dispatch it to its own session — whose
-    # agent may be a fixture double without run_conversation. A fresh Queue
-    # here fully isolates this test; monkeypatch restores the original on
-    # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
+    # reads process_registry.completion_queue by attribute at runtime. A fresh
+    # Queue here fully isolates this test from leaked/concurrent poller threads;
+    # monkeypatch restores the original on teardown. Same pattern as
+    # test_notification_poller_requeues_when_busy.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_poller_test")
 
-    stop = threading.Event()
-
-    # Put event on queue, then immediately signal stop so the poller
-    # runs exactly one iteration.
+    # Keep the stop signal clear until the agent turn runs so this exercises
+    # the live poller loop rather than its post-stop shutdown drain.
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_poller_test",
+        "origin_ui_session_id": "sid_poll",
         "command": "echo hello",
         "exit_code": 0,
         "output": "hello",
     })
-    stop.set()
 
     try:
         server._notification_poller_loop(stop, "sid_poll", sess)
@@ -7789,6 +8127,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_already_done",
+        "origin_ui_session_id": "sid_skip",
         "command": "echo x",
         "exit_code": 0,
         "output": "x",
@@ -7831,6 +8170,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     evt = {
         "type": "completion",
         "session_id": "proc_busy_test",
+        "origin_ui_session_id": "sid_busy",
         "command": "make build",
         "exit_code": 0,
         "output": "ok",
@@ -7962,6 +8302,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     base = {
         "type": "watch_match",
         "session_id": "proc_watch_dedup",
+        "origin_ui_session_id": "sid_watch_dedup",
         "command": "tail -f app.log",
         "pattern": "READY",
         "output": "READY on port 8000",

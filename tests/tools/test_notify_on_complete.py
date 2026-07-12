@@ -34,6 +34,8 @@ def _make_session(
     exit_code=None,
     output="",
     notify_on_complete=False,
+    session_key="",
+    origin_ui_session_id="",
 ) -> ProcessSession:
     s = ProcessSession(
         id=sid,
@@ -44,6 +46,8 @@ def _make_session(
         exit_code=exit_code,
         output_buffer=output,
         notify_on_complete=notify_on_complete,
+        session_key=session_key,
+        origin_ui_session_id=origin_ui_session_id,
     )
     return s
 
@@ -60,6 +64,10 @@ class TestProcessSessionField:
     def test_set_true(self):
         s = ProcessSession(id="proc_1", command="echo hi", notify_on_complete=True)
         assert s.notify_on_complete is True
+
+    def test_origin_ui_session_id_defaults_empty(self):
+        s = ProcessSession(id="proc_1", command="echo hi")
+        assert s.origin_ui_session_id == ""
 
 
 # =========================================================================
@@ -87,6 +95,8 @@ class TestCompletionQueue:
             notify_on_complete=True,
             output="build succeeded",
             exit_code=0,
+            session_key="child-session",
+            origin_ui_session_id="parent-tab",
         )
         s.exited = True
         s.exit_code = 0
@@ -101,6 +111,8 @@ class TestCompletionQueue:
         assert completion["exit_code"] == 0
         assert completion["completion_reason"] == "exited"
         assert completion["termination_source"] == ""
+        assert completion["session_key"] == "child-session"
+        assert completion["origin_ui_session_id"] == "parent-tab"
         assert "build succeeded" in completion["output"]
 
     def test_move_to_finished_nonzero_exit(self, registry):
@@ -214,13 +226,17 @@ class TestCompletionQueue:
 class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session(notify_on_complete=True)
+            s = _make_session(
+                notify_on_complete=True,
+                origin_ui_session_id="parent-tab",
+            )
             registry._running[s.id] = s
             registry._write_checkpoint()
 
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
+            assert data[0]["origin_ui_session_id"] == "parent-tab"
 
     def test_checkpoint_without_notify(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
@@ -239,12 +255,14 @@ class TestCheckpointNotify:
             "pid": os.getpid(),
             "task_id": "t1",
             "notify_on_complete": True,
+            "origin_ui_session_id": "parent-tab",
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 1
             s = registry.get("proc_live")
             assert s.notify_on_complete is True
+            assert s.origin_ui_session_id == "parent-tab"
 
     def test_recover_requeues_notify_watchers(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -254,6 +272,7 @@ class TestCheckpointNotify:
             "pid": os.getpid(),
             "task_id": "t1",
             "session_key": "sk1",
+            "origin_ui_session_id": "parent-tab",
             "watcher_platform": "telegram",
             "watcher_chat_id": "123",
             "watcher_user_id": "u123",
@@ -269,6 +288,7 @@ class TestCheckpointNotify:
             assert registry.pending_watchers[0]["notify_on_complete"] is True
             assert registry.pending_watchers[0]["user_id"] == "u123"
             assert registry.pending_watchers[0]["user_name"] == "alice"
+            assert registry.pending_watchers[0]["origin_ui_session_id"] == "parent-tab"
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
@@ -469,7 +489,12 @@ def _silent_bg_base_config(tmp_path):
     }
 
 
-def _silent_bg_harness(monkeypatch, tmp_path):
+def _silent_bg_harness(
+    monkeypatch,
+    tmp_path,
+    spawn_capture=None,
+    checkpoint_capture=None,
+):
     """Common test fixture: patch enough of terminal_tool to spawn a fake
     background process and capture the JSON result the agent sees."""
     import tools.terminal_tool as terminal_tool_module
@@ -480,10 +505,13 @@ def _silent_bg_harness(monkeypatch, tmp_path):
     dummy_env = SimpleNamespace(env={})
 
     def fake_spawn_local(**kwargs):
+        if spawn_capture is not None:
+            spawn_capture.update(kwargs)
         return SimpleNamespace(
             id="proc_silent_test",
             pid=4242,
             notify_on_complete=False,
+            origin_ui_session_id=kwargs.get("origin_ui_session_id", ""),
             watcher_platform="",
             watcher_chat_id="",
             watcher_user_id="",
@@ -497,6 +525,12 @@ def _silent_bg_harness(monkeypatch, tmp_path):
     monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool_module, "_check_all_guards", lambda *_args, **_kwargs: {"approved": True})
     monkeypatch.setattr(process_registry_module.process_registry, "spawn_local", fake_spawn_local)
+
+    def fake_checkpoint():
+        if checkpoint_capture is not None:
+            checkpoint_capture["calls"] = checkpoint_capture.get("calls", 0) + 1
+
+    monkeypatch.setattr(process_registry_module.process_registry, "_write_checkpoint", fake_checkpoint)
     monkeypatch.setitem(terminal_tool_module._active_environments, "default", dummy_env)
     monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
     return terminal_tool_module
@@ -528,6 +562,24 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
     )
 
 
+def test_background_without_notify_captures_parent_ui_return_address(monkeypatch, tmp_path):
+    """Ordinary background output stays bound to the commissioning WebUI tab."""
+    from gateway.session_context import bind_ui_session_id
+
+    spawned = {}
+    tt = _silent_bg_harness(monkeypatch, tmp_path, spawn_capture=spawned)
+    try:
+        with bind_ui_session_id("parent-tab"):
+            tt.terminal_tool(
+                command="python -m http.server",
+                background=True,
+            )
+        assert spawned["origin_ui_session_id"] == "parent-tab"
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+
 def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
     """The correct shape — bg+notify together — must not nag."""
     tt = _silent_bg_harness(monkeypatch, tmp_path)
@@ -547,6 +599,35 @@ def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
         f"Correct usage must not emit a hint, got: {result.get('hint')!r}"
     )
     assert result.get("notify_on_complete") is True
+
+
+def test_background_notify_captures_parent_ui_return_address(monkeypatch, tmp_path):
+    """A process spawned by a temporary subagent keeps the parent WebUI tab id."""
+    from gateway.session_context import bind_ui_session_id
+
+    spawned = {}
+    checkpoint = {}
+    tt = _silent_bg_harness(
+        monkeypatch,
+        tmp_path,
+        spawn_capture=spawned,
+        checkpoint_capture=checkpoint,
+    )
+    try:
+        with bind_ui_session_id("parent-tab"):
+            result = json.loads(
+                tt.terminal_tool(
+                    command="pytest tests/",
+                    background=True,
+                    notify_on_complete=True,
+                )
+            )
+        assert result["notify_on_complete"] is True
+        assert spawned["origin_ui_session_id"] == "parent-tab"
+        assert checkpoint["calls"] == 1
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
 
 
 def test_background_with_watch_patterns_does_not_emit_hint(monkeypatch, tmp_path):

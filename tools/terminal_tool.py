@@ -2358,6 +2358,20 @@ def terminal_tool(
             pass
 
         if background:
+            # Preserve the commissioning WebUI tab separately from session_key
+            # for both live output and later notifications. Delegated children
+            # replace session_key with their temporary child session, but inherit
+            # HERMES_UI_SESSION_ID from the parent chat.
+            origin_ui_session_id = ""
+            try:
+                from gateway.session_context import get_session_env
+
+                origin_ui_session_id = get_session_env(
+                    "HERMES_UI_SESSION_ID", ""
+                )
+            except Exception:
+                pass
+
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
@@ -2375,6 +2389,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        origin_ui_session_id=origin_ui_session_id,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
                     )
@@ -2385,6 +2400,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        origin_ui_session_id=origin_ui_session_id,
                     )
 
                 result_data = {
@@ -2583,6 +2599,7 @@ def terminal_tool(
                             "session_id": proc_session.id,
                             "check_interval": 5,
                             "session_key": session_key,
+                            "origin_ui_session_id": proc_session.origin_ui_session_id,
                             "platform": proc_session.watcher_platform,
                             "chat_id": proc_session.watcher_chat_id,
                             "user_id": proc_session.watcher_user_id,
@@ -2596,6 +2613,11 @@ def terminal_tool(
                 if watch_patterns and background:
                     proc_session.watch_patterns = list(watch_patterns)
                     result_data["watch_patterns"] = proc_session.watch_patterns
+
+                if background and (notify_on_complete or watch_patterns):
+                    # spawn_* checkpoints before notification flags and channel
+                    # metadata are attached. Persist the complete return address.
+                    process_registry._write_checkpoint()
 
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:

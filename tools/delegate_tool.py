@@ -1945,11 +1945,16 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-            )
+            from gateway.session_context import bind_ui_session_id
+
+            with bind_ui_session_id(
+                str(getattr(child, "_origin_ui_session_id", "") or "")
+            ):
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
@@ -2539,6 +2544,18 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
+
+    # Child execution crosses two executor boundaries, neither of which
+    # inherits ContextVars. Preserve only the parent's WebUI return address;
+    # execution ownership remains the child's own task/session key.
+    try:
+        from gateway.session_context import get_session_env
+
+        _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+    except Exception:
+        _origin_ui_session_id = ""
+    for _, _, child in children:
+        child._origin_ui_session_id = _origin_ui_session_id
 
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,

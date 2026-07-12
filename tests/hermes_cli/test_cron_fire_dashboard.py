@@ -61,7 +61,7 @@ def test_bad_token_401(monkeypatch):
     gate). fire_due must NOT run."""
     fired = []
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: None),  # verification fails
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
@@ -82,7 +82,7 @@ def test_bad_token_401(monkeypatch):
 
 def test_missing_job_id_400(monkeypatch):
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     client, pa, ph = _client(auth_required=False)
@@ -100,7 +100,7 @@ def test_unknown_job_200_gone(monkeypatch):
     """Valid token but the job isn't found in any profile -> 200 'gone'
     (NAS shouldn't retry a fire for a cancelled/completed job)."""
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: None)
@@ -116,12 +116,46 @@ def test_unknown_job_200_gone(monkeypatch):
         client.close()
 
 
+def test_fire_uses_selected_profile_context(tmp_path, monkeypatch):
+    """Firing a dashboard-selected job scopes the whole run to that profile."""
+    profile_home = tmp_path / "profiles" / "worker_alpha"
+    seen = {}
+
+    class FakeProvider:
+        def fire_due(self, job_id, adapters, loop):
+            from hermes_constants import get_hermes_home
+
+            seen["home"] = get_hermes_home()
+            seen["job_id"] = job_id
+            seen["adapters"] = adapters
+            seen["loop"] = loop
+            return True
+
+    monkeypatch.setattr(
+        web_server,
+        "_cron_profile_home",
+        lambda profile: ("worker_alpha", profile_home),
+    )
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        lambda: FakeProvider(),
+    )
+
+    assert web_server._fire_cron_job_for_profile("worker_alpha", "job-123") is True
+    assert seen == {
+        "home": profile_home,
+        "job_id": "job-123",
+        "adapters": None,
+        "loop": None,
+    }
+
+
 def test_valid_token_accepts_and_fires(monkeypatch):
     """Valid token + known job -> 202 and fire_due invoked for the resolved
     profile."""
     fired = []
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire", "aud": "agent:x"}),
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")

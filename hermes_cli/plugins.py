@@ -1764,16 +1764,55 @@ class PluginManager:
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
+
+                # Warn when all required env vars are present but the plugin
+                # registered nothing on any surface. Normalize requires_env
+                # entries (str or dict) before checking the process environment,
+                # mirroring hermes_cli/plugins_cmd.py:307-314.
+                _missing_env: list[str] = []
+                for _entry in manifest.requires_env or []:
+                    if isinstance(_entry, str):
+                        _var_name = _entry
+                    elif isinstance(_entry, dict):
+                        _var_name = _entry.get("name", "")
+                    else:
+                        _var_name = ""
+                    if _var_name and not os.environ.get(_var_name):
+                        _missing_env.append(_var_name)
+
+                if _missing_env:
+                    logger.warning(
+                        "Plugin '%s': required env var(s) not set: %s "
+                        "-- plugin may be non-functional",
+                        manifest.name, ", ".join(_missing_env),
+                    )
+
+                _cli_cmd_count = sum(
+                    1 for c in self._cli_commands
+                    if self._cli_commands[c].get("plugin") == manifest.name
+                )
+                _nothing_registered = not any([
+                    loaded.tools_registered,
+                    loaded.hooks_registered,
+                    loaded.middleware_registered,
+                    loaded.commands_registered,
+                    _cli_cmd_count,
+                ])
+                if _nothing_registered and not manifest.requires_env:
+                    logger.debug(
+                        "Plugin '%s' registered no tools, hooks, middleware, "
+                        "or commands -- it may register a provider or be a "
+                        "no-op stub",
+                        manifest.name,
+                    )
+
                 logger.debug(
                     "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
                     len(loaded.tools_registered),
                     len(loaded.hooks_registered),
                     len(loaded.middleware_registered),
                     len(loaded.commands_registered),
-                    sum(
-                        1 for c in self._cli_commands
-                        if self._cli_commands[c].get("plugin") == manifest.name
-                    ),
+                    _cli_cmd_count,
                 )
 
         except Exception as exc:

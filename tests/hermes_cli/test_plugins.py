@@ -2201,3 +2201,125 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+class TestRequiresEnvWarning:
+    """Regression tests for issue #2768: _load_plugin() warns when required
+    env vars are missing, handling both str and dict manifest entries.
+    """
+
+    def _make_manager(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mgr = PluginManager()
+        return mgr
+
+    def test_requires_env_str_missing_emits_warning(self, tmp_path, monkeypatch, caplog):
+        """A missing env var declared as a plain string must produce a WARNING."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("_TEST_MISSING_VAR_2768", raising=False)
+
+        plugin_dir = tmp_path / "plugins" / "envtest"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("def register(ctx): pass\n")
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=["_TEST_MISSING_VAR_2768"],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        assert any(
+            "_TEST_MISSING_VAR_2768" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        ), "Expected WARNING about missing env var, got: " + str([r.message for r in caplog.records])
+
+    def test_requires_env_dict_missing_emits_warning(self, tmp_path, monkeypatch, caplog):
+        """A missing env var declared as a dict {name: ...} must also warn."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("_TEST_DICT_VAR_2768", raising=False)
+
+        plugin_dir = tmp_path / "plugins" / "envtest_dict"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("def register(ctx): pass\n")
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest_dict",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=[{"name": "_TEST_DICT_VAR_2768", "description": "test var"}],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        assert any(
+            "_TEST_DICT_VAR_2768" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+    def test_requires_env_present_no_warning(self, tmp_path, monkeypatch, caplog):
+        """When the required env var IS set, no missing-env warning must fire."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("_TEST_PRESENT_VAR_2768", "set")
+
+        plugin_dir = tmp_path / "plugins" / "envtest_ok"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text("def register(ctx): pass\n")
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="envtest_ok",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=["_TEST_PRESENT_VAR_2768"],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        assert not any(
+            "_TEST_PRESENT_VAR_2768" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
+    def test_provider_only_plugin_no_false_positive(self, tmp_path, monkeypatch, caplog):
+        """A plugin that registers only a provider (no tools/hooks/commands)
+        must not produce a spurious empty-registration warning -- provider
+        registrations are not tracked in LoadedPlugin.
+        """
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        plugin_dir = tmp_path / "plugins" / "provider_only"
+        plugin_dir.mkdir(parents=True)
+        # Simulates a provider-only plugin like plugins/image_gen/fal
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    pass  # registers a provider internally\n"
+        )
+
+        mgr = PluginManager()
+        manifest = PluginManifest(
+            name="provider_only",
+            source="user",
+            path=str(plugin_dir),
+            requires_env=[],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr._load_plugin(manifest)
+
+        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert not any("registered no tools" in m for m in warning_msgs), (
+            f"False positive warning for provider-only plugin: {warning_msgs}"
+        )

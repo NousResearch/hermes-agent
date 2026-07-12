@@ -2349,8 +2349,13 @@ class TelegramAdapter(BasePlatformAdapter):
            wedged httpx pool fails this probe; a healthy one returns
            well under the timeout.
 
-        On any failure, re-enter the reconnect ladder so the existing
-        MAX_NETWORK_RETRIES path can ultimately escalate to fatal-error.
+        On connectivity failure, re-enter the reconnect ladder (via
+        ``_schedule_polling_recovery`` so the in-flight guard and task
+        bookkeeping apply) and let the existing MAX_NETWORK_RETRIES path
+        ultimately escalate to fatal-error. Auth/validation failures
+        (``InvalidToken``, ``BadRequest``, ...) are not connectivity symptoms
+        and must not trigger reconnect churn — same policy as the heartbeat
+        loop and the pending-update probe (#62098, #63243).
         """
         HEARTBEAT_PROBE_DELAY = 60
         PROBE_TIMEOUT = 10
@@ -2364,8 +2369,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Updater not running %ds after reconnect — treating as wedged",
                 self.name, HEARTBEAT_PROBE_DELAY,
             )
-            await self._handle_polling_network_error(
-                RuntimeError("Updater not running after reconnect heartbeat")
+            self._schedule_polling_recovery(
+                RuntimeError("Updater not running after reconnect heartbeat"),
+                reason="post-reconnect probe: updater not running",
             )
             return
 
@@ -2373,11 +2379,21 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
             self._send_path_degraded = False
         except Exception as probe_err:
+            if not self._looks_like_network_error(probe_err):
+                logger.warning(
+                    "[%s] Post-reconnect probe hit a non-connectivity error"
+                    " (not retrying): %s",
+                    self.name, _redact_telegram_error_text(probe_err),
+                )
+                return
             logger.warning(
                 "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
-                self.name, HEARTBEAT_PROBE_DELAY, probe_err,
+                self.name, HEARTBEAT_PROBE_DELAY,
+                _redact_telegram_error_text(probe_err),
             )
-            await self._handle_polling_network_error(probe_err)
+            self._schedule_polling_recovery(
+                probe_err, reason="post-reconnect probe failure"
+            )
 
     def _disarm_ptb_retry_loop(self) -> None:
         """Synchronously stop PTB's internal polling retry loop.

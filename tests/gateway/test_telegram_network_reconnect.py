@@ -385,6 +385,11 @@ async def test_heartbeat_probe_reenters_ladder_when_updater_not_running():
         await adapter._verify_polling_after_reconnect()
 
     mock_app.bot.get_me.assert_not_called()
+    # Recovery is scheduled through _schedule_polling_recovery (#63243), so
+    # the ladder runs as the tracked _polling_error_task.
+    task = adapter._polling_error_task
+    assert task is not None
+    await task
     adapter._handle_polling_network_error.assert_awaited_once()
     err = adapter._handle_polling_network_error.await_args.args[0]
     assert isinstance(err, RuntimeError)
@@ -421,6 +426,9 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
         with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", new=fast_wait_for):
             await adapter._verify_polling_after_reconnect()
 
+    task = adapter._polling_error_task
+    assert task is not None
+    await task
     adapter._handle_polling_network_error.assert_awaited_once()
 
 
@@ -445,10 +453,76 @@ async def test_heartbeat_probe_reenters_ladder_on_get_me_network_error():
     with patch("asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
 
+    task = adapter._polling_error_task
+    assert task is not None
+    # _schedule_polling_recovery must also register the ladder in
+    # _background_tasks so a failed recovery isn't silently GC'd.
+    assert task in adapter._background_tasks
+    await task
     adapter._handle_polling_network_error.assert_awaited_once()
     assert isinstance(
         adapter._handle_polling_network_error.await_args.args[0], ConnectionError
     )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_ignores_auth_errors():
+    """
+    Auth/validation failures from the post-reconnect probe must not enter the
+    network-reconnect ladder (#63243): a revoked token would otherwise churn
+    through stop/drain/start_polling cycles that mask the real failure.
+    """
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    # Name-shaped like PTB's InvalidToken; _looks_like_network_error excludes
+    # it by class name, matching real PTB semantics.
+    invalid_token = type("InvalidToken", (Exception,), {})("token revoked")
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(side_effect=invalid_token)
+    adapter._app = mock_app
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    assert adapter._polling_error_task is None
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_defers_to_inflight_recovery():
+    """
+    A probe failure while another recovery is mid-flight must not start a
+    second concurrent stop/drain/start_polling sequence (#63243) — overlapping
+    recoveries produce dueling getUpdates sessions (self-inflicted 409s).
+    """
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(side_effect=ConnectionError("pool wedged"))
+    adapter._app = mock_app
+
+    inflight = MagicMock()
+    inflight.done.return_value = False
+    adapter._polling_error_task = inflight
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    assert adapter._polling_error_task is inflight
+    adapter._handle_polling_network_error.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -544,3 +544,41 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+def build_azure_openai_api_key_headers(
+    base_url: str,
+    api_key: Any,
+    *,
+    provider: str | None = None,
+) -> dict[str, str]:
+    """Return Azure-compatible static-key headers for OpenAI-wire endpoints."""
+    if callable(api_key) and not isinstance(api_key, str):
+        return {}
+
+    key = str(api_key or "").strip()
+    if not key:
+        return {}
+
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider == "azure-foundry":
+        return {"api-key": key}
+
+    raw = (base_url or "").strip()
+    if not raw:
+        return {}
+
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return {}
+
+    path = (parsed.path or "").lower()
+    host_padded = f".{host}."
+    if ".openai.azure." in host_padded:
+        return {"api-key": key}
+    if ".azure-api.net." in host_padded and "/openai" in path:
+        return {"api-key": key}
+    if ".services.ai.azure." in host_padded and "/openai" in path:
+        return {"api-key": key}
+    return {}

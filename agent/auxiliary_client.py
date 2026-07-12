@@ -105,7 +105,14 @@ from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_lengt
 from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import (
+    base_url_host_matches,
+    base_url_hostname,
+    build_azure_openai_api_key_headers,
+    env_float,
+    model_forces_max_completion_tokens,
+    normalize_proxy_env_vars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2584,6 +2591,13 @@ def _try_azure_foundry(
     _clean_base, _dq = _extract_url_query_params(base_url)
     if _dq:
         extra["default_query"] = _dq
+    _azure_headers = build_azure_openai_api_key_headers(
+        _clean_base,
+        api_key,
+        provider="azure-foundry",
+    )
+    if _azure_headers:
+        extra["default_headers"] = _azure_headers
 
     client = _create_openai_client(api_key=api_key, base_url=_clean_base, **extra)
 

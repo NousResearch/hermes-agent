@@ -210,7 +210,15 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    build_azure_openai_api_key_headers,
+    env_float,
+    is_truthy_value,
+    model_forces_max_completion_tokens,
+)
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -4461,6 +4469,16 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+
+        _azure_headers = build_azure_openai_api_key_headers(
+            base_url,
+            self._client_kwargs.get("api_key", ""),
+            provider=self.provider,
+        )
+        if _azure_headers:
+            headers = dict(self._client_kwargs.get("default_headers") or {})
+            headers.update(_azure_headers)
+            self._client_kwargs["default_headers"] = headers
 
         # User-configured overrides win over URL/profile defaults — keep them
         # applied across credential swaps and client rebuilds, not just at

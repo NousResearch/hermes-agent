@@ -9,6 +9,7 @@ Covers:
 
 import asyncio
 import os
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -99,6 +100,15 @@ def _post_headers(adapter):
 def _token_file(tmp_path=None) -> Path:
     """Token file path inside the per-test HERMES_HOME."""
     return Path(os.environ["HERMES_HOME"]) / "secrets" / "whatsapp_bridge_token"
+
+
+def _assert_valid_idempotency_key(headers) -> None:
+    """The bounded-retry sender stamps a fresh UUIDv4 hex Idempotency-Key
+    on every logical delivery (see delivery_reliability.send_with_retries).
+    Verify shape rather than a fixed value since it's generated per-call."""
+    key = headers.get("Idempotency-Key")
+    assert key, "expected an Idempotency-Key header"
+    uuid.UUID(hex=key, version=4)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +278,9 @@ class TestStandaloneSendAuth:
         assert result.get("success")
         assert fake_session.calls
         for url, kwargs in fake_session.calls:
-            assert kwargs.get("headers") == {"Authorization": f"Bearer {TOKEN}"}
+            headers = kwargs.get("headers") or {}
+            assert headers.get("Authorization") == f"Bearer {TOKEN}"
+            _assert_valid_idempotency_key(headers)
 
     @pytest.mark.asyncio
     async def test_media_send_includes_bearer_from_file(self, tmp_path, fake_session):
@@ -288,7 +300,9 @@ class TestStandaloneSendAuth:
         # Text /send + media /send-media both authenticated.
         assert len(fake_session.calls) == 2
         for url, kwargs in fake_session.calls:
-            assert kwargs.get("headers") == {"Authorization": f"Bearer {TOKEN}"}
+            headers = kwargs.get("headers") or {}
+            assert headers.get("Authorization") == f"Bearer {TOKEN}"
+            _assert_valid_idempotency_key(headers)
 
     @pytest.mark.asyncio
     async def test_no_token_sends_empty_headers(self, fake_session):
@@ -297,5 +311,8 @@ class TestStandaloneSendAuth:
 
         result = await _standalone_send(pconfig, "5511999999999", "hi")
         assert result.get("success")
+        assert fake_session.calls
         for url, kwargs in fake_session.calls:
-            assert not kwargs.get("headers")
+            headers = kwargs.get("headers") or {}
+            assert "Authorization" not in headers
+            _assert_valid_idempotency_key(headers)

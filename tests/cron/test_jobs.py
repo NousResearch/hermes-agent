@@ -631,6 +631,34 @@ class TestMarkJobRun:
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
 
+    def test_delivery_meta_recorded_alongside_error(self, tmp_cron_dir):
+        """Machine fields (category/attempts/dead-letter ref) travel with the
+        human delivery_error string — Task 4 of the delivery-reliability plan."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=True,
+            delivery_error="delivery error: WhatsApp bridge error (503): unavailable",
+            delivery_meta={"category": "http_503", "attempts": 3, "dead_letter_ref": "ledger.jsonl#abcd"},
+        )
+        updated = get_job(job["id"])
+        assert updated["last_delivery_category"] == "http_503"
+        assert updated["last_delivery_attempts"] == 3
+        assert updated["last_delivery_dead_letter_ref"] == "ledger.jsonl#abcd"
+
+    def test_delivery_meta_cleared_on_success(self, tmp_cron_dir):
+        """A later successful delivery clears the previous machine fields too."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=True, delivery_error="503 unavailable",
+            delivery_meta={"category": "http_503", "attempts": 3, "dead_letter_ref": "ledger.jsonl#abcd"},
+        )
+        mark_job_run(job["id"], success=True, delivery_error=None)
+        updated = get_job(job["id"])
+        assert updated["last_delivery_error"] is None
+        assert updated["last_delivery_category"] is None
+        assert updated["last_delivery_attempts"] is None
+        assert updated["last_delivery_dead_letter_ref"] is None
+
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.
 

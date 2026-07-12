@@ -1402,7 +1402,8 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None,
+                     delivery_meta: Optional[dict] = None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1410,6 +1411,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    ``delivery_meta``, when passed, is filled in place with machine-readable
+    fields (``category``, ``attempts``, ``dead_letter_ref``) from a classified
+    standalone-send failure — plugins that reuse
+    ``plugins/platforms/whatsapp/delivery_reliability.send_with_retries`` (or
+    the equivalent) surface these via the ``error_category``/``attempts``/
+    ``dead_letter_ref`` keys on their result dict. Left untouched on success
+    or when the failing sender predates classification. The return type is
+    unchanged so existing callers keep working unmodified.
 
     Returns None on success, or an error string on failure.
     """
@@ -1959,6 +1969,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
+                if delivery_meta is not None and result.get("error_category") is not None:
+                    delivery_meta["category"] = result.get("error_category")
+                    delivery_meta["attempts"] = result.get("attempts")
+                    delivery_meta["dead_letter_ref"] = result.get("dead_letter_ref")
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
@@ -3471,6 +3485,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
+        delivery_meta: dict = {}
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -3510,7 +3525,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             if should_deliver:
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(
+                        job, deliver_content, adapters=adapters, loop=loop,
+                        delivery_meta=delivery_meta,
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -3529,7 +3547,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error,
+                         delivery_meta=delivery_meta or None)
         return True
 
     except Exception as e:

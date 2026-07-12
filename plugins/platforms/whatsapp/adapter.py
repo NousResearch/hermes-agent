@@ -1612,6 +1612,23 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document"
 
 
+def _standalone_delivery_error(prefix: str, outcome) -> Dict[str, Any]:
+    """Build an error dict from a failed ``DeliveryOutcome``.
+
+    Carries the human ``error`` string (for ``last_delivery_error``
+    backward compatibility) plus machine fields — sanitized category,
+    attempt count and dead-letter reference — so cron job storage can
+    track delivery health without parsing free text.
+    """
+    status_part = f" ({outcome.status})" if outcome.status is not None else ""
+    return {
+        "error": f"{prefix}{status_part}: {outcome.error}",
+        "error_category": outcome.failure.category if outcome.failure else None,
+        "attempts": outcome.attempts,
+        "dead_letter_ref": outcome.dead_letter_ref,
+    }
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -1628,11 +1645,18 @@ async def _standalone_send(
     succeed when cron runs separately from the gateway. Replaces the legacy
     _send_whatsapp helper.
 
+    Reuses the same bounded retry classifier and dead-letter ledger as the
+    live gateway adapter (``send_with_retries``) rather than a single-attempt
+    send, so a standalone cron delivery gets the same retry/DLQ behavior as
+    a gateway-connected one.
+
     When ``caption`` is provided (single-file ``MEDIA:<path> caption`` send),
     the text rides on the media bubble's native caption via the bridge
     ``/send-media`` ``caption`` field instead of being posted as a separate
     ``/send`` message beforehand.
     """
+    from .delivery_reliability import send_with_retries
+
     extra = getattr(pconfig, "extra", {}) or {}
     try:
         import aiohttp
@@ -1649,20 +1673,35 @@ async def _standalone_send(
         media_caption = caption if (caption and len(media) == 1) else None
         last_message_id = None
         async with aiohttp.ClientSession() as session:
+
+            async def _post_with_retries(path: str, payload: Dict[str, Any], *, timeout_total: float):
+                async def attempt(headers):
+                    async with session.post(
+                        f"http://localhost:{bridge_port}{path}",
+                        json=payload,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=timeout_total),
+                    ) as resp:
+                        if resp.status == 200:
+                            return resp.status, await resp.json()
+                        return resp.status, await resp.text()
+
+                return await send_with_retries(
+                    attempt,
+                    base_headers=auth_headers,
+                    platform="whatsapp",
+                    route=path,
+                )
+
             # 1) Text first (skip the /send call when this chunk is media-only
             #    or when the text is delivered as the media caption instead).
             if text.strip() and not media_caption:
-                async with session.post(
-                    f"http://localhost:{bridge_port}/send",
-                    json={"chatId": normalized_chat_id, "message": text},
-                    headers=auth_headers,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
-                    data = await resp.json()
-                    last_message_id = data.get("messageId")
+                outcome = await _post_with_retries(
+                    "/send", {"chatId": normalized_chat_id, "message": text}, timeout_total=30,
+                )
+                if not outcome.ok:
+                    return _standalone_delivery_error("WhatsApp bridge error", outcome)
+                last_message_id = (outcome.data or {}).get("messageId")
 
             # 2) Each media file as a native attachment via /send-media. The
             # bridge maps mediaType -> image/video/audio/document message kinds
@@ -1676,14 +1715,11 @@ async def _standalone_send(
                     # so nothing silently disappears.
                     if media_caption:
                         try:
-                            async with session.post(
-                                f"http://localhost:{bridge_port}/send",
-                                json={"chatId": normalized_chat_id, "message": media_caption},
-                                headers=auth_headers,
-                                timeout=aiohttp.ClientTimeout(total=30),
-                            ) as resp:
-                                if resp.status == 200:
-                                    last_message_id = (await resp.json()).get("messageId")
+                            fallback = await _post_with_retries(
+                                "/send", {"chatId": normalized_chat_id, "message": media_caption}, timeout_total=30,
+                            )
+                            if fallback.ok:
+                                last_message_id = (fallback.data or {}).get("messageId")
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
                     return {"error": f"WhatsApp media file not found: {media_path}"}
@@ -1697,17 +1733,10 @@ async def _standalone_send(
                     payload["fileName"] = os.path.basename(media_path)
                 if media_caption:
                     payload["caption"] = media_caption
-                async with session.post(
-                    f"http://localhost:{bridge_port}/send-media",
-                    json=payload,
-                    headers=auth_headers,
-                    timeout=aiohttp.ClientTimeout(total=120),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        return {"error": f"WhatsApp media error ({resp.status}): {body}"}
-                    data = await resp.json()
-                    last_message_id = data.get("messageId") or last_message_id
+                outcome = await _post_with_retries("/send-media", payload, timeout_total=120)
+                if not outcome.ok:
+                    return _standalone_delivery_error("WhatsApp media error", outcome)
+                last_message_id = (outcome.data or {}).get("messageId") or last_message_id
 
         return {
             "success": True,

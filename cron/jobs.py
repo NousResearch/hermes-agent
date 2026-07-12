@@ -1466,15 +1466,21 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 delivery_meta: Optional[dict] = None):
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``delivery_meta`` carries machine-readable fields from a classified
+    delivery failure (``category``, ``attempts``, ``dead_letter_ref`` — see
+    plugins/platforms/whatsapp/delivery_reliability.py) alongside the human
+    ``delivery_error`` string. Cleared together with it on successful delivery.
     """
     with _jobs_lock():
         jobs = load_jobs()
@@ -1486,6 +1492,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                meta = delivery_meta or {}
+                job["last_delivery_category"] = meta.get("category")
+                job["last_delivery_attempts"] = meta.get("attempts")
+                job["last_delivery_dead_letter_ref"] = meta.get("dead_letter_ref")
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None

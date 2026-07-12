@@ -957,6 +957,82 @@ class TestDeliverResultErrorReturns:
         assert "no delivery target" in result
 
 
+class TestDeliverResultDeliveryMeta:
+    """A classified standalone-send failure fills the delivery_meta out-param
+    (Task 4 of the delivery-reliability plan) without changing the existing
+    Optional[str] return contract that ~30 other tests rely on."""
+
+    def _job(self):
+        from gateway.config import Platform
+        return {
+            "id": "wa-job",
+            "deliver": "origin",
+            "origin": {"platform": "whatsapp", "chat_id": "5511999999999"},
+        }, Platform
+
+    def test_machine_fields_captured_on_standalone_failure(self):
+        job, Platform = self._job()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WHATSAPP: pconfig}
+
+        failing_result = {
+            "error": "WhatsApp bridge error (503): unavailable",
+            "error_category": "http_503",
+            "attempts": 3,
+            "dead_letter_ref": "ledger.jsonl#abcd1234",
+        }
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value=failing_result)):
+            delivery_meta = {}
+            result = _deliver_result(job, "Output.", delivery_meta=delivery_meta)
+
+        assert result is not None
+        assert "503" in result
+        assert delivery_meta == {
+            "category": "http_503",
+            "attempts": 3,
+            "dead_letter_ref": "ledger.jsonl#abcd1234",
+        }
+
+    def test_delivery_meta_untouched_on_success(self):
+        job, Platform = self._job()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WHATSAPP: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})):
+            delivery_meta = {}
+            result = _deliver_result(job, "Output.", delivery_meta=delivery_meta)
+
+        assert result is None
+        assert delivery_meta == {}
+
+    def test_delivery_meta_param_is_optional(self):
+        """Existing callers that omit delivery_meta are unaffected."""
+        job, Platform = self._job()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.WHATSAPP: pconfig}
+
+        failing_result = {
+            "error": "WhatsApp bridge error (401): unauthorized",
+            "error_category": "http_401",
+            "attempts": 1,
+            "dead_letter_ref": None,
+        }
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value=failing_result)):
+            result = _deliver_result(job, "Output.")
+
+        assert result is not None
+        assert "401" in result
+
+
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {
@@ -2626,6 +2702,7 @@ class TestSilentDelivery:
             False,
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
+            delivery_meta=None,
         )
 
 

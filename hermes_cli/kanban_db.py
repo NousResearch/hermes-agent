@@ -4032,7 +4032,7 @@ def complete_task(
                         "phantom_cards": phantom_cards,
                         "verified_cards": verified_cards,
                         "summary_preview": (
-                            (summary or result or "").strip().splitlines()[0][:200]
+                            ((summary or result or "").strip().splitlines() or [""])[0][:200]
                             if (summary or result)
                             else None
                         ),
@@ -4102,7 +4102,7 @@ def complete_task(
         # second SQL round-trip. First line only, 400 char cap — the
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
-        ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+        ev_summary = (ev_summary.strip().splitlines() or [""])[0][:400]
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
             "summary": ev_summary or None,
@@ -4519,10 +4519,7 @@ def edit_completed_task_result(
                     "UPDATE task_runs SET metadata = ? WHERE id = ?",
                     (json.dumps(metadata, ensure_ascii=False), run_id),
                 )
-        ev_summary = (
-            handoff_summary.strip().splitlines()[0][:400]
-            if handoff_summary else ""
-        )
+        ev_summary = (handoff_summary.strip().splitlines() or [""])[0][:400]
         _append_event(
             conn, task_id, "edited",
             {

@@ -12,7 +12,7 @@ transport:
 install:
   type: git
   url: https://github.com/thanhan-a17/agentweb.git
-  ref: v2.0.0
+  ref: v2.0.1
   bootstrap:
     - "python3 -m venv .venv"
     - ".venv/bin/pip install '.[mcp]'"

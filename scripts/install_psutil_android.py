@@ -27,21 +27,22 @@ import argparse
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
 
-# Pin a version we know patches cleanly. Update when a newer psutil
-# changes the marker line shape and we need to follow upstream.
-PSUTIL_URL = (
-    "https://files.pythonhosted.org/packages/aa/c6/"
-    "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
-    "psutil-7.2.2.tar.gz"
+# Keep sibling imports working when invoked as
+# ``python scripts/install_psutil_android.py`` from the repo checkout.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from hermes_cli.psutil_android import (
+    PSUTIL_URL,
+    PsutilAndroidInstallError,
+    prepare_patched_psutil_sdist,
 )
 
-MARKER = 'LINUX = sys.platform.startswith("linux")'
-REPLACEMENT = 'LINUX = sys.platform.startswith(("linux", "android"))'
 
 
 def _resolve_install_cmd(pip_arg: str | None, prefer_uv: bool) -> list[str]:
@@ -82,26 +83,10 @@ def main() -> int:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(PSUTIL_URL, archive)
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
-
         try:
-            src_root = next(
-                p for p in tmp_path.iterdir()
-                if p.is_dir() and p.name.startswith("psutil-")
-            )
-        except StopIteration:
-            sys.exit("psutil sdist did not contain a psutil-* directory")
-
-        common_py = src_root / "psutil" / "_common.py"
-        content = common_py.read_text(encoding="utf-8")
-        if MARKER not in content:
-            sys.exit(
-                "psutil Android compatibility patch marker not found — "
-                "upstream may have changed the LINUX detection line. "
-                "Update MARKER/REPLACEMENT in this script."
-            )
-        common_py.write_text(content.replace(MARKER, REPLACEMENT), encoding="utf-8")
+            src_root = prepare_patched_psutil_sdist(archive, tmp_path)
+        except PsutilAndroidInstallError as exc:
+            sys.exit(str(exc))
 
         cmd = install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)]
         print(f"  $ {' '.join(cmd)}")

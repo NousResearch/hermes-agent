@@ -15,7 +15,6 @@ import os
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -97,6 +96,94 @@ def _make_fake_zip(binary_bytes: bytes) -> bytes:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("bws", binary_bytes)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# _safe_extract_member — zip-slip containment
+# ---------------------------------------------------------------------------
+
+
+def test_safe_extract_member_extracts_normal_member(tmp_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("bws", b"hello")
+    buf.seek(0)
+
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    with zipfile.ZipFile(buf) as zf:
+        out = bw._safe_extract_member(zf, "bws", dest)
+
+    assert out == (dest / "bws").resolve() or out == dest / "bws"
+    assert Path(out).read_bytes() == b"hello"
+    # Nothing escaped the destination directory.
+    assert Path(out).resolve().parent == dest.resolve()
+
+
+@pytest.mark.parametrize(
+    "evil_name",
+    [
+        "../escape",
+        "../../escape",
+        "sub/../../escape",
+    ],
+)
+def test_safe_extract_member_rejects_traversal(tmp_path, evil_name):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(evil_name, b"pwned")
+    buf.seek(0)
+
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    outside = tmp_path / "escape"
+
+    with zipfile.ZipFile(buf) as zf:
+        with pytest.raises(RuntimeError, match="unsafe archive member"):
+            bw._safe_extract_member(zf, evil_name, dest)
+
+    # The traversal target must not have been written.
+    assert not outside.exists()
+
+
+def test_safe_extract_member_rejects_absolute_path(tmp_path):
+    # An absolute member name should never resolve inside dest.
+    abs_member = "/etc/cron.d/evil" if os.name != "nt" else "C:/Windows/evil"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(abs_member, b"pwned")
+    buf.seek(0)
+
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    with zipfile.ZipFile(buf) as zf:
+        # Absolute paths are reduced to a relative member by zipfile, but
+        # we exercise the guard directly with the raw escaping name too.
+        with pytest.raises(RuntimeError, match="unsafe archive member"):
+            bw._safe_extract_member(zf, "../../../etc/cron.d/evil", dest)
+
+
+def test_install_bws_rejects_malicious_member(hermes_home, monkeypatch):
+    # Build an archive whose only matching member escapes the temp dir.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"../../{bw._platform_binary_name()}", b"pwned")
+    zip_bytes = buf.getvalue()
+    asset_name = bw._platform_asset_name()
+    checksum_text = f"{hashlib.sha256(zip_bytes).hexdigest()}  {asset_name}\n"
+
+    def fake_download(url, dest):
+        if url.endswith(".zip"):
+            Path(dest).write_bytes(zip_bytes)
+        elif url.endswith(".txt"):
+            Path(dest).write_text(checksum_text)
+        else:
+            raise AssertionError(f"unexpected download url: {url}")
+
+    monkeypatch.setattr(bw, "_http_download", fake_download)
+
+    with pytest.raises(RuntimeError, match="unsafe archive member"):
+        bw.install_bws()
 
 
 def test_install_bws_happy_path(hermes_home, monkeypatch):
@@ -552,23 +639,247 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
     monkeypatch.delenv("MY_BSM_KEY", raising=False)
 
     called = {"n": 0}
-    def fake_apply(**kwargs):
+
+    def fake_fetch(**kwargs):
         called["n"] += 1
-        assert kwargs["enabled"] is True
         assert kwargs["project_id"] == "proj-1"
-        os.environ["MY_BSM_KEY"] = "from-bsm"
-        return bw.FetchResult(
-            secrets={"MY_BSM_KEY": "from-bsm"},
-            applied=["MY_BSM_KEY"],
-        )
+        return {"MY_BSM_KEY": "from-bsm"}, []
 
     monkeypatch.setattr(
-        "agent.secret_sources.bitwarden.apply_bitwarden_secrets",
-        fake_apply,
+        "agent.secret_sources.bitwarden.find_bws",
+        lambda **_kw: Path("/fake/bws"),
     )
+    monkeypatch.setattr(
+        "agent.secret_sources.bitwarden.fetch_bitwarden_secrets",
+        fake_fetch,
+    )
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
 
     from hermes_cli.env_loader import _apply_external_secret_sources
     _apply_external_secret_sources(home)
 
     assert called["n"] == 1
     assert os.environ.get("MY_BSM_KEY") == "from-bsm"
+
+
+# ---------------------------------------------------------------------------
+# Disk-persisted cache (cross-process — speeds up back-to-back CLI invocations)
+# ---------------------------------------------------------------------------
+
+
+def test_disk_cache_written_after_first_fetch(monkeypatch, tmp_path):
+    """First fetch hits bws AND writes a 0600 file under hermes_home/cache/."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    call_count = {"n": 0}
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    secrets, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert secrets == {"K1": "v1"}
+    assert call_count["n"] == 1
+
+    cache_path = bw._disk_cache_path(home)
+    assert cache_path.exists()
+    # Mode must be 0600 — disk cache contains plaintext secret values
+    mode = os.stat(cache_path).st_mode & 0o777
+    assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+
+    # File contents: key (fingerprint not raw token), secrets dict, fetched_at
+    payload_disk = json.loads(cache_path.read_text())
+    assert set(payload_disk.keys()) == {"key", "secrets", "fetched_at"}
+    assert payload_disk["secrets"] == {"K1": "v1"}
+    # Critically, the raw access token must NOT appear anywhere in the file
+    assert "0.t" not in cache_path.read_text()
+
+
+def test_disk_cache_short_circuits_bws_when_fresh(monkeypatch, tmp_path):
+    """Second fetch (different process simulation) skips bws entirely."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    call_count = {"n": 0}
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    # First call: hits bws, populates disk cache
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert call_count["n"] == 1
+
+    # Clear ONLY the in-process cache to simulate a fresh subprocess.
+    bw._CACHE.clear()
+
+    secrets2, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert secrets2 == {"K1": "v1"}
+    # Critical: bws was NOT invoked the second time
+    assert call_count["n"] == 1
+
+
+def test_disk_cache_expires_with_ttl(monkeypatch, tmp_path):
+    """Stale disk cache (older than ttl) triggers a refetch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    call_count = {"n": 0}
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    # First call
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert call_count["n"] == 1
+
+    # Backdate the disk cache so the TTL window has passed
+    cache_path = bw._disk_cache_path(home)
+    payload_disk = json.loads(cache_path.read_text())
+    payload_disk["fetched_at"] = time.time() - 10_000
+    cache_path.write_text(json.dumps(payload_disk))
+    bw._CACHE.clear()
+
+    # Second call: stale disk → refetch
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert call_count["n"] == 2
+
+
+def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
+    """Disk cache entry written by a different token/project is ignored."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    call_count = {"n": 0}
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    # Write a cache entry for a DIFFERENT token/project pair
+    cache_path = bw._disk_cache_path(home)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps({
+        "key": "deadbeef00000000|other-project|",
+        "secrets": {"OTHER": "should-not-leak"},
+        "fetched_at": time.time(),
+    }))
+
+    secrets, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    # We must NOT have used the foreign cache entry
+    assert secrets == {"K1": "v1"}
+    assert "OTHER" not in secrets
+    assert call_count["n"] == 1
+
+
+def test_disk_cache_use_cache_false_skips_disk(monkeypatch, tmp_path):
+    """use_cache=False must skip BOTH in-process and disk caches."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    call_count = {"n": 0}
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    # First call WITH cache populates disk
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, use_cache=True, home_path=home,
+    )
+    assert call_count["n"] == 1
+    bw._CACHE.clear()
+
+    # Second call with use_cache=False MUST hit bws again even though disk is fresh
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, use_cache=False, home_path=home,
+    )
+    assert call_count["n"] == 2
+
+
+def test_disk_cache_corrupt_file_falls_through(monkeypatch, tmp_path):
+    """A garbage cache file must NOT crash startup — we refetch."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    bw._reset_cache_for_tests(home)
+
+    # Write a corrupt cache file
+    cache_path = bw._disk_cache_path(home)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text("not json {{{")
+
+    secrets, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    # Refetched cleanly
+    assert secrets == {"K1": "v1"}
+    # And the corrupt file was replaced with a valid one
+    assert json.loads(cache_path.read_text())["secrets"] == {"K1": "v1"}
+
+
+def test_reset_cache_for_tests_deletes_disk_file(tmp_path):
+    """_reset_cache_for_tests(home_path) must also clean disk."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cache_path = bw._disk_cache_path(home)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text("{}")
+    assert cache_path.exists()
+
+    bw._reset_cache_for_tests(home)
+    assert not cache_path.exists()
+    # Idempotent
+    bw._reset_cache_for_tests(home)

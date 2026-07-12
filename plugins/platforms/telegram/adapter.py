@@ -241,6 +241,18 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".gif": "image/gif",
 }
 
+# Telegram can deliver iOS Voice Memo uploads as generic documents instead of
+# native audio/voice messages.  Keep this narrow: route only CAF files into the
+# audio-file attachment path so they become available to the agent without
+# automatically treating them like voice-message STT input.
+_TELEGRAM_AUDIO_DOCUMENT_TYPES = {
+    ".caf": "audio/x-caf",
+}
+_TELEGRAM_AUDIO_MIME_TO_EXT = {
+    "audio/x-caf": ".caf",
+    "audio/caf": ".caf",
+}
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
@@ -905,6 +917,32 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
+
+    @staticmethod
+    def _session_owner_user_id(session_key: Optional[str]) -> Optional[str]:
+        """Extract the owner user id from a Telegram session key, when present."""
+        if not session_key:
+            return None
+        parts = str(session_key).split(":")
+        if len(parts) < 5 or parts[:3] != ["agent", "main", "telegram"]:
+            return None
+
+        chat_type = parts[3].strip().lower()
+        if chat_type in {"dm", "private"}:
+            return None
+
+        # Shape: agent:main:telegram:<chat_type>:<chat_id>[:<thread_id>][:<user_id>]
+        # Regular group sessions append user_id directly after chat_id. Forum/thread
+        # sessions intentionally share state unless a seventh part is present.
+        if len(parts) >= 7:
+            return parts[-1] or None
+        if len(parts) == 6 and chat_type in {"group", "supergroup"}:
+            return parts[5] or None
+        return None
+
+    def _callback_matches_session_owner(self, session_key: Optional[str], user_id: str) -> bool:
+        owner_id = self._session_owner_user_id(session_key)
+        return owner_id is None or str(owner_id) == str(user_id or "").strip()
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -5370,10 +5408,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
+                session_key = self._approval_state.get(approval_id)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
                     return
+                if not self._callback_matches_session_owner(session_key, caller_id):
+                    await query.answer(text="This prompt belongs to another user.")
+                    return
+                self._approval_state.pop(approval_id, None)
 
                 # Map choice to human-readable label
                 label_map = {
@@ -5436,10 +5478,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to answer this prompt.")
                     return
 
-                session_key = self._slash_confirm_state.pop(confirm_id, None)
+                session_key = self._slash_confirm_state.get(confirm_id)
                 if not session_key:
                     await query.answer(text="This prompt has already been resolved.")
                     return
+                if not self._callback_matches_session_owner(session_key, caller_id):
+                    await query.answer(text="This prompt belongs to another user.")
+                    return
+                self._slash_confirm_state.pop(confirm_id, None)
 
                 label_map = {
                     "once": "✅ Approved once",
@@ -5539,6 +5585,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 session_key = self._clarify_state.get(clarify_id)
                 if not session_key:
                     await query.answer(text="This prompt has already been resolved.")
+                    return
+                if not self._callback_matches_session_owner(session_key, caller_id):
+                    await query.answer(text="This prompt belongs to another user.")
                     return
 
                 user_display = getattr(query.from_user, "first_name", "User")
@@ -7916,6 +7965,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not ext and doc_mime:
                     ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
                     if not ext:
+                        ext = _TELEGRAM_AUDIO_MIME_TO_EXT.get(doc_mime, "")
+                    if not ext:
                         mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                         ext = mime_to_ext.get(doc_mime, "")
 
@@ -7960,6 +8011,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         batch_key = self._photo_batch_key(event, msg)
                         self._enqueue_photo_event(batch_key, event)
+                    return
+
+                # iOS Voice Memos may arrive as .caf documents. Treat those as
+                # audio-file attachments (not voice messages) so the agent sees
+                # a usable cached audio path and can decide whether to analyze
+                # or transcribe it on request.
+                if ext in _TELEGRAM_AUDIO_DOCUMENT_TYPES or doc_mime in _TELEGRAM_AUDIO_MIME_TO_EXT:
+                    audio_ext = ext if ext in _TELEGRAM_AUDIO_DOCUMENT_TYPES else _TELEGRAM_AUDIO_MIME_TO_EXT.get(doc_mime, ".caf")
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=audio_ext)
+                    event.message_type = MessageType.AUDIO
+                    event.media_urls = [cached_path]
+                    event.media_types = [_TELEGRAM_AUDIO_DOCUMENT_TYPES.get(audio_ext, doc_mime or "audio/x-caf")]
+                    logger.info("[Telegram] Cached user audio document at %s", cached_path)
+                    await self.handle_message(event)
                     return
 
                 if not ext and doc.mime_type:

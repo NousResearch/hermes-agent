@@ -3260,6 +3260,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
+        all_chats = getattr(adapter, "_auto_tts_all_chats", None)
         if not isinstance(disabled_chats, set):
             return
         if disabled:
@@ -3268,16 +3269,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
             if isinstance(enabled_chats, set):
                 enabled_chats.discard(chat_id)
+            if isinstance(all_chats, set):
+                all_chats.discard(chat_id)
         else:
             disabled_chats.discard(chat_id)
 
-    def _set_adapter_auto_tts_enabled(self, adapter, chat_id: str, enabled: bool) -> None:
+    def _set_adapter_auto_tts_enabled(
+        self,
+        adapter,
+        chat_id: str,
+        enabled: bool,
+        *,
+        all_messages: bool = False,
+    ) -> None:
         """Update an adapter's per-chat auto-TTS opt-in set if present.
 
         Used for ``/voice on``/``/voice tts`` where the user explicitly wants
         auto-TTS even when ``voice.auto_tts`` is False globally.
         """
         enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
+        all_chats = getattr(adapter, "_auto_tts_all_chats", None)
         if not isinstance(enabled_chats, set):
             return
         if enabled:
@@ -3286,15 +3297,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
             if isinstance(disabled_chats, set):
                 disabled_chats.discard(chat_id)
+            if isinstance(all_chats, set):
+                if all_messages:
+                    all_chats.add(chat_id)
+                else:
+                    all_chats.discard(chat_id)
         else:
             enabled_chats.discard(chat_id)
+            if isinstance(all_chats, set):
+                all_chats.discard(chat_id)
 
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live platform adapter.
 
-        Populates three fields from config + ``self._voice_mode``:
+        Populates fields from config + ``self._voice_mode``:
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
           - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
+          - ``_auto_tts_all_chats``: chats with mode ``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
         """
         platform = getattr(adapter, "platform", None)
@@ -3303,7 +3322,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
         enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-        if not isinstance(disabled_chats, set) and not isinstance(enabled_chats, set):
+        all_chats = getattr(adapter, "_auto_tts_all_chats", None)
+        if (
+            not isinstance(disabled_chats, set)
+            and not isinstance(enabled_chats, set)
+            and not isinstance(all_chats, set)
+        ):
             return
 
         # Push the global voice.auto_tts default (config.yaml) onto the adapter.
@@ -3331,6 +3355,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_chats.update(
                 key[len(prefix):] for key, mode in self._voice_mode.items()
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
+            )
+        if isinstance(all_chats, set):
+            all_chats.clear()
+            all_chats.update(
+                key[len(prefix):] for key, mode in self._voice_mode.items()
+                if mode == "all" and key.startswith(prefix)
             )
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
@@ -12880,6 +12910,77 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return raw.guild.id
         return None
 
+    async def _handle_voice_command(self, event: MessageEvent) -> str:
+        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        args = event.get_command_args().strip().lower()
+        chat_id = event.source.chat_id
+        platform = event.source.platform
+        voice_key = self._voice_key(platform, chat_id)
+
+        adapter = self.adapters.get(platform)
+
+        if args in {"on", "enable"}:
+            self._voice_mode[voice_key] = "voice_only"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+            return t("gateway.voice.enabled_voice_only")
+        elif args in {"off", "disable"}:
+            self._voice_mode[voice_key] = "off"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+            return t("gateway.voice.disabled_text")
+        elif args == "tts":
+            self._voice_mode[voice_key] = "all"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_enabled(
+                    adapter, chat_id, enabled=True, all_messages=True
+                )
+            return t("gateway.voice.tts_enabled")
+        elif args in {"channel", "join"}:
+            return await self._handle_voice_channel_join(event)
+        elif args == "leave":
+            return await self._handle_voice_channel_leave(event)
+        elif args == "status":
+            mode = self._voice_mode.get(voice_key, "off")
+            labels = {
+                "off": t("gateway.voice.label_off"),
+                "voice_only": t("gateway.voice.label_voice_only"),
+                "all": t("gateway.voice.label_all"),
+            }
+            # Append voice channel info if connected
+            adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event)
+            if guild_id and hasattr(adapter, "get_voice_channel_info"):
+                info = adapter.get_voice_channel_info(guild_id)
+                if info:
+                    lines = [
+                        t("gateway.voice.status_mode", label=labels.get(mode, mode)),
+                        t("gateway.voice.status_channel", channel=info['channel_name']),
+                        t("gateway.voice.status_participants", count=info['member_count']),
+                    ]
+                    for m in info["members"]:
+                        status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
+                        lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
+                    return "\n".join(lines)
+            return t("gateway.voice.status_mode", label=labels.get(mode, mode))
+        else:
+            # Toggle: off → on, on/all → off
+            current = self._voice_mode.get(voice_key, "off")
+            if current == "off":
+                self._voice_mode[voice_key] = "voice_only"
+                self._save_voice_modes()
+                if adapter:
+                    self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                return t("gateway.voice.enabled_short")
+            else:
+                self._voice_mode[voice_key] = "off"
+                self._save_voice_modes()
+                if adapter:
+                    self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+                return t("gateway.voice.disabled_short")
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -12929,7 +13030,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter._voice_sources[guild_id] = event.source.to_dict()
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
-            self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            self._set_adapter_auto_tts_enabled(
+                adapter, event.source.chat_id, enabled=True, all_messages=True
+            )
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."

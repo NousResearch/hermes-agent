@@ -67,9 +67,9 @@ def _make_file_obj(data: bytes = b"hello"):
 
 
 def _make_document(
-    file_name="report.pdf",
-    mime_type="application/pdf",
-    file_size=1024,
+    file_name: str | None = "report.pdf",
+    mime_type: str | None = "application/pdf",
+    file_size: int | None = 1024,
     file_obj=None,
 ):
     """Create a mock Telegram Document object."""
@@ -149,6 +149,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
 
 
@@ -297,6 +300,48 @@ class TestDocumentDownloadBlock:
         enqueue_mock.assert_not_called()
         event = adapter.handle_message.call_args[0][0]
         assert "could not be read as an image" in event.text
+
+    @pytest.mark.asyncio
+    async def test_caf_document_is_routed_as_audio_attachment(self, adapter):
+        """iOS Voice Memo .caf uploads should cache as audio, not be rejected."""
+        caf_bytes = b"caff\x00\x01fake-caf-audio"
+        file_obj = _make_file_obj(caf_bytes)
+        doc = _make_document(
+            file_name="voice-sample.caf",
+            mime_type="audio/x-caf",
+            file_size=len(caf_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].endswith(".caf")
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/x-caf"]
+
+    @pytest.mark.asyncio
+    async def test_caf_document_detected_by_mime_without_filename(self, adapter):
+        """CAF uploads without a filename should still resolve from audio/x-caf."""
+        caf_bytes = b"caff\x00\x01fake-caf-audio"
+        file_obj = _make_file_obj(caf_bytes)
+        doc = _make_document(
+            file_name=None,
+            mime_type="audio/x-caf",
+            file_size=len(caf_bytes),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert event.media_urls[0].endswith(".caf")
+        assert event.media_types == ["audio/x-caf"]
 
     @pytest.mark.asyncio
     async def test_oversized_file_rejected(self, adapter):

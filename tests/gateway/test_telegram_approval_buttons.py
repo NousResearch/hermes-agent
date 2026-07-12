@@ -238,6 +238,18 @@ class TestTelegramExecApproval:
 class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 
+    def test_session_owner_parser_preserves_shared_and_dm_sessions(self):
+        assert TelegramAdapter._session_owner_user_id("agent:main:telegram:dm:111") is None
+        assert TelegramAdapter._session_owner_user_id("agent:main:telegram:forum:-10012345:777") is None
+        assert (
+            TelegramAdapter._session_owner_user_id("agent:main:telegram:group:-10012345:111")
+            == "111"
+        )
+        assert (
+            TelegramAdapter._session_owner_user_id("agent:main:telegram:forum:-10012345:777:111")
+            == "111"
+        )
+
     @pytest.mark.asyncio
     async def test_resolves_approval_on_click(self):
         adapter = _make_adapter()
@@ -257,7 +269,7 @@ class TestTelegramApprovalCallback:
         update = MagicMock()
         update.callback_query = query
         context = MagicMock()
-        query.from_user.id = "12345"
+        query.from_user.id = "99"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
             with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
@@ -289,7 +301,7 @@ class TestTelegramApprovalCallback:
         query.message.chat_id = 12345
         query.from_user = MagicMock()
         query.from_user.first_name = "Norbert"
-        query.from_user.id = "12345"
+        query.from_user.id = "99"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -317,7 +329,7 @@ class TestTelegramApprovalCallback:
         query.message.chat_id = 12345
         query.from_user = MagicMock()
         query.from_user.first_name = "Norbert"
-        query.from_user.id = "12345"
+        query.from_user.id = "99"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -348,7 +360,7 @@ class TestTelegramApprovalCallback:
         update = MagicMock()
         update.callback_query = query
         context = MagicMock()
-        query.from_user.id = "12345"
+        query.from_user.id = "99"
 
         with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
             with patch("tools.approval.resolve_gateway_approval", return_value=1):
@@ -420,6 +432,93 @@ class TestTelegramApprovalCallback:
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
         assert runner.last_source.chat_id == "12345"
+
+    @pytest.mark.asyncio
+    async def test_approval_callback_rejects_allowed_user_who_does_not_own_session(self):
+        adapter = _make_adapter()
+        adapter._approval_state[8] = "agent:main:telegram:group:-10012345:111"
+
+        query = AsyncMock()
+        query.data = "ea:once:8"
+        query.message = MagicMock()
+        query.message.chat_id = -10012345
+        query.message.chat.type = "group"
+        query.from_user = MagicMock()
+        query.from_user.id = "222"
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+        query.answer.assert_called_once()
+        assert "belongs to another user" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert adapter._approval_state[8] == "agent:main:telegram:group:-10012345:111"
+
+    @pytest.mark.asyncio
+    async def test_approval_callback_allows_session_owner_in_allowlisted_group(self):
+        adapter = _make_adapter()
+        adapter._approval_state[9] = "agent:main:telegram:group:-10012345:111"
+
+        query = AsyncMock()
+        query.data = "ea:once:9"
+        query.message = MagicMock()
+        query.message.chat_id = -10012345
+        query.message.chat.type = "group"
+        query.from_user = MagicMock()
+        query.from_user.id = "111"
+        query.from_user.first_name = "Alice"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with("agent:main:telegram:group:-10012345:111", "once")
+        assert 9 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_slash_confirm_callback_rejects_allowed_user_who_does_not_own_session(self):
+        adapter = _make_adapter()
+        adapter._slash_confirm_state["confirm-1"] = "agent:main:telegram:group:-10012345:111"
+
+        query = AsyncMock()
+        query.data = "sc:once:confirm-1"
+        query.message = MagicMock()
+        query.message.chat_id = -10012345
+        query.message.chat.type = "group"
+        query.from_user = MagicMock()
+        query.from_user.id = "222"
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.slash_confirm.resolve", new_callable=AsyncMock) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_not_called()
+        query.answer.assert_called_once()
+        assert "belongs to another user" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert adapter._slash_confirm_state["confirm-1"] == "agent:main:telegram:group:-10012345:111"
 
     @pytest.mark.asyncio
     async def test_already_resolved(self):

@@ -2384,8 +2384,10 @@ class BasePlatformAdapter(ABC):
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
         #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via ``/voice on``
-        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires even when
-        #     the global default is False.
+        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires for voice
+        #     input even when the global default is False.
+        #   - ``_auto_tts_all_chats``: chat explicitly opted in via ``/voice tts``
+        #     (mode is ``all``). Fires for both text and voice input.
         #   - ``_auto_tts_disabled_chats``: chat explicitly opted out via
         #     ``/voice off`` (mode is ``off``). Suppresses auto-TTS even when the
         #     global default is True.
@@ -2394,6 +2396,7 @@ class BasePlatformAdapter(ABC):
         #     OR (_auto_tts_default and chat not in _auto_tts_disabled_chats)
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
+        self._auto_tts_all_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
@@ -4949,13 +4952,19 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
-                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
-                # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
-                # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
-                # True globally and no ``/voice off`` has been issued.
+                # Auto-TTS: generate audio FIRST (before sending text). ``/voice on``
+                # and ``voice.auto_tts`` apply to voice inputs; ``/voice tts`` applies
+                # to both text and voice inputs for users who want automatic voice
+                # memos even when they type.
                 _tts_path = None
-                if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
+                _auto_tts_for_this_message = (
+                    event.source.chat_id in self._auto_tts_all_chats
+                    or (
+                        event.message_type == MessageType.VOICE
+                        and self._should_auto_tts_for_chat(event.source.chat_id)
+                    )
+                )
+                if (_auto_tts_for_this_message
                         and text_content
                         and not media_files):
                     try:

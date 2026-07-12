@@ -9,6 +9,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from hermes_cli.config import load_config_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,15 @@ def generate_title(
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
     of silently accumulating untitled sessions.
     """
+    try:
+        cfg = load_config_readonly() or {}
+        title_cfg = ((cfg.get("auxiliary") or {}).get("title_generation") or {})
+        if str(title_cfg.get("provider", "")).strip().lower() in {"off", "false", "none", "disabled"}:
+            logger.debug("Title generation disabled by auxiliary.title_generation.provider=%s", title_cfg.get("provider"))
+            return None
+    except Exception:
+        logger.debug("Could not read title generation config", exc_info=True)
+
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""
     assistant_snippet = assistant_response[:500] if assistant_response else ""

@@ -224,7 +224,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Note: ephemeral_system_prompt is NOT included here. It's injected at
     # API-call time only so it stays out of the cached/stored system prompt.
     if system_message is not None:
-        context_parts.append(system_message)
+        # Wrap caller-supplied instructions in safety tags to prevent
+        # prompt-injection attacks that could override identity or
+        # tool-use enforcement directives.  See PROMPT-001.
+        context_parts.append(
+            "<caller_instruction>\n"
+            + system_message
+            + "\n</caller_instruction>"
+        )
 
     if not agent.skip_context_files:
         # Use TERMINAL_CWD for context file discovery when set (gateway

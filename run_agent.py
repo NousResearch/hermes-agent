@@ -4451,7 +4451,14 @@ class AIAgent:
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
         if system_message is not None:
-            prompt_parts.append(system_message)
+            # Wrap caller-supplied instructions in safety tags to prevent
+            # prompt-injection attacks that could override identity or
+            # tool-use enforcement directives.  See PROMPT-001.
+            prompt_parts.append(
+                "<caller_instruction>\n"
+                + system_message
+                + "\n</caller_instruction>"
+            )
             _sys_msg_chars = len(system_message)
 
         if self._memory_store:

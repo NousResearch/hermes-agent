@@ -646,7 +646,7 @@ Create a single, unified markdown summary."""
             "task": "web_extract",
             "model": effective_model,
             "messages": [
-                {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Be thorough but concise."},
+                {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Preserve all facts, data, and actionable details from each section. Do not sacrifice completeness for brevity — the output must stand alone as a full replacement for the original content."},
                 {"role": "user", "content": synthesis_prompt},
             ],
             "temperature": 0.1,

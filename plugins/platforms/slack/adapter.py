@@ -50,6 +50,7 @@ from gateway.platforms.base import (
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_video_from_bytes,
 )
@@ -1749,7 +1750,9 @@ class SlackAdapter(BasePlatformAdapter):
             initial_comment_parts: List[str] = []
             try:
                 async with _httpx.AsyncClient(
-                    timeout=30.0, follow_redirects=True
+                    timeout=30.0,
+                    follow_redirects=True,
+                    event_hooks={"response": [_ssrf_redirect_guard]},
                 ) as http_client:
                     for image_url, alt_text in chunk:
                         if alt_text:

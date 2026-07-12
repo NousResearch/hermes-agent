@@ -382,7 +382,12 @@ def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
     if not existing:
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
+            # BOM-tolerant read matching the canonical .env readers in
+            # hermes_cli/config.py; a Notepad BOM on the first line would
+            # otherwise defeat the startswith() key match below.
+            for line in env_path.read_text(
+                encoding="utf-8-sig", errors="replace"
+            ).splitlines():
                 if line.startswith(f"{env_var}="):
                     existing = line.split("=", 1)[1].strip()
                     break

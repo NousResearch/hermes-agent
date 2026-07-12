@@ -11,6 +11,7 @@ from plugins.memory.mem0._setup import (
     parse_flags,
     build_oss_config,
     _write_env,
+    _prompt_api_key,
     post_setup,
     _check_qdrant_path,
     _check_ollama,
@@ -183,6 +184,28 @@ class TestWriteEnv:
         content = env_path.read_text(encoding="utf-8")
         assert content.count("OPENAI_API_KEY=") == 1
         assert "OPENAI_API_KEY=new" in content
+
+
+class TestPromptApiKey:
+
+    def test_existing_key_found_behind_bom(self, tmp_path, monkeypatch):
+        """The masked-current-value lookup must see a key on the BOM'd first
+        line of a Notepad-edited .env instead of prompting from scratch."""
+        env_path = tmp_path / ".env"
+        env_path.write_bytes("﻿OPENAI_API_KEY=sk-existing\n".encode("utf-8"))
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        prompts: list[str] = []
+
+        def _fake_getpass(prompt):
+            prompts.append(prompt)
+            return ""
+
+        monkeypatch.setattr("plugins.memory.mem0._setup.getpass.getpass", _fake_getpass)
+        _prompt_api_key("OpenAI", "OPENAI_API_KEY", str(tmp_path))
+
+        assert len(prompts) == 1
+        assert "current: ...ting" in prompts[0]
 
 
 class TestPostSetup:

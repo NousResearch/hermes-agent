@@ -33,23 +33,39 @@ def tmp_hermes(tmp_path, monkeypatch):
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    # Patch common.py paths
+    # Patch common.py paths — and rebind the same constants on every skill
+    # module already imported this session. The scripts use
+    # `from common import EXTRACTED_DIR`, so patching common alone leaves
+    # each module holding whatever value was live at its first import
+    # (historically the first test's tmp dir, which made some tests read
+    # a different directory than the code under test wrote to).
     import common
-    monkeypatch.setattr(common, "HERMES_HOME", hermes_home)
-    monkeypatch.setattr(common, "FINETUNE_DIR", hermes_home / "finetune")
-    monkeypatch.setattr(common, "DATA_DIR", hermes_home / "finetune" / "data")
-    monkeypatch.setattr(common, "EXTRACTED_DIR", hermes_home / "finetune" / "data" / "extracted")
-    monkeypatch.setattr(common, "SCORED_DIR", hermes_home / "finetune" / "data" / "scored")
-    monkeypatch.setattr(common, "CLUSTERS_DIR", hermes_home / "finetune" / "data" / "clusters")
-    monkeypatch.setattr(common, "IMPORTED_DIR", hermes_home / "finetune" / "data" / "imported")
-    monkeypatch.setattr(common, "ADAPTERS_DIR", hermes_home / "finetune" / "adapters")
-    monkeypatch.setattr(common, "MODELS_DIR", hermes_home / "finetune" / "models" / "merged")
-    monkeypatch.setattr(common, "LOGS_DIR", hermes_home / "finetune" / "logs")
-    monkeypatch.setattr(common, "BENCH_DIR", hermes_home / "finetune" / "bench")
-    monkeypatch.setattr(common, "FEEDBACK_PATH", hermes_home / "finetune" / "feedback.jsonl")
-    monkeypatch.setattr(common, "REGISTRY_PATH", hermes_home / "finetune" / "adapters" / "registry.json")
-    monkeypatch.setattr(common, "CLUSTER_STATE_PATH", hermes_home / "finetune" / "adapters" / "cluster_state.json")
-    monkeypatch.setattr(common, "EXTRACT_STATE_PATH", hermes_home / "finetune" / "extract_state.json")
+    paths = {
+        "HERMES_HOME": hermes_home,
+        "FINETUNE_DIR": hermes_home / "finetune",
+        "DATA_DIR": hermes_home / "finetune" / "data",
+        "EXTRACTED_DIR": hermes_home / "finetune" / "data" / "extracted",
+        "SCORED_DIR": hermes_home / "finetune" / "data" / "scored",
+        "CLUSTERS_DIR": hermes_home / "finetune" / "data" / "clusters",
+        "IMPORTED_DIR": hermes_home / "finetune" / "data" / "imported",
+        "ADAPTERS_DIR": hermes_home / "finetune" / "adapters",
+        "MODELS_DIR": hermes_home / "finetune" / "models" / "merged",
+        "LOGS_DIR": hermes_home / "finetune" / "logs",
+        "BENCH_DIR": hermes_home / "finetune" / "bench",
+        "FEEDBACK_PATH": hermes_home / "finetune" / "feedback.jsonl",
+        "REGISTRY_PATH": hermes_home / "finetune" / "adapters" / "registry.json",
+        "CLUSTER_STATE_PATH": hermes_home / "finetune" / "adapters" / "cluster_state.json",
+        "EXTRACT_STATE_PATH": hermes_home / "finetune" / "extract_state.json",
+    }
+    skill_modules = ("common", "extract", "score", "cluster", "format",
+                     "retro", "manage", "train", "eval", "route")
+    for mod_name in skill_modules:
+        mod = sys.modules.get(mod_name)
+        if mod is None or not str(getattr(mod, "__file__", "")).startswith(_scripts_dir):
+            continue
+        for attr, value in paths.items():
+            if hasattr(mod, attr):
+                monkeypatch.setattr(mod, attr, value)
 
     common.ensure_dirs()
     return hermes_home
@@ -842,9 +858,12 @@ class TestTurnExtraction:
 
         # Verify session_id grouping: read back the JSONL files and check
         # no session_id appears in both train and eval
-        from common import CLUSTERS_DIR, read_jsonl
-        train_sids = {r["session_id"] for r in read_jsonl(CLUSTERS_DIR / "_general" / "train.jsonl")}
-        eval_sids = {r["session_id"] for r in read_jsonl(CLUSTERS_DIR / "_general" / "eval.jsonl")}
+        import common
+        train_sids = {r["session_id"] for r in common.read_jsonl(common.CLUSTERS_DIR / "_general" / "train.jsonl")}
+        eval_sids = {r["session_id"] for r in common.read_jsonl(common.CLUSTERS_DIR / "_general" / "eval.jsonl")}
+        # Guard against vacuity: this assertion once passed on two empty sets
+        # because the formatter wrote to a stale directory.
+        assert train_sids, "train.jsonl was not written where the test is reading"
         assert not (train_sids & eval_sids), "Session IDs leaked across train/eval splits"
 
     def test_per_session_count_in_record(self, tmp_hermes):

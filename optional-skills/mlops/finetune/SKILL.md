@@ -12,7 +12,7 @@ platforms: [linux]
 required_environment_variables:
   - name: FINETUNE_BASE_MODEL
     prompt: "Path or HuggingFace ID of the base model for training"
-    help: "Defaults to ~/programs/carnice/Carnice-9b-Q8_0.gguf (Qwen-based). Override to use a different base."
+    help: "Defaults to kai-os/Carnice-9b (HF repo ID). Must be HF safetensors, not GGUF. Takes precedence over finetune.training.base_model in config.yaml."
     required_for: training
 prerequisites:
   commands: [accelerate, python]
@@ -45,7 +45,7 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 | `/finetune score` | Run quality scoring on extracted sessions |
 | `/finetune cluster` | Run/update domain discovery |
 | `/finetune train [cluster]` | Train adapter for a cluster (or all eligible) |
-| `/finetune eval [cluster] [version]` | Lightweight perplexity gate from training metrics |
+| `/finetune eval --cluster c-id --version v2` | Lightweight perplexity gate from training metrics |
 | `/finetune bench` | **Run the full 243-case benchmark against the active model** |
 | `/finetune retro list` | **Show priority queue of unlabeled sessions** |
 | `/finetune retro show <id>` | **Inspect a session's full conversation** |
@@ -61,7 +61,10 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 | `/finetune route disable` | Remove the adapter-routing plugin |
 | `/finetune run` | **Full pipeline, no bench gate** — fast, auto-promotes |
 | `/finetune run --with-bench` | **Full pipeline + bench gate** — auto-rollback on regression |
+| `/finetune gc --keep 2` | Delete old adapter versions (active + rollback target always kept) |
 | `/finetune cron` | Schedule recurring retraining |
+
+`/finetune` is CLI-only — it is not available from gateway platforms (Telegram/Discord/Slack).
 
 ## How training data is built
 
@@ -121,7 +124,7 @@ The pipeline supports two retraining modes. Pick the one that matches your appet
 
 **Trade-offs:**
 - Fast — no benchmark to wait for
-- Lightweight perplexity check from training metrics is the only gate
+- Lightweight perplexity check from training metrics is the only gate (when a training run recorded no eval metrics — e.g. datasets under 50 records train without an eval split — the gate loudly skips and passes)
 - A bad adapter goes live without warning. If quality regresses, you have to notice and run `/finetune rollback <cluster>` manually
 - Best for early iteration where you're tuning hyperparameters and re-running often
 
@@ -142,7 +145,9 @@ The pipeline supports two retraining modes. Pick the one that matches your appet
 2. **Promote** each new adapter to active
 3. **Run the benchmark** automatically (243 prompt cases against the now-active model)
 4. **Compare** the new bench result against the most recent prior bench result
-5. If regressed beyond the thresholds → **automatically rollback** every adapter promoted in step 2 and surface the regression report
+5. If regressed beyond the thresholds → **automatically rollback** the adapter the bench actually measured and surface the regression report
+
+Note: with `auto_redeploy` on and more than one cluster promoted in a run, only the **last-deployed** adapter is being served, so the bench measures only that one — the pipeline prints a warning and, on regression, rolls back only the served adapter. When the served adapter is unknown (redeploy off or failed), all adapters promoted in the run are rolled back.
 
 **Trade-offs:**
 - Safe — a regressing adapter never stays active for long
@@ -150,15 +155,17 @@ The pipeline supports two retraining modes. Pick the one that matches your appet
 - Requires a prior bench result to compare against. If none exists, the new result is recorded as the new baseline and the gate is a no-op
 - Best for scheduled retraining (cron) and any retrain you don't intend to babysit
 
-**Regression thresholds** (defined in the bench env config):
+**Regression thresholds** (hardcoded in `scripts/eval.py` and the bench env):
 - `tool_selection_accuracy`: must not drop more than 3%
 - `tool_execution_success`: must not drop more than 5%
 - `task_completion_rate`: must not drop more than 5%
 - `format_compliance`: must remain ≥ 95%
-- `hallucination_rate`: must remain 0%
+- `hallucination_rate`: must stay ≤ 1% (small tolerance so a single flaky case can't auto-reject an adapter)
 - `canary_pass_rate`: must not drop more than 5%
 
-If **any** of these fails, all adapters promoted in this run are rolled back automatically.
+Gates apply only to metrics present in both the candidate and the baseline; a missing gate metric is loudly skipped, never silently passed or failed. `hallucination_rate` counts calls to tool names that don't exist; unparseable tool-call JSON is tracked separately as `tool_call_parse_failure_rate`. Cases that fail on infrastructure errors (endpoint timeouts, connection resets) are excluded from all quality denominators and reported as `infra_errors`; a run with more than 5% infra errors is invalidated (exit code 3) instead of producing a verdict. Bench requests are seeded (`seed: 1234` in `bench/default.yaml`) for run-to-run determinism.
+
+If **any** gate fails, the measured adapter is rolled back automatically (see the note above about multi-cluster runs).
 
 ## Choosing a workflow
 
@@ -211,7 +218,7 @@ finetune:
     auto_redeploy: true
 
     # Path to llama.cpp's convert_lora_to_gguf.py script.
-    # Default points at ~/programs/llama.cpp/convert_lora_to_gguf.py.
+    # No default — redeploy aborts with an error until you set this.
     converter: ~/programs/llama.cpp/convert_lora_to_gguf.py
 
     # Where to find the HF safetensors snapshot of the base model.
@@ -230,10 +237,11 @@ finetune:
       -ngl 999 -c 32768 --host 0.0.0.0 --port 8008
       --lora %LORA%
 
-    # Where the pipeline writes the launched server's PID. Used to stop
-    # the previous server cleanly between deploys.
-    server_pid_file: /tmp/hermes-llama-server.pid
-    server_log_path: /tmp/hermes-llama-server.log
+    # Where the pipeline writes the launched server's PID and log. Used to
+    # stop the previous server cleanly between deploys. Leave empty to use
+    # the defaults under <hermes-home>/finetune/llama-server.{pid,log}.
+    server_pid_file: ""
+    server_log_path: ""
 
     # Health check after restart
     health_check_url: http://localhost:8008/v1/models
@@ -248,7 +256,7 @@ Even with `auto_redeploy: false`, you can run the redeploy step on demand:
 /finetune redeploy
 ```
 
-This deploys whatever's currently active in the registry. Useful when you want to push a manually-promoted adapter live, or when you've edited the LoRA outside the pipeline.
+This deploys whatever's currently active in the registry. Useful when you want to push a manually-promoted adapter live, or when you've edited the LoRA outside the pipeline — manual `redeploy` always reconverts the adapter to GGUF (pipeline auto-redeploys reuse the cached conversion).
 
 You can also redeploy a specific cluster/version:
 
@@ -268,7 +276,7 @@ You can also redeploy a specific cluster/version:
 |---|---|---|
 | `redeploy: could not auto-detect HF snapshot` | The base model isn't in the HF cache, or `base_model` is a local path instead of an HF repo ID | Run `huggingface-cli download <repo>` to populate the cache, or set `base_model_snapshot` explicitly |
 | `redeploy: GGUF conversion failed` | llama.cpp's converter doesn't support this base architecture, or the adapter is malformed | Check the converter's stderr in the error message; fall back to manual conversion to debug |
-| `redeploy: server did not respond within 30s` | The new llama-server failed to start (bad command, missing model, GPU OOM) | Check `/tmp/hermes-llama-server.log` for the actual failure |
+| `redeploy: server did not respond within 30s` | The new llama-server failed to start (bad command, missing model, GPU OOM) | Check `<hermes-home>/finetune/llama-server.log` for the actual failure |
 | llama-server starts but the new adapter isn't applied | The `server_command` template doesn't include `--lora %LORA%`, OR llama.cpp version doesn't support runtime LoRA loading | Add `--lora %LORA%` to the template and verify your llama.cpp build supports `--lora` |
 
 ### Interaction with the bench gate
@@ -309,6 +317,11 @@ adapter selection.
 The plugin only activates for local endpoints (localhost/127.0.0.1) — a
 remote provider can't load a LoRA from a local path. Restart hermes after
 enabling; plugins are discovered at session start.
+
+Routing only serves the GGUF adapter that `/finetune redeploy` produces
+(`adapter.gguf`). An adapter that has been trained and promoted but never
+redeployed routes to the base model — with a logged hint — until you run
+`/finetune redeploy`.
 
 ## Retroactive Labeling
 
@@ -372,7 +385,7 @@ After labeling, the next `/finetune score` run honors your labels. The scorer ap
 
 1. **Per-turn retro labels** — highest priority. Override the automated turn score directly.
 2. **Session-level retro labels** — apply to every assistant turn in the session that doesn't have a turn-level label.
-3. **In-the-moment feedback** — `Ctrl+Y`/`Ctrl+N` from the CLI, gateway emoji reactions.
+3. **In-the-moment feedback** — `Ctrl+Y`/`Ctrl+N` from the CLI (these only fire when the input line is empty and no modal prompt is open, so they never shadow emacs yank/next-line while typing). Gateway emoji reactions have a registered hook but no platform currently emits reaction events, so this path is dormant.
 4. **Automated heuristic** — falls through if nothing above applies.
 
 The trainer then includes a turn in the training set if and only if its effective score meets `min_turn_score`. A `good` retro label maps to 1.0; a `bad` label maps to 0.0; anything labeled `bad` is therefore guaranteed to be excluded.
@@ -430,9 +443,11 @@ pip install axolotl accelerate
 - **Sparse clusters**: With fewer than ~30 sessions in a domain, HDBSCAN won't form a dedicated cluster — everything goes to `_general`. This is correct for most personal use cases. Domain-specific adapters become useful at 500+ sessions.
 - **Chat template mismatch**: Training data MUST use the same chat template as inference. Verify `chat_template` in config matches your model.
 - **GGUF base model**: Axolotl trains against HuggingFace safetensors, NOT GGUF. Set `finetune.training.base_model` to the HF repo ID (e.g. `kai-os/Carnice-9b`), not the GGUF path. The GGUF path is only for inference-time serving via llama.cpp.
-- **Quantization degradation**: If a merged GGUF performs worse than LoRA-on-base, try a higher quant level (Q6_K, Q8_0) or use unmerged LoRA loading.
+- **Quantization degradation**: Serving applies the LoRA unmerged on top of the base GGUF. If quality looks degraded, try a higher quant level of the base model (Q6_K, Q8_0).
 - **Catastrophic forgetting**: The canary test set catches this. If canary scores drop, the adapter is blocked from promotion regardless of other metrics.
 - **VRAM tightness on 12GB cards**: Training a 9B model with QLoRA needs ~10-11GB peak VRAM at `sequence_len: 1024`, `micro_batch_size: 1`. Stop any other CUDA processes (including any local llama.cpp serving the same GPU) before launching training. The default template settings target 12GB cards.
+- **Sessions still in progress**: extraction tracks per-session message counts, so a conversation that grows after being extracted is re-extracted in full on the next run. The first extract after upgrading re-extracts everything once (the old watermark format is ignored).
+- **Secrets in training data**: message and tool-output content passes a conservative redaction pass (API keys, bearer tokens, PEM blocks, password assignments → `[REDACTED]`) before being written to training records. It is pattern-based, not exhaustive — review `train.jsonl` before sharing adapters trained on sensitive sessions.
 
 ## Verification
 

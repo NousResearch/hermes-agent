@@ -9,6 +9,7 @@ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -118,7 +119,7 @@ export async function startPromptLiveSession({
     return null
   }
 
-  const requestedModel = modelArg?.trim()
+  const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
 
   if (requestedModel) {
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })

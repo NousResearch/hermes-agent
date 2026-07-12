@@ -61,9 +61,27 @@ def _get_router():
                 raise FileNotFoundError(
                     "finetune skill scripts not found next to the plugin"
                 )
-            if str(scripts_dir) not in sys.path:
-                sys.path.insert(0, str(scripts_dir))
-            from route import AdapterRouter
+            # route.py does `from common import ...` — the skill scripts are
+            # also run directly as files (`python scripts/route.py`), so they
+            # can't use package-relative imports and a bare
+            # spec_from_file_location load of route.py alone would fail.
+            # Insert the scripts dir just long enough to import, then remove
+            # it so the long-lived CLI process's sys.path isn't permanently
+            # polluted.  Residual sys.modules entries ('route', 'common', …)
+            # do remain after a successful import — an accepted tradeoff of
+            # the scripts' flat top-level module names.
+            scripts_path = str(scripts_dir)
+            inserted = scripts_path not in sys.path
+            if inserted:
+                sys.path.insert(0, scripts_path)
+            try:
+                from route import AdapterRouter
+            finally:
+                if inserted:
+                    try:
+                        sys.path.remove(scripts_path)
+                    except ValueError:
+                        pass
             _router = AdapterRouter()
         except Exception as e:
             logger.warning("Finetune routing disabled — router init failed: %s", e)

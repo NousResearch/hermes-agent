@@ -2837,7 +2837,7 @@ DEFAULT_CONFIG = {
             "confidence_threshold": 0.6,
         },
         "training": {
-            "base_model": "~/programs/carnice/Carnice-9b-Q8_0.gguf",
+            "base_model": "kai-os/Carnice-9b",
             "chat_template": "chatml",
             "quantization": "Q5_K_M",
             "terminal_backend": "local",
@@ -2861,11 +2861,16 @@ DEFAULT_CONFIG = {
         # Off by default — requires user-specific paths to be set first.
         "serving": {
             "auto_redeploy": False,
-            "converter": "~/programs/llama.cpp/convert_lora_to_gguf.py",
+            # Empty = not configured; the user must point this at their
+            # llama.cpp convert_lora_to_gguf.py before using redeploy.
+            "converter": "",
             "base_model_snapshot": "auto",
             "server_command": "",
-            "server_pid_file": "/tmp/hermes-llama-server.pid",
-            "server_log_path": "/tmp/hermes-llama-server.log",
+            # Empty pid/log paths resolve at use-site to
+            # <hermes_home>/finetune/llama-server.{pid,log} (see the
+            # finetune skill's manage.py) — never world-writable /tmp.
+            "server_pid_file": "",
+            "server_log_path": "",
             "health_check_url": "http://localhost:8008/v1/models",
             "health_check_timeout": 30,
         },

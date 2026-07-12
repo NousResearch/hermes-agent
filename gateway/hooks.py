@@ -70,14 +70,15 @@ class HookRegistry:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Register built-in hooks that are always active.
+        """Register built-in (shipped) hooks.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        Built-ins currently shipped:
+          - finetune-feedback: records thumbs up/down reactions as finetune
+            quality signals (gated by ``finetune.feedback.gateway_reactions``).
+
+        Extension point for future always-on gateway hooks so they drop in
+        without re-plumbing discover_and_load().
         """
-        return
-
         # Finetune feedback: record thumbs up/down reactions as quality signals.
         # Gated by finetune.feedback.gateway_reactions config flag.
         try:

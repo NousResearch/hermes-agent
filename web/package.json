@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@hermes/shared": "file:../apps/shared",
     "@nous-research/ui": "0.18.2",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
@@ -38,7 +39,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
-    "@types/node": "^24.13.2",
+    "@types/node": "^22.20.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

@@ -201,6 +201,28 @@ class TestBuildAnthropicClient:
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
 
+    def test_disables_sdk_retries_for_api_key(self):
+        """#26293: the SDK's default max_retries=2 ignores Retry-After and
+        double-retries inside hermes's outer loop. We delegate retry entirely
+        to the outer loop, so the client must be built with max_retries=0."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-something")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["max_retries"] == 0
+
+    def test_disables_sdk_retries_for_oauth_token(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["max_retries"] == 0
+
+    def test_bedrock_disables_sdk_retries(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            assert kwargs["max_retries"] == 0
+
 
 class TestReadClaudeCodeCredentials:
     @pytest.fixture(autouse=True)
@@ -331,6 +353,131 @@ class TestResolveAnthropicToken:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "cc-auto-token"
 
+    def test_falls_back_to_anthropic_credential_pool_oauth(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Isolate source #4 (credential_pool): ensure source #3 (Claude Code
+        # creds, incl. the macOS keychain read which Path.home does not cover)
+        # returns nothing, mirroring a Hermes-PKCE-only setup.
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool_entry = SimpleNamespace(
+            auth_type="oauth",
+            access_token="pool-oauth-token",
+        )
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [pool_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "pool-oauth-token"
+
+    def test_prefers_anthropic_credential_pool_oauth_over_api_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Pool (source #4) must win over ANTHROPIC_API_KEY (source #5); also
+        # isolate source #3 so a machine-local Claude Code creds / keychain
+        # entry can't short-circuit before the pool.
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool_entry = SimpleNamespace(
+            auth_type="oauth",
+            access_token="pool-oauth-token",
+        )
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [pool_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "pool-oauth-token"
+
+    def test_pool_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
+        """A persisted OAuth entry with access_token=None must not crash the
+        resolver (None.strip() would escape the helper's try/excepts and take
+        down the whole resolver incl. the ANTHROPIC_API_KEY fallback). It should
+        be skipped and the api-key fallback (source #5) should win."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [broken_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        # Must fall through to source #5 (ANTHROPIC_API_KEY), not raise.
+        assert resolve_anthropic_token() == "sk-ant...ykey"
+
+    def test_pool_api_key_only_entry_is_not_returned_as_token(self, monkeypatch, tmp_path):
+        """resolve_anthropic_token() returns an OAuth bearer token; a pool entry
+        whose auth_type is api_key (not oauth) must NOT be returned from the pool
+        path — those are consumed via the aux client's _pool_runtime_api_key
+        lane, a different resolution concern."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [api_key_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        # No OAuth entry and no other source → None (the api_key entry is ignored here).
+        assert resolve_anthropic_token() is None
+
+    def test_pool_is_not_consulted_when_env_token_present(self, monkeypatch, tmp_path):
+        """Source #1 (ANTHROPIC_TOKEN) must short-circuit before the pool: when
+        it is set, load_pool must never be called (ordering contract #1 → #4)."""
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "env-token")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool_calls = []
+
+        def _tracking_load_pool(provider):
+            pool_calls.append(provider)
+            raise AssertionError("load_pool must not be called when source #1 wins")
+
+        monkeypatch.setattr("agent.credential_pool.load_pool", _tracking_load_pool)
+
+        assert resolve_anthropic_token() == "env-token"
+        assert pool_calls == []
+
+    def test_pool_resolution_is_read_only(self, monkeypatch, tmp_path):
+        """The resolver must enumerate the pool read-only — clear_expired and
+        refresh must both be False so a bare resolve never writes auth.json or
+        triggers a network refresh from diagnostic call sites (#50108 MED)."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        captured = {}
+        pool_entry = SimpleNamespace(auth_type="oauth", access_token="pool-oauth-token")
+
+        def _available_entries(**kwargs):
+            captured.update(kwargs)
+            return [pool_entry]
+
+        pool = SimpleNamespace(_available_entries=_available_entries)
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "pool-oauth-token"
+        assert captured == {"clear_expired": False, "refresh": False}
+
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
@@ -360,12 +507,22 @@ class TestResolveAnthropicToken:
 
 
 class TestRefreshOauthToken:
-    def test_returns_none_without_refresh_token(self):
+    def test_returns_none_without_refresh_token(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Neutralize live Claude Code sources (macOS Keychain + ~/.claude file)
+        # so the adopt-already-refreshed branch can't short-circuit with a real
+        # credential on a dev/CI machine that happens to have Claude Code creds.
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
         assert _refresh_oauth_token(creds) is None
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
 
         creds = {
             "accessToken": "old-token",
@@ -397,7 +554,11 @@ class TestRefreshOauthToken:
         assert written["claudeAiOauth"]["accessToken"] == "new-token-abc"
         assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
 
-    def test_failed_refresh_returns_none(self):
+    def test_failed_refresh_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials", lambda: None
+        )
         creds = {
             "accessToken": "old",
             "refreshToken": "refresh-123",
@@ -849,6 +1010,57 @@ class TestConvertMessages:
         assert len(tool_results) == 1
         assert tool_results[0]["tool_use_id"] == "tc_valid"
 
+    def test_strips_tool_use_when_result_not_immediately_adjacent(self):
+        """A tool_use whose result appears LATER but not in the immediately
+        following user message must be stripped (adjacency, #52145).
+
+        The old logic matched tool_result ids globally across the whole
+        transcript, so it would wrongly KEEP such a tool_use; Anthropic then
+        400s because the result does not follow the tool_use turn. The adjacency
+        rewrite only honors a result in the next user message.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_late", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "actually, something else"},
+            {"role": "assistant", "content": "sure"},
+            {"role": "tool", "tool_call_id": "tc_late", "content": "late result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        for m in result:
+            if m["role"] == "assistant" and isinstance(m["content"], list):
+                assert all(b.get("type") != "tool_use" for b in m["content"]), (
+                    "non-adjacent tool_use should have been stripped"
+                )
+        for m in result:
+            if m["role"] == "user" and isinstance(m["content"], list):
+                assert all(b.get("type") != "tool_result" for b in m["content"]), (
+                    "orphaned late tool_result should have been stripped"
+                )
+
+    def test_keeps_tool_use_when_result_immediately_adjacent(self):
+        """Control: an adjacent tool_use/result pair is preserved (no false strip)."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_ok", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_ok", "content": "good"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        asst = [m for m in result if m["role"] == "assistant"][0]
+        assert any(b.get("type") == "tool_use" for b in asst["content"])
+        user = [m for m in result if m["role"] == "user"][0]
+        assert any(b.get("type") == "tool_result" for b in user["content"])
+
     def test_system_with_cache_control(self):
         messages = [
             {
@@ -876,6 +1088,72 @@ class TestConvertMessages:
         assert assistant_blocks[0]["type"] == "text"
         assert assistant_blocks[0]["text"] == "Hello from assistant"
         assert assistant_blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_assistant_tool_use_cache_control_is_preserved(self):
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Run the tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ], native_anthropic=True)
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant_msg = [m for m in result if m["role"] == "assistant"][0]
+        tool_use = assistant_msg["content"][-1]
+
+        assert tool_use["type"] == "tool_use"
+        assert tool_use["id"] == "tc_1"
+        assert tool_use["cache_control"] == {"type": "ephemeral"}
+
+    def test_ordered_replay_tool_use_cache_control_is_preserved(self):
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Run the tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "anthropic_content_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Need a tool.",
+                        "signature": "sig_1",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tc_1",
+                        "name": "test_tool",
+                        "input": {"query": "raw"},
+                    },
+                ],
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "function": {
+                            "name": "test_tool",
+                            "arguments": '{"query":"redacted"}',
+                        },
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ], native_anthropic=True)
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant_msg = [m for m in result if m["role"] == "assistant"][0]
+        thinking, tool_use = assistant_msg["content"]
+
+        assert thinking["type"] == "thinking"
+        assert "cache_control" not in thinking
+        assert tool_use["type"] == "tool_use"
+        assert tool_use["id"] == "tc_1"
+        assert tool_use["input"] == {"query": "redacted"}
+        assert tool_use["cache_control"] == {"type": "ephemeral"}
 
     def test_tool_cache_control_is_preserved_on_tool_result_block(self):
         messages = apply_anthropic_cache_control([

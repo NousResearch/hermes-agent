@@ -35,6 +35,7 @@ import os
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -85,6 +86,20 @@ def _resolve_connector_url(override: Optional[str]) -> Optional[str]:
     return raw
 
 
+def _resolve_identity_token() -> str:
+    """Resolve the caller-identity bearer token (generic-OIDC or Nous Portal).
+
+    Delegates to the canonical resolver in ``gateway.relay`` so the enroll CLI and
+    the runtime self-provision path share ONE implementation (generic OAuth2
+    client-credentials when ``gateway.idp.token_url`` is set — the air-gapped /
+    self-hosted-IdP path; otherwise Nous Portal). Raises RuntimeError on failure.
+    """
+    from gateway.relay import _resolve_relay_identity_token
+
+    return _resolve_relay_identity_token()
+
+
+
 def _post_enroll(
     *,
     connector_base_url: str,
@@ -123,7 +138,7 @@ def _post_enroll(
         if exc.code == 401:
             raise RuntimeError(
                 "Connector rejected the caller identity (401). Your Nous Portal "
-                "token could not be verified — try `hermes auth login nous` and retry."
+                "token could not be verified — try `hermes auth add nous` and retry."
             ) from exc
         if exc.code == 403:
             raise RuntimeError(
@@ -179,18 +194,20 @@ def cmd_gateway_enroll(args) -> None:
 
     gateway_id = (getattr(args, "gateway_id", None) or _default_gateway_id()).strip()
 
-    # 1. Resolve a fresh Nous access token (the tenant-proving identity).
+    # 1. Resolve the caller-identity token (the tenant-proving identity). Generic
+    #    OIDC client-credentials when an IdP token endpoint is configured (air-
+    #    gapped / self-hosted-IdP, NO Nous Portal); otherwise the Nous Portal token.
     try:
-        access_token = resolve_nous_access_token()
+        access_token = _resolve_identity_token()
     except AuthError as exc:
         if getattr(exc, "relogin_required", False):
             print("✗ You're not logged into Nous Portal.")
-            print("  Run `hermes setup` (or `hermes auth login nous`) first, then retry.")
+            print("  Run `hermes setup` (or `hermes auth add nous`) first, then retry.")
         else:
             print(f"✗ Could not resolve a Nous Portal access token: {exc}")
         sys.exit(1)
     except Exception as exc:
-        print(f"✗ Could not resolve a Nous Portal access token: {exc}")
+        print(f"✗ Could not resolve a caller-identity token: {exc}")
         sys.exit(1)
 
     # 2-3. Redeem the enrollment token at the connector.
@@ -223,6 +240,14 @@ def cmd_gateway_enroll(args) -> None:
     if explicit_url:
         to_write["GATEWAY_RELAY_URL"] = explicit_url.rstrip("/")
 
+    # Phase 5 §5.2: persist the wake URL so self_provision_relay forwards it to
+    # the connector (which pokes it to wake this gateway when buffered work
+    # arrives while it's idle). Optional — omitted ⇒ the connector can't wake it,
+    # but the gateway still drains on its next reconnect.
+    explicit_wake_url = (getattr(args, "wake_url", None) or "").strip()
+    if explicit_wake_url:
+        to_write["GATEWAY_RELAY_WAKE_URL"] = explicit_wake_url.rstrip("/")
+
     for key, value in to_write.items():
         if not value:
             continue
@@ -242,6 +267,8 @@ def cmd_gateway_enroll(args) -> None:
     print("    GATEWAY_RELAY_DELIVERY_KEY=<hidden>")
     if explicit_url:
         print(f"    GATEWAY_RELAY_URL={explicit_url.rstrip('/')}")
+    if explicit_wake_url:
+        print(f"    GATEWAY_RELAY_WAKE_URL={explicit_wake_url.rstrip('/')}")
     print()
     print(
         "  The gateway now authenticates its relay WS upgrade with the per-gateway\n"

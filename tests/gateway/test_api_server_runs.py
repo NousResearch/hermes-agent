@@ -10,6 +10,7 @@ Covers:
 
 import asyncio
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -448,9 +449,21 @@ class TestRunEvents:
 
 
 class TestRunLifecycleSweep:
+    def test_sweep_keeps_transport_with_active_subscriber(self, adapter):
+        run_id = "run_subscribed"
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_streams_created[run_id] = 0
+        adapter._run_stream_subscribers.add(run_id)
+
+        adapter._sweep_orphaned_runs_once(time.time())
+
+        assert adapter._run_streams[run_id] is queue
+        assert run_id in adapter._run_streams_created
+
     @pytest.mark.asyncio
-    async def test_expired_live_run_remains_counted_approvable_and_stoppable(self, adapter):
-        """Stream TTL must not detach control state from a still-running task."""
+    async def test_expired_live_run_drops_transport_but_keeps_control_state(self, adapter):
+        """Stream TTL bounds buffering without detaching a live run."""
         app = _create_runs_app(adapter)
         adapter._max_concurrent_runs = 1
 
@@ -487,7 +500,8 @@ class TestRunLifecycleSweep:
 
                 assert adapter._active_run_tasks[run_id] is task
                 assert adapter._active_run_agents[run_id] is mock_agent
-                assert run_id in adapter._run_streams
+                assert run_id not in adapter._run_streams
+                assert run_id not in adapter._run_streams_created
                 assert adapter._run_approval_sessions[run_id] == run_id
 
                 limited = adapter._concurrency_limited_response()
@@ -505,6 +519,30 @@ class TestRunLifecycleSweep:
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
                 mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+    @pytest.mark.asyncio
+    async def test_expired_transport_stops_buffering_new_deltas(self, adapter):
+        """An unconsumed expired queue must not grow for the rest of a live run."""
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+                expired_queue = adapter._run_streams[run_id]
+                stream_delta = mock_create.call_args.kwargs["stream_delta_callback"]
+
+                adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
+                adapter._sweep_orphaned_runs_once(time.time())
+                before = expired_queue.qsize()
+                stream_delta("must-not-buffer")
+                await asyncio.sleep(0)
+
+                assert expired_queue.qsize() == before
 
     @pytest.mark.asyncio
     async def test_expired_orphan_run_state_is_reaped(self, adapter):
@@ -542,6 +580,88 @@ class TestRunLifecycleSweep:
 
 
 class TestStopRun:
+    @pytest.mark.asyncio
+    async def test_stop_before_agent_creation_prevents_run_start(self, adapter):
+        """A stop accepted while queued must prevent agent construction."""
+        app = _create_runs_app(adapter)
+        original_create_task = asyncio.create_task
+        task_started = asyncio.Event()
+        allow_task = asyncio.Event()
+
+        def _delayed_create_task(coro):
+            async def _delayed():
+                task_started.set()
+                await allow_task.wait()
+                return await coro
+
+            return original_create_task(_delayed())
+
+        with patch("gateway.platforms.api_server.asyncio.create_task", side_effect=_delayed_create_task), \
+             patch.object(adapter, "_create_agent") as mock_create:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await task_started.wait()
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                allow_task.set()
+
+                for _ in range(20):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_create.assert_not_called()
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_stop_keeps_uncooperative_executor_tracked_until_exit(self, adapter):
+        """Cancelling an asyncio wrapper must not hide its live executor thread."""
+        app = _create_runs_app(adapter)
+        run_can_finish = threading.Event()
+        run_finished = threading.Event()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                started = threading.Event()
+
+                def _run_conversation(*_args, **_kwargs):
+                    started.set()
+                    run_can_finish.wait(timeout=5)
+                    run_finished.set()
+                    return {"final_response": "late result"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                assert started.wait(timeout=3)
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                await asyncio.sleep(0.1)
+
+                assert not run_finished.is_set()
+                assert run_id in adapter._active_run_agents
+                assert run_id in adapter._active_run_tasks
+                assert adapter._run_statuses[run_id]["status"] == "stopping"
+
+                run_can_finish.set()
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert run_id not in adapter._active_run_agents
+                assert run_id not in adapter._active_run_tasks
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
     @pytest.mark.asyncio
     async def test_stop_running_agent(self, adapter):
         """Stop should interrupt the agent and cancel the task."""

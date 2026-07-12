@@ -60,7 +60,7 @@ def _as_list(value: Any, default: list[str]) -> list[str]:
     return list(default)
 
 
-def _state_db_path(config: dict[str, Any]) -> Path:
+def _state_db_path(config: dict[str, Any]) -> Path | None:
     raw = str(config.get("state_db") or "").strip()
     if raw:
         return Path(raw).expanduser()
@@ -69,7 +69,10 @@ def _state_db_path(config: dict[str, Any]) -> Path:
 
         return kb.kanban_home() / "kanban" / "kanban-block-notifier.sqlite3"
     except Exception:
-        return Path.home() / ".hermes" / "kanban" / "kanban-block-notifier.sqlite3"
+        # Persistent state must follow Hermes' profile/custom-home resolution.
+        # If that resolver is unavailable, fail closed rather than writing to a
+        # parallel ~/.hermes tree and weakening event-scoped deduplication.
+        return None
 
 
 def _ensure_state(conn: sqlite3.Connection) -> None:
@@ -239,6 +242,11 @@ def _on_kanban_task_blocked(**kwargs: Any) -> None:
         config=config,
     )
     state_db = _state_db_path(config)
+    if state_db is None:
+        logger.warning(
+            "kanban-block-notifier: persistent state root unavailable; notification skipped"
+        )
+        return
     key = _dedupe_key(
         board,
         task_id,

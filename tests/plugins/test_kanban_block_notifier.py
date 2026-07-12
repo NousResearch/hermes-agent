@@ -127,6 +127,7 @@ def test_dedupe_is_scoped_to_block_event_and_board(tmp_path, monkeypatch):
 def test_real_kanban_block_event_sends_once(tmp_path, monkeypatch):
     mod = _load_plugin_module()
     sent: list[tuple[str, str]] = []
+    hook_calls: list[dict] = []
     home = tmp_path / "kanban-home"
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -136,15 +137,29 @@ def test_real_kanban_block_event_sends_once(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     import hermes_cli.plugins as plugins
 
-    monkeypatch.setattr(
-        plugins,
-        "invoke_hook",
-        lambda event, **kwargs: mod._on_kanban_task_blocked(**kwargs) if event == "kanban_task_blocked" else None,
-    )
     kb.init_db()
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="Configure HTTPS", assignee="developer", initial_status="running")
+
+        def capture_hook(event, **kwargs):
+            if event != "kanban_task_blocked":
+                return
+            # A separate connection can only observe the event after commit,
+            # proving lifecycle dispatch is outside the write transaction.
+            observer = kb.connect()
+            try:
+                row = observer.execute(
+                    "SELECT id, kind FROM task_events WHERE id = ?", (kwargs["event_id"],)
+                ).fetchone()
+            finally:
+                observer.close()
+            assert row is not None
+            assert row["kind"] == "blocked"
+            hook_calls.append(kwargs)
+            mod._on_kanban_task_blocked(**kwargs)
+
+        monkeypatch.setattr(plugins, "invoke_hook", capture_hook)
         assert kb.block_task(conn, tid, reason="Need DNS decision", kind="needs_input")
         event_id = kb.list_events(conn, tid)[-1].id
         # Same blocker fired again through the lifecycle callback should be deduped.
@@ -153,8 +168,59 @@ def test_real_kanban_block_event_sends_once(tmp_path, monkeypatch):
         conn.close()
 
     assert len(sent) == 1
+    assert len(hook_calls) == 1
+    assert hook_calls[0]["event_id"] == event_id
+    assert hook_calls[0]["kind"] == "needs_input"
     assert "Configure HTTPS" in sent[0][1]
     assert "Need DNS decision" in sent[0][1]
+
+
+def test_dependency_block_hook_has_committed_event_id_and_kind(tmp_path, monkeypatch):
+    home = tmp_path / "kanban-home"
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    from hermes_cli import kanban_db as kb
+    import hermes_cli.plugins as plugins
+
+    calls: list[dict] = []
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="Wait for parent", assignee="developer", initial_status="running")
+
+        def capture_hook(event, **kwargs):
+            if event != "kanban_task_blocked":
+                return
+            observer = kb.connect()
+            try:
+                row = observer.execute(
+                    "SELECT id, kind FROM task_events WHERE id = ?", (kwargs["event_id"],)
+                ).fetchone()
+            finally:
+                observer.close()
+            assert row is not None
+            assert row["kind"] == "dependency_wait"
+            calls.append(kwargs)
+
+        monkeypatch.setattr(plugins, "invoke_hook", capture_hook)
+        assert kb.block_task(conn, tid, reason="waiting for parent", kind="dependency")
+        event = kb.list_events(conn, tid)[-1]
+    finally:
+        conn.close()
+
+    assert len(calls) == 1
+    assert calls[0]["event_id"] == event.id
+    assert calls[0]["kind"] == "dependency"
+
+
+def test_state_db_path_fails_closed_without_kanban_resolver(monkeypatch):
+    mod = _load_plugin_module()
+    import hermes_cli
+
+    monkeypatch.setattr(hermes_cli, "kanban_db", None, raising=False)
+
+    assert mod._state_db_path({}) is None
 
 
 def test_unblock_then_reblock_same_reason_sends_again(tmp_path, monkeypatch):

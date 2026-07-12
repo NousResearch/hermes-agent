@@ -2670,7 +2670,8 @@ class TestAutoMaintenance:
         db.create_session(session_id="new", source="cli")  # active
 
         # Transcript files mimicking real gateway/CLI layout
-        (sessions_dir / "session_old1.json").write_text("{}")
+        (sessions_dir / "session_old1.json").write_text("{}")  # new naming
+        (sessions_dir / "old2.json").write_text("{}")  # legacy naming
         (sessions_dir / "old1.jsonl").write_text("{}\n")
         (sessions_dir / "old2.jsonl").write_text("{}\n")
         (sessions_dir / "request_dump_old1_001.json").write_text("{}")
@@ -2681,8 +2682,9 @@ class TestAutoMaintenance:
         )
         assert result["pruned"] == 2
 
-        # Pruned transcript files are gone
+        # Pruned transcript files are gone (both new and legacy JSON naming)
         assert not (sessions_dir / "session_old1.json").exists()
+        assert not (sessions_dir / "old2.json").exists()
         assert not (sessions_dir / "old1.jsonl").exists()
         assert not (sessions_dir / "old2.jsonl").exists()
         assert not (sessions_dir / "request_dump_old1_001.json").exists()

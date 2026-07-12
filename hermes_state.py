@@ -2014,19 +2014,21 @@ class SessionDB:
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
-        Cleans up ``session_{session_id}.json``, ``{session_id}.jsonl``, and
-        any ``request_dump_{session_id}_*.json`` files left by the gateway.
-        Silently skips files that don't exist and swallows OSError so a
-        filesystem hiccup never blocks a DB operation.
+        Cleans up ``session_{session_id}.json`` (new), legacy ``{session_id}.json``,
+        ``{session_id}.jsonl``, and any ``request_dump_{session_id}_*.json`` files left
+        by the gateway. Silently skips files that don't exist and swallows OSError
+        so a filesystem hiccup never blocks a DB operation.
         """
         if sessions_dir is None:
             return
         # The per-session JSON dump is written with a ``session_`` prefix
-        # (see run_agent.py session_log_file), while the .jsonl transcript
-        # uses the bare session id as its filename stem.
+        # (see run_agent.py session_log_file). Older sessions may have the
+        # legacy bare-{id}.json naming. The .jsonl transcript uses the bare
+        # session id as its filename stem.
         candidates = [
-            sessions_dir / f"session_{session_id}.json",
-            sessions_dir / f"{session_id}.jsonl",
+            sessions_dir / f"session_{session_id}.json",  # new naming (run_agent.py)
+            sessions_dir / f"{session_id}.json",  # legacy naming (backward compat)
+            sessions_dir / f"{session_id}.jsonl",  # transcript
         ]
         for p in candidates:
             try:

@@ -5027,13 +5027,16 @@ class MessageSender:
         body_start = divider_pos + len(divider)
         body = content[body_start:].strip()
 
-        # Strip trailing footer text — match either the recurring footer
-        # or the one-shot footer.  Used to match by hardcoded prefix;
-        # now strips any text after the last newline pair (the footer is
-        # always the last block separated by \n\n).
-        last_double_newline = body.rfind("\n\n")
-        if last_double_newline > 0:
-            body = body[:last_double_newline].strip()
+        # Both scheduler footers are emitted as the final paragraph. Only
+        # remove a recognized footer so multi-paragraph output is preserved.
+        footer_pos = body.rfind("\n\n")
+        if footer_pos > 0:
+            footer = body[footer_pos + 2:]
+            if footer.startswith((
+                "To stop or manage this job, send me a new message ",
+                "This was a one-time job and will not run again. ",
+            )):
+                body = body[:footer_pos].strip()
 
         return body or content
 

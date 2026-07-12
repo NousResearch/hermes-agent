@@ -65,6 +65,61 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+    def test_fallback_compaction_counts_as_ineffective_even_when_prompt_fits(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 90_000
+        compressor._verify_compaction_cleared_threshold = True
+        compressor._last_summary_fallback_used = True
+
+        compressor.update_from_response({
+            "prompt_tokens": 5_000,
+            "completion_tokens": 100,
+            "total_tokens": 5_100,
+        })
+
+        assert compressor.last_real_prompt_tokens == 5_000
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
+        assert compressor._ineffective_compression_count == 1
+        assert compressor._verify_compaction_cleared_threshold is False
+        assert compressor.awaiting_real_usage_after_compression is False
+
+    def test_successful_compaction_fit_still_clears_prior_ineffective_count(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 90_000
+        compressor._verify_compaction_cleared_threshold = True
+        compressor._last_summary_fallback_used = False
+        compressor._ineffective_compression_count = 1
+
+        compressor.update_from_response({
+            "prompt_tokens": 5_000,
+            "completion_tokens": 100,
+            "total_tokens": 5_100,
+        })
+
+        assert compressor._ineffective_compression_count == 0
+
+    def test_second_fallback_strike_blocks_future_compression(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_prompt_tokens = 90_000
+        assert compressor.should_compress() is True
+
+        for expected in (1, 2):
+            compressor.awaiting_real_usage_after_compression = True
+            compressor.last_compression_rough_tokens = 90_000
+            compressor._verify_compaction_cleared_threshold = True
+            compressor._last_summary_fallback_used = True
+            compressor.update_from_response({
+                "prompt_tokens": 5_000,
+                "completion_tokens": 100,
+                "total_tokens": 5_100,
+            })
+            assert compressor._ineffective_compression_count == expected
+            compressor.last_prompt_tokens = 90_000
+
+        assert compressor.should_compress() is False
+
 
 class TestPreflightDeferral:
     def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):

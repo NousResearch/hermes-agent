@@ -4805,6 +4805,28 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    async def try_send_final_rich_response(
+        self,
+        *,
+        chat_id: str,
+        original_response: str,
+        text_content: str,
+        images: List[Tuple[str, str]],
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        force_document_attachments: bool,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        is_ephemeral_response: bool = False,
+    ) -> Optional[SendResult]:
+        """Optionally send a platform-native rich final response.
+
+        Subclasses can override this to combine already-extracted text and
+        media into one richer platform message. Return ``None`` to let the base
+        legacy text/media delivery continue unchanged.
+        """
+        return None
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -4948,6 +4970,11 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                # The final-response marker is currently Feishu-only: this PR
+                # wires a concrete Feishu card renderer while leaving every
+                # other platform's final-message metadata unchanged.
+                if self.platform == Platform.FEISHU:
+                    _final_thread_metadata["hermes_final_response"] = True
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -4999,8 +5026,34 @@ class BasePlatformAdapter(ABC):
                         except OSError:
                             pass
 
+                _rich_final_response_delivered = False
+                if not _tts_caption_delivered:
+                    try:
+                        _rich_result = await self.try_send_final_rich_response(
+                            chat_id=event.source.chat_id,
+                            original_response=_response_pre_extract,
+                            text_content=text_content,
+                            images=list(images),
+                            media_files=list(media_files),
+                            local_files=list(local_files),
+                            force_document_attachments=force_document_attachments,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_final_thread_metadata,
+                            is_ephemeral_response=bool(_ephemeral_ttl and _ephemeral_ttl > 0),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[%s] Final rich response hook failed; falling back to legacy delivery",
+                            self.name,
+                            exc_info=True,
+                        )
+                        _rich_result = None
+                    if _rich_result is not None and getattr(_rich_result, "success", False):
+                        _record_delivery(_rich_result)
+                        _rich_final_response_delivered = True
+
                 # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                if text_content and not _tts_caption_delivered and not _rich_final_response_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     result = await self._send_with_retry(
@@ -5030,7 +5083,7 @@ class BasePlatformAdapter(ABC):
                 human_delay = self._get_human_delay()
 
                 # Send extracted images as native attachments
-                if images:
+                if images and not _rich_final_response_delivered:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
                         await self.send_multiple_images(
@@ -5042,6 +5095,10 @@ class BasePlatformAdapter(ABC):
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
+
+                if _rich_final_response_delivered:
+                    media_files = []
+                    local_files = []
 
                 # Send extracted media files — route by file type
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -5625,3 +5682,14 @@ class BasePlatformAdapter(ABC):
             ]
 
         return chunks
+
+
+def iter_media_tag_paths(content: str) -> List[str]:
+    """Return deliverable MEDIA:<path> paths using the canonical media parser.
+
+    This delegates to ``BasePlatformAdapter.extract_media`` so card-rendering
+    decisions share the same quoted-path, extension, and protected-span
+    behavior as native attachment delivery.
+    """
+    media, _cleaned = BasePlatformAdapter.extract_media(content or "")
+    return [path for path, _is_voice in media]

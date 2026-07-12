@@ -1,0 +1,100 @@
+import json
+
+from gateway.rendering.document import (
+    CodeBlock,
+    HeadingBlock,
+    ImageBlock,
+    MessageDocument,
+    ParagraphBlock,
+    TableBlock,
+)
+from gateway.platforms.feishu_card_renderer import render_document_to_feishu_card_v2
+
+
+def test_card_v2_contains_schema_body_and_summary():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([ParagraphBlock("Hello **Feishu**")]),
+        title="Hermes",
+    )
+
+    assert card["schema"] == "2.0"
+    assert card["config"]["width_mode"] == "fill"
+    assert card["config"]["summary"]["content"] == "Hello Feishu"
+    assert card["header"]["title"]["content"] == "Hermes"
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": "Hello **Feishu**", "text_size": "normal"}
+    ]
+
+
+def test_table_block_renders_native_table_component():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([
+            HeadingBlock(level=2, text="状态"),
+            TableBlock(
+                headers=["名称", "状态"],
+                rows=[["A", "**完成**"], ["B", "[详情](https://example.com)"]],
+                raw_markdown="| 名称 | 状态 |\n|---|---|\n| A | **完成** |\n| B | [详情](https://example.com) |",
+            ),
+        ])
+    )
+
+    elements = card["body"]["elements"]
+    assert elements[0] == {"tag": "markdown", "content": "状态", "text_size": "heading"}
+    assert elements[1]["tag"] == "table"
+    assert elements[1]["row_height"] == "auto"
+    assert elements[1]["columns"] == [
+        {"name": "col_0", "display_name": "名称", "data_type": "markdown"},
+        {"name": "col_1", "display_name": "状态", "data_type": "markdown"},
+    ]
+    assert elements[1]["rows"] == [
+        {"col_0": "A", "col_1": "**完成**"},
+        {"col_0": "B", "col_1": "[详情](https://example.com)"},
+    ]
+
+
+def test_code_block_renders_markdown_fence():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([CodeBlock(language="python", code="print('hi')")])
+    )
+
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": "```python\nprint('hi')\n```", "text_size": "normal"}
+    ]
+
+
+def test_too_wide_table_falls_back_to_markdown_code_block():
+    raw = "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |"
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([TableBlock(headers=["A", "B", "C"], rows=[["1", "2", "3"]], raw_markdown=raw)]),
+        max_columns=2,
+    )
+
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": f"```markdown\n{raw}\n```", "text_size": "normal"}
+    ]
+
+
+def test_card_payload_is_json_serializable():
+    card = render_document_to_feishu_card_v2(MessageDocument([ParagraphBlock("Hello")]))
+
+    assert json.loads(json.dumps(card, ensure_ascii=False))["schema"] == "2.0"
+
+
+def test_image_block_renders_card_v2_img_element():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([
+            ParagraphBlock("图片前"),
+            ImageBlock(source="/tmp/a.png", alt="测试图"),
+            ParagraphBlock("图片后"),
+        ]),
+        image_key_by_source={"/tmp/a.png": "img_test"},
+    )
+
+    elements = card["body"]["elements"]
+    assert elements[0] == {"tag": "markdown", "content": "图片前", "text_size": "normal"}
+    assert elements[1] == {
+        "tag": "img",
+        "img_key": "img_test",
+        "alt": {"tag": "plain_text", "content": "测试图"},
+    }
+    assert elements[2] == {"tag": "markdown", "content": "图片后", "text_size": "normal"}

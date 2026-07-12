@@ -386,6 +386,64 @@ def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypat
     assert "codex_ttfb_kill" not in closes
 
 
+def test_large_codex_request_dead_stream_killed_within_scaled_ceiling(tmp_path, monkeypatch):
+    """A large Codex request must NOT run completely unguarded. Previously the
+    no-byte watchdog was disabled outright for >=10k-token requests, so a
+    genuinely dead stream (zero SSE events, backend wedged) burned the full
+    wall-clock stale timeout — measured at 963s+ in production. The watchdog is
+    now SCALED (not disabled): a large request still arms a finite no-byte
+    ceiling, and a dead stream is killed within it rather than never.
+
+    Here the wall-clock stale timeout is 60s (harness default); with a scaled
+    2s ceiling the dead stream must be killed via the TTFB path well before it,
+    proving the large request is guarded again.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    # Base small-request cutoff of 1s, scaled ceiling of 2s for large requests.
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_LARGE_MAX_SECONDS", "2")
+    # Ensure the opt-in full-disable escape hatch is not what we're exercising.
+    monkeypatch.delenv("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_STRICT", raising=False)
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        # Never mark _codex_stream_last_event_ts: a truly dead stream.
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    large_input = "x" * 44_000  # ~11k estimated tokens, above the 10k scale gate.
+    t0 = time.time()
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+        elapsed = time.time() - t0
+        # Killed via the no-byte TTFB path at the scaled 2s ceiling...
+        assert "TTFB threshold: 2s" in str(excinfo.value)
+        assert "codex_ttfb_kill" in closes
+        # ...not left to the 60s wall-clock stale timeout.
+        assert elapsed < 15, f"large-request watchdog took {elapsed:.1f}s (should be ~2s)"
+    finally:
+        stop["flag"] = True
+
+
 def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypatch):
     """Operators can force the old early-reconnect behavior for large inputs
     with HERMES_CODEX_TTFB_STRICT=1."""

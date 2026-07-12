@@ -488,8 +488,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # stream event has arrived yet we apply a much shorter TTFB cutoff so the
     # main retry loop can reconnect promptly. Large subscription-backed Codex
     # requests can legitimately spend tens of seconds in backend admission /
-    # prompt prefill before the first SSE event, so the no-byte TTFB watchdog
-    # is disabled for large chatgpt.com/backend-api/codex requests. A second
+    # prompt prefill before the first SSE event, so for large
+    # chatgpt.com/backend-api/codex requests the no-byte TTFB watchdog is not
+    # disabled but SCALED to a generous-but-finite ceiling
+    # (HERMES_CODEX_TTFB_LARGE_MAX_SECONDS) — long enough to clear slow prefill,
+    # short enough to still catch a genuinely dead stream. A second
     # failure mode emits an opening SSE frame and then stalls forever in SSL
     # read; for that we watch the gap since the last Codex stream event. This
     # matches Codex CLI's stream_idle_timeout model: any valid SSE event is
@@ -524,10 +527,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
-        _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on"
         }
+        # Escape hatch — now OPT-IN (default 0 = never fully disable). The
+        # historical default of 10_000 here was the bug: it DISABLED the no-byte
+        # watchdog for every large request, and worker calls are routinely
+        # 77k–133k tokens, so essentially every worker call ran with no stall
+        # detection at all. A dead/hung stream then burned the full wall-clock
+        # stale timeout (measured: 963s to first byte) before the retry loop
+        # could reconnect. Leave a way to restore the old disable behavior, but
+        # default to a finite guard instead (see the scale branch below).
+        _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 0.0)
+        _ttfb_scale_above = _env_float("HERMES_CODEX_TTFB_SCALE_ABOVE_TOKENS", 10_000.0)
         if (
             not _ttfb_strict
             and _ttfb_disable_above > 0
@@ -536,11 +548,44 @@ def interruptible_api_call(agent, api_kwargs: dict):
             _ttfb_enabled = False
             logger.info(
                 "Disabling openai-codex no-byte TTFB watchdog for large request "
-                "(context=~%s tokens >= %.0f). Waiting for backend response instead. "
+                "(context=~%s tokens >= %.0f via HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS). "
+                "Waiting for backend response instead. "
                 "Set HERMES_CODEX_TTFB_STRICT=1 to force early reconnects.",
                 f"{_est_tokens_for_codex_watchdog:,}",
                 _ttfb_disable_above,
             )
+        elif (
+            not _ttfb_strict
+            and _ttfb_scale_above > 0
+            and _est_tokens_for_codex_watchdog >= _ttfb_scale_above
+        ):
+            # Large subscription-backed Codex requests can legitimately spend
+            # tens of seconds in backend admission / prompt prefill before the
+            # first SSE event, so the tight small-request cutoff would
+            # false-trigger. Rather than DISABLING the watchdog (which leaves
+            # genuinely dead streams undetected until the far longer stale
+            # timeout), SCALE the no-byte ceiling up to a generous-but-finite
+            # value. A truly wedged socket is still killed within this ceiling
+            # so the retry loop can reconnect, while normal slow prefill (a few
+            # seconds) sails well under it.
+            _ttfb_large_ceiling = _env_float("HERMES_CODEX_TTFB_LARGE_MAX_SECONDS", 180.0)
+            if _ttfb_large_ceiling > 0:
+                _scaled = max(_ttfb_timeout, _ttfb_large_ceiling)
+                if _scaled != _ttfb_timeout:
+                    logger.info(
+                        "Scaling openai-codex no-byte TTFB watchdog for large request "
+                        "(context=~%s tokens >= %.0f): first-byte ceiling %.0fs → %.0fs. "
+                        "Set HERMES_CODEX_TTFB_LARGE_MAX_SECONDS to tune, "
+                        "HERMES_CODEX_TTFB_STRICT=1 to force the tight small-request "
+                        "cutoff, or HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS to disable.",
+                        f"{_est_tokens_for_codex_watchdog:,}",
+                        _ttfb_scale_above,
+                        _ttfb_timeout,
+                        _scaled,
+                    )
+                _ttfb_timeout = _scaled
+            # A ceiling of 0 keeps the base timeout (still enabled) rather than
+            # disabling — a finite no-byte guard is the whole point of the fix.
         else:
             _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
             if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:

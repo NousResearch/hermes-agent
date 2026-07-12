@@ -7,7 +7,7 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [seerr, overseerr, jellyseerr, movies, tv, plex, jellyfin, radarr, sonarr]
+    tags: [seerr, movies, tv, media-requests, plex, jellyfin, emby, radarr, sonarr]
     category: media
     config:
       - key: seerr.url

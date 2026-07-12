@@ -475,9 +475,26 @@ def cmd_status(args) -> None:
 
     if providers:
         print("\n  Installed plugins:")
-        for pname, desc, _ in providers:
-            active = " ← active" if pname == provider_name else ""
-            print(f"    • {pname}  ({desc}){active}")
+        for pname, desc, candidate in providers:
+            active = pname == provider_name
+            marker = " ← active" if active else ""
+            print(f"    • {pname}  ({desc}){marker}")
+            # A provider can be fully configured (its own config file has
+            # everything it needs) without being the activated one — e.g.
+            # honcho.json is present and enabled, but config.yaml's
+            # memory.provider was never set to "honcho". is_available()
+            # only checks the provider's own config, so this case reports
+            # no error anywhere; surface it here instead of leaving the
+            # user to notice a silently-unused config file on their own.
+            if not active:
+                try:
+                    if candidate.is_available():
+                        print(
+                            f"      ⚠ configured but not active — add "
+                            f"'memory.provider: {pname}' to config.yaml to enable"
+                        )
+                except Exception:
+                    pass
 
     print()
 

@@ -165,6 +165,54 @@ def test_cmd_status_prefers_provider_status_config(monkeypatch, capsys):
     assert "http://stale.local" not in output
 
 
+def test_cmd_status_warns_when_inactive_provider_is_configured(monkeypatch, capsys):
+    """A provider can have its own config file fully populated (e.g. honcho.json
+    with enabled=true) without ever being activated via memory.provider in
+    config.yaml. is_available() only checks the provider's own config, so this
+    mismatch previously surfaced nowhere — cmd_status should flag it."""
+
+    class ConfiguredButInactiveProvider:
+        def is_available(self):
+            return True
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+    monkeypatch.setattr(
+        memory_setup,
+        "_get_available_providers",
+        lambda: [
+            ("honcho", "Memory with social cognition", ConfiguredButInactiveProvider())
+        ],
+    )
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    output = capsys.readouterr().out
+    assert "configured but not active" in output
+    assert "memory.provider: honcho" in output
+
+
+def test_cmd_status_silent_for_inactive_unconfigured_provider(monkeypatch, capsys):
+    """The common case — an installed plugin nobody has configured yet —
+    should not print the warning; only genuinely-configured-but-inactive
+    providers should."""
+
+    class UnconfiguredProvider:
+        def is_available(self):
+            return False
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+    monkeypatch.setattr(
+        memory_setup,
+        "_get_available_providers",
+        lambda: [("mem0", "Vector memory", UnconfiguredProvider())],
+    )
+
+    memory_setup.cmd_status(SimpleNamespace())
+
+    output = capsys.readouterr().out
+    assert "configured but not active" not in output
+
+
 def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     class ChoiceProvider:
         def __init__(self):

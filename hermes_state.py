@@ -647,6 +647,29 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db FTS in-place rebuild pass failed: %s", exc)
 
+    # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ──
+    # PRAGMA integrity_check can report "wrong # of entries in index" when a
+    # B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
+    # base table. REINDEX rewrites the index b-tree from the canonical table
+    # rows using the existing index definition, fixing the mismatch without
+    # touching data or FTS schema.
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            conn.execute("REINDEX")
+            conn.commit()
+        finally:
+            conn.close()
+        if _db_opens_cleanly(db_path) is None:
+            report["repaired"] = True
+            report["strategy"] = "reindex_btree"
+            logger.warning(
+                "state.db B-tree indexes rebuilt via REINDEX: %s", db_path
+            )
+            return report
+    except sqlite3.DatabaseError as exc:
+        logger.warning("state.db REINDEX pass failed: %s", exc)
+
     # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)

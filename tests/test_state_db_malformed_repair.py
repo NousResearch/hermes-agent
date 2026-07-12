@@ -333,6 +333,35 @@ def test_repair_noop_db_uses_already_healthy_shortcut(tmp_path):
     assert report["strategy"] == "already_healthy"
 
 
+def test_repair_rebuilds_stale_btree_indexes(tmp_path, monkeypatch):
+    """repair_state_db_schema uses REINDEX for 'wrong # of entries in index'.
+
+    When PRAGMA integrity_check reports a stale B-tree index (e.g.
+    idx_sessions_handoff_state), the FTS-rebuild and dedup strategies don't
+    help — REINDEX rewrites the index b-tree from the canonical table rows.
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+
+    _reason = "wrong # of entries in index idx_sessions_handoff_state"
+    _call_count = {"n": 0}
+    _real_check = hermes_state._db_opens_cleanly
+
+    def _simulated_check(path):
+        _call_count["n"] += 1
+        # initial health check + post-Strategy-0 check report corruption;
+        # after REINDEX (Strategy 0.5) the DB is healthy.
+        if _call_count["n"] <= 2:
+            return _reason
+        return _real_check(path)
+
+    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", _simulated_check)
+
+    report = repair_state_db_schema(db_path)
+    assert report["repaired"] is True
+    assert report["strategy"] == "reindex_btree"
+
+
 def test_select_cached_agent_history_prefers_longer_live_transcript():
     """Gateway guard keeps the live transcript when persisted history lags."""
     from gateway.run import _select_cached_agent_history

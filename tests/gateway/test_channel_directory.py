@@ -61,6 +61,7 @@ class TestLoadDirectory:
         cache_file = _write_directory(tmp_path, {
             "discord": [
                 {"id": "dm-1", "name": "Private", "type": "dm", "guild": None},
+                {"id": "private-thread-1", "name": "Secret thread", "type": "private_thread", "guild": "Guild"},
                 {"id": "public-1", "name": "ops", "type": "channel", "guild": "Guild"},
             ]
         })
@@ -68,6 +69,7 @@ class TestLoadDirectory:
             assert resolve_channel_name("discord", "Private") is None
             assert "Discord (DMs)" not in format_directory_for_display()
             assert is_discord_public_target("dm-1") is False
+            assert is_discord_public_target("private-thread-1") is False
             assert is_discord_public_target("public-1") is True
 
     def test_corrupt_file(self, tmp_path):

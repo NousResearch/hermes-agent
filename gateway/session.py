@@ -13,14 +13,66 @@ import hashlib
 import logging
 import os
 import json
+import secrets
 import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field as dataclass_field, replace as dataclass_replace
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_CAPABILITY_EPOCH_PREFIX = "cap_epoch_v1_"
+
+
+class CapabilityEpochRotationBlocked(RuntimeError):
+    """A routing boundary could not revoke the exact old authority epoch."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        authority_rotated: bool = False,
+    ) -> None:
+        super().__init__(message)
+        # True means the old epoch was already durably tombstoned and any
+        # surviving same-epoch routing entry was replaced with fresh authority,
+        # even though the requested routing transition lost its CAS.
+        self.authority_rotated = bool(authority_rotated)
+
+
+CapabilityEpochRotationCallback = Callable[["SessionEntry", str], None]
+
+
+def _new_capability_epoch() -> str:
+    """Return a new opaque routing-boundary capability epoch.
+
+    The raw value exists only in the live gateway process. Model tools and the
+    privileged writer receive only its SHA-256 digest. A gateway restart thus
+    expires durable mutation authority even if model-controlled code rolls
+    routing storage back to an older snapshot.
+    """
+
+    return _CAPABILITY_EPOCH_PREFIX + secrets.token_hex(32)
+
+
+def _load_capability_epoch(value: Any) -> str:
+    """Canonicalize an explicitly supplied in-process epoch.
+
+    Epochs are never loaded from routing persistence.  This helper is only for
+    constructing and mechanically validating live ``SessionEntry`` objects.
+    """
+
+    epoch = str(value or "").strip()
+    body = epoch.removeprefix(_CAPABILITY_EPOCH_PREFIX)
+    if (
+        epoch.startswith(_CAPABILITY_EPOCH_PREFIX)
+        and len(body) == 64
+        and all(char in "0123456789abcdef" for char in body)
+    ):
+        return epoch
+    return _new_capability_epoch()
 
 
 def _now() -> datetime:
@@ -312,6 +364,9 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    # Writer-only authority binding. Omitted from to_dict() and therefore from
+    # every model-facing session-context prompt.
+    capability_epoch_sha256: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -660,6 +715,18 @@ class SessionEntry:
     session_id: str
     created_at: datetime
     updated_at: datetime
+
+    # Process-memory-only authority generation for the current routing
+    # boundary. It is intentionally never serialized. It is
+    # deliberately independent from the deterministic session_key and from a
+    # resumable transcript session_id: /new, /resume, /branch, and other
+    # routing switches must invalidate prior durable mutation capabilities
+    # even when best-effort revocation cannot reach the privileged writer.
+    capability_epoch: str = dataclass_field(default_factory=_new_capability_epoch, repr=False)
+    # An automatic reset whose durable old-epoch tombstone could not be written
+    # stays on the old entry and retries the boundary on every later access.
+    # Process-memory-only: restart already mints an unrelated fresh epoch.
+    capability_rotation_deferred: bool = dataclass_field(default=False, repr=False)
     
     # Origin metadata for delivery routing
     origin: Optional[SessionSource] = None
@@ -727,6 +794,12 @@ class SessionEntry:
     # override is rehydrated after a restart and are never written to disk
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
+
+    def __post_init__(self) -> None:
+        # The distinctive prefix lets the mandatory output redactor mask an
+        # epoch if it is ever included in diagnostics.  The value itself is
+        # process-memory-only and is deliberately absent from routing storage.
+        self.capability_epoch = _load_capability_epoch(self.capability_epoch)
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -1001,8 +1074,16 @@ class SessionStore:
     Falls back to legacy JSONL files if SQLite is unavailable.
     """
     
-    def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+    def __init__(
+        self,
+        sessions_dir: Path,
+        config: GatewayConfig,
+        has_active_processes_fn=None,
+        has_active_turn_fn=None,
+        before_capability_epoch_rotation_fn: (
+            CapabilityEpochRotationCallback | None
+        ) = None,
+    ):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -1017,6 +1098,10 @@ class SessionStore:
         self._inflight_lock = threading.Lock()
         self._inflight_sessions: Dict[str, _SessionFlight] = {}
         self._has_active_processes_fn = has_active_processes_fn
+        self._has_active_turn_fn = has_active_turn_fn
+        self._before_capability_epoch_rotation_fn = (
+            before_capability_epoch_rotation_fn
+        )
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
         # backward compatibility; disable via gateway.write_sessions_json.
@@ -1031,6 +1116,31 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+    def _before_capability_epoch_rotation(
+        self,
+        old_entry: SessionEntry,
+        reason: str,
+    ) -> None:
+        """Revoke one exact old epoch before a replacement can be published.
+
+        The callback performs privileged I/O and therefore must only run while
+        no SessionStore lock is held.  A failure is a hard boundary for explicit
+        and stale transitions; automatic policy resets may catch this exception
+        and defer without changing the current entry.
+        """
+
+        callback = self._before_capability_epoch_rotation_fn
+        if callback is None:
+            return
+        try:
+            callback(old_entry, str(reason or "session_boundary")[:240])
+        except CapabilityEpochRotationBlocked:
+            raise
+        except Exception as exc:
+            raise CapabilityEpochRotationBlocked(
+                "durable old-epoch revocation failed before session rotation"
+            ) from exc
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -1198,6 +1308,10 @@ class SessionStore:
                             row["end_reason"],
                             recovered_entry.session_id,
                         )
+                        # Never carry process-memory authority across a recovery
+                        # inferred from state.db/routing data. Both are writable
+                        # by same-UID model children. The recovered entry keeps
+                        # the fresh epoch minted when it was constructed.
                         self._entries[key] = recovered_entry
                         recovered_keys += 1
                         continue
@@ -1738,28 +1852,6 @@ class SessionStore:
             )
             return session_id
 
-    def _heal_compression_tip_locked(
-        self,
-        entry: "SessionEntry",
-        original_session_id: Optional[str],
-        canonical_session_id: Optional[str],
-    ) -> bool:
-        """Rewrite *entry* to the compression continuation if stale. Lock held."""
-        if (
-            not original_session_id
-            or not canonical_session_id
-            or entry.session_id != original_session_id
-            or canonical_session_id == original_session_id
-        ):
-            return False
-        logger.info(
-            "SessionStore healed compressed session mapping: %s -> %s",
-            entry.session_id,
-            canonical_session_id,
-        )
-        entry.session_id = canonical_session_id
-        return True
-
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -1864,6 +1956,7 @@ class SessionStore:
 
         # ---- Phase 1: lock read -- get entry snapshot for stale/reset checks ----
         _stale_session_id = None
+        _stale_updated_at = None
         _entry_for_checks = None
         with self._lock:
             self._ensure_loaded_locked()
@@ -1872,13 +1965,16 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 _entry_for_checks = self._entries[session_key]
                 _stale_session_id = _entry_for_checks.session_id
+                _stale_updated_at = _entry_for_checks.updated_at
 
         # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
         _is_stale = False
         _reset_reason = None
         if _entry_for_checks is not None and _stale_session_id is not None:
             _is_stale = self._is_session_ended_in_db(_stale_session_id)
-            if _entry_for_checks.suspended:
+            if _entry_for_checks.capability_rotation_deferred:
+                _reset_reason = "capability_rotation_deferred"
+            elif _entry_for_checks.suspended:
                 _reset_reason = "suspended"
             elif _entry_for_checks.resume_pending:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
@@ -1893,6 +1989,63 @@ class SessionStore:
             else:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
 
+        # Revoke the exact old authority epoch before any replacement entry is
+        # visible. This callback performs writer I/O, so it deliberately runs
+        # outside ``self._lock``. DB-reported compression lineage is not an
+        # authority proof: state.db is writable by same-UID model children, so
+        # recovering to its reported tip is an ordinary rotation boundary.
+        _rotation_deferred = False
+        _compression_continuation = bool(
+            existing_session_id
+            and canonical_existing_session_id
+            and canonical_existing_session_id != existing_session_id
+        )
+        _rotation_entry: Optional[SessionEntry] = None
+        _rotation_epoch = ""
+        _rotation_reason = ""
+        _rotation_callback_succeeded = False
+        if force_new and force_new_observed_entry is not None:
+            _rotation_entry = force_new_observed_entry
+            _rotation_reason = "force_new"
+        elif _entry_for_checks is not None and _compression_continuation:
+            _rotation_entry = _entry_for_checks
+            _rotation_reason = "compression_tip_recovery"
+        elif (
+            _entry_for_checks is not None
+            and _is_stale
+        ):
+            _rotation_entry = _entry_for_checks
+            _rotation_reason = "stale_session_recovery"
+        elif (
+            _entry_for_checks is not None
+            and _reset_reason
+        ):
+            _rotation_entry = _entry_for_checks
+            _rotation_reason = f"automatic_reset:{_reset_reason}"
+
+        if _rotation_entry is not None:
+            _rotation_epoch = _rotation_entry.capability_epoch
+            try:
+                self._before_capability_epoch_rotation(
+                    _rotation_entry,
+                    _rotation_reason,
+                )
+                _rotation_callback_succeeded = True
+            except CapabilityEpochRotationBlocked:
+                if _rotation_reason.startswith("automatic_reset:"):
+                    # An idle/daily/suspended policy reset is optional. Keep the
+                    # exact old entry and epoch published until the privileged
+                    # writer can durably tombstone it; never rotate locally and
+                    # hope a best-effort revoke catches up later.
+                    logger.warning(
+                        "Deferring automatic session reset for %s because exact "
+                        "old-epoch revocation is unavailable",
+                        session_key,
+                    )
+                    _rotation_deferred = True
+                else:
+                    raise
+
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
         _needs_recover = False
@@ -1906,11 +2059,74 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-                self._heal_compression_tip_locked(
-                    entry, existing_session_id, canonical_existing_session_id
+
+                # If trusted live work changed the routing entry while writer
+                # I/O was in flight, the stale policy decision must not be
+                # applied. After a successful callback, a same-epoch survivor
+                # must also be rotated because that epoch is now tombstoned. A
+                # failed automatic-reset callback preserves the old epoch and
+                # merely defers the policy boundary.
+                _rotation_cas_lost = bool(
+                    _rotation_epoch
+                    and (
+                        entry is not _rotation_entry
+                        or entry.session_id != _stale_session_id
+                        or entry.updated_at != _stale_updated_at
+                    )
                 )
 
-                if _is_stale and entry.session_id == _stale_session_id:
+                if _rotation_cas_lost:
+                    if (
+                        _rotation_callback_succeeded
+                        and entry.capability_epoch == _rotation_epoch
+                    ):
+                        logger.warning(
+                            "SessionStore authority rotation raced a live routing "
+                            "change for %s; preserving %s with fresh authority",
+                            session_key,
+                            entry.session_id,
+                        )
+                        entry = dataclass_replace(
+                            entry,
+                            updated_at=now,
+                            capability_epoch=_new_capability_epoch(),
+                            capability_rotation_deferred=False,
+                        )
+                        self._entries[session_key] = entry
+                    elif _rotation_deferred and entry is _rotation_entry:
+                        entry.capability_rotation_deferred = True
+                        entry.updated_at = now
+                    _needs_save = True
+                elif (
+                    _compression_continuation
+                    and entry is _entry_for_checks
+                    and entry.session_id == existing_session_id
+                ):
+                    logger.info(
+                        "SessionStore rotated authority while healing compressed "
+                        "session mapping: %s -> %s",
+                        entry.session_id,
+                        canonical_existing_session_id,
+                    )
+                    entry = dataclass_replace(
+                        entry,
+                        session_id=canonical_existing_session_id,
+                        updated_at=now,
+                        capability_epoch=_new_capability_epoch(),
+                        capability_rotation_deferred=False,
+                    )
+                    self._entries[session_key] = entry
+                    _needs_save = True
+                if _rotation_cas_lost:
+                    # Concurrent trusted activity wins over the stale reset or
+                    # DB-selected target. The replacement above is the complete
+                    # mechanical outcome for this access.
+                    pass
+                elif _rotation_deferred and entry is _entry_for_checks:
+                    entry.capability_rotation_deferred = True
+                    entry.updated_at = now
+                    _needs_save = True
+                elif _is_stale and entry.session_id == _stale_session_id:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
                     # state.db.  Drop it and fall through to recovery/create.
@@ -1989,6 +2205,24 @@ class SessionStore:
                     self._entries[session_key] = candidate
                     published = candidate
                 else:
+                    if (
+                        force_new
+                        and current is not None
+                        and _rotation_epoch
+                        and _rotation_callback_succeeded
+                        and current.capability_epoch == _rotation_epoch
+                    ):
+                        # The force-new callback revoked an entry that was
+                        # concurrently replaced without rotating its epoch.
+                        # Preserve the winner, but never expose the tombstoned
+                        # generation.
+                        current = dataclass_replace(
+                            current,
+                            updated_at=now,
+                            capability_epoch=_new_capability_epoch(),
+                            capability_rotation_deferred=False,
+                        )
+                        self._entries[session_key] = current
                     published = current
             assert published is not None
             entry = published
@@ -2169,31 +2403,114 @@ class SessionStore:
         cutoff = _now() - timedelta(days=max_age_days)
         removed_keys: list[str] = []
 
+        # Snapshot immutable CAS fields under the routing lock. Privileged
+        # writer I/O and activity callbacks must never run while it is held.
         with self._lock:
             self._ensure_loaded_locked()
-            for key, entry in list(self._entries.items()):
-                if entry.suspended:
+            candidates = [
+                (
+                    key,
+                    entry,
+                    entry.session_id,
+                    entry.updated_at,
+                    entry.capability_epoch,
+                )
+                for key, entry in self._entries.items()
+                if not entry.suspended and entry.updated_at < cutoff
+            ]
+
+        def _has_live_work(entry: SessionEntry) -> bool:
+            callbacks = (
+                ("has_active_turn_fn", getattr(self, "_has_active_turn_fn", None)),
+                (
+                    "has_active_processes_fn",
+                    getattr(self, "_has_active_processes_fn", None),
+                ),
+            )
+            for label, callback in callbacks:
+                if callback is None:
                     continue
-                # Never prune sessions with an active background process
-                # attached — the user may still be waiting on output.
-                # The callback is keyed by session_key (see process_registry.
-                # has_active_for_session); passing session_id here used to
-                # never match, so active sessions got pruned anyway.
-                if self._has_active_processes_fn is not None:
-                    try:
-                        if self._has_active_processes_fn(entry.session_key):
-                            continue
-                    except Exception as exc:
-                        logger.debug(
-                            "has_active_processes_fn raised during prune for %s: %s",
-                            entry.session_key, exc,
-                        )
-                if entry.updated_at < cutoff:
+                try:
+                    if callback(entry.session_key):
+                        return True
+                except Exception as exc:
+                    # A maintenance sweep cannot prove inactivity when its
+                    # observer fails. Retain the entry rather than split a
+                    # possibly live long-running task from its authority epoch.
+                    logger.warning(
+                        "%s raised during prune for %s; retaining entry: %s",
+                        label,
+                        entry.session_key,
+                        exc,
+                    )
+                    return True
+            return False
+
+        for (
+            key,
+            entry,
+            observed_session_id,
+            observed_updated_at,
+            observed_epoch,
+        ) in candidates:
+            if _has_live_work(entry):
+                continue
+
+            # Revalidate immediately before the durable boundary. This does not
+            # replace the post-I/O CAS; it only avoids needless revocation when
+            # activity already changed the candidate after the snapshot.
+            with self._lock:
+                current = self._entries.get(key)
+                candidate_still_current = bool(
+                    current is entry
+                    and current.session_id == observed_session_id
+                    and current.updated_at == observed_updated_at
+                    and current.capability_epoch == observed_epoch
+                    and not current.suspended
+                    and current.updated_at < cutoff
+                )
+            if not candidate_still_current or _has_live_work(entry):
+                continue
+
+            try:
+                self._before_capability_epoch_rotation(
+                    entry,
+                    "maintenance_prune",
+                )
+            except CapabilityEpochRotationBlocked:
+                logger.warning(
+                    "Deferring prune for %s because exact old-epoch "
+                    "revocation is unavailable",
+                    key,
+                )
+                continue
+
+            # A foreground turn may have started while writer I/O was in
+            # flight. Never remove it. Since the old epoch is already durably
+            # tombstoned, mark an exact same-epoch survivor for mandatory
+            # rotation on its next routing access.
+            live_after_revoke = _has_live_work(entry)
+            with self._lock:
+                current = self._entries.get(key)
+                cas_matches = bool(
+                    current is entry
+                    and current.session_id == observed_session_id
+                    and current.updated_at == observed_updated_at
+                    and current.capability_epoch == observed_epoch
+                    and not current.suspended
+                    and current.updated_at < cutoff
+                )
+                if cas_matches and not live_after_revoke:
+                    self._entries.pop(key, None)
                     removed_keys.append(key)
-            for key in removed_keys:
-                self._entries.pop(key, None)
-            if removed_keys:
-                self._save()
+                elif (
+                    current is not None
+                    and current.capability_epoch == observed_epoch
+                ):
+                    current.capability_rotation_deferred = True
+
+        if removed_keys:
+            self._save_entries()
 
         if removed_keys:
             logger.info(
@@ -2238,8 +2555,21 @@ class SessionStore:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
-        """Force reset a session, creating a new session ID."""
+    def reset_session(
+        self,
+        session_key: str,
+        display_name: Optional[str] = None,
+        *,
+        source: Optional[SessionSource] = None,
+        create_if_missing: bool = False,
+    ) -> Optional[SessionEntry]:
+        """Force reset a session, creating a new session ID.
+
+        ``create_if_missing`` is used by the gateway's first-ever ``/new``
+        boundary. Creating that initial route inside this method closes the gap
+        where the reset handler previously exposed its running slot and only
+        later called ``get_or_create_session(force_new=True)``.
+        """
         db_end_session_id = None
         db_create_kwargs = None
         new_entry = None
@@ -2248,9 +2578,67 @@ class SessionStore:
             self._ensure_loaded_locked()
 
             if session_key not in self._entries:
-                return None
+                if not create_if_missing or source is None:
+                    return None
 
-            old_entry = self._entries[session_key]
+                now = _now()
+                session_id = (
+                    f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+                )
+                new_entry = SessionEntry(
+                    session_key=session_key,
+                    session_id=session_id,
+                    created_at=now,
+                    updated_at=now,
+                    origin=source,
+                    display_name=(
+                        display_name
+                        if display_name is not None
+                        else source.chat_name
+                    ),
+                    platform=source.platform,
+                    chat_type=source.chat_type,
+                    is_fresh_reset=True,
+                )
+                self._entries[session_key] = new_entry
+                self._save()
+                db_create_kwargs = {
+                    "session_id": session_id,
+                    "source": (
+                        source.platform.value if source.platform else "unknown"
+                    ),
+                    "user_id": source.user_id,
+                    "session_key": session_key,
+                    "chat_id": source.chat_id,
+                    "chat_type": source.chat_type,
+                    "thread_id": source.thread_id,
+                }
+                old_entry = None
+            else:
+                old_entry = self._entries[session_key]
+
+        if old_entry is None:
+            if self._db and db_create_kwargs:
+                try:
+                    self._db.create_session(**db_create_kwargs)
+                    self._record_gateway_session_peer(
+                        new_entry.session_id,
+                        session_key,
+                        source,
+                        display_name=new_entry.display_name,
+                    )
+                except Exception as e:
+                    logger.debug("Session DB operation failed: %s", e)
+            return new_entry
+
+        self._before_capability_epoch_rotation(old_entry, "explicit_reset")
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            if self._entries.get(session_key) is not old_entry:
+                raise CapabilityEpochRotationBlocked(
+                    "session changed while exact old-epoch reset was being revoked"
+                )
             db_end_session_id = old_entry.session_id
 
             now = _now()
@@ -2300,7 +2688,11 @@ class SessionStore:
 
         return new_entry
 
-    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+    def switch_session(
+        self,
+        session_key: str,
+        target_session_id: str,
+    ) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 
         Used by ``/resume`` to restore a previously-named session.
@@ -2308,6 +2700,11 @@ class SessionStore:
         generating a fresh session ID, re-uses ``target_session_id`` so the
         old transcript is loaded on the next message. If the target session was
         previously ended, re-open it so gateway resume semantics match the CLI.
+
+        Every switch rotates mutation authority. Compression that completes
+        in the live gateway preserves continuity by updating the trusted
+        in-memory ``SessionEntry`` directly; a later switch inferred from
+        writable routing/SQLite state is never authority-preserving.
         """
         db_end_session_id = None
         new_entry = None
@@ -2319,12 +2716,45 @@ class SessionStore:
                 return None
 
             old_entry = self._entries[session_key]
+            old_session_id = old_entry.session_id
+            old_updated_at = old_entry.updated_at
+            old_epoch = old_entry.capability_epoch
 
             # Don't switch if already on that session
-            if old_entry.session_id == target_session_id:
+            if old_session_id == target_session_id:
                 return old_entry
 
-            db_end_session_id = old_entry.session_id
+        # DB/routing ancestry is writable by the same-UID model child, so it
+        # cannot prove authority continuity. Revoke the exact process-memory
+        # epoch before publishing every switch, including recovery to a
+        # database-reported compression descendant.
+        self._before_capability_epoch_rotation(old_entry, "explicit_switch")
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            current = self._entries.get(session_key)
+            if (
+                current is not old_entry
+                or old_entry.session_id != old_session_id
+                or old_entry.updated_at != old_updated_at
+            ):
+                if (
+                    current is not None
+                    and current.capability_epoch == old_epoch
+                ):
+                    current = dataclass_replace(
+                        current,
+                        updated_at=_now(),
+                        capability_epoch=_new_capability_epoch(),
+                        capability_rotation_deferred=False,
+                    )
+                    self._entries[session_key] = current
+                    self._save()
+                raise CapabilityEpochRotationBlocked(
+                    "session changed while exact old-epoch switch was being resolved",
+                    authority_rotated=True,
+                )
+            db_end_session_id = old_session_id
 
             now = _now()
             new_entry = SessionEntry(
@@ -2336,6 +2766,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                capability_epoch=_new_capability_epoch(),
             )
 
             self._entries[session_key] = new_entry
@@ -2578,6 +3009,9 @@ def build_session_context(
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
+        context.capability_epoch_sha256 = hashlib.sha256(
+            session_entry.capability_epoch.encode("ascii")
+        ).hexdigest()
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
     

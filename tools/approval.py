@@ -1408,6 +1408,7 @@ def detect_dangerous_command(command: str) -> tuple:
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
+_session_approved_generations: dict[tuple[str, str], int] = {}
 _plan_capabilities: dict[str, dict[str, dict]] = {}
 _plan_capability_consume_locks: dict[tuple[str, str, str], threading.Lock] = {}
 # Process-lifetime replay ledger for runtime-observed approval messages.  It is
@@ -1417,6 +1418,14 @@ _plan_capability_consume_locks: dict[tuple[str, str, str], threading.Lock] = {}
 # durable lease/consume protocol.
 _plan_approval_source_states: dict[str, str] = {}
 _session_yolo: set[str] = set()
+_session_yolo_generations: dict[str, int] = {}
+# Stable routing keys survive /new, /resume, and other conversation boundaries.
+# A monotonic process-local generation therefore fences every local authority
+# write that was commissioned before a boundary.  The old epoch digest is also
+# retained as a tombstone so a paused gateway worker that starts a *new* local
+# grant after the boundary cannot attach it to the successor generation.
+_session_authority_generations: dict[str, int] = {}
+_retired_session_capability_epochs: set[tuple[str, str]] = set()
 _permanent_approved: set = set()
 
 # =========================================================================
@@ -1430,12 +1439,27 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = (
+        "event",
+        "data",
+        "result",
+        "reason",
+        "authority_generation",
+        "capability_epoch_sha256",
+    )
 
-    def __init__(self, data: dict):
+    def __init__(
+        self,
+        data: dict,
+        *,
+        authority_generation: int = 0,
+        capability_epoch_sha256: str = "",
+    ):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        self.authority_generation = int(authority_generation)
+        self.capability_epoch_sha256 = str(capability_epoch_sha256 or "")
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
@@ -1519,36 +1543,265 @@ def submit_pending(session_key: str, approval: dict):
         _pending[session_key] = approval
 
 
-def approve_session(session_key: str, pattern_key: str):
-    """Approve a pattern for this session only."""
+def _observed_capability_epoch_sha256() -> str:
+    """Return the gateway-owned epoch digest bound to the current worker."""
+
+    return _observed_session_value("HERMES_CAPABILITY_EPOCH_SHA256")
+
+
+def _current_authority_generation_locked(session_key: str) -> int:
+    return int(_session_authority_generations.get(session_key, 0))
+
+
+def capture_session_authority_fence(session_key: str) -> tuple[int, str]:
+    """Capture the exact process-local authority generation for current work.
+
+    A retired gateway epoch can never capture the successor generation.  This
+    closes the post-boundary race where a paused old worker wakes only after
+    cleanup and otherwise appears to be a brand-new writer on the stable key.
+    """
+
+    session_key = str(session_key or "")
+    epoch_sha256 = _observed_capability_epoch_sha256()
     with _lock:
-        _session_approved.setdefault(session_key, set()).add(pattern_key)
+        if epoch_sha256 and (
+            session_key,
+            epoch_sha256,
+        ) in _retired_session_capability_epochs:
+            raise PermissionError("session authority epoch has been retired")
+        return _current_authority_generation_locked(session_key), epoch_sha256
 
 
-def enable_session_yolo(session_key: str) -> None:
-    """Enable YOLO bypass for a single session key."""
+def session_authority_fence_is_current(
+    session_key: str,
+    authority_generation: int,
+    capability_epoch_sha256: str = "",
+) -> bool:
+    """Mechanically validate one captured local-authority fence."""
+
+    session_key = str(session_key or "")
+    epoch_sha256 = str(capability_epoch_sha256 or "")
+    with _lock:
+        return bool(
+            int(authority_generation)
+            == _current_authority_generation_locked(session_key)
+            and not (
+                epoch_sha256
+                and (session_key, epoch_sha256)
+                in _retired_session_capability_epochs
+            )
+        )
+
+
+def persist_session_approval_decision(
+    session_key: str,
+    pattern_keys: list[str] | tuple[str, ...] | set[str],
+    *,
+    expected_generation: int | None = None,
+    permanent_pattern_keys: list[str] | tuple[str, ...] | set[str] = (),
+) -> bool:
+    """Atomically persist one human decision under its captured fence.
+
+    Session and permanent writes share the same lock/check so a boundary can
+    occur entirely before or entirely after the decision, never between the
+    generation check and a surviving authority write.
+    """
+
+    session_key = str(session_key or "")
+    clean_patterns = tuple(str(value) for value in pattern_keys if str(value))
+    clean_permanent = tuple(
+        str(value) for value in permanent_pattern_keys if str(value)
+    )
+    if not session_key or not clean_patterns:
+        return False
+    epoch_sha256 = _observed_capability_epoch_sha256()
+    with _lock:
+        current_generation = _current_authority_generation_locked(session_key)
+        if (
+            expected_generation is not None
+            and int(expected_generation) != current_generation
+        ) or (
+            epoch_sha256
+            and (session_key, epoch_sha256)
+            in _retired_session_capability_epochs
+        ):
+            return False
+        session_approvals = _session_approved.setdefault(session_key, set())
+        for pattern_key in clean_patterns:
+            session_approvals.add(pattern_key)
+            _session_approved_generations[(session_key, pattern_key)] = (
+                current_generation
+            )
+        _permanent_approved.update(clean_permanent)
+        return True
+
+
+def approve_session(
+    session_key: str,
+    pattern_key: str,
+    *,
+    expected_generation: int | None = None,
+) -> bool:
+    """Approve a pattern only if its captured boundary generation is current."""
+
+    return persist_session_approval_decision(
+        session_key,
+        (pattern_key,),
+        expected_generation=expected_generation,
+    )
+
+
+def enable_session_yolo(
+    session_key: str,
+    *,
+    expected_generation: int | None = None,
+) -> bool:
+    """Enable YOLO only for the captured boundary generation."""
+
     if not session_key:
-        return
+        return False
+    epoch_sha256 = _observed_capability_epoch_sha256()
     with _lock:
+        current_generation = _current_authority_generation_locked(session_key)
+        if (
+            expected_generation is not None
+            and int(expected_generation) != current_generation
+        ) or (
+            epoch_sha256
+            and (session_key, epoch_sha256)
+            in _retired_session_capability_epochs
+        ):
+            return False
         _session_yolo.add(session_key)
+        _session_yolo_generations[session_key] = current_generation
+        return True
 
 
-def disable_session_yolo(session_key: str) -> None:
+def disable_session_yolo(
+    session_key: str,
+    *,
+    expected_generation: int | None = None,
+) -> bool:
     """Disable YOLO bypass for a single session key."""
     if not session_key:
-        return
+        return False
     with _lock:
+        if (
+            expected_generation is not None
+            and int(expected_generation)
+            != _current_authority_generation_locked(session_key)
+        ):
+            return False
         _session_yolo.discard(session_key)
+        _session_yolo_generations.pop(session_key, None)
+        return True
 
 
-def clear_session(session_key: str) -> None:
-    """Remove all approval and yolo state for a given session."""
+def revoke_session_capabilities_durably(
+    session_key: str,
+    *,
+    reason: str = "gateway_session_boundary",
+) -> dict:
+    """Durably tombstone the exact runtime-bound session epoch.
+
+    The caller must first bind the old trusted SessionContext.  No session or
+    epoch value is accepted as payload authority: both are re-derived from that
+    isolated context and the raw session key is checked against its digest.
+    """
+
+    session_key = str(session_key or "").strip()
+    if not session_key:
+        raise ValueError("session_key is required for durable capability revoke")
+    reason = str(reason or "gateway_session_boundary").strip()[:1000]
+    if not reason:
+        raise ValueError("durable capability revoke reason is required")
+
+    writer_boundary_required = _writer_boundary_policy_required()
+    try:
+        from gateway.canonical_writer_boundary import (
+            canonical_writer_call,
+            trusted_runtime_envelope,
+            writer_boundary_configured,
+        )
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        use_privileged_writer = writer_boundary_configured()
+    except Exception as exc:
+        if writer_boundary_required:
+            raise RuntimeError(
+                "privileged Canonical writer is required for session rotation"
+            ) from exc
+        return {
+            "success": True,
+            "writer_required": False,
+            "scope_revoked": False,
+            "revoked": 0,
+        }
+
+    if not use_privileged_writer:
+        if writer_boundary_required:
+            raise RuntimeError(
+                "privileged Canonical writer is required for session rotation"
+            )
+        return {
+            "success": True,
+            "writer_required": False,
+            "scope_revoked": False,
+            "revoked": 0,
+        }
+
+    session_hash, capability_epoch_sha256 = _validated_writer_capability_binding(
+        session_key,
+        trusted_runtime_envelope(),
+    )
+    result = canonical_writer_call(
+        CanonicalWriterOperation.CAPABILITY_REVOKE_SESSION.value,
+        {"reason": reason},
+        idempotency_key=(
+            "capability-revoke-session:"
+            f"{session_hash}:{capability_epoch_sha256}"
+        ),
+    )
+    if (
+        result.get("success") is not True
+        or result.get("session_key_sha256") != session_hash
+        or result.get("capability_epoch_sha256") != capability_epoch_sha256
+        or result.get("scope_type") != "session"
+        or result.get("scope_revoked") is not True
+    ):
+        raise RuntimeError(
+            "privileged writer did not confirm the exact session-epoch tombstone"
+        )
+    return dict(result)
+
+
+def clear_session_local(
+    session_key: str,
+    *,
+    retire_capability_epoch_sha256: str = "",
+) -> None:
+    """Atomically fence and clear local authority for one routing key."""
+
+    session_key = str(session_key or "")
     if not session_key:
         return
+    retired_epoch = str(retire_capability_epoch_sha256 or "").strip()
     with _lock:
+        _session_authority_generations[session_key] = (
+            _current_authority_generation_locked(session_key) + 1
+        )
+        if retired_epoch:
+            _retired_session_capability_epochs.add((session_key, retired_epoch))
         _session_approved.pop(session_key, None)
+        for approval_key in tuple(_session_approved_generations):
+            if approval_key[0] == session_key:
+                _session_approved_generations.pop(approval_key, None)
         _plan_capabilities.pop(session_key, None)
+        for consume_key in tuple(_plan_capability_consume_locks):
+            if consume_key[0] == session_key:
+                _plan_capability_consume_locks.pop(consume_key, None)
         _session_yolo.discard(session_key)
+        _session_yolo_generations.pop(session_key, None)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -1558,12 +1811,42 @@ def clear_session(session_key: str) -> None:
         entry.event.set()
 
 
+def clear_session(session_key: str) -> None:
+    """Best-effort durable revoke plus unconditional local session cleanup.
+
+    SessionStore epoch rotations use ``revoke_session_capabilities_durably`` as
+    a mandatory pre-publication gate and then call ``clear_session_local``.
+    This compatibility helper remains best-effort for non-routing cleanup paths.
+    """
+
+    if not session_key:
+        return
+    try:
+        revoke_session_capabilities_durably(
+            session_key,
+            reason="gateway_session_cleared",
+        )
+    except Exception as exc:
+        logger.warning("Privileged session capability revoke failed: %s", exc)
+    clear_session_local(session_key)
+
+
 def is_session_yolo_enabled(session_key: str) -> bool:
     """Return True when YOLO bypass is enabled for a specific session."""
     if not session_key:
         return False
+    observed_epoch = _observed_capability_epoch_sha256()
     with _lock:
-        return session_key in _session_yolo
+        return bool(
+            session_key in _session_yolo
+            and _session_yolo_generations.get(session_key)
+            == _current_authority_generation_locked(session_key)
+            and not (
+                observed_epoch
+                and (session_key, observed_epoch)
+                in _retired_session_capability_epochs
+            )
+        )
 
 
 def is_current_session_yolo_enabled() -> bool:
@@ -1579,9 +1862,21 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
     acceptable substitute for owner approval of an exact plan.
     """
     aliases = _approval_key_aliases(pattern_key)
+    observed_epoch = _observed_capability_epoch_sha256()
     with _lock:
+        if observed_epoch and (
+            session_key,
+            observed_epoch,
+        ) in _retired_session_capability_epochs:
+            return False
         session_approvals = _session_approved.get(session_key, set())
-        return any(alias in session_approvals for alias in aliases)
+        current_generation = _current_authority_generation_locked(session_key)
+        return any(
+            alias in session_approvals
+            and _session_approved_generations.get((session_key, alias))
+            == current_generation
+            for alias in aliases
+        )
 
 
 def _observed_session_value(name: str) -> str:
@@ -1686,7 +1981,52 @@ def _canonical_brain_required() -> bool:
     )
 
 
-def _canonical_active_plan_matches(*, case_id: str, plan_id: str) -> bool:
+def _writer_boundary_policy_required() -> bool:
+    """Read only the static writer-boundary enablement policy.
+
+    This deliberately does not probe code, the Unix socket, credentials, or
+    service health. Once enabled, those failures must block capability use
+    instead of silently falling back to process-local authority.
+    """
+    from gateway.canonical_writer_boundary import writer_boundary_policy_required
+
+    return writer_boundary_policy_required()
+
+
+def _validated_writer_capability_binding(
+    session_key: str,
+    runtime_envelope: dict,
+) -> tuple[str, str]:
+    """Return exact trusted session/epoch digests or fail closed.
+
+    The routing session key is deterministic and survives ``/new``. Durable
+    mutation authority therefore also requires the gateway-generated
+    capability epoch, which rotates at every routing/security boundary.
+    """
+
+    expected_session_hash = hashlib.sha256(
+        str(session_key or "").encode("utf-8")
+    ).hexdigest()
+    if runtime_envelope.get("session_key_sha256") != expected_session_hash:
+        raise PermissionError(
+            "plan capability session does not match the runtime-observed session"
+        )
+    capability_epoch_sha256 = str(
+        runtime_envelope.get("capability_epoch_sha256") or ""
+    ).strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", capability_epoch_sha256):
+        raise PermissionError(
+            "plan capability requires a trusted routing-boundary epoch"
+        )
+    return expected_session_hash, capability_epoch_sha256
+
+
+def _canonical_active_plan_matches(
+    *,
+    case_id: str,
+    plan_id: str,
+    plan_revision: int | None = None,
+) -> bool:
     """Mechanically verify the exact active plan in Canonical Brain.
 
     No free-form field is interpreted here.  Authority is bound only to the
@@ -1696,7 +2036,11 @@ def _canonical_active_plan_matches(*, case_id: str, plan_id: str) -> bool:
     try:
         from tools.canonical_brain_tool import canonical_active_plan_matches
 
-        return bool(canonical_active_plan_matches(case_id=case_id, plan_id=plan_id))
+        return bool(canonical_active_plan_matches(
+            case_id=case_id,
+            plan_id=plan_id,
+            plan_revision=plan_revision,
+        ))
     except Exception as exc:
         logger.warning("Canonical Brain active-plan validation failed: %s", exc)
         return False
@@ -1749,6 +2093,7 @@ def grant_plan_capability(
     *,
     session_key: str,
     plan_id: str,
+    plan_revision: int | None = None,
     exact_commands: list[str],
     approved_by_user_id: str,
     ttl_seconds: int = 3600,
@@ -1780,6 +2125,18 @@ def grant_plan_capability(
     canonical_case_id = str(canonical_case_id or "").strip()
     if not session_key or not plan_id:
         raise ValueError("session_key and plan_id are required")
+    authority_generation, authority_epoch_sha256 = (
+        capture_session_authority_fence(session_key)
+    )
+    if (
+        plan_revision is not None
+        and (
+            isinstance(plan_revision, bool)
+            or not isinstance(plan_revision, int)
+            or plan_revision < 1
+        )
+    ):
+        raise ValueError("plan_revision must be a positive integer")
     if canonical_case_id and not canonical_case_id.startswith("case:"):
         raise ValueError("canonical_case_id must start with case:")
     if source_refs is not None and not isinstance(source_refs, dict):
@@ -1790,7 +2147,12 @@ def grant_plan_capability(
     # Gateway-scoped dangerous plan authority always depends on Canonical
     # Task Workspace in this fork. A transient config/helper outage must not
     # downgrade a live messaging turn into a local-only grant.
-    canonical_required = _canonical_brain_required() or bool(observed_platform)
+    writer_boundary_required = _writer_boundary_policy_required()
+    canonical_required = (
+        writer_boundary_required
+        or _canonical_brain_required()
+        or bool(observed_platform)
+    )
     runtime_scoped = (
         canonical_required
         or bool(canonical_case_id)
@@ -1816,13 +2178,19 @@ def grant_plan_capability(
         raise PermissionError(
             "Canonical Brain plan capability requires an exact canonical_case_id"
         )
+    if canonical_required and plan_revision is None:
+        raise PermissionError(
+            "Canonical Brain plan capability requires an exact plan_revision"
+        )
     if canonical_required and not _canonical_active_plan_matches(
         case_id=canonical_case_id,
         plan_id=plan_id,
+        plan_revision=plan_revision,
     ):
         raise PermissionError(
-            "Canonical Brain case does not contain the exact active plan_id"
+            "Canonical Brain case does not contain the exact active plan_id/revision"
         )
+    effective_plan_revision = plan_revision or 1
     if not isinstance(exact_commands, list) or not 1 <= len(exact_commands) <= 64:
         raise ValueError("exact_commands must contain 1..64 commands")
     ttl_seconds = max(60, min(int(ttl_seconds), 8 * 3600))
@@ -1847,21 +2215,123 @@ def grant_plan_capability(
         observed_user_id=observed_user_id,
         observed_message_id=observed_message_id,
     )
+    try:
+        from gateway.canonical_writer_boundary import (
+            canonical_writer_call,
+            trusted_runtime_envelope,
+            writer_boundary_configured,
+        )
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        use_privileged_writer = writer_boundary_configured()
+    except Exception:
+        use_privileged_writer = False
+    if writer_boundary_required and not use_privileged_writer:
+        raise RuntimeError(
+            "privileged Canonical writer is required but unavailable"
+        )
+    if canonical_required and use_privileged_writer:
+        runtime_envelope = trusted_runtime_envelope()
+        expected_session_hash, capability_epoch_sha256 = (
+            _validated_writer_capability_binding(
+                session_key,
+                runtime_envelope,
+            )
+        )
+        expires_at = now + ttl_seconds
+        approval_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            (
+                "canonical-plan-approval:"
+                f"{approval_source_sha256}:{canonical_case_id}:{plan_id}:"
+                f"revision:{effective_plan_revision}:"
+                f"{expected_session_hash}:{capability_epoch_sha256}"
+            ),
+        ))
+        result = canonical_writer_call(
+            CanonicalWriterOperation.CAPABILITY_GRANT.value,
+            {
+                "approval_id": approval_id,
+                "case_id": canonical_case_id,
+                "plan_id": plan_id,
+                "plan_revision": effective_plan_revision,
+                "approval_source_sha256": approval_source_sha256,
+                "command_hashes": sorted(command_uses),
+                "expires_at": dt.datetime.fromtimestamp(
+                    expires_at,
+                    dt.timezone.utc,
+                ).replace(microsecond=0).isoformat(),
+                "max_uses": max_uses_per_command,
+            },
+            idempotency_key=(
+                "capability-grant:"
+                f"{approval_source_sha256}:{plan_id}:"
+                f"revision:{effective_plan_revision}:{capability_epoch_sha256}"
+            ),
+        )
+        if (
+            result.get("success") is not True
+            or result.get("state") != "granted"
+            or result.get("authority_active") is not True
+            or result.get("session_key_sha256") != expected_session_hash
+            or result.get("capability_epoch_sha256")
+                != capability_epoch_sha256
+            or result.get("approved_by_user_id") != approved_by_user_id
+            or result.get("plan_revision") != effective_plan_revision
+        ):
+            raise RuntimeError(
+                "privileged Canonical writer did not durably grant the capability:"
+                + str(
+                    result.get("error_code")
+                    or result.get("state")
+                    or "grant_blocked"
+                )
+            )
+        return {
+            **result,
+            "approval_id": str(result.get("approval_id") or approval_id),
+            "plan_id": plan_id,
+            "plan_revision": effective_plan_revision,
+            "state": str(result["state"]),
+            "approved_by_user_id": approved_by_user_id,
+            "session_key_sha256": expected_session_hash,
+            "capability_epoch_sha256": capability_epoch_sha256,
+            "command_hashes": sorted(command_uses),
+            "command_count": len(command_uses),
+            "expires_at_epoch": expires_at,
+            "expires_in_seconds": ttl_seconds,
+            "max_uses_per_command": max_uses_per_command,
+            "approval_source_sha256": approval_source_sha256,
+            "canonical_readback_verified": True,
+        }
     with _lock:
         existing = _plan_capabilities.get(session_key, {}).get(plan_id)
         if (
             existing
+            and authority_generation
+            == _current_authority_generation_locked(session_key)
+            and not (
+                authority_epoch_sha256
+                and (session_key, authority_epoch_sha256)
+                in _retired_session_capability_epochs
+            )
+            and int(existing.get("_authority_generation", -1))
+            == authority_generation
+            and str(existing.get("_capability_epoch_sha256") or "")
+            == authority_epoch_sha256
             and float(existing.get("expires_at") or 0) > now
             and existing.get("approved_by_user_id") == approved_by_user_id
             and set((existing.get("command_uses") or {}).keys()) == set(command_uses)
             and int(existing.get("max_uses_per_command") or 0) == max_uses_per_command
             and str(existing.get("canonical_case_id") or "") == canonical_case_id
+            and int(existing.get("plan_revision") or 0) == effective_plan_revision
             and existing.get("approval_source_sha256") == approval_source_sha256
             and existing.get("durably_granted") is True
         ):
             return {
                 "approval_id": existing["approval_id"],
                 "plan_id": plan_id,
+                "plan_revision": effective_plan_revision,
                 "state": "granted",
                 "approved_by_user_id": approved_by_user_id,
                 "session_key_sha256": existing["session_key_sha256"],
@@ -1887,6 +2357,7 @@ def grant_plan_capability(
     capability = {
         "approval_id": approval_id,
         "plan_id": plan_id,
+        "plan_revision": effective_plan_revision,
         "approved_by_user_id": approved_by_user_id,
         "session_key_sha256": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
         "expires_at": expires_at,
@@ -1897,18 +2368,43 @@ def grant_plan_capability(
         "canonical_case_id": canonical_case_id,
         "source_refs": authority_source_refs,
         "durably_granted": not canonical_case_id,
+        "_authority_generation": authority_generation,
+        "_capability_epoch_sha256": authority_epoch_sha256,
     }
+    authority_stale = False
     with _lock:
-        session_plans = _plan_capabilities.setdefault(session_key, {})
-        previous_capability = session_plans.get(plan_id)
-        session_plans[plan_id] = capability
-        if approval_source_reservation and not canonical_case_id:
-            _plan_approval_source_states[approval_source_sha256] = (
-                f"used:{approval_id}"
+        authority_stale = bool(
+            authority_generation
+            != _current_authority_generation_locked(session_key)
+            or (
+                authority_epoch_sha256
+                and (session_key, authority_epoch_sha256)
+                in _retired_session_capability_epochs
             )
+        )
+        if authority_stale:
+            previous_capability = None
+        else:
+            session_plans = _plan_capabilities.setdefault(session_key, {})
+            previous_capability = session_plans.get(plan_id)
+            session_plans[plan_id] = capability
+            if approval_source_reservation and not canonical_case_id:
+                _plan_approval_source_states[approval_source_sha256] = (
+                    f"used:{approval_id}"
+                )
+    if authority_stale:
+        if approval_source_reservation:
+            _release_plan_approval_source(
+                approval_source_sha256,
+                approval_source_reservation,
+            )
+        raise PermissionError(
+            "plan capability session authority rotated before local grant"
+        )
     receipt = {
         "approval_id": approval_id,
         "plan_id": plan_id,
+        "plan_revision": effective_plan_revision,
         "state": "granted",
         "approved_by_user_id": approved_by_user_id,
         "session_key_sha256": capability["session_key_sha256"],
@@ -1974,7 +2470,93 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
     digest = hashlib.sha256(str(command or "").strip().encode("utf-8")).hexdigest()
     observed_user_id = _observed_session_user_id()
     observed_platform = _observed_session_platform()
-    canonical_required = _canonical_brain_required() or bool(observed_platform)
+    try:
+        authority_generation, authority_epoch_sha256 = (
+            capture_session_authority_fence(session_key)
+        )
+    except PermissionError:
+        logger.warning(
+            "Plan capability rejected: calling session authority epoch is retired"
+        )
+        return None
+    writer_boundary_required = _writer_boundary_policy_required()
+    canonical_required = (
+        writer_boundary_required
+        or _canonical_brain_required()
+        or bool(observed_platform)
+    )
+
+    try:
+        from gateway.canonical_writer_boundary import (
+            canonical_writer_call,
+            trusted_runtime_envelope,
+            writer_boundary_configured,
+        )
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        use_privileged_writer = writer_boundary_configured()
+    except Exception:
+        use_privileged_writer = False
+    if writer_boundary_required and not use_privileged_writer:
+        logger.warning(
+            "Privileged plan capability rejected: required writer unavailable"
+        )
+        return None
+    if canonical_required and use_privileged_writer:
+        if observed_platform != "discord" or not observed_user_id:
+            logger.warning(
+                "Privileged plan capability rejected: current Discord owner identity is missing"
+            )
+            return None
+        runtime_envelope = trusted_runtime_envelope()
+        if str(runtime_envelope.get("user_id") or "") != observed_user_id:
+            logger.warning(
+                "Privileged plan capability rejected: runtime owner identity mismatch"
+            )
+            return None
+        try:
+            _expected_session_hash, capability_epoch_sha256 = (
+                _validated_writer_capability_binding(
+                    session_key,
+                    runtime_envelope,
+                )
+            )
+        except PermissionError:
+            logger.warning(
+                "Privileged plan capability rejected: runtime session/epoch mismatch"
+            )
+            return None
+        consume_idempotency_key = f"capability-consume:{uuid.uuid4()}"
+        try:
+            result = canonical_writer_call(
+                CanonicalWriterOperation.CAPABILITY_CONSUME.value,
+                {
+                    "command_sha256": digest,
+                    "idempotency_key": consume_idempotency_key,
+                },
+                idempotency_key=consume_idempotency_key,
+            )
+        except Exception as exc:
+            logger.warning("Privileged plan capability consume failed: %s", exc)
+            return None
+        if (
+            result.get("success") is not True
+            or result.get("authorized") is not True
+            or result.get("capability_epoch_sha256")
+                != capability_epoch_sha256
+            or result.get("command_sha256") != digest
+            or result.get("approved_by_user_id") != observed_user_id
+            or isinstance(result.get("plan_revision"), bool)
+            or not isinstance(result.get("plan_revision"), int)
+            or int(result["plan_revision"]) < 1
+        ):
+            logger.warning(
+                "Privileged plan capability was not authorized: %s",
+                result.get("error_code") or "not_authorized",
+            )
+            return None
+        plan_id = str(result.get("plan_id") or "").strip()
+        return plan_id or None
 
     with _lock:
         plans = _plan_capabilities.get(session_key, {})
@@ -1985,6 +2567,10 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
             plan_id
             for plan_id, capability in plans.items()
             if capability.get("durably_granted") is True
+            and int(capability.get("_authority_generation", -1))
+            == authority_generation
+            and str(capability.get("_capability_epoch_sha256") or "")
+            == authority_epoch_sha256
             and int((capability.get("command_uses") or {}).get(digest, 0)) > 0
         ]
 
@@ -1995,6 +2581,20 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
                 capability = _plan_capabilities.get(session_key, {}).get(plan_id)
                 if not capability or capability.get("durably_granted") is not True:
                     continue
+                if (
+                    authority_generation
+                    != _current_authority_generation_locked(session_key)
+                    or (
+                        authority_epoch_sha256
+                        and (session_key, authority_epoch_sha256)
+                        in _retired_session_capability_epochs
+                    )
+                    or int(capability.get("_authority_generation", -1))
+                    != authority_generation
+                    or str(capability.get("_capability_epoch_sha256") or "")
+                    != authority_epoch_sha256
+                ):
+                    continue
                 if float(capability.get("expires_at") or 0) <= time.time():
                     _plan_capabilities.get(session_key, {}).pop(plan_id, None)
                     continue
@@ -2002,6 +2602,7 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
                     continue
                 approved_by = str(capability.get("approved_by_user_id") or "")
                 canonical_case_id = str(capability.get("canonical_case_id") or "")
+                plan_revision = int(capability.get("plan_revision") or 0)
 
             runtime_scoped = (
                 canonical_required
@@ -2030,6 +2631,7 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
                 if not canonical_case_id or not _canonical_active_plan_matches(
                     case_id=canonical_case_id,
                     plan_id=plan_id,
+                    plan_revision=plan_revision,
                 ):
                     logger.warning(
                         "Plan capability %s rejected: no exact active Canonical Brain plan",
@@ -2048,6 +2650,13 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
                 )
                 if (
                     capability.get("durably_granted") is not True
+                    or authority_generation
+                    != _current_authority_generation_locked(session_key)
+                    or (
+                        authority_epoch_sha256
+                        and (session_key, authority_epoch_sha256)
+                        in _retired_session_capability_epochs
+                    )
                     or float(capability.get("expires_at") or 0) <= time.time()
                     or remaining_before <= 0
                 ):
@@ -2059,6 +2668,8 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
                 receipt = {
                     "approval_id": capability["approval_id"],
                     "plan_id": plan_id,
+                    "plan_revision": plan_revision,
+                    "approved_by_user_id": approved_by,
                     "state": "authorized",
                     "session_key_sha256": capability["session_key_sha256"],
                     "command_sha256": digest,
@@ -2102,9 +2713,75 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
 
 def revoke_plan_capability(session_key: str, plan_id: str) -> bool:
     """Remove one exact plan capability from its session."""
+    writer_boundary_required = _writer_boundary_policy_required()
+    try:
+        from gateway.canonical_writer_boundary import (
+            canonical_writer_call,
+            trusted_runtime_envelope,
+            writer_boundary_configured,
+        )
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        use_privileged_writer = writer_boundary_configured()
+    except Exception:
+        use_privileged_writer = False
+    if writer_boundary_required and not use_privileged_writer:
+        logger.warning(
+            "Privileged plan capability revoke blocked: required writer unavailable"
+        )
+        return False
+    if use_privileged_writer:
+        try:
+            expected_session_hash, capability_epoch_sha256 = (
+                _validated_writer_capability_binding(
+                    session_key,
+                    trusted_runtime_envelope(),
+                )
+            )
+        except PermissionError:
+            return False
+        try:
+            result = canonical_writer_call(
+                CanonicalWriterOperation.CAPABILITY_REVOKE.value,
+                {
+                    "plan_id": str(plan_id or ""),
+                    "reason": "plan_terminal_or_superseded",
+                },
+                idempotency_key=(
+                    "capability-revoke:"
+                    f"{expected_session_hash}:{capability_epoch_sha256}:{plan_id}"
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Privileged plan capability revoke failed: %s", exc)
+            return False
+        return bool(
+            result.get("success") is True
+            and result.get("capability_epoch_sha256")
+                == capability_epoch_sha256
+            and int(result.get("revoked") or 0) > 0
+        )
+    try:
+        authority_generation, authority_epoch_sha256 = (
+            capture_session_authority_fence(session_key)
+        )
+    except PermissionError:
+        return False
     with _lock:
         plans = _plan_capabilities.get(str(session_key or ""), {})
-        return plans.pop(str(plan_id or ""), None) is not None
+        capability = plans.get(str(plan_id or ""))
+        if (
+            not capability
+            or authority_generation
+            != _current_authority_generation_locked(str(session_key or ""))
+            or int(capability.get("_authority_generation", -1))
+            != authority_generation
+            or str(capability.get("_capability_epoch_sha256") or "")
+            != authority_epoch_sha256
+        ):
+            return False
+        plans.pop(str(plan_id or ""), None)
+        return True
 
 
 def approve_permanent(pattern_key: str):
@@ -2587,7 +3264,11 @@ def _run_approval_gate(
                 "allow_permanent": True,
             }
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface="gateway"
+                session_key,
+                notify_cb,
+                approval_data,
+                surface="gateway",
+                include_authority_fence=True,
             )
             if decision.get("notify_failed"):
                 return {
@@ -2601,7 +3282,10 @@ def _run_approval_gate(
             deny_reason = decision.get("reason")
 
             if not resolved or choice is None or choice == "deny":
-                if not resolved:
+                if decision.get("authority_stale"):
+                    reason = "was invalidated by a session boundary"
+                    timeout_addendum = " Old approval cannot authorize the new session."
+                elif not resolved:
                     reason = "timed out without user response"
                     timeout_addendum = " Silence is not consent."
                 else:
@@ -2623,12 +3307,44 @@ def _run_approval_gate(
                     "user_consent": False,
                 }
 
-            if choice == "session":
-                approve_session(session_key, pattern_key)
-            elif choice == "always":
-                approve_session(session_key, pattern_key)
-                approve_permanent(pattern_key)
-                save_permanent_allowlist(_permanent_approved)
+            if choice in {"session", "always"}:
+                persisted = persist_session_approval_decision(
+                    session_key,
+                    (pattern_key,),
+                    expected_generation=decision["authority_generation"],
+                    permanent_pattern_keys=(pattern_key,)
+                    if choice == "always"
+                    else (),
+                )
+                if not persisted:
+                    return {
+                        "approved": False,
+                        "message": (
+                            "BLOCKED: Approval was invalidated by a session "
+                            "boundary and cannot authorize the successor session."
+                        ),
+                        "pattern_key": pattern_key,
+                        "description": description,
+                        "user_consent": False,
+                    }
+                if choice == "always":
+                    with _lock:
+                        permanent_snapshot = set(_permanent_approved)
+                    save_permanent_allowlist(permanent_snapshot)
+            elif not session_authority_fence_is_current(
+                session_key,
+                decision["authority_generation"],
+                decision.get("capability_epoch_sha256", ""),
+            ):
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: One-shot approval expired at a session boundary."
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                    "user_consent": False,
+                }
             return {"approved": True, "message": None}
 
         # No notify callback (e.g. API server without an attached chat):
@@ -2878,7 +3594,8 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
-                            *, surface: str = "gateway") -> dict:
+                            *, surface: str = "gateway",
+                            include_authority_fence: bool = False) -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
     thread until the request is resolved or the gateway approval timeout
     elapses — firing pre/post approval hooks and cleaning up the queue entry.
@@ -2897,8 +3614,29 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    entry = _ApprovalEntry(approval_data)
+    capability_epoch_sha256 = _observed_capability_epoch_sha256()
     with _lock:
+        authority_generation = _current_authority_generation_locked(session_key)
+        if capability_epoch_sha256 and (
+            session_key,
+            capability_epoch_sha256,
+        ) in _retired_session_capability_epochs:
+            stale_result = {
+                "resolved": True,
+                "choice": "deny",
+            }
+            if include_authority_fence:
+                stale_result.update({
+                    "authority_stale": True,
+                    "authority_generation": authority_generation,
+                    "capability_epoch_sha256": capability_epoch_sha256,
+                })
+            return stale_result
+        entry = _ApprovalEntry(
+            approval_data,
+            authority_generation=authority_generation,
+            capability_epoch_sha256=capability_epoch_sha256,
+        )
         _gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry() -> None:
@@ -2927,7 +3665,17 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()
-        return {"resolved": False, "choice": None, "notify_failed": True}
+        notify_failure = {
+            "resolved": False,
+            "choice": None,
+            "notify_failed": True,
+        }
+        if include_authority_fence:
+            notify_failure.update({
+                "authority_generation": entry.authority_generation,
+                "capability_epoch_sha256": entry.capability_epoch_sha256,
+            })
+        return notify_failure
 
     # Block until the user responds or timeout (default 5 min). Poll in short
     # slices so we can fire activity heartbeats every ~10s to the agent's
@@ -2978,6 +3726,17 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _drop_entry()
 
     choice = entry.result
+    authority_stale = not session_authority_fence_is_current(
+        session_key,
+        entry.authority_generation,
+        entry.capability_epoch_sha256,
+    )
+    if authority_stale:
+        # A resolver can pop the entry immediately before boundary cleanup.
+        # Its later signal must not turn that detached old waiter into consent
+        # under the successor conversation generation.
+        resolved = True
+        choice = "deny"
     # Normalize outcome for the post hook. Unresolved (timeout) and None both
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
@@ -2992,7 +3751,18 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice, "reason": entry.reason}
+    result = {
+        "resolved": resolved,
+        "choice": choice,
+        "reason": entry.reason,
+    }
+    if include_authority_fence:
+        result.update({
+            "authority_stale": authority_stale,
+            "authority_generation": entry.authority_generation,
+            "capability_epoch_sha256": entry.capability_epoch_sha256,
+        })
+    return result
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -3242,7 +4012,11 @@ def check_all_command_guards(command: str, env_type: str,
                 "allow_permanent": not has_tirith,
             }
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface="gateway"
+                session_key,
+                notify_cb,
+                approval_data,
+                surface="gateway",
+                include_authority_fence=True,
             )
             if decision.get("notify_failed"):
                 return {
@@ -3261,7 +4035,11 @@ def check_all_command_guards(command: str, env_type: str,
                 # that names the agent's most common evasion paths (retry,
                 # rephrase, achieve the same outcome via a different command).
                 # See issue #24912 for the original incident.
-                if not resolved:
+                if decision.get("authority_stale"):
+                    reason = "was invalidated by a session boundary"
+                    timeout_addendum = " Old approval cannot authorize the new session."
+                    outcome = "boundary_invalidated"
+                elif not resolved:
                     reason = "timed out without user response"
                     timeout_addendum = " Silence is not consent."
                     outcome = "timeout"
@@ -3293,16 +4071,51 @@ def check_all_command_guards(command: str, env_type: str,
                     "deny_reason": deny_reason,
                 }
 
-            # User approved — persist based on scope (same logic as CLI)
-            for key, _, is_tirith in warnings:
-                if choice == "session" or (choice == "always" and is_tirith):
-                    approve_session(session_key, key)
-                elif choice == "always":
-                    approve_session(session_key, key)
-                    approve_permanent(key)
-                    save_permanent_allowlist(_permanent_approved)
-                # choice == "once": no persistence — command allowed this
-                # single time only, matching the CLI's behavior.
+            # User approved — commit the whole decision under one generation
+            # check. A boundary cannot split session and permanent writes.
+            if choice in {"session", "always"}:
+                permanent_keys = (
+                    [key for key, _, is_tirith in warnings if not is_tirith]
+                    if choice == "always"
+                    else []
+                )
+                persisted = persist_session_approval_decision(
+                    session_key,
+                    all_keys,
+                    expected_generation=decision["authority_generation"],
+                    permanent_pattern_keys=permanent_keys,
+                )
+                if not persisted:
+                    return {
+                        "approved": False,
+                        "message": (
+                            "BLOCKED: Approval was invalidated by a session "
+                            "boundary and cannot authorize the successor session."
+                        ),
+                        "pattern_key": primary_key,
+                        "description": combined_desc,
+                        "outcome": "boundary_invalidated",
+                        "user_consent": False,
+                    }
+                if permanent_keys:
+                    with _lock:
+                        permanent_snapshot = set(_permanent_approved)
+                    save_permanent_allowlist(permanent_snapshot)
+            elif not session_authority_fence_is_current(
+                session_key,
+                decision["authority_generation"],
+                decision.get("capability_epoch_sha256", ""),
+            ):
+                return {
+                    "approved": False,
+                    "message": (
+                        "BLOCKED: One-shot approval expired at a session boundary."
+                    ),
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                    "outcome": "boundary_invalidated",
+                    "user_consent": False,
+                }
 
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
@@ -3516,7 +4329,11 @@ def check_execute_code_guard(code: str, env_type: str,
         "description": display_description,
     }
     decision = _await_gateway_decision(
-        session_key, notify_cb, approval_data, surface="gateway"
+        session_key,
+        notify_cb,
+        approval_data,
+        surface="gateway",
+        include_authority_fence=True,
     )
     if decision.get("notify_failed"):
         return {
@@ -3534,8 +4351,12 @@ def check_execute_code_guard(code: str, env_type: str,
     deny_reason = decision.get("reason")
 
     if not resolved or choice is None or choice == "deny":
-        reason = "timed out without user response" if not resolved else "denied by user"
-        addendum = " Silence is not consent." if not resolved else ""
+        if decision.get("authority_stale"):
+            reason = "was invalidated by a session boundary"
+            addendum = " Old approval cannot authorize the new session."
+        else:
+            reason = "timed out without user response" if not resolved else "denied by user"
+            addendum = " Silence is not consent." if not resolved else ""
         reason_addendum = ""
         if resolved and choice == "deny" and deny_reason:
             reason_addendum = f' Reason given by the user: "{deny_reason}".'
@@ -3555,12 +4376,42 @@ def check_execute_code_guard(code: str, env_type: str,
         }
 
     # Approved — persist based on scope (same logic as check_all_command_guards).
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+    if choice in {"session", "always"}:
+        persisted = persist_session_approval_decision(
+            session_key,
+            (pattern_key,),
+            expected_generation=decision["authority_generation"],
+            permanent_pattern_keys=(pattern_key,) if choice == "always" else (),
+        )
+        if not persisted:
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code approval was invalidated by a "
+                    "session boundary."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "boundary_invalidated",
+                "user_consent": False,
+            }
+        if choice == "always":
+            with _lock:
+                permanent_snapshot = set(_permanent_approved)
+            save_permanent_allowlist(permanent_snapshot)
+    elif not session_authority_fence_is_current(
+        session_key,
+        decision["authority_generation"],
+        decision.get("capability_epoch_sha256", ""),
+    ):
+        return {
+            "approved": False,
+            "message": "BLOCKED: One-shot execute_code approval expired at a session boundary.",
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "boundary_invalidated",
+            "user_consent": False,
+        }
     # choice == "once": no persistence — approval lasts this single call only.
 
     return {"approved": True, "message": None,
@@ -3617,7 +4468,11 @@ def request_elicitation_consent(
         }
         try:
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface=surface,
+                session_key,
+                notify_cb,
+                approval_data,
+                surface=surface,
+                include_authority_fence=True,
             )
         except Exception as exc:
             logger.error(
@@ -3625,12 +4480,16 @@ def request_elicitation_consent(
             )
             return "decline"
 
-        if decision.get("notify_failed"):
+        if decision.get("notify_failed") or decision.get("authority_stale"):
             return "decline"
         if not decision.get("resolved"):
             return "cancel"
         choice = decision.get("choice")
-        if choice in ("once", "session", "always"):
+        if choice in ("once", "session", "always") and session_authority_fence_is_current(
+            session_key,
+            decision["authority_generation"],
+            decision.get("capability_epoch_sha256", ""),
+        ):
             return "accept"
         return "decline"
 

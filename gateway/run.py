@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -41,7 +42,7 @@ import threading
 import time
 import sqlite3
 from collections import OrderedDict
-from contextvars import copy_context
+from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Union
@@ -1763,6 +1764,7 @@ from gateway.config import (
 )
 from gateway.session import (
     AsyncSessionStore,
+    SessionEntry,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -2841,6 +2843,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
+        from gateway.canonical_writer_boundary import (
+            harden_gateway_process_for_writer_boundary,
+        )
+
+        harden_gateway_process_for_writer_boundary()
         self.config = config or load_gateway_config()
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
@@ -2890,6 +2897,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
                 key, max_active_age=_bg_max_age_seconds,
+            ),
+            has_active_turn_fn=lambda key: bool(
+                key in getattr(self, "_running_agents", {})
+                or key in getattr(self, "_active_session_leases", {})
+            ),
+            before_capability_epoch_rotation_fn=(
+                self._before_capability_epoch_rotation
             ),
         )
         # One enforced loop-side boundary for the synchronous SessionStore.
@@ -9365,20 +9379,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
-            # clear the adapter's pending queue so the stale "/reset" text
-            # doesn't get re-processed as a user message after the
-            # interrupt completes.
+            # broken history — #2170).  The reset handler first durably
+            # tombstones the old authority epoch; only after that succeeds may
+            # it interrupt the live turn or clear any old-session state.
             if _cmd_def_inner and _cmd_def_inner.name == "new":
-                # Clear any pending messages so the old text doesn't replay
-                await self._interrupt_and_clear_session(
-                    _quick_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_RESET,
-                    invalidation_reason="new_command",
-                )
-                # Clean up the running agent entry so the reset handler
-                # doesn't think an agent is still active.
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> — queue without interrupting.
@@ -10979,7 +10983,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # lane session is ended cleanly. Mutating session_entry in
                     # place here created a split-brain state where the JSON
                     # index pointed at one id but code downstream used another.
-                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+                    switched = await self.async_session_store.switch_session(
+                        session_key,
+                        bound_session_id,
+                    )
                     if switched is not None:
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
@@ -11146,7 +11153,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 timeout=15.0,
             )
         except Exception as exc:
-            logger.debug("Canonical Brain route-back context prompt failed: %s", exc)
+            logger.warning("Canonical Brain route-back context prompt failed: %s", exc)
+            try:
+                from gateway.canonical_brain_routeback_context import (
+                    build_routeback_context_incomplete_prompt,
+                )
+
+                _routeback_context_prompt = build_routeback_context_incomplete_prompt(
+                    "the bounded route-back context lookup timed out or failed"
+                )
+            except Exception:
+                _routeback_context_prompt = (
+                    "## Canonical Brain route-back context\n\n"
+                    "INCOMPLETE/BLOCKED: the exact route-back context is unavailable.\n"
+                    "Do not infer that no linked case exists or create a duplicate case."
+                )
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
@@ -15441,6 +15462,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            session_id=context.session_id,
+            capability_epoch_sha256=context.capability_epoch_sha256,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
@@ -16483,10 +16506,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         return True
 
-    def _clear_session_boundary_security_state(self, session_key: str) -> None:
+    def _before_capability_epoch_rotation(
+        self,
+        old_entry: SessionEntry,
+        reason: str,
+    ) -> None:
+        """Tombstone one exact old epoch, then clear all local authority.
+
+        SessionStore invokes this before publishing an epoch-changing routing
+        transition.  Run in a fresh Context so an active `/new` fast-path cannot
+        inherit an empty, new, or sibling turn identity; the writer envelope is
+        derived solely from the captured old SessionEntry.
+        """
+
+        session_key = str(getattr(old_entry, "session_key", "") or "")
+        capability_epoch = str(
+            getattr(old_entry, "capability_epoch", "") or ""
+        )
+        if not session_key or not capability_epoch:
+            raise RuntimeError("old session authority binding is incomplete")
+        epoch_sha256 = hashlib.sha256(
+            capability_epoch.encode("ascii", errors="strict")
+        ).hexdigest()
+        source = getattr(old_entry, "origin", None)
+
+        def _revoke_and_clear() -> None:
+            from gateway.session_context import set_session_vars
+            from tools.approval import (
+                revoke_session_capabilities_durably,
+            )
+
+            platform = getattr(source, "platform", None)
+            set_session_vars(
+                platform=str(getattr(platform, "value", platform) or ""),
+                chat_id=str(getattr(source, "chat_id", "") or ""),
+                chat_name=str(getattr(source, "chat_name", "") or ""),
+                thread_id=str(getattr(source, "thread_id", "") or ""),
+                user_id=str(getattr(source, "user_id", "") or ""),
+                user_name=str(getattr(source, "user_name", "") or ""),
+                session_key=session_key,
+                session_id=str(getattr(old_entry, "session_id", "") or ""),
+                capability_epoch_sha256=epoch_sha256,
+                message_id=str(getattr(source, "message_id", "") or ""),
+                profile=str(getattr(source, "profile", "") or ""),
+            )
+            revoke_session_capabilities_durably(
+                session_key,
+                reason=f"session_epoch_rotation:{str(reason or 'boundary')[:900]}",
+            )
+            self._clear_session_boundary_security_state(
+                session_key,
+                strict=True,
+                retire_capability_epoch_sha256=epoch_sha256,
+            )
+
+        Context().run(_revoke_and_clear)
+
+    def _clear_session_boundary_security_state(
+        self,
+        session_key: str,
+        *,
+        strict: bool = False,
+        retire_capability_epoch_sha256: str = "",
+    ) -> None:
         """Clear per-session control state that must not survive a boundary switch."""
         if not session_key:
             return
+
+        failures: list[Exception] = []
 
         pending_skills_reload_notes = getattr(
             self, "_pending_skills_reload_notes", None
@@ -16510,6 +16597,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 _slash_confirm_mod.clear(session_key)
             except Exception as e:
+                failures.append(e)
                 logger.debug(
                     "Failed to clear slash-confirm state for session boundary %s: %s",
                     session_key,
@@ -16517,18 +16605,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         try:
-            from tools.approval import clear_session as _clear_approval_session
-        except Exception:
-            return
-
-        try:
-            _clear_approval_session(session_key)
+            from tools.approval import clear_session_local as _clear_approval_session
         except Exception as e:
-            logger.debug(
-                "Failed to clear approval state for session boundary %s: %s",
-                session_key,
-                e,
-            )
+            failures.append(e)
+            _clear_approval_session = None
+
+        if _clear_approval_session is not None:
+            try:
+                _clear_approval_session(
+                    session_key,
+                    retire_capability_epoch_sha256=(
+                        retire_capability_epoch_sha256
+                    ),
+                )
+            except Exception as e:
+                failures.append(e)
+                logger.debug(
+                    "Failed to clear approval state for session boundary %s: %s",
+                    session_key,
+                    e,
+                )
+        if strict and failures:
+            raise RuntimeError(
+                "process-local session authority cleanup failed"
+            ) from failures[0]
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh run generation token for ``session_key``.
@@ -16591,19 +16691,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         interrupt_reason: str,
         invalidation_reason: str,
         release_running_state: bool = True,
+        evict_cached_agent: bool = True,
     ) -> None:
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
             return
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            running_agent.interrupt(interrupt_reason)
+            try:
+                running_agent.interrupt(interrupt_reason)
+            except Exception:
+                logger.debug(
+                    "Failed to interrupt running agent for %s",
+                    session_key,
+                    exc_info=True,
+                )
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         adapter = self._adapter_for_source(source)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
-            await adapter.interrupt_session_activity(session_key, source.chat_id)
+            try:
+                result = adapter.interrupt_session_activity(
+                    session_key, source.chat_id
+                )
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.debug(
+                    "Failed to interrupt adapter activity for %s",
+                    session_key,
+                    exc_info=True,
+                )
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            try:
+                adapter.get_pending_message(session_key)  # consume and discard
+            except Exception:
+                logger.debug(
+                    "Failed to discard adapter pending message for %s",
+                    session_key,
+                    exc_info=True,
+                )
         self._pending_messages.pop(session_key, None)
         if release_running_state:
             self._release_running_agent_state(session_key)
@@ -16616,7 +16742,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # rebuilds the agent from session history, while the old agent
             # object keeps its interrupt flag so a hung drain still dies
             # when it unblocks.
-            self._evict_cached_agent(session_key)
+            if evict_cached_agent:
+                self._evict_cached_agent(session_key)
 
     async def _refresh_agent_cache_message_count(
         self, session_key: str, session_id: Optional[str]
@@ -20960,6 +21087,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # in-memory module.
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
+
+    # The privileged Canonical writer authorizes this exact MainPID.  Before
+    # any model-controlled child can run, make the gateway non-dumpable so a
+    # same-UID child cannot ptrace/process_vm/pidfd-inject writer calls into it.
+    from gateway.canonical_writer_boundary import (
+        harden_gateway_process_for_writer_boundary,
+    )
+    harden_gateway_process_for_writer_boundary()
 
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.

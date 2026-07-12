@@ -35,6 +35,7 @@ from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
+    CapabilityEpochRotationBlocked,
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
@@ -89,6 +90,71 @@ class GatewaySlashCommandsMixin:
 
     async_session_store: AsyncSessionStore
 
+    async def _run_fenced_session_transition(
+        self,
+        event: MessageEvent,
+        *,
+        operation: str,
+        handler,
+    ):
+        """Run one routing transition while its local session slot is closed.
+
+        Cold-path slash commands are dispatched before ordinary turns claim the
+        gateway's running-agent sentinel. Claiming it here, synchronously before
+        the first await, prevents a new turn from starting between validation,
+        privileged epoch revocation, routing publication, and cache cleanup.
+        ``_session_transition_slots`` distinguishes this sentinel from the
+        setup sentinel of a real turn, which ``/new`` is allowed to interrupt.
+        """
+
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        running_agents = getattr(self, "_running_agents", None)
+        if running_agents is None:
+            running_agents = {}
+            self._running_agents = running_agents
+        transition_slots = getattr(self, "_session_transition_slots", None)
+        if transition_slots is None:
+            transition_slots = {}
+            self._session_transition_slots = transition_slots
+        if session_key in running_agents or session_key in transition_slots:
+            return (
+                f"Session {operation} is blocked because another turn or "
+                "session transition is active. No routing change was made; "
+                "retry after it finishes."
+            )
+
+        token = object()
+        transition_slots[session_key] = token
+        running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        running_ts = getattr(self, "_running_agents_ts", None)
+        if running_ts is None:
+            running_ts = {}
+            self._running_agents_ts = running_ts
+        running_ts[session_key] = time.time()
+        self._invalidate_session_run_generation(
+            session_key,
+            reason=f"session_{operation}_transition",
+        )
+        try:
+            try:
+                self._persist_active_agents()
+            except Exception:
+                logger.debug(
+                    "Failed to persist %s transition sentinel for %s",
+                    operation,
+                    session_key,
+                    exc_info=True,
+                )
+            return await handler(event)
+        finally:
+            if transition_slots.get(session_key) is token:
+                transition_slots.pop(session_key, None)
+                if running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                    self._release_running_agent_state(session_key)
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
@@ -102,23 +168,105 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
-    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+    async def _handle_reset_command(
+        self,
+        event: MessageEvent,
+    ) -> Union[str, EphemeralReply]:
+        """Fence a cold ``/new`` or reset the already-running old turn."""
+
+        session_key = self._session_key_for_source(event.source)
+        transition_slots = getattr(self, "_session_transition_slots", {})
+        if session_key in transition_slots:
+            return EphemeralReply(
+                "Session reset is blocked because another session transition "
+                "is active. No routing change was made; retry after it finishes."
+            )
+        if session_key in getattr(self, "_running_agents", {}):
+            # The active-session fast path intentionally allows /new to cancel
+            # a real turn (including its setup sentinel). The claimed handler
+            # keeps that slot closed until the old cache is evicted.
+            return await self._handle_reset_command_claimed(event)
+        return await self._run_fenced_session_transition(
+            event,
+            operation="reset",
+            handler=self._handle_reset_command_claimed,
+        )
+
+    async def _handle_reset_command_claimed(
+        self,
+        event: MessageEvent,
+    ) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
-        
+
         # Get existing session key
         session_key = self._session_key_for_source(source)
-        self._invalidate_session_run_generation(session_key, reason="session_reset")
-        # Evict the running-agent slot now that the generation is bumped. The
-        # in-flight run's own guarded release (run_generation=old) will return
-        # False and leave its dead agent behind; clearing here keeps the slot
-        # from becoming a zombie that silently drops all later messages (#28686).
-        # Idempotent, so the run's finally calling it again is harmless.
-        self._release_running_agent_state(session_key)
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+
+        # Snapshot the old cached agent without changing routing, execution,
+        # or cache state.  The privileged reset below is the first mutation:
+        # if its durable old-epoch tombstone cannot be written, the running
+        # task and every local queue/resource must remain untouched.
+        _old_agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = getattr(self, "_agent_cache", {}).get(session_key)
+                _old_agent = (
+                    _cached[0]
+                    if isinstance(_cached, tuple)
+                    else _cached if _cached else None
+                )
+
+        # Reset only after the privileged writer durably tombstones the exact
+        # old authority epoch.  A writer outage leaves the old routing entry,
+        # live turn, queues, delegations, and cached resources untouched.
+        try:
+            new_entry = await self.async_session_store.reset_session(
+                session_key,
+                source=source,
+                create_if_missing=True,
+            )
+        except CapabilityEpochRotationBlocked:
+            logger.warning(
+                "Session reset blocked because old-epoch revocation failed: %s",
+                session_key,
+            )
+            return EphemeralReply(
+                "Session reset is temporarily blocked because the durable "
+                "approval boundary is unavailable. No new session or authority "
+                "epoch was created; retry after the Canonical writer recovers."
+            )
+
+        if old_entry is None:
+            # The initial route has no old-epoch callback through which to clear
+            # orphaned process-local control state. Do it now, while the running
+            # slot is still closed to every successor turn.
+            self._clear_session_boundary_security_state(session_key)
+
+        if new_entry is None:
+            return EphemeralReply(
+                "Session reset could not initialize a fresh routing entry. "
+                "No successor session was exposed; retry after checking the "
+                "gateway session store."
+            )
+
+        # The durable boundary is now published. Promptly fence and interrupt
+        # the old run and discard adapter/runner pending input. Keep both its
+        # running slot and cache entry until hard resource cleanup completes;
+        # otherwise a successor turn could reuse the old cached agent in the
+        # gap between slot release and eviction.
+        await self._interrupt_and_clear_session(
+            session_key,
+            source,
+            interrupt_reason="Session reset requested",
+            invalidation_reason="session_reset",
+            release_running_state=False,
+            evict_cached_agent=False,
+        )
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -132,11 +280,7 @@ class GatewaySlashCommandsMixin:
         # and the bot goes silent until restart (#35994). Offload it to a worker
         # thread (via the contextvar-preserving executor helper) with a bounded
         # timeout so the loop is never blocked.
-        _cache_lock = getattr(self, "_agent_cache_lock", None)
-        if _cache_lock is not None:
-            with _cache_lock:
-                _cached = self._agent_cache.get(session_key)
-                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        try:
             if _old_agent is not None:
                 try:
                     await asyncio.wait_for(
@@ -161,7 +305,15 @@ class GatewaySlashCommandsMixin:
                         "reset: %s (#35994)",
                         session_key, cleanup_exc,
                     )
-        self._evict_cached_agent(session_key)
+        finally:
+            # Pop the cache while the old agent is still marked running, so
+            # _evict_cached_agent cannot start a concurrent soft teardown.
+            # Only then expose the slot to a successor turn. A cold-path reset
+            # owns a transition sentinel for the whole handler, so its wrapper
+            # performs the release after the remaining boundary cleanup/hooks.
+            self._evict_cached_agent(session_key)
+            if session_key not in getattr(self, "_session_transition_slots", {}):
+                self._release_running_agent_state(session_key)
 
         # Discard any /queue overflow for this session — /new is a
         # conversation-boundary operation, queued follow-ups from the
@@ -200,9 +352,6 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Reset the session
-        new_entry = await self.async_session_store.reset_session(session_key)
-
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
@@ -216,11 +365,6 @@ class GatewaySlashCommandsMixin:
         _lrm = getattr(self, "_last_resolved_model", None)
         if _lrm is not None:
             _lrm.pop(session_key, None)
-
-        # Clear session-scoped dangerous-command approvals and /yolo state.
-        # /new is a conversation-boundary operation — approval state from the
-        # previous conversation must not survive the reset.
-        self._clear_session_boundary_security_state(session_key)
 
         _old_sid = old_entry.session_id if old_entry else None
 
@@ -262,11 +406,9 @@ class GatewaySlashCommandsMixin:
         except Exception:
             session_info = ""
 
-        if new_entry:
+        if old_entry is not None:
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_default")
         else:
-            # No existing session, just create one
-            new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
@@ -2929,18 +3071,39 @@ class GatewaySlashCommandsMixin:
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
         from tools.approval import (
+            capture_session_authority_fence,
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
         )
 
         session_key = self._session_key_for_source(event.source)
+        try:
+            authority_generation, _epoch = capture_session_authority_fence(
+                session_key
+            )
+        except PermissionError:
+            return EphemeralReply(
+                "YOLO state was not changed because this session boundary is stale."
+            )
         current = is_session_yolo_enabled(session_key)
         if current:
-            disable_session_yolo(session_key)
+            if not disable_session_yolo(
+                session_key,
+                expected_generation=authority_generation,
+            ):
+                return EphemeralReply(
+                    "YOLO state was not changed because the session rotated."
+                )
             return EphemeralReply(t("gateway.yolo.disabled"))
         else:
-            enable_session_yolo(session_key)
+            if not enable_session_yolo(
+                session_key,
+                expected_generation=authority_generation,
+            ):
+                return EphemeralReply(
+                    "YOLO state was not changed because the session rotated."
+                )
             return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
@@ -3540,6 +3703,15 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.title.current_no_title", session_id=session_id)
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
+        """Run /resume under an exclusive routing-transition sentinel."""
+
+        return await self._run_fenced_session_transition(
+            event,
+            operation="resume",
+            handler=self._handle_resume_command_claimed,
+        )
+
+    async def _handle_resume_command_claimed(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -3657,14 +3829,30 @@ class GatewaySlashCommandsMixin:
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
 
-        # Clear any running agent for this session key
-        self._release_running_agent_state(session_key)
-
         # Switch the session entry to point at the old session
-        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        try:
+            new_entry = await self.async_session_store.switch_session(
+                session_key,
+                target_id,
+            )
+        except CapabilityEpochRotationBlocked as exc:
+            logger.warning(
+                "Session resume blocked because old-epoch revocation failed: %s",
+                session_key,
+            )
+            if getattr(exc, "authority_rotated", False):
+                return (
+                    "Session resume was not published because concurrent session "
+                    "activity won the routing race. That activity was preserved "
+                    "with fresh authority; retry /resume after it finishes."
+                )
+            return (
+                "Session resume is temporarily blocked because the durable "
+                "approval boundary is unavailable. The current session and "
+                "authority epoch were not changed."
+            )
         if not new_entry:
             return t("gateway.resume.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
 
         # Clear session-scoped model/reasoning overrides so the resumed
         # conversation picks up configured defaults instead of a /model
@@ -3695,10 +3883,26 @@ class GatewaySlashCommandsMixin:
         self._evict_cached_agent(session_key)
 
         # Get the title for confirmation
-        title = await self._session_db.get_session_title(target_id) or name
+        try:
+            title = await self._session_db.get_session_title(target_id) or name
+        except Exception:
+            logger.debug(
+                "Failed to read resumed session title for %s",
+                target_id,
+                exc_info=True,
+            )
+            title = name or target_id
 
         # Count messages for context
-        history = await self.async_session_store.load_transcript(target_id)
+        try:
+            history = await self.async_session_store.load_transcript(target_id)
+        except Exception:
+            logger.debug(
+                "Failed to read resumed transcript count for %s",
+                target_id,
+                exc_info=True,
+            )
+            history = []
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
@@ -3782,6 +3986,15 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
+        """Run /branch under an exclusive routing-transition sentinel."""
+
+        return await self._run_fenced_session_transition(
+            event,
+            operation="branch",
+            handler=self._handle_branch_command_claimed,
+        )
+
+    async def _handle_branch_command_claimed(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
         Copies conversation history to a new session so the user can explore
@@ -3821,12 +4034,36 @@ class GatewaySlashCommandsMixin:
             branch_title = await self._session_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
+        branch_staged = False
 
-        # Create the new session with parent link.
-        # Persist a stable ``_branched_from`` marker in model_config so
-        # list_sessions_rich() keeps the branch visible in /resume and
-        # /sessions even after the parent is reopened and re-ended with a
-        # different end_reason (e.g. tui_shutdown overwriting 'branched').
+        async def _remove_staged_branch() -> bool:
+            """Delete the not-yet-published branch row and all copied messages."""
+
+            if not branch_staged:
+                return True
+            try:
+                deleted = await self._session_db.delete_session(new_session_id)
+                if deleted is True:
+                    return True
+                logger.error(
+                    "Staged branch session %s was not confirmed deleted",
+                    new_session_id,
+                )
+                return False
+            except Exception:
+                logger.error(
+                    "Failed to remove staged branch session %s",
+                    new_session_id,
+                    exc_info=True,
+                )
+                return False
+
+        # Stage the complete branch before rotating routing authority. Every
+        # write is required: silently skipping one copied message would publish
+        # a branch that only looked complete. If staging or the later privileged
+        # switch fails, delete the artifact before reporting a blocked outcome.
+        # The stable ``_branched_from`` marker keeps a successfully published
+        # branch visible in /resume and /sessions.
         try:
             await self._session_db.create_session(
                 session_id=new_session_id,
@@ -3835,13 +4072,8 @@ class GatewaySlashCommandsMixin:
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
             )
-        except Exception as e:
-            logger.error("Failed to create branch session: %s", e)
-            return t("gateway.branch.create_failed", error=e)
-
-        # Copy conversation history to the new session
-        for msg in history:
-            try:
+            branch_staged = True
+            for msg in history:
                 await self._session_db.append_message(
                     session_id=new_session_id,
                     role=msg.get("role", "user"),
@@ -3856,20 +4088,63 @@ class GatewaySlashCommandsMixin:
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
                 )
-            except Exception:
-                pass  # Best-effort copy
-
-        # Set title
-        try:
-            await self._session_db.set_session_title(new_session_id, branch_title)
-        except Exception:
-            pass
+            title_written = await self._session_db.set_session_title(
+                new_session_id,
+                branch_title,
+            )
+            if title_written is not True:
+                raise RuntimeError("staged branch title write was not confirmed")
+        except Exception as exc:
+            logger.error("Failed to stage branch session: %s", exc)
+            cleaned = await _remove_staged_branch()
+            if not cleaned:
+                return (
+                    f"Branch creation failed and staged artifact "
+                    f"{new_session_id} could not be removed. The active session "
+                    "was not switched; operator cleanup is required."
+                )
+            return t("gateway.branch.create_failed", error=exc)
 
         # Switch the session store entry to the new session
-        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+        try:
+            new_entry = await self.async_session_store.switch_session(
+                session_key,
+                new_session_id,
+            )
+        except CapabilityEpochRotationBlocked as exc:
+            logger.warning(
+                "Session branch transition was blocked for %s",
+                session_key,
+            )
+            cleaned = await _remove_staged_branch()
+            if not cleaned:
+                return (
+                    f"Session branch was not published, but staged artifact "
+                    f"{new_session_id} could not be removed. The active routing "
+                    "entry was not switched by this command; operator cleanup "
+                    "is required."
+                )
+            if getattr(exc, "authority_rotated", False):
+                return (
+                    "Session branch was not published because concurrent session "
+                    "activity won the routing race. The staged branch was removed "
+                    "and the concurrent activity was preserved with fresh "
+                    "authority; retry /branch after it finishes."
+                )
+            return (
+                "Session branch creation is temporarily blocked because the "
+                "durable approval boundary is unavailable. The current session "
+                "and authority epoch were not changed."
+            )
         if not new_entry:
+            cleaned = await _remove_staged_branch()
+            if not cleaned:
+                return (
+                    f"Session branch switch failed and staged artifact "
+                    f"{new_session_id} could not be removed. The active routing "
+                    "entry was not switched; operator cleanup is required."
+                )
             return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
 
         # Evict any cached agent for this session
         self._evict_cached_agent(session_key)

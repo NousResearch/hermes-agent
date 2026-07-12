@@ -792,6 +792,36 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
+def _is_discord_private_thread(channel: Any) -> bool:
+    """Mechanically reject Discord's guild-backed private-thread type."""
+
+    channel_type = getattr(channel, "type", None)
+    type_value = getattr(channel_type, "value", channel_type)
+    type_name = str(getattr(channel_type, "name", "") or "").strip().casefold()
+    return type_value == 12 or type_name == "private_thread"
+
+
+def _discord_everyone_can_view(channel: Any) -> bool:
+    """Return exact effective ``view_channel`` for the guild default role.
+
+    A guild-backed object is not necessarily public. Discord permission
+    overwrites can hide text channels and public-thread objects from
+    ``@everyone`` while the bot itself can still see and send to them. Missing
+    guild/default-role/permission data therefore fails closed.
+    """
+
+    guild = getattr(channel, "guild", None)
+    default_role = getattr(guild, "default_role", None)
+    permissions_for = getattr(channel, "permissions_for", None)
+    if guild is None or default_role is None or not callable(permissions_for):
+        return False
+    try:
+        permissions = permissions_for(default_role)
+    except Exception:
+        return False
+    return getattr(permissions, "view_channel", None) is True
+
+
 class DiscordAdapter(BasePlatformAdapter):
     """
     Discord bot adapter.
@@ -2036,10 +2066,26 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 if isinstance(t, type)
             )
-            if (dm_types and isinstance(channel, dm_types)) or getattr(channel, "guild", None) is None:
+            if (
+                (dm_types and isinstance(channel, dm_types))
+                or getattr(channel, "guild", None) is None
+                or _is_discord_private_thread(channel)
+            ):
                 return SendResult(
                     success=False,
-                    error="Discord DMs and group DMs are forbidden; use an approved public guild channel/thread.",
+                    error=(
+                        "Discord DMs, group DMs, and private threads are forbidden; "
+                        "use an approved public guild channel/thread."
+                    ),
+                )
+            if not _discord_everyone_can_view(channel):
+                return SendResult(
+                    success=False,
+                    error=(
+                        "Discord target is not publicly visible to the guild "
+                        "@everyone/default role; use an approved public guild "
+                        "channel/thread."
+                    ),
                 )
 
             # Forum channels reject channel.send() — create a thread post instead.
@@ -2163,8 +2209,13 @@ class DiscordAdapter(BasePlatformAdapter):
             channel is None
             or (dm_types and isinstance(channel, dm_types))
             or getattr(channel, "guild", None) is None
+            or _is_discord_private_thread(channel)
+            or not _discord_everyone_can_view(channel)
         ):
-            raise RuntimeError("Discord receipt target is not a public guild channel/thread")
+            raise RuntimeError(
+                "Discord receipt target is not a public guild channel/thread "
+                "visible to @everyone/default role"
+            )
         message = await channel.fetch_message(int(message_id))
         author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
         bot_id = str(getattr(self._client.user, "id", "") or "")

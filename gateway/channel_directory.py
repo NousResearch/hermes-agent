@@ -487,7 +487,7 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
 
 
 _DISCORD_NON_PUBLIC_TYPES = frozenset({
-    "dm", "group", "group_dm", "private", "private_channel",
+    "dm", "group", "group_dm", "private", "private_channel", "private_thread",
 })
 
 

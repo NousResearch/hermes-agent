@@ -12,10 +12,8 @@ import asyncio
 import concurrent.futures
 import datetime as dt
 import hashlib
-import importlib.util
 import json
 import os
-import pathlib
 import re
 import uuid
 from typing import Any, Dict, Optional
@@ -33,8 +31,6 @@ from gateway.support_ops_team_registry import (
     resolve_team_member,
 )
 
-CANONICAL_BRAIN_ROOT = pathlib.Path("/opt/adventico-ai-platform/canonical-brain")
-CLOUD_SQL_HELPER = CANONICAL_BRAIN_ROOT / "bin" / "cloud_sql_synthetic_write_gate.py"
 EVENT_TABLE = "canonical_event_log"
 MAX_ROUTE_BACK_MESSAGE_CHARS = 1900
 CANONICAL_BRAIN_IO_TIMEOUT_SECONDS = 12
@@ -42,7 +38,6 @@ CANONICAL_BRAIN_IO_TIMEOUT_SECONDS = 12
 # completes the bounded send, live readback, receipt validation, and durable
 # terminal append.  This exceeds the worst-case sum of those configured I/O
 # windows; a retry must not race the worker by declaring it blocked early.
-ROUTE_BACK_INTENT_LEASE_SECONDS = 180
 TASK_MODEL_EVENT_TYPES = {
     "task.plan.updated",
     "task.verification.recorded",
@@ -51,22 +46,25 @@ PROCESS_RECEIPT_EVENT_TYPES = {
     "approval.capability.recorded",
     "capability.check.recorded",
 }
+ROUTE_BACK_WRITER_EVENT_TYPES = {
+    "route_back.intent.created",
+    "route_back.sent",
+    "route_back.blocked",
+}
+WRITER_OWNED_EVENT_TYPES = ROUTE_BACK_WRITER_EVENT_TYPES | PROCESS_RECEIPT_EVENT_TYPES
 ALLOWED_EVENT_TYPES = {
     "case.note",
     "handoff.created",
     "handoff.waiting",
     "resolver.reply.received",
     "route_back.required",
-    "route_back.intent.created",
-    "route_back.sent",
-    "route_back.blocked",
     "handoff.closed",
     "operational.note.needs_review",
     "semantic_interpreter.failed",
     "semantic_interpreter.skipped",
     "semantic_event.drafted",
     "person.alias.learned",
-} | TASK_MODEL_EVENT_TYPES | PROCESS_RECEIPT_EVENT_TYPES
+} | TASK_MODEL_EVENT_TYPES
 RECEIPT_REQUIRED_EVENT_TYPES = {"route_back.sent"} | PROCESS_RECEIPT_EVENT_TYPES
 TASK_STEP_STATUSES = {"pending", "in_progress", "completed", "cancelled", "blocked"}
 TASK_PLAN_STATES = {"active", "completed", "blocked", "cancelled"}
@@ -85,7 +83,15 @@ FORBIDDEN_ROUTE_BACK_DM_KEYS = {
     "recipient_id",
     "dm_recipient_id",
 }
-FORBIDDEN_ROUTE_BACK_DM_VALUES = {"dm", "direct_message", "private_dm", "user_dm"}
+FORBIDDEN_ROUTE_BACK_DM_VALUES = {
+    "dm",
+    "direct_message",
+    "private_dm",
+    "user_dm",
+    "group",
+    "group_dm",
+    "private_channel",
+}
 SECRET_MARKERS = (
     "api_key=", "apikey=", "token=", "password=", "secret=",
     "authorization: bearer", "private_key", "BEGIN PRIVATE KEY",
@@ -139,14 +145,45 @@ def _event_uuid(
 
 
 def _load_helper() -> Any:
-    if not CLOUD_SQL_HELPER.exists():
-        raise RuntimeError("canonical brain Cloud SQL helper missing")
-    spec = importlib.util.spec_from_file_location("canonical_brain_cloud_sql_helper", CLOUD_SQL_HELPER)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load canonical brain Cloud SQL helper")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    return module
+    """Return the database adapter only inside the authenticated writer.
+
+    The gateway process deliberately has no helper-path fallback.  Unit tests
+    may replace this function with an in-memory fixture, but production code
+    can obtain a database adapter only after the Unix peer/MainPID boundary has
+    authenticated the request and bound a writer-service context.
+    """
+
+    from gateway.canonical_writer_boundary import require_writer_database
+
+    return require_writer_database()
+
+
+def _writer_proxy_result(
+    operation: str,
+    payload: Dict[str, Any],
+    *,
+    idempotency_key: str | None = None,
+) -> Dict[str, Any] | None:
+    """Return a typed writer response outside the service, else ``None``.
+
+    A disabled boundary never restores direct database access: ``_load_helper``
+    remains service-only.  The ``None`` path exists for the privileged handler
+    itself and for isolated tests that replace ``_load_helper`` with a fixture.
+    """
+
+    from gateway.canonical_writer_boundary import (
+        canonical_writer_call,
+        in_writer_service,
+        writer_boundary_configured,
+    )
+
+    if in_writer_service() or not writer_boundary_configured():
+        return None
+    return canonical_writer_call(
+        operation,
+        payload,
+        idempotency_key=idempotency_key,
+    )
 
 
 def _bound_socket_io(sock: Any) -> None:
@@ -583,6 +620,16 @@ def _validate_runtime_receipt(event_type: str, payload: Dict[str, Any]) -> None:
         raise ValueError(f"payload.{key} contains reserved runtime projection fields")
     _required_text(receipt, "approval_id", f"payload.{key}", max_chars=160)
     _required_text(receipt, "plan_id", f"payload.{key}", max_chars=160)
+    plan_revision = receipt.get("plan_revision")
+    if (
+        not isinstance(plan_revision, int)
+        or isinstance(plan_revision, bool)
+        or plan_revision < 1
+        or plan_revision > 999_999_999
+    ):
+        raise ValueError(
+            f"payload.{key}.plan_revision must be a positive bounded integer"
+        )
     session_hash = _required_text(receipt, "session_key_sha256", f"payload.{key}", max_chars=64)
     if not _SHA256_RE.fullmatch(session_hash):
         raise ValueError(f"payload.{key}.session_key_sha256 must be a sha256 digest")
@@ -623,8 +670,14 @@ def _validate_append_request(
     actors: Dict[str, Any],
     payload: Dict[str, Any],
     safety: Dict[str, Any],
+    _writer_owned_event: bool = False,
 ) -> None:
-    if event_type not in ALLOWED_EVENT_TYPES:
+    allowed_event_types = (
+        ALLOWED_EVENT_TYPES | WRITER_OWNED_EVENT_TYPES
+        if _writer_owned_event
+        else ALLOWED_EVENT_TYPES
+    )
+    if event_type not in allowed_event_types:
         raise ValueError(f"event_type_not_allowed:{event_type}")
     if not _CASE_ID_RE.fullmatch(str(case_id or "")):
         raise ValueError(
@@ -862,6 +915,26 @@ def _readback_matches(
         idempotency_key,
         content_sha256,
     )
+
+
+def _materialize_verified_alias_event(
+    *,
+    event_type: str,
+    payload: Dict[str, Any],
+    response: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Apply the local alias projection only after durable writer success."""
+
+    if event_type != "person.alias.learned" or response.get("success") is not True:
+        return response
+    from gateway.support_ops_team_registry import learn_team_member_alias
+
+    rendered = dict(response)
+    rendered["alias"] = learn_team_member_alias(
+        str(payload.get("alias")),
+        str(payload.get("member_key")),
+    )
+    return rendered
 
 
 def _decode_mapping(value: Any) -> Dict[str, Any]:
@@ -1302,7 +1375,7 @@ LIMIT 1;
         )
 
 
-def canonical_event_append_tool(
+def _canonical_event_append_impl(
     event_type: str,
     case_id: str,
     summary: str,
@@ -1311,6 +1384,7 @@ def canonical_event_append_tool(
     payload: Optional[Dict[str, Any]] = None,
     safety: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
+    _writer_owned_event: bool = False,
 ) -> str:
     """Append one canonical operational event to Cloud SQL.
 
@@ -1333,12 +1407,56 @@ def canonical_event_append_tool(
             actors=actors,
             payload=payload,
             safety=safety,
+            _writer_owned_event=_writer_owned_event,
         )
         if not idempotency_key:
             idempotency_key = f"{case_id}:{event_type}:{_hash({'source_refs': source_refs, 'payload': payload})[:24]}"
         idempotency_key = str(idempotency_key)
-        if len(idempotency_key) > 512 or any(ord(char) < 32 for char in idempotency_key):
-            raise ValueError("idempotency_key must be <=512 characters without control characters")
+        from gateway.canonical_writer_protocol import (
+            MAX_IDEMPOTENCY_KEY_BYTES,
+            CanonicalWriterOperation,
+        )
+
+        if (
+            len(idempotency_key.encode("utf-8")) > MAX_IDEMPOTENCY_KEY_BYTES
+            or any(ord(char) < 32 for char in idempotency_key)
+        ):
+            raise ValueError(
+                "idempotency_key exceeds the writer protocol byte bound or contains control characters"
+            )
+
+        operation = CanonicalWriterOperation.EVENT_APPEND_MODEL
+        writer_payload: Dict[str, Any] = {
+            "event_type": event_type,
+            "case_id": case_id,
+            "summary": summary,
+            "source_refs": source_refs,
+            "actors": actors,
+            "payload": payload,
+            "safety": safety,
+            "idempotency_key": idempotency_key,
+        }
+        if event_type == "task.plan.updated":
+            operation = CanonicalWriterOperation.PLAN_TRANSITION
+            writer_payload.pop("event_type", None)
+        elif event_type == "task.verification.recorded":
+            operation = CanonicalWriterOperation.VERIFICATION_APPEND
+            writer_payload.pop("event_type", None)
+        proxy = _writer_proxy_result(
+            operation.value,
+            writer_payload,
+            idempotency_key=idempotency_key,
+        )
+        if proxy is not None:
+            return json.dumps(
+                _materialize_verified_alias_event(
+                    event_type=event_type,
+                    payload=payload,
+                    response=proxy,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         canonical_content_sha256 = _hash({
             "event_type": event_type,
             "case_id": case_id,
@@ -1458,43 +1576,41 @@ def canonical_event_append_tool(
             clean_payload=clean_payload,
         )
         helper = _load_helper()
-        password = helper.get_secret_value()
+        sock = helper.open_connection()
+        _bound_socket_io(sock)
         try:
-            sock = helper.connect(password)
-            _bound_socket_io(sock)
-            try:
-                _authorize_append_scope(helper, sock, case_id=case_id)
-                superseded_plan_id: str | None = None
-                if event_type == "task.plan.updated":
-                    superseded_plan_id = _validate_task_plan_revision(
-                        helper,
-                        sock,
-                        case_id=case_id,
-                        event_id=event_id,
-                        payload=payload,
-                    )
-                elif event_type == "task.verification.recorded":
-                    _validate_task_verification_against_plan(
-                        helper,
-                        sock,
-                        case_id=case_id,
-                        payload=payload,
-                    )
-                elif event_type == "route_back.sent":
-                    _validate_route_back_sent_against_intent(
-                        helper,
-                        sock,
-                        case_id=case_id,
-                        idempotency_key=idempotency_key,
-                        payload=payload,
-                    )
-                _validate_completed_plan_receipts(
+            _authorize_append_scope(helper, sock, case_id=case_id)
+            superseded_plan_id: str | None = None
+            if event_type == "task.plan.updated":
+                superseded_plan_id = _validate_task_plan_revision(
+                    helper,
+                    sock,
+                    case_id=case_id,
+                    event_id=event_id,
+                    payload=payload,
+                )
+            elif event_type == "task.verification.recorded":
+                _validate_task_verification_against_plan(
                     helper,
                     sock,
                     case_id=case_id,
                     payload=payload,
                 )
-                sql = f"""
+            elif event_type == "route_back.sent":
+                _validate_route_back_sent_against_intent(
+                    helper,
+                    sock,
+                    case_id=case_id,
+                    idempotency_key=idempotency_key,
+                    payload=payload,
+                )
+            _validate_completed_plan_receipts(
+                helper,
+                sock,
+                case_id=case_id,
+                payload=payload,
+            )
+            sql = f"""
 INSERT INTO {EVENT_TABLE} (
   event_id, schema_version, event_type, occurred_at, case_id,
   source, actor, subject, evidence, decision, status, next_action, safety, payload
@@ -1516,8 +1632,8 @@ INSERT INTO {EVENT_TABLE} (
 )
 ON CONFLICT (event_id) DO NOTHING;
 """
-                tag = helper.query(sock, sql)["command_tag"]
-                readback = helper.query(sock, f"""
+            tag = helper.query(sock, sql)["command_tag"]
+            readback = helper.query(sock, f"""
 SELECT event_id::text, event_type, case_id, occurred_at::text,
        payload->>'idempotency_key' AS idempotency_key,
        payload->>'canonical_content_sha256' AS canonical_content_sha256
@@ -1525,13 +1641,11 @@ FROM {EVENT_TABLE}
 WHERE event_id = {helper.sql_quote(event_id)}::uuid
 LIMIT 1;
 """)["rows"]
-            finally:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
         finally:
-            password = ""
+            try:
+                sock.close()
+            except Exception:
+                pass
         readback_verified = _readback_matches(
             readback,
             event_id=event_id,
@@ -1585,16 +1699,38 @@ LIMIT 1;
                     # Capability revocation is a local defense-in-depth cleanup;
                     # the durable task event remains the canonical truth.
                     pass
-        if event_type == "person.alias.learned" and readback_verified:
-            from gateway.support_ops_team_registry import learn_team_member_alias
-
-            response["alias"] = learn_team_member_alias(
-                str(payload.get("alias")),
-                str(payload.get("member_key")),
-            )
+        response = _materialize_verified_alias_event(
+            event_type=event_type,
+            payload=payload,
+            response=response,
+        )
         return json.dumps(response, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
         return tool_error(f"CANONICAL_EVENT_APPEND_FAIL: {exc}")
+
+
+def canonical_event_append_tool(
+    event_type: str,
+    case_id: str,
+    summary: str,
+    source_refs: Dict[str, Any],
+    actors: Optional[Dict[str, Any]] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    safety: Optional[Dict[str, Any]] = None,
+    idempotency_key: Optional[str] = None,
+) -> str:
+    """Public model append surface; writer-owned receipt events are excluded."""
+
+    return _canonical_event_append_impl(
+        event_type=event_type,
+        case_id=case_id,
+        summary=summary,
+        source_refs=source_refs,
+        actors=actors,
+        payload=payload,
+        safety=safety,
+        idempotency_key=idempotency_key,
+    )
 
 
 def record_plan_approval_receipt(
@@ -1609,7 +1745,7 @@ def record_plan_approval_receipt(
     approval path calls it only after ``grant_plan_capability`` has verified
     the authenticated owner and reduced commands to hashes.
     """
-    return canonical_event_append_tool(
+    return _canonical_event_append_impl(
         event_type="approval.capability.recorded",
         case_id=case_id,
         summary=f"Exact plan capability granted for {str(receipt.get('plan_id') or '')[:160]}",
@@ -1632,6 +1768,7 @@ def record_plan_approval_receipt(
             f"approval-source:{receipt.get('approval_source_sha256')}:"
             f"plan:{receipt.get('plan_id')}"
         ),
+        _writer_owned_event=True,
     )
 
 
@@ -1642,7 +1779,7 @@ def record_plan_capability_check(
     source_refs: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Persist one deterministic exact-command capability authorization."""
-    return canonical_event_append_tool(
+    return _canonical_event_append_impl(
         event_type="capability.check.recorded",
         case_id=case_id,
         summary=f"Exact plan capability authorized command hash for {str(receipt.get('plan_id') or '')[:160]}",
@@ -1659,6 +1796,7 @@ def record_plan_capability_check(
             f"capability-check:{receipt.get('approval_id')}:"
             f"{receipt.get('command_sha256')}:{receipt.get('remaining_uses_for_command')}"
         ),
+        _writer_owned_event=True,
     )
 
 
@@ -1744,7 +1882,7 @@ def _route_back_state_impl(
             next_action=base_payload.get("next_action"),
             clean_payload=base_payload,
         )
-        result = canonical_event_append_tool(
+        result = _canonical_event_append_impl(
             event_type=event_type,
             case_id=case_id,
             summary=message_summary,
@@ -1753,6 +1891,7 @@ def _route_back_state_impl(
             payload=base_payload,
             safety={"contains_secret": False, "contains_payment_credential": False},
             idempotency_key=idempotency_key,
+            _writer_owned_event=event_type in WRITER_OWNED_EVENT_TYPES,
         )
         try:
             data = json.loads(result)
@@ -1788,6 +1927,56 @@ def route_back_tool(
     idempotency_key: Optional[str] = None,
 ) -> str:
     """Public model-facing route-back state writer; sent state is unavailable."""
+
+    if mode == "record_blocked":
+        try:
+            normalized_target = _normalize_dict(target_ref, "target_ref")
+            normalized_sources = _normalize_dict(source_refs, "source_refs")
+            summary = str(message_summary or "").strip()
+            _block_secret_like_fields(
+                target_ref=normalized_target,
+                message_summary=summary,
+                source_refs=normalized_sources,
+                blocker_reason=blocker_reason,
+            )
+            blocker = str(blocker_reason or "").strip()
+            if not blocker:
+                raise ValueError("record_blocked requires blocker_reason")
+            stable_key = str(idempotency_key or "").strip() or (
+                f"{case_id}:route_back.blocked:"
+                f"{_hash({'target_ref': normalized_target, 'source_refs': normalized_sources, 'blocker_reason': blocker})[:24]}"
+            )
+            data = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=_sanitized_blocked_target_ref(normalized_target),
+                message_summary=summary,
+                source_refs=normalized_sources,
+                blocker_reason=blocker,
+                idempotency_key=stable_key,
+            )
+            if isinstance(data, dict) and data.get("success"):
+                data = dict(data)
+                data["route_back"] = {
+                    "mode": "record_blocked",
+                    "event_type": "route_back.blocked",
+                    "terminal_outcome": True,
+                    "required_next_step": "none",
+                }
+            return json.dumps(data, ensure_ascii=False, sort_keys=True)
+        except Exception as exc:
+            return tool_error(f"ROUTE_BACK_STATE_FAIL: {exc}")
+
+    if mode == "queue_intent":
+        from gateway.canonical_writer_boundary import (
+            in_writer_service,
+            writer_boundary_configured,
+        )
+
+        if writer_boundary_configured() and not in_writer_service():
+            return tool_error(
+                "ROUTE_BACK_STATE_FAIL: queue_intent is writer-owned and requires "
+                "the exact content-bound route_back_execute claim path"
+            )
     return _route_back_state_impl(
         case_id=case_id,
         target_ref=target_ref,
@@ -1809,6 +1998,22 @@ def _record_route_back_execution_intent(
     idempotency_key: str,
     execution_binding: Dict[str, Any],
 ) -> str:
+    from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+    proxy = _writer_proxy_result(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        {
+            "case_id": case_id,
+            "target_ref": target_ref,
+            "message_summary": message_summary,
+            "source_refs": source_refs,
+            "idempotency_key": idempotency_key,
+            "execution_binding": execution_binding,
+        },
+        idempotency_key=idempotency_key,
+    )
+    if proxy is not None:
+        return json.dumps(proxy, ensure_ascii=False, sort_keys=True)
     return _route_back_state_impl(
         case_id=case_id,
         target_ref=target_ref,
@@ -1830,6 +2035,23 @@ def _record_route_back_sent_receipt(
     idempotency_key: str,
     execution_binding: Dict[str, Any],
 ) -> str:
+    from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+    proxy = _writer_proxy_result(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value,
+        {
+            "case_id": case_id,
+            "target_ref": target_ref,
+            "message_summary": message_summary,
+            "source_refs": source_refs,
+            "receipt": receipt,
+            "idempotency_key": idempotency_key,
+            "execution_binding": execution_binding,
+        },
+        idempotency_key=idempotency_key,
+    )
+    if proxy is not None:
+        return json.dumps(proxy, ensure_ascii=False, sort_keys=True)
     return _route_back_state_impl(
         case_id=case_id,
         target_ref=target_ref,
@@ -1847,8 +2069,9 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
     """Resolve an exact approved public route-back target.
 
     This intentionally uses the team/channel registry, not business-keyword
-    routing.  The first supported executor target is the owner lane: references
-    to Emil/owner resolve to the public control-tower channel, never a DM.
+    routing. References to Emil/owner resolve to the public control-tower
+    channel, never a DM. Multiple identity fields must resolve consistently;
+    contradictory or partly unresolved identities are clarification blockers.
     """
     candidate_values = []
     for key in ("id", "mention", "lane", "person", "target_person", "key"):
@@ -1856,21 +2079,67 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
         if value:
             candidate_values.append(value)
 
-    channel_id = str(target_ref.get("channel_id") or target_ref.get("thread_id") or "").strip()
+    channel_surfaces = {
+        key: str(target_ref.get(key) or "").strip()
+        for key in ("channel_id", "thread_id", "chat_id")
+        if str(target_ref.get(key) or "").strip()
+    }
+    distinct_channel_ids = set(channel_surfaces.values())
+    if len(distinct_channel_ids) > 1:
+        raise ValueError(
+            "route_back_execute target_ref contains conflicting public channel/thread fields; "
+            "ask requester to clarify the public target"
+        )
+    channel_id = next(iter(distinct_channel_ids), "")
     raw_id = str(target_ref.get("id") or "").strip()
     if raw_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+        if channel_id and channel_id != raw_id:
+            raise ValueError(
+                "route_back_execute target_ref contains conflicting public channel/thread fields; "
+                "ask requester to clarify the public target"
+            )
         channel_id = SKYVISION_CONTROL_TOWER_CHANNEL_ID
 
-    resolved_member: TeamMember | None = None
+    resolved_members: dict[str, TeamMember] = {}
+    unresolved_values: list[str] = []
     for value in candidate_values:
         resolution = resolve_team_member(value)
         if resolution.status == "resolved":
-            resolved_member = resolution.member
-            break
+            member = resolution.member
+            if member is None:
+                raise ValueError(
+                    "route_back_execute target resolution is incomplete; ask requester to clarify the public target"
+                )
+            resolved_members[member.key] = member
+            continue
         if resolution.status == "ambiguous":
             raise ValueError("route_back_execute target_ref ambiguous; ask requester to clarify the public target")
+        unresolved_values.append(value)
+
+    if len(resolved_members) > 1:
+        raise ValueError(
+            "route_back_execute target_ref contains conflicting people; ask requester to clarify the public target"
+        )
+
+    resolved_member = next(iter(resolved_members.values()), None)
 
     if resolved_member is not None:
+        unresolved_conflicts = [
+            value
+            for value in unresolved_values
+            if value not in {
+                resolved_member.key,
+                resolved_member.discord_user_id,
+                resolved_member.mention,
+                resolved_member.default_channel_id,
+            }
+        ]
+        if unresolved_conflicts or (
+            channel_id and channel_id != resolved_member.default_channel_id
+        ):
+            raise ValueError(
+                "route_back_execute target_ref contains conflicting or unresolved identity fields; ask requester to clarify the public target"
+            )
         return {
             "channel_id": resolved_member.default_channel_id,
             "channel_type": "public_channel",
@@ -1881,6 +2150,13 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
         }
 
     if channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+        if any(
+            value != SKYVISION_CONTROL_TOWER_CHANNEL_ID
+            for value in unresolved_values
+        ):
+            raise ValueError(
+                "route_back_execute target_ref contains conflicting or unresolved identity fields; ask requester to clarify the public target"
+            )
         return {
             "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
             "channel_type": "public_channel",
@@ -1891,6 +2167,10 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
         }
 
     if channel_id:
+        if any(value != channel_id for value in unresolved_values):
+            raise ValueError(
+                "route_back_execute target_ref contains unresolved identity fields; ask requester to clarify the public target"
+            )
         from gateway.channel_directory import is_discord_public_target
 
         if not is_discord_public_target(channel_id):
@@ -1921,53 +2201,59 @@ def _authorize_route_back_execution(
     public_target: Dict[str, Any],
 ) -> None:
     """Authorize caller/case and exact public target before any outbound send."""
+    from gateway.canonical_writer_boundary import (
+        in_writer_service,
+        writer_boundary_configured,
+    )
+
+    # The typed routeback.claim operation performs this authorization and the
+    # durable idempotent claim atomically.  Do not split that decision across a
+    # gateway-side read and a later writer-side append.
+    if writer_boundary_configured() and not in_writer_service():
+        return
     if not _canonical_scope_enforced():
         return
     helper = _load_helper()
-    password = helper.get_secret_value()
+    sock = helper.open_connection()
+    _bound_socket_io(sock)
     try:
-        sock = helper.connect(password)
-        _bound_socket_io(sock)
-        try:
-            _authorize_existing_case_scope(helper, sock, case_id=case_id)
-            target_kind = str(public_target.get("target_kind") or "")
-            if target_kind in {
-                "member_default_public_channel",
-                "owner_public_channel",
-            }:
-                return
-            channel_id = str(public_target.get("channel_id") or "").strip()
-            if _configured_discord_channel_allowed(channel_id):
-                return
-            target_match = _thread_authorization_match_sql(
-                helper,
-                channel_id,
-                alias="targeted",
-            )
-            rows = helper.query(sock, f"""
+        _authorize_existing_case_scope(helper, sock, case_id=case_id)
+        target_kind = str(public_target.get("target_kind") or "")
+        if target_kind in {
+            "member_default_public_channel",
+            "owner_public_channel",
+        }:
+            return
+        channel_id = str(public_target.get("channel_id") or "").strip()
+        if _configured_discord_channel_allowed(channel_id):
+            return
+        target_match = _thread_authorization_match_sql(
+            helper,
+            channel_id,
+            alias="targeted",
+        )
+        rows = helper.query(sock, f"""
 SELECT EXISTS (
   SELECT 1 FROM {EVENT_TABLE} AS targeted
   WHERE targeted.case_id = {helper.sql_quote(case_id)}
     AND {target_match}
 ) AS target_linked;
 """).get("rows", [])
-            row = rows[0] if rows else None
-            linked = (
-                _bool_cell(row.get("target_linked"))
-                if isinstance(row, dict)
-                else _bool_cell(row[0] if isinstance(row, (list, tuple)) and row else False)
+        row = rows[0] if rows else None
+        linked = (
+            _bool_cell(row.get("target_linked"))
+            if isinstance(row, dict)
+            else _bool_cell(row[0] if isinstance(row, (list, tuple)) and row else False)
+        )
+        if not linked:
+            raise PermissionError(
+                "route_back_execute target is neither configured nor runtime-linked to this case"
             )
-            if not linked:
-                raise PermissionError(
-                    "route_back_execute target is neither configured nor runtime-linked to this case"
-                )
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
     finally:
-        password = ""
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 
 def _existing_route_back_terminal(
@@ -1976,23 +2262,30 @@ def _existing_route_back_terminal(
     idempotency_key: str,
 ) -> Dict[str, Any]:
     """Return a legacy/new terminal row for this exact execution key."""
+    from gateway.canonical_writer_boundary import (
+        in_writer_service,
+        writer_boundary_configured,
+    )
+
+    # The privileged claim checks existing terminal state atomically.  This
+    # legacy pre-read remains only for isolated service tests/backward fixtures.
+    if writer_boundary_configured() and not in_writer_service():
+        return {}
     if not _canonical_scope_enforced():
         return {}
     helper = _load_helper()
-    password = helper.get_secret_value()
+    sock = helper.open_connection()
+    _bound_socket_io(sock)
     try:
-        sock = helper.connect(password)
-        _bound_socket_io(sock)
-        try:
-            _authorize_existing_case_scope(helper, sock, case_id=case_id)
-            event_ids = [
-                _event_uuid(idempotency_key, "route_back.sent", case_id),
-                _event_uuid(idempotency_key, "route_back.blocked", case_id),
-            ]
-            quoted = ", ".join(
-                f"{helper.sql_quote(event_id)}::uuid" for event_id in event_ids
-            )
-            rows = helper.query(sock, f"""
+        _authorize_existing_case_scope(helper, sock, case_id=case_id)
+        event_ids = [
+            _event_uuid(idempotency_key, "route_back.sent", case_id),
+            _event_uuid(idempotency_key, "route_back.blocked", case_id),
+        ]
+        quoted = ", ".join(
+            f"{helper.sql_quote(event_id)}::uuid" for event_id in event_ids
+        )
+        rows = helper.query(sock, f"""
 SELECT event_type, payload
 FROM {EVENT_TABLE}
 WHERE case_id = {helper.sql_quote(case_id)}
@@ -2001,13 +2294,11 @@ WHERE case_id = {helper.sql_quote(case_id)}
 ORDER BY occurred_at DESC, event_id DESC
 LIMIT 1;
 """).get("rows", [])
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
     finally:
-        password = ""
+        try:
+            sock.close()
+        except Exception:
+            pass
     if not rows:
         return {}
     row = rows[0]
@@ -2107,19 +2398,35 @@ def _discord_post_message(channel_id: str, content: str, *, timeout: int = 15) -
     if not getattr(result, "success", False):
         raise RuntimeError(str(getattr(result, "error", None) or "discord_adapter_send_failed"))
     message_id = str(getattr(result, "message_id", None) or "")
-    verified = _discord_verify_message_receipt(
-        channel_id=str(channel_id),
-        message_id=message_id,
-        expected_content_sha256=expected_content_sha256,
-        timeout=timeout,
-    )
-    return {
+    delivery = {
         "id": message_id,
         "channel_id": str(channel_id),
         "adapter_receipt": True,
-        "content_sha256": str(verified.get("content_sha256") or ""),
-        "receipt_readback_verified": True,
+        # This is the digest of the exact single rendered chunk accepted by
+        # adapter.send.  It remains useful partial evidence if Discord accepts
+        # the send but the subsequent live readback cannot be established.
+        "content_sha256": expected_content_sha256,
+        "receipt_readback_verified": False,
     }
+    if not message_id:
+        delivery["receipt_verification_error"] = "missing_message_id"
+        return delivery
+    try:
+        verified = _discord_verify_message_receipt(
+            channel_id=str(channel_id),
+            message_id=message_id,
+            expected_content_sha256=expected_content_sha256,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        # Do not collapse an adapter-accepted send into "send failed".  The
+        # caller durably finalizes this claim as blocked/accepted-unverified,
+        # preserves the partial receipt, and forbids an automatic resend.
+        delivery["receipt_verification_error"] = type(exc).__name__
+        return delivery
+    delivery["content_sha256"] = str(verified.get("content_sha256") or "")
+    delivery["receipt_readback_verified"] = True
+    return delivery
 
 
 def _route_back_record_blocked(
@@ -2130,21 +2437,65 @@ def _route_back_record_blocked(
     source_refs: Dict[str, Any],
     blocker_reason: str,
     idempotency_key: Optional[str],
+    execution_binding: Optional[Dict[str, Any]] = None,
+    partial_receipt: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    result = route_back_tool(
-        case_id=case_id,
-        target_ref=target_ref,
-        message_summary=message_summary,
-        source_refs=source_refs,
-        mode="record_blocked",
-        blocker_reason=blocker_reason,
-        idempotency_key=idempotency_key,
-    )
+    from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+    writer_payload = {
+        "case_id": case_id,
+        "target_ref": target_ref,
+        "message_summary": message_summary,
+        "source_refs": source_refs,
+        "blocker_reason": blocker_reason,
+        "idempotency_key": idempotency_key,
+    }
+    if execution_binding is None:
+        # Target/render blockers happen before an execution claim can exist.
+        # They still cross the same typed, privileged terminal boundary rather
+        # than minting route_back.blocked through model event append.
+        writer_payload["preclaim"] = True
+    else:
+        writer_payload["execution_binding"] = execution_binding
+    if partial_receipt is not None:
+        writer_payload["partial_receipt"] = partial_receipt
     try:
+        proxy = _writer_proxy_result(
+            CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
+            writer_payload,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "status": "ROUTE_BACK_BLOCKED_RECORD_FAILED",
+            "error": f"canonical_writer_finalize_blocked_failed:{type(exc).__name__}",
+        }
+    if proxy is not None:
+        return proxy
+
+    # Service-local and isolated-test compatibility only. Outside the writer
+    # service a configured boundary never reaches this legacy implementation.
+    try:
+        result = _route_back_state_impl(
+            case_id=case_id,
+            target_ref=target_ref,
+            message_summary=message_summary,
+            source_refs=source_refs,
+            mode="record_blocked",
+            blocker_reason=blocker_reason,
+            idempotency_key=idempotency_key,
+        )
         data = json.loads(result)
-    except Exception:
+    except Exception as exc:
+        return {
+            "success": False,
+            "status": "ROUTE_BACK_BLOCKED_RECORD_FAILED",
+            "error": f"route_back_blocked_record_failed:{type(exc).__name__}",
+        }
+    if not isinstance(data, dict):
         data = {"raw": result}
-    return data if isinstance(data, dict) else {"raw": result}
+    return data
 
 
 def _sanitized_blocked_target_ref(target_ref: Dict[str, Any]) -> Dict[str, Any]:
@@ -2164,7 +2515,14 @@ def _sanitized_blocked_target_ref(target_ref: Dict[str, Any]) -> Dict[str, Any]:
     return safe
 
 
-def _blocked_execution_result(blocker_reason: str, blocked: Dict[str, Any]) -> str:
+def _blocked_execution_result(
+    blocker_reason: str,
+    blocked: Dict[str, Any],
+    *,
+    observed_receipt: Optional[Dict[str, Any]] = None,
+    delivery_outcome_uncertain: bool = False,
+    clarification_detail: Optional[str] = None,
+) -> str:
     recorded = bool(isinstance(blocked, dict) and blocked.get("success"))
     data: Dict[str, Any] = {
         "success": recorded,
@@ -2176,45 +2534,42 @@ def _blocked_execution_result(blocker_reason: str, blocked: Dict[str, Any]) -> s
         "blocker_reason": blocker_reason,
         "route_back_record": blocked,
     }
-    if not recorded:
+    if observed_receipt is not None:
+        data["partial_receipt"] = observed_receipt
+    if clarification_detail:
+        data["clarification_required"] = True
+        data["clarification"] = str(clarification_detail).strip()[:500]
         data["final_answer_guard"] = (
-            "Delivery was blocked and durable route_back.blocked recording also failed. "
-            "Do not claim a durable terminal outcome; report both blockers clearly."
+            "The route-back target fields are contradictory, ambiguous, or "
+            "incomplete. Explain the exact conflict to the requester and ask "
+            "which approved public Discord channel/thread or teammate lane they "
+            "intend. Do not guess or send until clarified."
         )
+    if delivery_outcome_uncertain:
+        data["delivery_outcome_uncertain"] = True
+        data["resend_forbidden"] = True
+        data["final_answer_guard"] = (
+            "After the durable execution claim, the Discord operation may have "
+            "reached Discord, but the exact authorized delivery outcome could not "
+            "be established. Do not resend and do not claim "
+            "route_back.sent. Report the observed receipt and the durable "
+            "route_back.blocked outcome."
+        )
+    if not recorded:
+        if delivery_outcome_uncertain:
+            data["resend_forbidden"] = True
+            data["final_answer_guard"] = (
+                "The exact post-claim delivery outcome could not be established and "
+                "durable route_back.blocked recording also failed. Do not resend or "
+                "claim a durable terminal outcome; report both blockers clearly."
+            )
+        else:
+            data["final_answer_guard"] = (
+                "No public delivery was attempted, but durable route_back.blocked "
+                "recording failed. Report the original blocker and the Canonical "
+                "recording failure; do not claim a terminal outcome."
+            )
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-
-def _route_back_intent_lease_expired(
-    intent: Dict[str, Any],
-    *,
-    now: Optional[dt.datetime] = None,
-) -> bool:
-    """Return True only when a verified durable intent is provably stale."""
-    readback = intent.get("readback") if isinstance(intent, dict) else None
-    if not isinstance(readback, list) or len(readback) != 1:
-        return False
-    row = readback[0]
-    if isinstance(row, dict):
-        raw_occurred_at = row.get("occurred_at")
-    elif isinstance(row, (list, tuple)) and len(row) > 3:
-        raw_occurred_at = row[3]
-    else:
-        return False
-    try:
-        occurred_at = dt.datetime.fromisoformat(
-            str(raw_occurred_at or "").strip().replace("Z", "+00:00")
-        )
-    except (TypeError, ValueError):
-        return False
-    if occurred_at.tzinfo is None:
-        occurred_at = occurred_at.replace(tzinfo=dt.timezone.utc)
-    current = now or dt.datetime.now(dt.timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=dt.timezone.utc)
-    age_seconds = (current.astimezone(dt.timezone.utc) - occurred_at.astimezone(
-        dt.timezone.utc
-    )).total_seconds()
-    return age_seconds >= ROUTE_BACK_INTENT_LEASE_SECONDS
 
 
 def route_back_execute_tool(
@@ -2228,8 +2583,10 @@ def route_back_execute_tool(
     """Deliver an exact public route-back and record the terminal outcome.
 
     This is the send+receipt executor counterpart to ``route_back_state``. It
-    never sends DMs. If it cannot send to an approved public target, it records
-    ``route_back.blocked`` instead of leaving the case in a pending state.
+    never sends DMs. If it cannot send to an approved public target before or
+    during its own claimed attempt, it records ``route_back.blocked``. A retry
+    that observes another worker's unterminated claim remains pending exact
+    reconciliation and never infers failure or resends from claim age.
     """
     try:
         target_ref = _normalize_dict(target_ref, "target_ref")
@@ -2271,7 +2628,11 @@ def route_back_execute_tool(
                 blocker_reason=blocker_reason,
                 idempotency_key=idempotency_key,
             )
-            return _blocked_execution_result(blocker_reason, blocked)
+            return _blocked_execution_result(
+                blocker_reason,
+                blocked,
+                clarification_detail=(str(exc) if isinstance(exc, ValueError) else None),
+            )
 
         existing_terminal = _existing_route_back_terminal(
             case_id=case_id,
@@ -2361,6 +2722,40 @@ def route_back_execute_tool(
             intent = json.loads(intent_raw)
         except Exception:
             intent = {"success": False, "raw": intent_raw}
+        terminal_type = (
+            str(intent.get("terminal_event_type") or "")
+            if isinstance(intent, dict)
+            else ""
+        )
+        if terminal_type in {"route_back.sent", "route_back.blocked"}:
+            terminal_payload = intent.get("terminal_payload")
+            terminal_payload = (
+                terminal_payload if isinstance(terminal_payload, dict) else {}
+            )
+            route_back_payload = terminal_payload.get("route_back")
+            route_back_payload = (
+                route_back_payload
+                if isinstance(route_back_payload, dict)
+                else {}
+            )
+            return json.dumps({
+                "success": terminal_type == "route_back.sent",
+                "status": (
+                    "ROUTE_BACK_EXECUTE_ALREADY_SENT"
+                    if terminal_type == "route_back.sent"
+                    else "ROUTE_BACK_EXECUTE_ALREADY_BLOCKED"
+                ),
+                "receipt": (
+                    terminal_payload.get("receipt")
+                    or route_back_payload.get("receipt")
+                    or {}
+                ),
+                "terminal_event_type": terminal_type,
+                "final_answer_guard": (
+                    "The exact execution key already has a terminal Canonical Brain "
+                    "outcome. Do not send again."
+                ),
+            }, ensure_ascii=False, sort_keys=True)
         if not isinstance(intent, dict) or not intent.get("success"):
             return json.dumps({
                 "success": False,
@@ -2372,35 +2767,39 @@ def route_back_execute_tool(
                 ),
             }, ensure_ascii=False, sort_keys=True)
         if intent.get("inserted") is not True:
-            if not _route_back_intent_lease_expired(intent):
-                return json.dumps({
-                    "success": False,
-                    "status": "ROUTE_BACK_EXECUTE_ALREADY_CLAIMED_PENDING",
-                    "lease_seconds": ROUTE_BACK_INTENT_LEASE_SECONDS,
-                    "route_back_record": intent,
-                    "final_answer_guard": (
-                        "Another worker may still be completing this exact execution. "
-                        "Do not send or record a terminal outcome during the intent lease. "
-                        "Retry after the lease or inspect the exact terminal Canonical Brain event."
-                    ),
-                }, ensure_ascii=False, sort_keys=True)
-            blocker_reason = (
-                "route_back_execution_intent_lease_expired_outcome_uncertain"
-            )
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason=blocker_reason,
-                idempotency_key=idempotency_key,
-            )
-            return _blocked_execution_result(blocker_reason, blocked)
+            # An external Discord send cannot be fenced by a database lease.
+            # Age alone therefore never turns another claimant's nonterminal
+            # lifecycle into route_back.blocked: the original process may
+            # resume and complete a real send.  Reconciliation is the only
+            # safe next step, and every retry remains no-resend.
+            return json.dumps({
+                "success": False,
+                "status": (
+                    "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
+                ),
+                "delivery_outcome_uncertain": True,
+                "resend_forbidden": True,
+                "route_back_record": intent,
+                "final_answer_guard": (
+                    "Another worker owns this exact durable route-back claim and "
+                    "may still complete the Discord send. Do not send or write a "
+                    "blocked terminal based on claim age. Reconcile the exact "
+                    "Canonical lifecycle and Discord receipt before any next action."
+                ),
+            }, ensure_ascii=False, sort_keys=True)
 
         try:
             delivery = _discord_post_message(public_target["channel_id"], message)
         except Exception as exc:
-            blocker_reason = f"discord_send_failed:{type(exc).__name__}"
+            failure_kind = (
+                "timeout"
+                if isinstance(exc, TimeoutError)
+                or str(exc).strip() == "discord_adapter_send_timeout"
+                else type(exc).__name__
+            )
+            blocker_reason = (
+                "discord_post_claim_delivery_outcome_uncertain:" + failure_kind
+            )
             blocked = _route_back_record_blocked(
                 case_id=case_id,
                 target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
@@ -2408,24 +2807,15 @@ def route_back_execute_tool(
                 source_refs=source_refs,
                 blocker_reason=blocker_reason,
                 idempotency_key=idempotency_key,
-            )
-            return _blocked_execution_result(blocker_reason, blocked)
-
-        message_id = str(delivery.get("id") or "").strip() if isinstance(delivery, dict) else ""
-        if not message_id:
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=resolved_target_ref,
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason="discord_send_missing_message_id_receipt",
-                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
             )
             return _blocked_execution_result(
-                "discord_send_missing_message_id_receipt",
+                blocker_reason,
                 blocked,
+                delivery_outcome_uncertain=True,
             )
 
+        message_id = str(delivery.get("id") or "").strip() if isinstance(delivery, dict) else ""
         receipt = {
             "platform": "discord",
             "message_id": message_id,
@@ -2437,7 +2827,72 @@ def route_back_execute_tool(
                 delivery.get("content_sha256")
                 or hashlib.sha256(message.encode("utf-8")).hexdigest()
             ),
+            "adapter_receipt": delivery.get("adapter_receipt") is True,
+            "receipt_readback_verified": (
+                delivery.get("receipt_readback_verified") is True
+            ),
         }
+        adapter_accepted = receipt["adapter_receipt"] is True
+        if not message_id:
+            blocker_reason = (
+                "discord_send_accepted_missing_message_id_receipt"
+                if adapter_accepted
+                else "discord_send_missing_message_id_receipt"
+            )
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=blocker_reason,
+                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+            )
+            return _blocked_execution_result(
+                blocker_reason,
+                blocked,
+                observed_receipt=receipt,
+                delivery_outcome_uncertain=adapter_accepted,
+            )
+
+        if adapter_accepted and receipt["receipt_readback_verified"] is not True:
+            verification_error = str(
+                delivery.get("receipt_verification_error") or "unverified"
+            )
+            verification_error = re.sub(
+                r"[^A-Za-z0-9_.:-]+",
+                "_",
+                verification_error,
+            )[:120]
+            blocker_reason = (
+                "discord_send_accepted_receipt_readback_unverified:"
+                + verification_error
+            )
+            partial_receipt = {
+                "platform": "discord",
+                "adapter_receipt": True,
+                "receipt_readback_verified": False,
+                "message_id": message_id,
+                "channel_id": str(public_target["channel_id"]),
+                "content_sha256": receipt["content_sha256"],
+            }
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=blocker_reason,
+                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+                partial_receipt=partial_receipt,
+            )
+            return _blocked_execution_result(
+                blocker_reason,
+                blocked,
+                observed_receipt=partial_receipt,
+                delivery_outcome_uncertain=True,
+            )
+
         if receipt["content_sha256"] != expected_content_sha256:
             blocked = _route_back_record_blocked(
                 case_id=case_id,
@@ -2446,25 +2901,126 @@ def route_back_execute_tool(
                 source_refs=source_refs,
                 blocker_reason="discord_send_content_hash_mismatch",
                 idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
             )
             return _blocked_execution_result(
                 "discord_send_content_hash_mismatch",
                 blocked,
+                observed_receipt=receipt,
+                delivery_outcome_uncertain=adapter_accepted,
             )
-        result = _record_route_back_sent_receipt(
-            case_id=case_id,
-            target_ref=resolved_target_ref,
-            message_summary=message_summary,
-            source_refs=source_refs,
-            receipt=receipt,
-            idempotency_key=idempotency_key,
-            execution_binding=execution_binding,
-        )
         try:
-            record_data = json.loads(result)
-        except Exception:
-            record_data = {"raw": result}
+            result = _record_route_back_sent_receipt(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                receipt=receipt,
+                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+            )
+            try:
+                record_data = json.loads(result)
+            except Exception:
+                record_data = {"success": False, "raw": result}
+        except Exception as exc:
+            record_data = {
+                "success": False,
+                "error": f"route_back_sent_finalize_failed:{type(exc).__name__}",
+            }
         if not isinstance(record_data, dict) or not record_data.get("success"):
+            # Reconcile before downgrading a proven external delivery. The
+            # exact claim and sent finalizer are both idempotent: a lost
+            # success response is recovered as an existing sent terminal, and
+            # a transient writer failure gets one bounded retry without any
+            # second Discord send.
+            try:
+                reconcile_claim = json.loads(
+                    _record_route_back_execution_intent(
+                        case_id=case_id,
+                        target_ref=resolved_target_ref,
+                        message_summary=message_summary,
+                        source_refs=source_refs,
+                        idempotency_key=idempotency_key,
+                        execution_binding=execution_binding,
+                    )
+                )
+            except Exception:
+                reconcile_claim = {}
+            if (
+                isinstance(reconcile_claim, dict)
+                and reconcile_claim.get("terminal_event_type")
+                == "route_back.sent"
+            ):
+                return json.dumps({
+                    "success": True,
+                    "status": "ROUTE_BACK_EXECUTE_SENT_RECONCILED",
+                    "receipt": receipt,
+                    "route_back_record": reconcile_claim,
+                }, ensure_ascii=False, sort_keys=True)
+
+            try:
+                retry_result = _record_route_back_sent_receipt(
+                    case_id=case_id,
+                    target_ref=resolved_target_ref,
+                    message_summary=message_summary,
+                    source_refs=source_refs,
+                    receipt=receipt,
+                    idempotency_key=idempotency_key,
+                    execution_binding=execution_binding,
+                )
+                try:
+                    retry_record = json.loads(retry_result)
+                except Exception:
+                    retry_record = {"success": False, "raw": retry_result}
+            except Exception as exc:
+                retry_record = {
+                    "success": False,
+                    "error": f"route_back_sent_finalize_retry_failed:{type(exc).__name__}",
+                }
+            if isinstance(retry_record, dict) and retry_record.get("success"):
+                return json.dumps({
+                    "success": True,
+                    "status": "ROUTE_BACK_EXECUTE_SENT_RECONCILED",
+                    "receipt": receipt,
+                    "route_back_record": retry_record,
+                }, ensure_ascii=False, sort_keys=True)
+
+            # The retry can commit successfully and still lose its response.
+            # Perform one final exact claim readback before writing a blocker.
+            try:
+                final_reconcile_claim = json.loads(
+                    _record_route_back_execution_intent(
+                        case_id=case_id,
+                        target_ref=resolved_target_ref,
+                        message_summary=message_summary,
+                        source_refs=source_refs,
+                        idempotency_key=idempotency_key,
+                        execution_binding=execution_binding,
+                    )
+                )
+            except Exception:
+                final_reconcile_claim = {}
+            if (
+                isinstance(final_reconcile_claim, dict)
+                and final_reconcile_claim.get("terminal_event_type")
+                == "route_back.sent"
+            ):
+                return json.dumps({
+                    "success": True,
+                    "status": "ROUTE_BACK_EXECUTE_SENT_RECONCILED",
+                    "receipt": receipt,
+                    "route_back_record": final_reconcile_claim,
+                }, ensure_ascii=False, sort_keys=True)
+
+            verified_receipt = {
+                "platform": "discord",
+                "adapter_receipt": True,
+                "receipt_readback_verified": True,
+                "message_id": message_id,
+                "channel_id": str(public_target["channel_id"]),
+                "content_sha256": receipt["content_sha256"],
+            }
             blocked = _route_back_record_blocked(
                 case_id=case_id,
                 target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
@@ -2472,6 +3028,8 @@ def route_back_execute_tool(
                 source_refs=source_refs,
                 blocker_reason="route_back_sent_receipt_persistence_failed",
                 idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+                partial_receipt=verified_receipt,
             )
             return json.dumps({
                 "success": False,
@@ -2482,11 +3040,17 @@ def route_back_execute_tool(
                 ),
                 "receipt": receipt,
                 "route_back_record": record_data,
+                "route_back_retry_record": retry_record,
+                "route_back_final_reconcile_record": final_reconcile_claim,
                 "blocked_record": blocked,
+                "delivery_outcome_verified": True,
+                "resend_forbidden": True,
                 "final_answer_guard": (
-                    "The public message was sent, but durable route_back.sent recording failed. "
-                    "Do not resend. Report the real adapter receipt, the recording failure, "
-                    "and whether route_back.blocked was durably recorded for that blocker."
+                    "The public Discord delivery was verified by exact live readback, but "
+                    "durable route_back.sent recording failed after one bounded retry and "
+                    "reconciliation. Never resend this delivery. Report the verified receipt, "
+                    "the Canonical recording blocker, and whether route_back.blocked was "
+                    "durably recorded for that blocker."
                 ),
             }, ensure_ascii=False, sort_keys=True)
 
@@ -2515,6 +3079,127 @@ def _normalize_query_rows(rows: Any) -> list[Dict[str, Any]]:
         elif isinstance(row, (list, tuple)):
             normalized.append(dict(zip(_QUERY_COLUMNS, row)))
     return normalized
+
+
+def _render_writer_query_proxy(
+    proxy: Dict[str, Any],
+    *,
+    case_id: str,
+    thread_id: str,
+    limit: int,
+    view: str,
+) -> Dict[str, Any]:
+    """Mechanically fold one scoped writer read into the public query contract.
+
+    PostgreSQL remains responsible for authorization and bounded row selection.
+    Folding stays in the existing pure Python projection so the privileged SQL
+    boundary does not acquire a second implementation of task semantics.
+    """
+
+    if proxy.get("status") == "CANONICAL_BRAIN_QUERY_PASS":
+        return proxy
+    if proxy.get("success") is False:
+        return proxy
+
+    raw_events = proxy.get("events")
+    if not isinstance(raw_events, list) or len(raw_events) > limit + 1:
+        raise ValueError("privileged writer returned an invalid query window")
+    recent_rows = _normalize_query_rows(raw_events)
+    if len(recent_rows) != len(raw_events):
+        raise ValueError("privileged writer returned a malformed query row")
+
+    raw_support = proxy.get("support_events", [])
+    if not isinstance(raw_support, list) or len(raw_support) > 1024:
+        raise ValueError("privileged writer returned invalid query support")
+    support_rows = _normalize_query_rows(raw_support)
+    if len(support_rows) != len(raw_support):
+        raise ValueError("privileged writer returned a malformed support row")
+
+    truncated = bool(
+        proxy.get("truncated") is True
+        or proxy.get("has_more") is True
+        or len(recent_rows) > limit
+    )
+    recent_rows = recent_rows[:limit]
+
+    raw_reasons = proxy.get("support_incomplete_reasons", [])
+    if not isinstance(raw_reasons, list) or len(raw_reasons) > 32:
+        raise ValueError("privileged writer returned invalid support metadata")
+    support_incomplete_reasons: list[str] = []
+    for raw_reason in raw_reasons:
+        reason = str(raw_reason or "").strip()
+        if not reason or len(reason) > 240:
+            raise ValueError("privileged writer returned invalid support metadata")
+        if reason not in support_incomplete_reasons:
+            support_incomplete_reasons.append(reason)
+    if view == "resume_bundle" and "support_events" not in proxy:
+        support_incomplete_reasons.append(
+            "privileged_writer_resume_support_metadata_missing"
+        )
+
+    raw_missing_ids = proxy.get("missing_verification_event_ids", [])
+    if not isinstance(raw_missing_ids, list) or len(raw_missing_ids) > MAX_TASK_COLLECTION_ITEMS:
+        raise ValueError("privileged writer returned invalid verification metadata")
+    missing_verification_event_ids: list[str] = []
+    for raw_event_id in raw_missing_ids:
+        event_id = str(raw_event_id or "").strip()
+        try:
+            parsed = uuid.UUID(event_id)
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError(
+                "privileged writer returned invalid verification metadata"
+            ) from None
+        if parsed.int == 0:
+            raise ValueError("privileged writer returned invalid verification metadata")
+        canonical_event_id = str(parsed)
+        if canonical_event_id not in missing_verification_event_ids:
+            missing_verification_event_ids.append(canonical_event_id)
+    if missing_verification_event_ids and (
+        "completed_plan_verification_support_missing"
+        not in support_incomplete_reasons
+    ):
+        support_incomplete_reasons.append(
+            "completed_plan_verification_support_missing"
+        )
+
+    combined_rows: list[Dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
+    for row in recent_rows + support_rows:
+        event_id = str(row.get("event_id") or "").strip()
+        if event_id and event_id in seen_event_ids:
+            continue
+        if event_id:
+            seen_event_ids.add(event_id)
+        combined_rows.append(row)
+
+    from gateway.canonical_brain_projection import fold_case_events
+
+    cases = fold_case_events(combined_rows, timeline_limit=min(20, limit))
+    return {
+        "success": True,
+        "status": "CANONICAL_BRAIN_QUERY_PASS",
+        "query": {
+            "case_id": case_id or None,
+            "thread_id": thread_id or None,
+            "limit": limit,
+            "view": view,
+        },
+        "event_count": len(recent_rows),
+        "window_event_count": len(recent_rows),
+        "support_event_count": len(support_rows),
+        "support_incomplete": bool(support_incomplete_reasons),
+        "support": {
+            "complete": not support_incomplete_reasons,
+            "reasons": support_incomplete_reasons,
+            "missing_verification_event_ids": missing_verification_event_ids,
+        },
+        "truncated": truncated,
+        "candidate_cases_truncated": bool(
+            proxy.get("candidate_cases_truncated") is True
+        ),
+        "case_count": len(cases),
+        "cases": cases,
+    }
 
 
 def _thread_retrieval_match_sql(helper: Any, thread_id: str, *, alias: str = "e") -> str:
@@ -2783,6 +3468,17 @@ def canonical_brain_query_tool(
 ) -> str:
     """Read exact Canonical events and mechanically fold bounded case state."""
     try:
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        proxy = _writer_proxy_result(
+            CanonicalWriterOperation.CASE_QUERY.value,
+            {
+                "case_id": case_id,
+                "thread_id": thread_id,
+                "limit": limit,
+                "view": view,
+            },
+        )
         case_id = str(case_id or "").strip()
         thread_id = str(thread_id or "").strip()
         view = str(view or "summary").strip()
@@ -2797,13 +3493,24 @@ def canonical_brain_query_tool(
         limit = int(limit)
         if limit < 1 or limit > 200:
             raise ValueError("limit must be between 1 and 200")
+        if proxy is not None:
+            return json.dumps(
+                _render_writer_query_proxy(
+                    proxy,
+                    case_id=case_id,
+                    thread_id=thread_id,
+                    limit=limit,
+                    view=view,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
         support_incomplete_reasons: list[str] = []
         missing_verification_event_ids: list[str] = []
         helper = _load_helper()
-        password = helper.get_secret_value()
+        sock = helper.open_connection()
         try:
-            sock = helper.connect(password)
             _bound_socket_io(sock)
             try:
                 candidate_cases_truncated = False
@@ -2962,7 +3669,7 @@ def canonical_brain_query_tool(
                 except Exception:
                     pass
         finally:
-            password = ""
+            pass
 
         from gateway.canonical_brain_projection import fold_case_events
 
@@ -2995,17 +3702,43 @@ def canonical_brain_query_tool(
         return tool_error(f"CANONICAL_BRAIN_QUERY_FAIL: {exc}")
 
 
-def canonical_active_plan_matches(*, case_id: str, plan_id: str) -> bool:
-    """Narrow authorized check for one exact active plan identity."""
+def canonical_active_plan_revision(*, case_id: str, plan_id: str) -> Optional[int]:
+    """Return the exact positive revision for one authorized active plan.
+
+    ``None`` is deliberately fail-closed: it covers no match, invalid input,
+    malformed writer output, scope rejection, and writer/database outage.
+    """
+
     case_id = str(case_id or "").strip()
     plan_id = str(plan_id or "").strip()
     if not _CASE_ID_RE.fullmatch(case_id) or not _CANONICAL_ID_RE.fullmatch(plan_id):
-        return False
+        return None
     try:
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        proxy = _writer_proxy_result(
+            CanonicalWriterOperation.PLAN_ACTIVE_MATCH.value,
+            {"case_id": case_id, "plan_id": plan_id},
+        )
+        if proxy is not None:
+            if proxy.get("matches") is not True:
+                return None
+            raw_revision = proxy.get("plan_revision")
+            if raw_revision is None:
+                # Compatibility with the first SQL contract draft. The final
+                # typed writer response uses ``plan_revision``.
+                raw_revision = proxy.get("active_plan_revision")
+            if (
+                not isinstance(raw_revision, int)
+                or isinstance(raw_revision, bool)
+                or raw_revision < 1
+                or raw_revision > 999_999_999
+            ):
+                return None
+            return raw_revision
         helper = _load_helper()
-        password = helper.get_secret_value()
+        sock = helper.open_connection()
         try:
-            sock = helper.connect(password)
             _bound_socket_io(sock)
             try:
                 _authorize_existing_case_scope(helper, sock, case_id=case_id)
@@ -3016,37 +3749,63 @@ def canonical_active_plan_matches(*, case_id: str, plan_id: str) -> bool:
                 except Exception:
                     pass
         finally:
-            password = ""
+            pass
     except Exception:
-        return False
+        return None
     plan = latest.get("plan") if isinstance(latest.get("plan"), dict) else {}
-    return bool(
+    if not (
         latest
         and str(latest.get("plan_id") or "") == plan_id
         and str(plan.get("state") or "") == "active"
+    ):
+        return None
+    revision = latest.get("revision")
+    if isinstance(revision, bool):
+        return None
+    if isinstance(revision, str):
+        if not re.fullmatch(r"[1-9][0-9]{0,8}", revision):
+            return None
+        revision = int(revision)
+    elif not isinstance(revision, int):
+        return None
+    return revision if 1 <= revision <= 999_999_999 else None
+
+
+def canonical_active_plan_matches(
+    *,
+    case_id: str,
+    plan_id: str,
+    plan_revision: Optional[int] = None,
+) -> bool:
+    """Bool-compatible exact active-plan check, optionally revision-bound."""
+
+    active_revision = canonical_active_plan_revision(
+        case_id=case_id,
+        plan_id=plan_id,
     )
+    if plan_revision is None:
+        return active_revision is not None
+    if (
+        not isinstance(plan_revision, int)
+        or isinstance(plan_revision, bool)
+        or plan_revision < 1
+        or plan_revision > 999_999_999
+    ):
+        return False
+    return active_revision == plan_revision
 
 
 def check_canonical_brain_requirements() -> bool:
     """Expose Canonical Brain tools only for explicit private/runtime installs.
 
-    This is not an upstream-generic tool surface: it requires the private Cloud
-    SQL helper and an explicit profile config enablement under
-    ``canonical_brain.audit_bridge.enabled`` or ``canonical_brain.tools_enabled``.
+    Availability is static for the life of a gateway conversation: it depends
+    on explicit ``config.yaml`` policy, not a live socket/DB probe.  A writer
+    outage therefore returns a stable fail-closed tool error without changing
+    the tool schema or invalidating prompt caching.
     """
-    if not CLOUD_SQL_HELPER.exists():
-        return False
-    if load_config is None:
-        return False
-    try:
-        cfg = load_config() or {}
-    except Exception:
-        return False
-    cb = cfg.get("canonical_brain") if isinstance(cfg, dict) else None
-    if not isinstance(cb, dict):
-        return False
-    audit = cb.get("audit_bridge")
-    return bool(cb.get("tools_enabled") or (isinstance(audit, dict) and audit.get("enabled")))
+    from gateway.canonical_writer_boundary import canonical_model_tools_configured
+
+    return canonical_model_tools_configured()
 
 
 CANONICAL_EVENT_APPEND_SCHEMA = {
@@ -3054,7 +3813,7 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
     "description": (
         "Append a durable operational event to a private/runtime Canonical Brain Cloud SQL. "
         "Use when Hermes has reasoned that durable state exists (case note, handoff, "
-        "route_back.required/blocked, needs_review, resolver reply, or task workspace state). "
+        "route_back.required, needs_review, resolver reply, or task workspace state). "
         "For a durable complex-task checkpoint use task.plan.updated with payload.plan containing "
         "plan_id, positive revision, objective, explicit state, stable success_criteria IDs, "
         "Todo-shaped steps (id/content/status), current_step_id, attempts/decisions/artifacts, "
@@ -3069,7 +3828,7 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "event_type": {"type": "string", "enum": sorted(ALLOWED_EVENT_TYPES - RECEIPT_REQUIRED_EVENT_TYPES)},
+            "event_type": {"type": "string", "enum": sorted(ALLOWED_EVENT_TYPES)},
             "case_id": {"type": "string", "description": "Canonical case id, must start with case:"},
             "summary": {"type": "string", "description": "Short operational summary"},
             "source_refs": {"type": "object", "description": "Exact source refs: platform + message/thread/event/manual ref"},
@@ -3085,9 +3844,9 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
 ROUTE_BACK_SCHEMA = {
     "name": "route_back_state",
     "description": (
-        "Record route-back required, queued, or blocked state in private/runtime Canonical Brain. "
+        "Record route-back required or blocked state in private/runtime Canonical Brain. "
         "This tool never records sent state. Use route_back_execute for idempotent public send, "
-        "live Discord readback, and a receipt-coupled terminal event."
+        "content-bound durable claim, live Discord readback, and a receipt-coupled terminal event."
     ),
     "parameters": {
         "type": "object",
@@ -3096,7 +3855,7 @@ ROUTE_BACK_SCHEMA = {
             "target_ref": {"type": "object", "description": "Target person/lane/mention/channel refs"},
             "message_summary": {"type": "string"},
             "source_refs": {"type": "object"},
-            "mode": {"type": "string", "enum": ["record_required_only", "queue_intent", "record_blocked"], "default": "record_required_only"},
+            "mode": {"type": "string", "enum": ["record_required_only", "record_blocked"], "default": "record_required_only"},
             "blocker_reason": {"type": "string", "description": "Required for record_blocked"},
             "idempotency_key": {"type": "string"},
         },
@@ -3109,10 +3868,12 @@ ROUTE_BACK_EXECUTE_SCHEMA = {
     "description": (
         "Execute an exact approved public route-back for private/runtime Canonical Brain cases. "
         "Use this when the route-back target is already known and is a directory-confirmed public "
-        "Discord channel/thread or an exact registered teammate public lane. The tool sends first "
-        "through the live adapter, then records route_back.sent with the real "
-        "Discord receipt/message_id. If it cannot send safely, it records route_back.blocked and returns "
-        "that terminal outcome instead of leaving route_back.required pending."
+        "Discord channel/thread or an exact registered teammate public lane. The tool first creates "
+        "an atomic durable execution claim, sends through the live adapter, verifies live readback, "
+        "then finalizes route_back.sent with the real Discord receipt/message_id. If it cannot send "
+        "safely in its own claimed attempt, it finalizes route_back.blocked. If another worker "
+        "already owns an unterminated claim, it returns pending reconciliation and forbids resend "
+        "instead of inferring a terminal outcome from claim age."
     ),
     "parameters": {
         "type": "object",

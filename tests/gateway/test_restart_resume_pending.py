@@ -408,6 +408,7 @@ class TestGetOrCreateResumePending:
         )
         first = store.get_or_create_session(source)
         original_sid = first.session_id
+        original_epoch = first.capability_epoch
         store.mark_resume_pending(first.session_key)
 
         with patch.object(
@@ -417,6 +418,7 @@ class TestGetOrCreateResumePending:
 
         assert second.session_id == "child-session"
         assert second.resume_pending is True
+        assert second.capability_epoch != original_epoch
         mock_tip.assert_called_with(original_sid)
 
     def test_suspended_still_creates_new_session(self, tmp_path):

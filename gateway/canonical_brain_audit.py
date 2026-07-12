@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
-import importlib.util
 import json
 import logging
 import os
@@ -33,14 +32,6 @@ AUDIT_EVENT_TYPES = {
     "runtime.lease.check.allowed",
     "runtime.lease.check.failed",
 }
-
-_CANONICAL_ROOT = Path("/opt/adventico-ai-platform/canonical-brain")
-_CLOUD_SQL_HELPER = _CANONICAL_ROOT / "bin" / "cloud_sql_synthetic_write_gate.py"
-_LEASE_TABLE = "runtime_lease"
-_EVENT_TABLE = "canonical_event_log"
-_LEASE_SCOPE = "discord_gateway:adventico-internal"
-_LEASE_RUNTIME_ID = "cloud-hermes"
-_LEASE_ROLE = "primary_discord_runtime"
 
 _AUDIT_NAMESPACE = uuid.UUID("77dd7ec4-80ed-4fb9-97b3-2f9c7b13c8d5")
 _METADATA_KEY = "_canonical_brain_audit"
@@ -433,172 +424,42 @@ class CanonicalBrainAuditBridge:
             return
         await asyncio.to_thread(self._record_send_path_lease_shadow_sync, source, session_key, marker)
 
-    def _load_cloud_sql_helper(self) -> Any:
-        if not _CLOUD_SQL_HELPER.exists():
-            raise RuntimeError("missing cloud sql helper")
-        spec = importlib.util.spec_from_file_location("canonical_brain_cloud_sql_helper", _CLOUD_SQL_HELPER)
-        if spec is None or spec.loader is None:
-            raise RuntimeError("could not load cloud sql helper")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    def _evaluate_lease_attempt(self, lease: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
-        reasons: list[str] = []
-        if attempt["lease_scope"] != lease["lease_scope"]:
-            reasons.append("lease_scope_mismatch")
-        if attempt["runtime_id"] != lease["runtime_id"]:
-            reasons.append("runtime_id_mismatch")
-        if attempt["role"] != lease["role"]:
-            reasons.append("role_mismatch")
-        if lease["status"] != "active":
-            reasons.append("lease_status_not_active")
-        if attempt["generation"] != lease["generation"]:
-            reasons.append("generation_mismatch")
-        if attempt["fencing_token"] != lease["fencing_token"]:
-            reasons.append("fencing_token_mismatch")
-        if not attempt.get("not_expired", lease["not_expired"]):
-            reasons.append("lease_expired")
-        return {
-            "scenario": attempt["scenario"],
-            "runtime_id": attempt["runtime_id"],
-            "role": attempt["role"],
-            "lease_scope": attempt["lease_scope"],
-            "generation": attempt["generation"],
-            "fencing_token_ref": self.ref(attempt["fencing_token"], "fencing-token"),
-            "fencing_token_value_recorded": False,
-            "would_allow": not reasons,
-            "would_block": bool(reasons),
-            "reasons": reasons,
-            "report_only": True,
-            "enforcement_enabled": False,
-        }
-
     def _record_send_path_lease_shadow_sync(self, source: Any, session_key: Optional[str], marker: dict[str, Any]) -> None:
-        helper = self._load_cloud_sql_helper()
-        password = helper.get_secret_value()
-        try:
-            sock = helper.connect(password)
-            try:
-                rows = helper.query(sock, f"""
-SELECT lease_scope, runtime_id, role, status, generation::text, fencing_token,
-       acquired_at::text, heartbeat_at::text, expires_at::text,
-       (expires_at > now())::text
-FROM {_LEASE_TABLE}
-WHERE lease_scope = {helper.sql_quote(_LEASE_SCOPE)}
-LIMIT 1;
-""")["rows"]
-                if len(rows) != 1:
-                    return
-                row = rows[0]
-                lease = {
-                    "lease_scope": row[0],
-                    "runtime_id": row[1],
-                    "role": row[2],
-                    "status": row[3],
-                    "generation": int(row[4]),
-                    "fencing_token": row[5],
-                    "fencing_token_ref": self.ref(row[5], "fencing-token"),
-                    "acquired_at": row[6],
-                    "heartbeat_at": row[7],
-                    "expires_at": row[8],
-                    "not_expired": row[9] == "true",
-                }
-                current = {
-                    "scenario": "send_path_current_cloud_hermes",
-                    "lease_scope": _LEASE_SCOPE,
-                    "runtime_id": _LEASE_RUNTIME_ID,
-                    "role": _LEASE_ROLE,
-                    "generation": lease["generation"],
-                    "fencing_token": lease["fencing_token"],
-                    "not_expired": lease["not_expired"],
-                }
-                matrix = [
-                    self._evaluate_lease_attempt(lease, current),
-                    self._evaluate_lease_attempt(lease, dict(current, scenario="send_path_simulated_local_hermes", runtime_id="local-hermes", role="passive_cockpit_fallback_dev")),
-                    self._evaluate_lease_attempt(lease, dict(current, scenario="send_path_simulated_stale_generation", generation=max(0, lease["generation"] - 1))),
-                    self._evaluate_lease_attempt(lease, dict(current, scenario="send_path_simulated_expired_lease", not_expired=False)),
-                    self._evaluate_lease_attempt(lease, dict(current, scenario="send_path_simulated_fencing_mismatch", fencing_token="simulated-mismatch-token-not-secret")),
-                ]
-                current_decision = matrix[0]
-                event_type = "runtime.lease.check.allowed" if current_decision["would_allow"] else "runtime.lease.check.failed"
-                now_iso = _now_iso()
-                idempotency = f"send-path-lease-shadow:{marker.get('intent_event_id')}:{lease['generation']}:{event_type}"
-                payload = {
-                    "metadata_only": True,
-                    "shadow_mode": True,
-                    "report_only": True,
-                    "enforcement_enabled": bool(self.config.runtime_lease_enforcement_enabled),
-                    "send_path_blocking_enabled": bool(self.config.runtime_lease_send_path_blocking_enabled),
-                    "blocking_effective": bool(self.config.runtime_lease_enforcement_enabled) and bool(self.config.runtime_lease_send_path_blocking_enabled),
-                    "send_unblocked_regardless_of_decision": not (bool(self.config.runtime_lease_enforcement_enabled) and bool(self.config.runtime_lease_send_path_blocking_enabled)),
-                    "runtime_lease_enforcement_config": marker.get("runtime_lease_enforcement"),
-                    "intent_event_id": marker.get("intent_event_id"),
-                    "intent_kind": marker.get("intent_kind"),
-                    "lease_scope": _LEASE_SCOPE,
-                    "runtime_id": _LEASE_RUNTIME_ID,
-                    "role": _LEASE_ROLE,
-                    "lease_status": lease["status"],
-                    "generation": lease["generation"],
-                    "fencing_token_ref": lease["fencing_token_ref"],
-                    "fencing_token_value_recorded": False,
-                    "would_allow": current_decision["would_allow"],
-                    "would_block": current_decision["would_block"],
-                    "decision_reasons": current_decision["reasons"],
-                    "decision_matrix": matrix,
-                    "raw_discord_content_recorded": False,
-                }
-                source_stub = source
-                envelope = self.envelope(
-                    event_type=event_type,
-                    idempotency_key=idempotency,
-                    source=source_stub,
-                    session_key=session_key,
-                    actor_kind="system",
-                    actor_ref=self.ref(self.config.runtime_id, "runtime"),
-                    status_state="pass" if current_decision["would_allow"] else "failed",
-                    summary="Discord send-path lease shadow decision recorded",
-                    case_ref=marker.get("case"),
-                    payload=payload,
-                )
-                self._append_jsonl(envelope)
-                raw_hash = hashlib.sha256(json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-                tag = helper.query(sock, f"""
-INSERT INTO {_EVENT_TABLE} (
-  event_id, schema_version, event_type, occurred_at, case_id,
-  source, actor, subject, evidence, decision, status, next_action, safety, payload,
-  idempotency_key, source_spool, spool_line_number, raw_event_sha256
-) VALUES (
-  {helper.sql_quote(envelope['event_id'])}::uuid,
-  {helper.sql_quote(envelope['schema_version'])},
-  {helper.sql_quote(envelope['event_type'])},
-  {helper.sql_quote(envelope['occurred_at'])}::timestamptz,
-  {helper.sql_quote(envelope['case']['case_id'])},
-  {helper.json_sql(envelope['source'])},
-  {helper.json_sql(envelope['actor'])},
-  {helper.json_sql(envelope['subject'])},
-  {helper.json_sql(envelope['evidence'])},
-  {helper.json_sql(envelope['decision'])},
-  {helper.json_sql(envelope['status'])},
-  {helper.json_sql(envelope['next_action'])},
-  {helper.json_sql(envelope['safety'])},
-  {helper.json_sql(envelope['payload'])},
-  {helper.sql_quote(idempotency)},
-  {helper.sql_quote('discord_send_path_lease_shadow_mode')},
-  NULL,
-  {helper.sql_quote(raw_hash)}
-)
-ON CONFLICT (event_id) DO NOTHING;
-""")["command_tag"]
-                logger.debug("canonical brain send-path lease shadow persisted: %s", tag)
-                helper.send_msg(sock, b"X", b"")
-            finally:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-        finally:
-            password = ""
+        from gateway.canonical_writer_boundary import canonical_writer_call
+        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+        result = canonical_writer_call(
+            CanonicalWriterOperation.LEASE_SHADOW_RECORD.value,
+            {
+                "intent_event_id": str(marker.get("intent_event_id") or ""),
+                "intent_kind": str(marker.get("intent_kind") or ""),
+                "case": marker.get("case") or {},
+                "runtime_lease_enforcement": (
+                    marker.get("runtime_lease_enforcement") or {}
+                ),
+                "enforcement_enabled": bool(
+                    self.config.runtime_lease_enforcement_enabled
+                ),
+                "send_path_blocking_enabled": bool(
+                    self.config.runtime_lease_send_path_blocking_enabled
+                ),
+                "audit_runtime_id": self.config.runtime_id,
+                "source_platform": _platform_name(
+                    getattr(source, "platform", None)
+                ),
+                "session_key_ref": self.ref(session_key or "", "session"),
+            },
+            idempotency_key=(
+                f"send-path-lease-shadow:{marker.get('intent_event_id')}"
+            ),
+        )
+        envelope = result.get("envelope")
+        if isinstance(envelope, dict):
+            self._append_jsonl(envelope)
+        logger.debug(
+            "canonical brain send-path lease shadow persisted: %s",
+            result.get("status") or result.get("event_id") or "ok",
+        )
 
     async def record_outbound_receipt(
         self,

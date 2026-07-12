@@ -10,63 +10,39 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib.util
 import json
 import os
 import pathlib
-from typing import Any
+from typing import Any, Mapping
 
 from gateway.canonical_brain_projection import fold_case_events
 
 
-DEFAULT_HELPER = pathlib.Path(
-    "/opt/adventico-ai-platform/canonical-brain/bin/cloud_sql_synthetic_write_gate.py"
-)
-EVENT_TABLE = "canonical_event_log"
+def read_events(events_path: pathlib.Path, *, limit: int) -> list[dict[str, Any]]:
+    """Read a bounded export produced by the privileged writer service.
 
+    This projector intentionally has no database/helper/secret path.  The
+    writer service owns database reads and may write an atomic JSON export for
+    this pure folding process.  The export is derived state, never authority;
+    Canonical Brain's append-only log remains the source of truth.
+    """
 
-def _load_helper(path: pathlib.Path) -> Any:
-    spec = importlib.util.spec_from_file_location("canonical_brain_cloud_sql_helper", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load Canonical Brain Cloud SQL helper")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def read_events(helper_path: pathlib.Path, *, limit: int) -> list[dict[str, Any]]:
-    helper = _load_helper(helper_path)
-    password = helper.get_secret_value()
-    try:
-        sock = helper.connect(password)
-        try:
-            result = helper.query(sock, f"""
-SELECT event_id::text, schema_version, event_type, case_id, occurred_at::text,
-       source, actor, subject, evidence, decision, status, next_action, safety, payload
-FROM {EVENT_TABLE}
-WHERE event_type <> 'runtime.lease.renewed'
-ORDER BY occurred_at DESC, event_id DESC
-LIMIT {int(limit)};
-""")
-            rows = result.get("rows", []) if isinstance(result, dict) else []
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
-    finally:
-        password = ""
-
-    columns = [
-        "event_id", "schema_version", "event_type", "case_id", "occurred_at",
-        "source", "actor", "subject", "evidence", "decision", "status",
-        "next_action", "safety", "payload",
-    ]
-    return [
-        row if isinstance(row, dict) else dict(zip(columns, row))
-        for row in rows
-        if isinstance(row, (dict, list, tuple))
-    ]
+    with events_path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if isinstance(value, Mapping):
+        rows = value.get("events")
+    else:
+        rows = value
+    if not isinstance(rows, list):
+        raise ValueError("writer event export must contain an events array")
+    if len(rows) > limit:
+        raise ValueError("writer event export exceeds the projector limit")
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("writer event export rows must be objects")
+        normalized.append(dict(row))
+    return normalized
 
 
 def projection_documents(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -118,15 +94,20 @@ def write_documents(output_dir: pathlib.Path, documents: dict[str, dict[str, Any
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--helper", type=pathlib.Path, default=DEFAULT_HELPER)
+    parser.add_argument(
+        "--events-json",
+        type=pathlib.Path,
+        required=True,
+        help="atomic event export produced by muncho-canonical-writer",
+    )
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--limit", type=int, default=200_000)
     args = parser.parse_args()
-    if not args.helper.is_file():
-        raise SystemExit("Canonical Brain Cloud SQL helper unavailable")
+    if not args.events_json.is_file():
+        raise SystemExit("privileged Canonical writer event export unavailable")
     if args.limit < 1 or args.limit > 1_000_000:
         raise SystemExit("--limit must be between 1 and 1000000")
-    rows = read_events(args.helper, limit=args.limit)
+    rows = read_events(args.events_json, limit=args.limit)
     documents = projection_documents(rows)
     write_documents(args.output_dir, documents)
     print(json.dumps(documents["index.json"], ensure_ascii=False, sort_keys=True))

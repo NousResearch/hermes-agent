@@ -14,6 +14,9 @@ class _Helper:
         self.sql = ""
         self.queries = []
 
+    def open_connection(self):
+        return _Sock()
+
     def get_secret_value(self):
         return "secret-handle-value"
 

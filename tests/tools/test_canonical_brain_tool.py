@@ -12,6 +12,16 @@ from tools import canonical_brain_tool as cbt
 _REAL_DISCORD_VERIFY_MESSAGE_RECEIPT = cbt._discord_verify_message_receipt
 
 
+def _verified_delivery(message_id: str, channel_id: str, content: str) -> dict:
+    return {
+        "id": message_id,
+        "channel_id": channel_id,
+        "adapter_receipt": True,
+        "receipt_readback_verified": True,
+        "content_sha256": hashlib.sha256(str(content).encode("utf-8")).hexdigest(),
+    }
+
+
 @pytest.fixture(autouse=True)
 def _verified_discord_receipt(monkeypatch):
     monkeypatch.setattr(
@@ -135,6 +145,7 @@ def test_route_back_sent_rejects_target_receipt_channel_mismatch():
                 },
             },
             safety={},
+            _writer_owned_event=True,
         )
 
 
@@ -211,7 +222,7 @@ def test_route_back_sent_blocks_dm_receipt_before_helper(monkeypatch):
         raise AssertionError("helper must not be loaded after forbidden DM receipt")
 
     monkeypatch.setattr(cbt, "_load_helper", boom)
-    out = cbt.canonical_event_append_tool(
+    out = cbt._canonical_event_append_impl(
         event_type="route_back.sent",
         case_id="case:test",
         summary="DM receipt must not be accepted",
@@ -232,6 +243,7 @@ def test_route_back_sent_blocks_dm_receipt_before_helper(monkeypatch):
                 "dm_channel_id": "1521098105041191104",
             },
         },
+        _writer_owned_event=True,
     )
     data = json.loads(out)
 
@@ -261,6 +273,34 @@ def test_route_back_pending_modes_return_non_terminal_guard(monkeypatch, mode):
     assert "Do not present this as delivered or complete" in data["route_back"]["final_answer_guard"]
 
 
+def test_configured_writer_rejects_generic_queue_intent_before_append(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.canonical_writer_boundary.writer_boundary_configured",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_boundary.in_writer_service",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_canonical_event_append_impl",
+        lambda **kwargs: pytest.fail("queue_intent must not generic-append"),
+    )
+
+    data = json.loads(cbt.route_back_tool(
+        case_id="case:test",
+        target_ref={"id": "public-channel"},
+        message_summary="must use exact execute claim",
+        source_refs={"platform": "discord", "message_id": "m-queue"},
+        mode="queue_intent",
+        idempotency_key="queue-intent:configured-writer:1",
+    ))
+
+    assert "queue_intent is writer-owned" in data["error"]
+    assert "route_back_execute" in data["error"]
+
+
 def test_route_back_blocked_returns_terminal_outcome(monkeypatch):
     fake = _FakeHelper()
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
@@ -283,6 +323,63 @@ def test_route_back_blocked_returns_terminal_outcome(monkeypatch):
     assert "final_answer_guard" not in data["route_back"]
 
 
+@pytest.mark.parametrize(
+    "target_ref",
+    [
+        {"id": "alex", "mention": "<@1282940574533423125>"},
+        {"id": "alex", "mention": "unknown-person-alias"},
+        {"id": "alex", "channel_id": "1504852553031221391"},
+        {"channel_id": "public-channel-a", "thread_id": "public-thread-b"},
+    ],
+)
+def test_route_back_target_contradictions_require_clarification(target_ref):
+    with pytest.raises(ValueError, match="clarify"):
+        cbt._resolve_route_back_public_target(target_ref)
+
+
+def test_route_back_target_conflict_uses_typed_preclaim_blocker(monkeypatch):
+    writer_calls = []
+    sends = []
+
+    def _writer(operation, payload, *, idempotency_key=None):
+        writer_calls.append((operation, payload, idempotency_key))
+        return {"success": True, "outcome": "blocked", "preclaim": True}
+
+    monkeypatch.setattr(cbt, "_writer_proxy_result", _writer)
+    monkeypatch.setattr(
+        cbt,
+        "route_back_tool",
+        lambda **kwargs: pytest.fail("typed preclaim must not use generic append"),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_post_message",
+        lambda *args, **kwargs: sends.append((args, kwargs)),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:target-conflict",
+        target_ref={"id": "alex", "mention": "<@1282940574533423125>"},
+        message="must not guess target",
+        message_summary="conflicting teammate identities",
+        source_refs={"platform": "discord", "message_id": "m-conflict"},
+        idempotency_key="routeback:target-conflict:1",
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert data["clarification_required"] is True
+    assert "conflicting people" in data["clarification"]
+    assert "Do not guess" in data["final_answer_guard"]
+    assert sends == []
+    assert len(writer_calls) == 1
+    operation, payload, writer_idempotency_key = writer_calls[0]
+    assert operation == "routeback.finalize_blocked"
+    assert payload["preclaim"] is True
+    assert "execution_binding" not in payload
+    assert payload["blocker_reason"] == "target_not_approved_or_unresolved:ValueError"
+    assert writer_idempotency_key == "routeback:target-conflict:1"
+
+
 def test_route_back_execute_owner_target_sends_then_records_sent(monkeypatch):
     fake = _FakeHelper()
     sent = {}
@@ -291,7 +388,7 @@ def test_route_back_execute_owner_target_sends_then_records_sent(monkeypatch):
     def fake_post(channel_id, content, *, timeout=15):
         sent["channel_id"] = channel_id
         sent["content"] = content
-        return {"id": "discord-msg-1", "channel_id": channel_id}
+        return _verified_delivery("discord-msg-1", channel_id, content)
 
     monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
 
@@ -341,11 +438,153 @@ def test_route_back_execute_send_failure_records_blocked(monkeypatch):
 
     assert data["success"] is True
     assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert data["blocker_reason"] == "discord_send_failed:RuntimeError"
+    assert data["blocker_reason"] == (
+        "discord_post_claim_delivery_outcome_uncertain:RuntimeError"
+    )
+    assert data["delivery_outcome_uncertain"] is True
+    assert data["resend_forbidden"] is True
+    assert "Do not resend" in data["final_answer_guard"]
     assert data["route_back_record"]["route_back"]["mode"] == "record_blocked"
     sql = "\n".join(fake.queries)
     assert "route_back.blocked" in sql
-    assert "discord_send_failed:RuntimeError" in sql
+    assert "discord_post_claim_delivery_outcome_uncertain:RuntimeError" in sql
+
+
+def test_route_back_execute_post_claim_timeout_is_uncertain_and_never_retried(
+    monkeypatch,
+):
+    sends = []
+    blocked = []
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({"success": True, "inserted": True}),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: blocked.append(kwargs) or {"success": True},
+    )
+
+    def _timeout(channel_id, content, **kwargs):
+        sends.append((channel_id, content))
+        raise RuntimeError("discord_adapter_send_timeout")
+
+    monkeypatch.setattr(cbt, "_discord_post_message", _timeout)
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:test",
+        target_ref={"id": "1282940511962791959"},
+        message="timeout outcome must not be replayed",
+        message_summary="post-claim Discord timeout",
+        source_refs={"platform": "discord", "message_id": "m-timeout"},
+        idempotency_key="routeback:post-claim-timeout:1",
+    ))
+
+    assert len(sends) == 1
+    assert len(blocked) == 1
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert data["blocker_reason"] == (
+        "discord_post_claim_delivery_outcome_uncertain:timeout"
+    )
+    assert data["delivery_outcome_uncertain"] is True
+    assert data["resend_forbidden"] is True
+    assert "Do not resend" in data["final_answer_guard"]
+
+
+def test_route_back_execute_accepted_unverified_send_records_partial_receipt(
+    monkeypatch,
+):
+    blocked_calls = []
+    content = "accepted but readback unavailable"
+    expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda target_ref: {
+            "channel_id": "public-channel-1",
+            "channel_type": "public_channel",
+            "target_kind": "exact_public_directory_target",
+            "target_member_key": None,
+            "target_member_id": None,
+            "target_mention": None,
+        },
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({"success": True, "inserted": True}),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_post_message",
+        lambda channel_id, message, **kwargs: {
+            "id": "discord-accepted-1",
+            "channel_id": channel_id,
+            "adapter_receipt": True,
+            "receipt_readback_verified": False,
+            "content_sha256": expected_hash,
+            "receipt_verification_error": "RuntimeError",
+        },
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: blocked_calls.append(kwargs)
+        or {
+            "success": True,
+            "outcome": "blocked",
+            "partial_receipt": kwargs.get("partial_receipt"),
+        },
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:test",
+        target_ref={"channel_id": "public-channel-1"},
+        message=content,
+        message_summary="accepted send with unverified readback",
+        source_refs={"platform": "discord", "message_id": "source-1"},
+        idempotency_key="routeback:accepted-unverified:1",
+    ))
+
+    expected_partial = {
+        "platform": "discord",
+        "adapter_receipt": True,
+        "receipt_readback_verified": False,
+        "message_id": "discord-accepted-1",
+        "channel_id": "public-channel-1",
+        "content_sha256": expected_hash,
+    }
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert data["delivery_outcome_uncertain"] is True
+    assert data["partial_receipt"] == expected_partial
+    assert "Do not resend" in data["final_answer_guard"]
+    assert blocked_calls == [
+        {
+            "case_id": "case:test",
+            "target_ref": {
+                "id": "public-channel-1",
+                "mention": None,
+                "channel_id": "public-channel-1",
+                "channel_type": "public_channel",
+                "target_kind": "exact_public_directory_target",
+            },
+            "message_summary": "accepted send with unverified readback",
+            "source_refs": {"platform": "discord", "message_id": "source-1"},
+            "blocker_reason": (
+                "discord_send_accepted_receipt_readback_unverified:RuntimeError"
+            ),
+            "idempotency_key": "routeback:accepted-unverified:1",
+            "execution_binding": {
+                "target_channel_id": "public-channel-1",
+                "content_sha256": expected_hash,
+            },
+            "partial_receipt": expected_partial,
+        }
+    ]
 
 
 def test_route_back_execute_registered_teammate_uses_public_default_lane(monkeypatch):
@@ -355,7 +594,7 @@ def test_route_back_execute_registered_teammate_uses_public_default_lane(monkeyp
     def fake_post(channel_id, content, *, timeout=15):
         called["send"] = True
         called["channel_id"] = channel_id
-        return {"id": "discord-msg-alex", "channel_id": channel_id}
+        return _verified_delivery("discord-msg-alex", channel_id, content)
 
     monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
@@ -397,10 +636,9 @@ def test_route_back_execute_normalizes_conflicting_target_channel_fields(monkeyp
     monkeypatch.setattr(
         cbt,
         "_discord_post_message",
-        lambda channel_id, content, timeout=15: {
-            "id": "discord-normalized",
-            "channel_id": channel_id,
-        },
+        lambda channel_id, content, timeout=15: _verified_delivery(
+            "discord-normalized", channel_id, content
+        ),
     )
 
     data = json.loads(cbt.route_back_execute_tool(
@@ -436,7 +674,7 @@ def test_fresh_claimed_route_back_intent_does_not_send_or_record_terminal(
         "_discord_post_message",
         lambda channel_id, content, timeout=15: (
             sends.append((channel_id, content))
-            or {"id": "discord-msg-once", "channel_id": channel_id}
+            or _verified_delivery("discord-msg-once", channel_id, content)
         ),
     )
     kwargs = {
@@ -453,21 +691,21 @@ def test_fresh_claimed_route_back_intent_does_not_send_or_record_terminal(
     fake.insert_tags_by_event_type["route_back.intent.created"] = "INSERT 0 0"
     retry = json.loads(cbt.route_back_execute_tool(**kwargs))
 
-    assert retry["status"] == "ROUTE_BACK_EXECUTE_ALREADY_CLAIMED_PENDING"
-    assert retry["lease_seconds"] == cbt.ROUTE_BACK_INTENT_LEASE_SECONDS
+    assert retry["status"] == (
+        "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
+    )
+    assert retry["delivery_outcome_uncertain"] is True
+    assert retry["resend_forbidden"] is True
     assert "Do not send" in retry["final_answer_guard"]
     assert len(sends) == 1
 
 
-def test_stale_claimed_route_back_intent_records_uncertain_block_without_send(
+def test_old_claim_never_auto_terminalizes_blocked_or_resends(
     monkeypatch,
 ):
     sends = []
     blocked = []
-    old = (
-        cbt.dt.datetime.now(cbt.dt.timezone.utc)
-        - cbt.dt.timedelta(seconds=cbt.ROUTE_BACK_INTENT_LEASE_SECONDS + 1)
-    ).isoformat()
+    old = "2000-01-01T00:00:00+00:00"
     monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
     monkeypatch.setattr(
         cbt,
@@ -476,8 +714,7 @@ def test_stale_claimed_route_back_intent_records_uncertain_block_without_send(
             "success": True,
             "inserted": False,
             "deduped": True,
-            "readback_verified": True,
-            "readback": [["event", "route_back.intent.created", "case:test", old]],
+            "claimed_at": old,
         }),
     )
     monkeypatch.setattr(
@@ -500,36 +737,50 @@ def test_stale_claimed_route_back_intent_records_uncertain_block_without_send(
         idempotency_key="routeback:stale-intent:1",
     ))
 
-    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert data["blocker_reason"] == (
-        "route_back_execution_intent_lease_expired_outcome_uncertain"
+    assert data["status"] == (
+        "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
     )
+    assert data["delivery_outcome_uncertain"] is True
+    assert data["resend_forbidden"] is True
+    assert "Do not send" in data["final_answer_guard"]
     assert sends == []
-    assert blocked[0]["blocker_reason"] == data["blocker_reason"]
+    assert blocked == []
 
 
-def test_sent_receipt_record_failure_records_route_back_blocked(monkeypatch):
-    calls = []
+def test_sent_receipt_finalize_exception_retries_once_without_resend(monkeypatch):
+    sends = []
+    claim_calls = []
+    finalize_calls = []
+    claim_results = iter([
+        {"success": True, "inserted": True},
+        {"success": True, "inserted": False},
+    ])
 
-    def _record(**kwargs):
-        calls.append(kwargs["mode"])
-        if kwargs["mode"] == "queue_intent":
-            return json.dumps({
-                "success": True,
-                "inserted": True,
-                "readback_verified": True,
-            })
-        if kwargs["mode"] == "record_sent_receipt":
-            return json.dumps({"success": False, "error": "database unavailable"})
-        assert kwargs["mode"] == "record_blocked"
-        assert kwargs["blocker_reason"] == "route_back_sent_receipt_persistence_failed"
-        return json.dumps({"success": True, "inserted": True, "readback_verified": True})
+    def _claim(**kwargs):
+        claim_calls.append(kwargs)
+        return json.dumps(next(claim_results))
 
-    monkeypatch.setattr(cbt, "_route_back_state_impl", _record)
+    def _finalize(**kwargs):
+        finalize_calls.append(kwargs)
+        if len(finalize_calls) == 1:
+            raise TimeoutError("writer response lost")
+        return json.dumps({"success": True, "outcome": "sent"})
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
+    monkeypatch.setattr(cbt, "_record_route_back_sent_receipt", _finalize)
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: pytest.fail("successful bounded retry must not record blocked"),
+    )
     monkeypatch.setattr(
         cbt,
         "_discord_post_message",
-        lambda *args, **kwargs: {"id": "discord-receipt", "channel_id": "channel"},
+        lambda channel_id, content, **kwargs: (
+            sends.append((channel_id, content))
+            or _verified_delivery("discord-receipt", channel_id, content)
+        ),
     )
     data = json.loads(cbt.route_back_execute_tool(
         case_id="case:test",
@@ -540,11 +791,128 @@ def test_sent_receipt_record_failure_records_route_back_blocked(monkeypatch):
         idempotency_key="routeback:receipt-failure:1",
     ))
 
-    assert calls == ["queue_intent", "record_sent_receipt", "record_blocked"]
-    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECEIPT_RECORD_BLOCKED"
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert len(sends) == 1
+    assert len(claim_calls) == 2
+    assert len(finalize_calls) == 2
     assert data["receipt"]["message_id"] == "discord-receipt"
-    assert data["blocked_record"]["success"] is True
-    assert "Do not resend" in data["final_answer_guard"]
+
+
+def test_sent_receipt_lost_retry_response_reconciles_terminal_without_resend(
+    monkeypatch,
+):
+    sends = []
+    claim_calls = []
+    finalize_calls = []
+    claim_results = iter([
+        {"success": True, "inserted": True},
+        {"success": True, "inserted": False},
+        {
+            "success": True,
+            "inserted": False,
+            "terminal_event_type": "route_back.sent",
+        },
+    ])
+
+    def _claim(**kwargs):
+        claim_calls.append(kwargs)
+        return json.dumps(next(claim_results))
+
+    def _finalize(**kwargs):
+        finalize_calls.append(kwargs)
+        raise TimeoutError("writer response lost")
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
+    monkeypatch.setattr(cbt, "_record_route_back_sent_receipt", _finalize)
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: pytest.fail("terminal reconciliation must not record blocked"),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_post_message",
+        lambda channel_id, content, **kwargs: (
+            sends.append((channel_id, content))
+            or _verified_delivery("discord-lost-retry", channel_id, content)
+        ),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:test",
+        target_ref={"id": "1282940511962791959"},
+        message="delivered exactly once",
+        message_summary="lost sent finalizer response",
+        source_refs={"platform": "discord", "message_id": "m-lost"},
+        idempotency_key="routeback:lost-retry-response:1",
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert len(sends) == 1
+    assert len(finalize_calls) == 2
+    assert len(claim_calls) == 3
+
+
+def test_sent_receipt_persistence_failure_blocks_after_one_bounded_retry(
+    monkeypatch,
+):
+    sends = []
+    claim_calls = []
+    finalize_calls = []
+    blocked_calls = []
+    claim_results = iter([
+        {"success": True, "inserted": True},
+        {"success": True, "inserted": False},
+        {"success": True, "inserted": False},
+    ])
+
+    def _claim(**kwargs):
+        claim_calls.append(kwargs)
+        return json.dumps(next(claim_results))
+
+    def _finalize(**kwargs):
+        finalize_calls.append(kwargs)
+        return json.dumps({"success": False, "error": "writer unavailable"})
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
+    monkeypatch.setattr(cbt, "_record_route_back_sent_receipt", _finalize)
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: blocked_calls.append(kwargs) or {"success": True},
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_post_message",
+        lambda channel_id, content, **kwargs: (
+            sends.append((channel_id, content))
+            or _verified_delivery("discord-persist-fail", channel_id, content)
+        ),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:test",
+        target_ref={"id": "1282940511962791959"},
+        message="delivered but canonical finalizer unavailable",
+        message_summary="bounded sent persistence failure",
+        source_refs={"platform": "discord", "message_id": "m-persist"},
+        idempotency_key="routeback:persist-failure:1",
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECEIPT_RECORD_BLOCKED"
+    assert data["delivery_outcome_verified"] is True
+    assert data["resend_forbidden"] is True
+    assert "Never resend" in data["final_answer_guard"]
+    assert len(sends) == 1
+    assert len(finalize_calls) == 2
+    assert len(claim_calls) == 3
+    assert len(blocked_calls) == 1
+    assert blocked_calls[0]["blocker_reason"] == (
+        "route_back_sent_receipt_persistence_failed"
+    )
+    assert blocked_calls[0]["partial_receipt"]["receipt_readback_verified"] is True
 
 
 def test_discord_post_message_uses_gateway_loop_and_cancels_timeout(monkeypatch):
@@ -726,6 +1094,72 @@ def test_discord_post_message_binds_live_readback_to_rendered_content(monkeypatc
     assert captured["expected_content_sha256"] == expected
     assert captured["metadata"] == {"require_single_public_receipt": True}
     assert result["content_sha256"] == expected
+
+
+def test_discord_post_message_preserves_adapter_receipt_when_readback_fails(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from gateway.config import Platform
+
+    expected = hashlib.sha256(b"rendered content").hexdigest()
+
+    class _Loop:
+        @staticmethod
+        def is_running():
+            return True
+
+    class _Adapter:
+        MAX_MESSAGE_LENGTH = 2000
+
+        @staticmethod
+        def format_message(content):
+            return "rendered content"
+
+        @staticmethod
+        def truncate_message(content, max_length):
+            return [content]
+
+        async def send(self, channel_id, content, metadata=None):
+            return SimpleNamespace(success=True, message_id="message-accepted")
+
+    class _Future:
+        @staticmethod
+        def result(timeout):
+            return SimpleNamespace(success=True, message_id="message-accepted")
+
+    def _schedule(coro, loop):
+        coro.close()
+        return _Future()
+
+    runner = SimpleNamespace(
+        adapters={Platform.DISCORD: _Adapter()},
+        _gateway_loop=_Loop(),
+    )
+    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+    monkeypatch.setattr(cbt.asyncio, "run_coroutine_threadsafe", _schedule)
+    monkeypatch.setattr(
+        cbt,
+        "_discord_expected_content_sha256",
+        lambda content: expected,
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_verify_message_receipt",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("readback down")),
+    )
+
+    result = cbt._discord_post_message("channel-1", "source markdown")
+
+    assert result == {
+        "id": "message-accepted",
+        "channel_id": "channel-1",
+        "adapter_receipt": True,
+        "content_sha256": expected,
+        "receipt_readback_verified": False,
+        "receipt_verification_error": "RuntimeError",
+    }
 
 
 def test_canonical_event_append_blocks_keyword_authority_secret_like_payload():
@@ -913,6 +1347,10 @@ class _FakeHelper:
         self.scope_linked = False
         self.target_linked = False
         self.event_payloads = {}
+
+    @staticmethod
+    def open_connection():
+        return _FakeSock()
 
     @staticmethod
     def get_secret_value():
@@ -1183,21 +1621,47 @@ def test_append_missing_source_refs_without_context_fails_before_helper(monkeypa
     assert called["helper"] is False
 
 
-def test_check_requirements_false_when_private_helper_absent(monkeypatch, tmp_path):
-    monkeypatch.setattr(cbt, "CLOUD_SQL_HELPER", tmp_path / "missing.py")
+def test_check_requirements_false_when_boundary_policy_absent(monkeypatch, request):
+    from gateway import canonical_writer_boundary as writer_boundary
+
+    writer_boundary._reset_frozen_writer_boundary_config_for_tests()
+    request.addfinalizer(
+        writer_boundary._reset_frozen_writer_boundary_config_for_tests
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
 
     assert cbt.check_canonical_brain_requirements() is False
 
 
-def test_check_requirements_requires_explicit_profile_enablement(monkeypatch, tmp_path):
-    helper = tmp_path / "cloud_sql_synthetic_write_gate.py"
-    helper.write_text("# helper")
-    monkeypatch.setattr(cbt, "CLOUD_SQL_HELPER", helper)
-    monkeypatch.setattr(cbt, "load_config", lambda: {"canonical_brain": {"audit_bridge": {"enabled": False}}})
+def test_check_requirements_requires_explicit_writer_boundary(monkeypatch, request):
+    from gateway import canonical_writer_boundary as writer_boundary
+
+    writer_boundary._reset_frozen_writer_boundary_config_for_tests()
+    request.addfinalizer(
+        writer_boundary._reset_frozen_writer_boundary_config_for_tests
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"canonical_brain": {"audit_bridge": {"enabled": False}}})
 
     assert cbt.check_canonical_brain_requirements() is False
 
-    monkeypatch.setattr(cbt, "load_config", lambda: {"canonical_brain": {"tools_enabled": True}})
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"canonical_brain": {"tools_enabled": True}})
+    assert cbt.check_canonical_brain_requirements() is False
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "canonical_brain": {
+                "tools_enabled": True,
+                "writer_boundary": {
+                    "enabled": True,
+                    "socket_path": "/run/muncho-canonical-writer/writer.sock",
+                },
+            }
+        },
+    )
+    # Runtime edits are intentionally invisible until a process restart.
+    assert cbt.check_canonical_brain_requirements() is False
+    writer_boundary._reset_frozen_writer_boundary_config_for_tests()
     assert cbt.check_canonical_brain_requirements() is True
 
 
@@ -1268,11 +1732,51 @@ def test_narrow_authorized_active_plan_check_reads_one_latest_plan(monkeypatch):
         case_id="case:p0",
         plan_id="plan:p0",
     ) is True
+    assert cbt.canonical_active_plan_revision(
+        case_id="case:p0",
+        plan_id="plan:p0",
+    ) == 1
+    assert cbt.canonical_active_plan_matches(
+        case_id="case:p0",
+        plan_id="plan:p0",
+        plan_revision=1,
+    ) is True
+    assert cbt.canonical_active_plan_matches(
+        case_id="case:p0",
+        plan_id="plan:p0",
+        plan_revision=2,
+    ) is False
     assert cbt.canonical_active_plan_matches(
         case_id="case:p0",
         plan_id="plan:other",
     ) is False
     assert all("capability.check.recorded" not in sql for sql in fake.queries)
+
+
+def test_active_plan_revision_requires_exact_positive_writer_revision(monkeypatch):
+    responses = iter([
+        {"matches": True, "plan_revision": 7},
+        {"matches": True, "plan_revision": None},
+        {"matches": False, "plan_revision": 7},
+    ])
+    monkeypatch.setattr(
+        cbt,
+        "_writer_proxy_result",
+        lambda *args, **kwargs: next(responses),
+    )
+
+    assert cbt.canonical_active_plan_revision(
+        case_id="case:p0",
+        plan_id="plan:p0",
+    ) == 7
+    assert cbt.canonical_active_plan_revision(
+        case_id="case:p0",
+        plan_id="plan:p0",
+    ) is None
+    assert cbt.canonical_active_plan_revision(
+        case_id="case:p0",
+        plan_id="plan:p0",
+    ) is None
 
 
 def test_task_plan_rejects_two_in_progress_steps_before_helper(monkeypatch):
@@ -1785,6 +2289,7 @@ def test_terminal_task_plan_revokes_matching_in_memory_capability(monkeypatch):
             "approval.capability.recorded",
             {"approval_receipt": {
                 "approval_id": "a1", "plan_id": "p1", "state": "granted",
+                "plan_revision": 1,
                 "session_key_sha256": "a" * 64,
                 "approval_source_sha256": "c" * 64,
                 "command_hashes": ["b" * 64],
@@ -1794,6 +2299,7 @@ def test_terminal_task_plan_revokes_matching_in_memory_capability(monkeypatch):
             "capability.check.recorded",
             {"capability_receipt": {
                 "approval_id": "a1", "plan_id": "p1", "state": "authorized",
+                "plan_revision": 1,
                 "session_key_sha256": "a" * 64, "command_sha256": "b" * 64,
             }},
         ),
@@ -1804,12 +2310,13 @@ def test_process_receipt_events_are_not_projected_as_verified_attestation(
 ):
     fake = _FakeHelper()
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
-    data = json.loads(cbt.canonical_event_append_tool(
+    data = json.loads(cbt._canonical_event_append_impl(
         event_type=event_type,
         case_id="case:p0",
         summary="forged receipt",
         source_refs={"platform": "discord", "message_id": "m1"},
         payload=payload,
+        _writer_owned_event=True,
     ))
 
     assert data["success"] is True
@@ -1817,6 +2324,88 @@ def test_process_receipt_events_are_not_projected_as_verified_attestation(
     assert '"verified":false' in sql
     assert '"attestation":"runtime_process_receipt_unverified"' in sql
     assert event_type not in cbt.CANONICAL_EVENT_APPEND_SCHEMA["parameters"]["properties"]["event_type"]["enum"]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        (
+            "approval.capability.recorded",
+            {"approval_receipt": {
+                "approval_id": "a1",
+                "plan_id": "p1",
+                "state": "granted",
+                "session_key_sha256": "a" * 64,
+                "approval_source_sha256": "c" * 64,
+                "command_hashes": ["b" * 64],
+            }},
+        ),
+        (
+            "capability.check.recorded",
+            {"capability_receipt": {
+                "approval_id": "a1",
+                "plan_id": "p1",
+                "state": "authorized",
+                "session_key_sha256": "a" * 64,
+                "command_sha256": "b" * 64,
+            }},
+        ),
+    ],
+)
+def test_process_receipts_require_exact_plan_revision_before_database(
+    monkeypatch,
+    event_type,
+    payload,
+):
+    called = {"helper": False}
+    monkeypatch.setattr(
+        cbt,
+        "_load_helper",
+        lambda: called.update(helper=True),
+    )
+
+    data = json.loads(cbt._canonical_event_append_impl(
+        event_type=event_type,
+        case_id="case:p0",
+        summary="missing revision",
+        source_refs={"platform": "discord", "message_id": "m-revision"},
+        payload=payload,
+        _writer_owned_event=True,
+    ))
+
+    assert "plan_revision must be a positive bounded integer" in data["error"]
+    assert called["helper"] is False
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    sorted(cbt.WRITER_OWNED_EVENT_TYPES),
+)
+def test_generic_model_append_excludes_writer_owned_events_before_database(
+    monkeypatch,
+    event_type,
+):
+    called = {"helper": False}
+    monkeypatch.setattr(
+        cbt,
+        "_load_helper",
+        lambda: called.update(helper=True),
+    )
+
+    data = json.loads(cbt.canonical_event_append_tool(
+        event_type=event_type,
+        case_id="case:p0",
+        summary="must use typed writer operation",
+        source_refs={"platform": "discord", "message_id": "m-writer-owned"},
+    ))
+
+    assert event_type not in cbt.ALLOWED_EVENT_TYPES
+    assert event_type not in (
+        cbt.CANONICAL_EVENT_APPEND_SCHEMA["parameters"]["properties"]
+        ["event_type"]["enum"]
+    )
+    assert f"event_type_not_allowed:{event_type}" in data["error"]
+    assert called["helper"] is False
 
 
 def test_model_supplied_verified_evidence_is_downgraded_to_assertion(monkeypatch):

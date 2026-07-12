@@ -9,12 +9,10 @@ instead of creating a duplicate.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 try:
@@ -27,8 +25,6 @@ from gateway.session import SessionContext
 
 logger = logging.getLogger(__name__)
 
-CANONICAL_BRAIN_ROOT = Path("/opt/adventico-ai-platform/canonical-brain")
-CLOUD_SQL_HELPER = CANONICAL_BRAIN_ROOT / "bin" / "cloud_sql_synthetic_write_gate.py"
 EVENT_TABLE = "canonical_event_log"
 MAX_CONTEXT_CASES = 3
 MAX_CONTEXT_QUERY_CASES = MAX_CONTEXT_CASES + 1
@@ -55,17 +51,9 @@ class RouteBackContextLookup:
 
 
 def _load_helper() -> Any:
-    if not CLOUD_SQL_HELPER.exists():
-        raise RuntimeError("canonical brain Cloud SQL helper missing")
-    spec = importlib.util.spec_from_file_location(
-        "canonical_brain_cloud_sql_helper",
-        CLOUD_SQL_HELPER,
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load canonical brain Cloud SQL helper")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    return module
+    from gateway.canonical_writer_boundary import require_writer_database
+
+    return require_writer_database()
 
 
 def _routeback_context_enabled() -> bool:
@@ -88,7 +76,9 @@ def _routeback_context_enabled() -> bool:
 
 
 def _helper_available() -> bool:
-    return CLOUD_SQL_HELPER.exists()
+    from gateway.canonical_writer_boundary import writer_boundary_configured
+
+    return writer_boundary_configured()
 
 
 def _coerce_mapping(value: Any) -> dict[str, Any]:
@@ -162,9 +152,8 @@ def _row_source_thread(source: Mapping[str, Any]) -> str:
 
 def _query_linked_rows(current_thread_id: str) -> list[Any]:
     helper = _load_helper()
-    password = helper.get_secret_value()
+    sock = helper.open_connection()
     try:
-        sock = helper.connect(password)
         setter = getattr(sock, "settimeout", None)
         if callable(setter):
             setter(CANONICAL_BRAIN_IO_TIMEOUT_SECONDS)
@@ -258,7 +247,7 @@ LIMIT {MAX_CONTEXT_QUERY_CASES};
             except Exception:
                 pass
     finally:
-        password = ""
+        pass
 
 
 def lookup_routeback_context_for_thread(
@@ -274,6 +263,37 @@ def lookup_routeback_context_for_thread(
     current_thread_id = str(current_thread_id or "").strip()
     if not current_thread_id:
         return RouteBackContextLookup(cases=())
+
+    from gateway.canonical_writer_boundary import (
+        canonical_writer_call,
+        in_writer_service,
+        writer_boundary_configured,
+    )
+    from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+    if writer_boundary_configured() and not in_writer_service():
+        result = canonical_writer_call(
+            CanonicalWriterOperation.ROUTEBACK_CONTEXT.value,
+            {"thread_id": current_thread_id},
+        )
+        raw_cases = result.get("cases")
+        if not isinstance(raw_cases, list):
+            raise RuntimeError("canonical_writer_routeback_context_invalid")
+        contexts = []
+        for item in raw_cases:
+            if not isinstance(item, Mapping):
+                raise RuntimeError("canonical_writer_routeback_context_invalid")
+            case_id = _safe_context_identifier(item.get("case_id"))
+            source_thread_id = _safe_context_identifier(
+                item.get("source_thread_id")
+            )
+            if not case_id or not source_thread_id:
+                raise RuntimeError("canonical_writer_routeback_context_invalid")
+            contexts.append(RouteBackCaseContext(case_id, source_thread_id))
+        return RouteBackContextLookup(
+            cases=tuple(contexts[:MAX_CONTEXT_CASES]),
+            truncated=bool(result.get("truncated")),
+        )
 
     columns = ["event_id", "event_type", "case_id", "occurred_at", "source", "payload"]
     contexts: list[RouteBackCaseContext] = []
@@ -355,23 +375,44 @@ def build_routeback_context_prompt(
 
 
 def build_routeback_context_prompt_for_session(context: SessionContext) -> str:
-    """Build a fail-soft prompt fragment for the current gateway session."""
+    """Build a current-turn prompt fragment with explicit outage state."""
     try:
         if context.source.platform != Platform.DISCORD:
             return ""
         current_thread_id = str(context.source.thread_id or context.source.chat_id or "").strip()
         if not current_thread_id:
             return ""
-        if not _routeback_context_enabled() or not _helper_available():
+        if not _routeback_context_enabled():
             return ""
+        if not _helper_available():
+            return build_routeback_context_incomplete_prompt(
+                "the privileged Canonical writer is unavailable or misconfigured"
+            )
         lookup = lookup_routeback_context_for_thread(current_thread_id)
         return build_routeback_context_prompt(
             lookup.cases,
             truncated=lookup.truncated,
         )
     except Exception as exc:
-        logger.debug("Canonical Brain route-back context lookup failed: %s", exc)
-        return ""
+        logger.warning("Canonical Brain route-back context lookup failed: %s", exc)
+        return build_routeback_context_incomplete_prompt(
+            "the exact route-back context lookup failed"
+        )
+
+
+def build_routeback_context_incomplete_prompt(reason: str) -> str:
+    """Return a replayable fail-closed current-turn context note."""
+
+    safe_reason = str(reason or "Canonical context is unavailable").strip()[:300]
+    return "\n".join(
+        [
+            "## Canonical Brain route-back context",
+            "",
+            f"INCOMPLETE/BLOCKED: {safe_reason}.",
+            "Do not infer that this Discord thread has no linked case and do not create a duplicate case.",
+            "Retry the exact Canonical Brain read. If it remains unavailable, report this blocker and preserve the continuation context.",
+        ]
+    )
 
 
 def attach_routeback_context_to_user_turn(
@@ -399,6 +440,7 @@ __all__ = [
     "lookup_routeback_context_for_thread",
     "lookup_routeback_cases_for_thread",
     "build_routeback_context_prompt",
+    "build_routeback_context_incomplete_prompt",
     "build_routeback_context_prompt_for_session",
     "attach_routeback_context_to_user_turn",
 ]

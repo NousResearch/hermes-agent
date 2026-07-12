@@ -275,6 +275,7 @@ def todo_tool(
             result["plan_capability"] = grant_plan_capability(
                 session_key=session_key,
                 plan_id=plan_approval.get("plan_id", ""),
+                plan_revision=plan_approval.get("plan_revision"),
                 exact_commands=plan_approval.get("exact_commands") or [],
                 approved_by_user_id=user_id,
                 ttl_seconds=plan_approval.get("ttl_seconds", 3600),
@@ -371,6 +372,13 @@ TODO_SCHEMA = {
                 ),
                 "properties": {
                     "plan_id": {"type": "string"},
+                    "plan_revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "Exact active Canonical Task Workspace revision approved by the owner."
+                        ),
+                    },
                     "exact_commands": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64},
                     "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 28800},
                     "max_uses_per_command": {"type": "integer", "minimum": 1, "maximum": 10},
@@ -386,7 +394,7 @@ TODO_SCHEMA = {
                         "description": "Exact approval message/session refs; runtime fills observed refs when omitted.",
                     },
                 },
-                "required": ["plan_id", "exact_commands"],
+                "required": ["plan_id", "plan_revision", "exact_commands"],
             },
             "goal_outcome": {
                 "type": "object",

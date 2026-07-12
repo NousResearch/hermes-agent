@@ -181,6 +181,18 @@ _JSON_FIELD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Gateway routing-boundary epochs are process-memory-only, but an early P0
+# implementation briefly persisted them and diagnostics may still contain a
+# value. They therefore have a distinctive prefix and are always redacted from
+# tool/file/log output, even when ordinary secret redaction is disabled. The
+# exact JSON-key rule covers legacy/unprefixed routing entries during upgrade.
+_CAPABILITY_EPOCH_VALUE_RE = re.compile(r"\bcap_epoch_v1_[0-9a-f]{64}\b")
+_CAPABILITY_EPOCH_JSON_FIELD_RE = re.compile(
+    r'("capability_epoch"\s*:\s*")([^"]*)(")',
+    re.IGNORECASE,
+)
+_CAPABILITY_EPOCH_REDACTED = "[REDACTED CAPABILITY EPOCH]"
+
 # Authorization headers — any scheme (Bearer, Basic, Token, Digest, …) plus the
 # bare-credential form, and Proxy-Authorization. The credential token is masked
 # while the header name and scheme word are preserved for debuggability. The
@@ -533,6 +545,20 @@ def redact_sensitive_text(
         text = str(text)
     if not text:
         return text
+
+    # This boundary is deliberately unconditional: file_read implies
+    # code_file (which skips generic JSON-key redaction), and users may opt out
+    # of ordinary log redaction. Neither path may reveal a routing epoch.
+    text = _CAPABILITY_EPOCH_VALUE_RE.sub(
+        _CAPABILITY_EPOCH_REDACTED,
+        text,
+    )
+    text = _CAPABILITY_EPOCH_JSON_FIELD_RE.sub(
+        lambda match: (
+            match.group(1) + _CAPABILITY_EPOCH_REDACTED + match.group(3)
+        ),
+        text,
+    )
     if not (force or _REDACT_ENABLED):
         return text
 

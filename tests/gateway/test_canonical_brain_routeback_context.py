@@ -19,6 +19,9 @@ class _FakeHelper:
         self.queries = []
         self.current_thread_id = ""
 
+    def open_connection(self):
+        return _FakeSock()
+
     def get_secret_value(self):
         return "fake-password"
 
@@ -153,6 +156,75 @@ def _enable_with_rows(monkeypatch, rows):
     monkeypatch.setattr(ctx, "_helper_available", lambda: True)
     monkeypatch.setattr(ctx, "_routeback_context_enabled", lambda: True)
     return helper
+
+
+def _discord_session_context():
+    config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="fake")},
+    )
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="parent-channel",
+        chat_name="Adventico / control-tower",
+        chat_type="thread",
+        thread_id="owner-thread",
+        user_name="Emil",
+    )
+    return build_session_context(source, config)
+
+
+def test_enabled_context_surfaces_writer_unavailable_as_incomplete_blocker(
+    monkeypatch,
+):
+    import gateway.canonical_brain_routeback_context as ctx
+
+    monkeypatch.setattr(ctx, "_routeback_context_enabled", lambda: True)
+    monkeypatch.setattr(ctx, "_helper_available", lambda: False)
+    monkeypatch.setattr(
+        ctx,
+        "lookup_routeback_context_for_thread",
+        lambda thread_id: (_ for _ in ()).throw(
+            AssertionError("unavailable writer must not be queried")
+        ),
+    )
+
+    prompt = build_routeback_context_prompt_for_session(_discord_session_context())
+
+    assert "INCOMPLETE/BLOCKED" in prompt
+    assert "privileged Canonical writer is unavailable" in prompt
+    assert "do not create a duplicate case" in prompt
+    assert "Retry the exact Canonical Brain read" in prompt
+
+
+def test_enabled_context_surfaces_lookup_failure_as_incomplete_blocker(monkeypatch):
+    import gateway.canonical_brain_routeback_context as ctx
+
+    monkeypatch.setattr(ctx, "_routeback_context_enabled", lambda: True)
+    monkeypatch.setattr(ctx, "_helper_available", lambda: True)
+    monkeypatch.setattr(
+        ctx,
+        "lookup_routeback_context_for_thread",
+        lambda thread_id: (_ for _ in ()).throw(TimeoutError("writer timeout")),
+    )
+
+    prompt = build_routeback_context_prompt_for_session(_discord_session_context())
+
+    assert "INCOMPLETE/BLOCKED" in prompt
+    assert "exact route-back context lookup failed" in prompt
+    assert "do not create a duplicate case" in prompt
+
+
+def test_disabled_context_remains_absent_without_writer_probe(monkeypatch):
+    import gateway.canonical_brain_routeback_context as ctx
+
+    monkeypatch.setattr(ctx, "_routeback_context_enabled", lambda: False)
+    monkeypatch.setattr(
+        ctx,
+        "_helper_available",
+        lambda: (_ for _ in ()).throw(AssertionError("disabled context must not probe")),
+    )
+
+    assert build_routeback_context_prompt_for_session(_discord_session_context()) == ""
 
 
 def test_lookup_routeback_cases_requires_current_thread_as_target(monkeypatch):

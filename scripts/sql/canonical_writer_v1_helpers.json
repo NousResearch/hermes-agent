@@ -1,0 +1,19 @@
+{
+  "schema": "canonical_brain.writer_helpers.v1",
+  "owner": "canonical_brain_migration_owner",
+  "runtime_execute": false,
+  "signatures": [
+    "canonical_brain._append_event(text, text, text, jsonb, jsonb, jsonb, jsonb, text, text, jsonb)",
+    "canonical_brain._case_scope_authorized(text, jsonb, boolean)",
+    "canonical_brain._contains_forbidden_dm_ref(jsonb)",
+    "canonical_brain._deterministic_uuid(text)",
+    "canonical_brain._event_envelope(public.canonical_event_log)",
+    "canonical_brain._fail(text, text)",
+    "canonical_brain._keys_valid(jsonb, text[], text[])",
+    "canonical_brain._ok(jsonb)",
+    "canonical_brain._plan_head(text)",
+    "canonical_brain._runtime_valid(jsonb)",
+    "canonical_brain._sha256_json(jsonb)",
+    "canonical_brain._sha256_text(text)"
+  ]
+}

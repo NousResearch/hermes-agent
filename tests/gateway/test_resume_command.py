@@ -325,8 +325,8 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
-    async def test_resume_clears_running_agent(self, tmp_path):
-        """Switching sessions clears any cached running agent."""
+    async def test_resume_never_releases_a_concurrently_started_agent(self, tmp_path):
+        """A cold-path /resume does not own or clear another turn's slot."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("old_session", "telegram", user_id="12345", chat_id="67890")
@@ -340,9 +340,11 @@ class TestHandleResumeCommand:
         real_key = _session_key_for_event(event)
         runner._running_agents[real_key] = MagicMock()
 
-        await runner._handle_resume_command(event)
+        result = await runner._handle_resume_command(event)
 
-        assert real_key not in runner._running_agents
+        assert "blocked" in result.lower()
+        assert runner._running_agents[real_key] is not None
+        runner.session_store.switch_session.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio

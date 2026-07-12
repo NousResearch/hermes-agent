@@ -87,6 +87,30 @@ class TestMentionStrippedCommandDispatch:
         assert result.success is False
         assert "DMs" in result.error
 
+    async def test_real_adapter_send_and_receipt_block_private_thread(self, discord_adapter):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        private_thread = SimpleNamespace(
+            id=8675309,
+            guild=SimpleNamespace(id=42),
+            type=SimpleNamespace(value=12, name="private_thread"),
+        )
+        discord_adapter._client.get_channel = lambda _id: private_thread
+        result = await DiscordAdapter.send(
+            discord_adapter,
+            str(private_thread.id),
+            "forbidden",
+        )
+        assert result.success is False
+        assert "private threads" in result.error
+
+        with pytest.raises(RuntimeError, match="not a public guild channel"):
+            await DiscordAdapter.verify_public_message_receipt(
+                discord_adapter,
+                channel_id=str(private_thread.id),
+                message_id="123",
+            )
+
 
 class TestAutoThreadingPreservesCommand:
     async def test_command_detected_after_auto_thread(self, discord_adapter, bot_user, monkeypatch):

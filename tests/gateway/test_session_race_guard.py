@@ -197,6 +197,23 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
         await task1
 
 
+@pytest.mark.asyncio
+async def test_running_new_does_not_interrupt_before_durable_reset_handler():
+    """The active-session fast path delegates /new without pre-clearing state."""
+    runner = _make_runner()
+    event = _make_event(text="/new")
+    session_key = build_session_key(event.source)
+    runner._running_agents[session_key] = MagicMock()
+    runner._handle_reset_command = AsyncMock(return_value="reset-complete")
+    runner._interrupt_and_clear_session = AsyncMock()
+
+    result = await runner._handle_message(event)
+
+    assert result == "reset-complete"
+    runner._handle_reset_command.assert_awaited_once_with(event)
+    runner._interrupt_and_clear_session.assert_not_awaited()
+
+
 def test_merge_pending_message_event_merges_text_and_photo_followups():
     pending = {}
     source = SessionSource(

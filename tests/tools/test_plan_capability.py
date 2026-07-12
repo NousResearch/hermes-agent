@@ -98,6 +98,7 @@ def test_todo_schema_and_registry_expose_plan_approval_to_model(monkeypatch):
     properties = TODO_SCHEMA["parameters"]["properties"]
     assert "plan_approval" in properties
     assert "goal_outcome" in properties
+    assert "plan_revision" in properties["plan_approval"]["required"]
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -110,6 +111,7 @@ def test_todo_schema_and_registry_expose_plan_approval_to_model(monkeypatch):
             "todos": [{"id": "1", "content": "approved step", "status": "pending"}],
             "plan_approval": {
                 "plan_id": "plan-registry",
+                "plan_revision": 1,
                 "exact_commands": ["git status --short"],
                 "max_uses_per_command": 1,
             },
@@ -176,6 +178,7 @@ def test_explicit_canonical_config_fails_closed_when_helper_is_unavailable(monke
             exact_commands=["git status --short"],
             approved_by_user_id="owner-canonical-policy",
             canonical_case_id="case:canonical-policy",
+            plan_revision=1,
         )
     assert approval.consume_plan_capability(
         "session-canonical-policy", "git status --short"
@@ -240,6 +243,7 @@ def test_gateway_owner_is_discord_bound_and_requires_current_observed_message(mo
         exact_commands=["git status --short"],
         approved_by_user_id="discord-owner",
         canonical_case_id="case:platform-binding",
+        plan_revision=1,
         source_refs={"message_id": "model-supplied-old-message"},
     )
     assert grant["state"] == "granted"
@@ -290,6 +294,7 @@ def test_existing_capability_cannot_be_consumed_by_same_id_on_another_platform(
         approved_by_user_id="discord-consume-owner",
         max_uses_per_command=1,
         canonical_case_id="case:consume-platform-binding",
+        plan_revision=1,
     )
 
     monkeypatch.setattr(approval, "_observed_session_platform", lambda: "telegram")
@@ -338,6 +343,7 @@ def test_observed_approval_message_cannot_mint_fresh_authority_after_restart_or_
         exact_commands=["git status --short"],
         approved_by_user_id="discord-replay-owner",
         canonical_case_id="case:replay-ledger",
+        plan_revision=1,
     )
     retry = approval.grant_plan_capability(
         session_key=session_key,
@@ -345,6 +351,7 @@ def test_observed_approval_message_cannot_mint_fresh_authority_after_restart_or_
         exact_commands=["git status --short"],
         approved_by_user_id="discord-replay-owner",
         canonical_case_id="case:replay-ledger",
+        plan_revision=1,
     )
     assert retry["approval_id"] == first["approval_id"]
     assert retry["existing_capability"] is True
@@ -357,6 +364,7 @@ def test_observed_approval_message_cannot_mint_fresh_authority_after_restart_or_
             exact_commands=["git status --short"],
             approved_by_user_id="discord-replay-owner",
             canonical_case_id="case:replay-ledger",
+            plan_revision=1,
         )
 
     observed_message["id"] = "replay-message-expiry"
@@ -366,6 +374,7 @@ def test_observed_approval_message_cannot_mint_fresh_authority_after_restart_or_
         exact_commands=["git status --short"],
         approved_by_user_id="discord-replay-owner",
         canonical_case_id="case:replay-ledger",
+        plan_revision=1,
     )
     approval._plan_capabilities[session_key][plan_id]["expires_at"] = 0
     with pytest.raises(PermissionError, match="already used"):
@@ -375,6 +384,7 @@ def test_observed_approval_message_cannot_mint_fresh_authority_after_restart_or_
             exact_commands=["git status --short"],
             approved_by_user_id="discord-replay-owner",
             canonical_case_id="case:replay-ledger",
+            plan_revision=1,
         )
 
     observed_message["id"] = "fresh-owner-message"
@@ -384,6 +394,7 @@ def test_observed_approval_message_cannot_mint_fresh_authority_after_restart_or_
         exact_commands=["git status --short"],
         approved_by_user_id="discord-replay-owner",
         canonical_case_id="case:replay-ledger",
+        plan_revision=1,
     )
     assert fresh["approval_id"] != first["approval_id"]
 
@@ -404,6 +415,7 @@ def test_canonical_runtime_requires_observed_owner_case_and_active_exact_plan(mo
             exact_commands=["git status --short"],
             approved_by_user_id="owner-1",
             canonical_case_id="case:canonical",
+            plan_revision=1,
         )
 
     monkeypatch.setattr(approval, "_observed_session_user_id", lambda: "owner-1")
@@ -413,6 +425,15 @@ def test_canonical_runtime_requires_observed_owner_case_and_active_exact_plan(mo
             plan_id="plan-canonical",
             exact_commands=["git status --short"],
             approved_by_user_id="owner-1",
+        )
+
+    with pytest.raises(PermissionError, match="exact plan_revision"):
+        approval.grant_plan_capability(
+            session_key="session-canonical",
+            plan_id="plan-canonical",
+            exact_commands=["git status --short"],
+            approved_by_user_id="owner-1",
+            canonical_case_id="case:canonical",
         )
 
     monkeypatch.setattr(
@@ -426,6 +447,7 @@ def test_canonical_runtime_requires_observed_owner_case_and_active_exact_plan(mo
             exact_commands=["git status --short"],
             approved_by_user_id="owner-1",
             canonical_case_id="case:canonical",
+            plan_revision=1,
         )
 
     monkeypatch.setattr(
@@ -442,6 +464,7 @@ def test_canonical_runtime_requires_observed_owner_case_and_active_exact_plan(mo
         exact_commands=["git status --short"],
         approved_by_user_id="owner-1",
         canonical_case_id="case:canonical",
+        plan_revision=1,
     )
     assert grant["canonical_readback_verified"] is True
 
@@ -480,6 +503,7 @@ def test_canonical_grant_requires_new_insert_and_verified_readback(monkeypatch):
             exact_commands=["git status --short"],
             approved_by_user_id="owner-1",
             canonical_case_id="case:grant-receipt",
+            plan_revision=1,
         )
     assert approval.consume_plan_capability(session_key, "git status --short") is None
     monkeypatch.setattr(
@@ -492,6 +516,7 @@ def test_canonical_grant_requires_new_insert_and_verified_readback(monkeypatch):
         exact_commands=["git status --short"],
         approved_by_user_id="owner-1",
         canonical_case_id="case:grant-receipt",
+        plan_revision=1,
     )
     assert retry["canonical_readback_verified"] is True
 
@@ -527,6 +552,7 @@ def test_canonical_consume_revalidates_active_plan_and_rejects_deduped_receipt(m
         exact_commands=[command],
         approved_by_user_id="owner-1",
         canonical_case_id=case_id,
+        plan_revision=1,
         max_uses_per_command=1,
     )
 
@@ -598,6 +624,7 @@ def test_concurrent_canonical_receipt_failure_cannot_overcredit_counter(monkeypa
         exact_commands=[command],
         approved_by_user_id="owner-1",
         canonical_case_id="case:concurrent-receipt",
+        plan_revision=1,
         max_uses_per_command=2,
     )
 

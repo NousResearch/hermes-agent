@@ -84,6 +84,34 @@ class TestKnownPrefixes:
         assert "***" in result
 
 
+class TestCapabilityEpochBoundary:
+    RAW = "cap_epoch_v1_" + "a" * 64
+
+    def test_bare_epoch_is_always_redacted(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+        result = redact_sensitive_text(self.RAW, file_read=True)
+
+        assert self.RAW not in result
+        assert result == "[REDACTED CAPABILITY EPOCH]"
+
+    def test_exact_json_field_is_redacted_for_legacy_value(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        legacy = "a" * 64
+        text = '{"capability_epoch": "' + legacy + '", "session_id": "s1"}'
+
+        result = redact_sensitive_text(text, file_read=True)
+
+        assert legacy not in result
+        assert '"capability_epoch": "[REDACTED CAPABILITY EPOCH]"' in result
+
+    def test_epoch_digest_is_not_treated_as_raw_epoch(self):
+        digest = "b" * 64
+        text = '{"capability_epoch_sha256": "' + digest + '"}'
+
+        assert redact_sensitive_text(text, file_read=True) == text
+
+
 class TestEnvAssignments:
     def test_export_api_key(self):
         text = "export OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012"

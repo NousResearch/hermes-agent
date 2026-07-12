@@ -46,6 +46,30 @@ _ensure_discord_mock()
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
+def _public_channel(**attributes):
+    default_role = object()
+    guild = SimpleNamespace(id=1, default_role=default_role)
+
+    def permissions_for(role):
+        assert role is default_role
+        return SimpleNamespace(view_channel=True)
+
+    return SimpleNamespace(
+        guild=guild,
+        permissions_for=permissions_for,
+        **attributes,
+    )
+
+
+def _mark_public(channel):
+    default_role = object()
+    channel.guild = SimpleNamespace(id=1, default_role=default_role)
+    channel.permissions_for = lambda role: SimpleNamespace(
+        view_channel=role is default_role
+    )
+    return channel
+
+
 @pytest.mark.asyncio
 async def test_verify_public_message_receipt_checks_bot_author_and_content():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
@@ -54,9 +78,8 @@ async def test_verify_public_message_receipt_checks_bot_author_and_content():
         author=SimpleNamespace(id=42),
         content="verified delivery",
     )
-    channel = SimpleNamespace(
+    channel = _public_channel(
         id=555,
-        guild=SimpleNamespace(id=1),
         fetch_message=AsyncMock(return_value=message),
     )
     adapter._client = SimpleNamespace(
@@ -80,9 +103,8 @@ async def test_verify_public_message_receipt_checks_bot_author_and_content():
 async def test_verify_public_message_receipt_rejects_content_mismatch():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     message = SimpleNamespace(id=1234, author=SimpleNamespace(id=42), content="actual")
-    channel = SimpleNamespace(
+    channel = _public_channel(
         id=555,
-        guild=SimpleNamespace(id=1),
         fetch_message=AsyncMock(return_value=message),
     )
     adapter._client = SimpleNamespace(
@@ -117,8 +139,7 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
             )
         return sent_msg
 
-    channel = SimpleNamespace(
-        guild=SimpleNamespace(id=1),
+    channel = _public_channel(
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -155,8 +176,7 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
             )
         return sent_msgs[len(send_calls) - 2]
 
-    channel = SimpleNamespace(
-        guild=SimpleNamespace(id=1),
+    channel = _public_channel(
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -197,8 +217,7 @@ async def test_send_does_not_retry_on_unrelated_errors():
             "403 Forbidden (error code: 50013): Missing Permissions"
         )
 
-    channel = SimpleNamespace(
-        guild=SimpleNamespace(id=1),
+    channel = _public_channel(
         fetch_message=AsyncMock(return_value=ref_msg),
         send=AsyncMock(side_effect=fake_send),
     )
@@ -220,9 +239,8 @@ async def test_send_does_not_retry_on_unrelated_errors():
 @pytest.mark.asyncio
 async def test_single_receipt_send_rejects_format_expansion_before_any_post():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    channel = SimpleNamespace(
+    channel = _public_channel(
         type=0,
-        guild=SimpleNamespace(id=1),
         send=AsyncMock(return_value=SimpleNamespace(id=1234)),
     )
     adapter._client = SimpleNamespace(
@@ -254,9 +272,8 @@ async def test_single_receipt_send_rejects_format_expansion_before_any_post():
 @pytest.mark.asyncio
 async def test_single_receipt_send_allows_exactly_one_formatted_public_post():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    channel = SimpleNamespace(
+    channel = _public_channel(
         type=0,
-        guild=SimpleNamespace(id=1),
         send=AsyncMock(return_value=SimpleNamespace(id=1234)),
     )
     adapter._client = SimpleNamespace(
@@ -276,6 +293,104 @@ async def test_single_receipt_send_allows_exactly_one_formatted_public_post():
         content="One receipt-bound post",
         reference=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_public_thread_visible_to_everyone_allows_send_and_receipt():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    default_role = object()
+    bot_user = SimpleNamespace(id=42)
+    sent_message = SimpleNamespace(id=1234, author=bot_user, content="public thread")
+    thread = SimpleNamespace(
+        id=555,
+        type=SimpleNamespace(value=11, name="public_thread"),
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=MagicMock(
+            return_value=SimpleNamespace(view_channel=True)
+        ),
+        send=AsyncMock(return_value=sent_message),
+        fetch_message=AsyncMock(return_value=sent_message),
+    )
+    adapter._client = SimpleNamespace(
+        user=bot_user,
+        get_channel=lambda _channel_id: thread,
+        fetch_channel=AsyncMock(),
+    )
+
+    sent = await adapter.send("555", "public thread")
+    receipt = await adapter.verify_public_message_receipt(
+        channel_id="555",
+        message_id="1234",
+        expected_content_sha256=hashlib.sha256(b"public thread").hexdigest(),
+    )
+
+    assert sent.success is True
+    assert receipt["verified"] is True
+    assert receipt["channel_id"] == "555"
+    assert thread.permissions_for.call_count == 2
+    assert all(
+        call.args == (default_role,)
+        for call in thread.permissions_for.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_guild_channel_hidden_from_everyone_fails_send_and_receipt_closed():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    default_role = object()
+    channel = SimpleNamespace(
+        id=555,
+        type=0,
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=MagicMock(
+            return_value=SimpleNamespace(view_channel=False)
+        ),
+        send=AsyncMock(),
+        fetch_message=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    sent = await adapter.send("555", "must stay blocked")
+
+    assert sent.success is False
+    assert "@everyone/default role" in (sent.error or "")
+    channel.send.assert_not_awaited()
+    with pytest.raises(RuntimeError, match="@everyone/default role"):
+        await adapter.verify_public_message_receipt(
+            channel_id="555",
+            message_id="1234",
+        )
+    channel.fetch_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_default_role_permission_data_fails_closed():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        id=555,
+        type=0,
+        guild=SimpleNamespace(id=1),
+        permissions_for=MagicMock(
+            return_value=SimpleNamespace(view_channel=True)
+        ),
+        send=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    sent = await adapter.send("555", "missing public proof")
+
+    assert sent.success is False
+    assert "@everyone/default role" in (sent.error or "")
+    channel.permissions_for.assert_not_called()
+    channel.send.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +436,7 @@ async def test_single_receipt_send_rejects_forum_parent_before_thread_creation()
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
-    forum_channel.guild = SimpleNamespace(id=1)
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock()
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -353,7 +468,7 @@ async def test_send_to_forum_creates_thread_post():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
-    forum_channel.guild = SimpleNamespace(id=1)
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(return_value=thread)
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -388,7 +503,7 @@ async def test_send_to_forum_sends_remaining_chunks():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
-    forum_channel.guild = SimpleNamespace(id=1)
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(return_value=thread)
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -410,7 +525,7 @@ async def test_send_to_forum_create_thread_failure():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
-    forum_channel.guild = SimpleNamespace(id=1)
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(side_effect=Exception("rate limited"))
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,
@@ -445,7 +560,7 @@ async def test_send_to_forum_follow_up_chunk_failures_collected_as_warnings():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
-    forum_channel.guild = SimpleNamespace(id=1)
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(return_value=thread)
     adapter._client = SimpleNamespace(
         get_channel=lambda _chat_id: forum_channel,

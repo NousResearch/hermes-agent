@@ -23,7 +23,12 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import (
+    CapabilityEpochRotationBlocked,
+    SessionEntry,
+    SessionSource,
+    build_session_key,
+)
 
 
 def _make_source() -> SessionSource:
@@ -198,3 +203,106 @@ async def test_reset_completes_when_cleanup_times_out(caplog):
     ), "expected the timeout warning to be logged"
     runner.session_store.reset_session.assert_called_once()
     assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_writer_outage_leaves_running_reset_state_untouched():
+    """The durable old-epoch tombstone is the first reset mutation."""
+    runner = _make_runner_with_cached_agent(lambda: None)
+    session_key = build_session_key(_make_source())
+    agent = runner._agent_cache[session_key]
+    runner._running_agents[session_key] = agent
+    runner._running_agents_ts = {session_key: 123.0}
+    runner._session_run_generation = {session_key: 7}
+    runner._pending_messages = {session_key: "runner-pending"}
+    runner._queued_events = {session_key: ["queued-event"]}
+    runner._session_model_overrides[session_key] = {"model": "old-model"}
+    runner._cleanup_agent_resources = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.interrupt_session_activity = AsyncMock()
+    adapter.get_pending_message = MagicMock()
+    runner.session_store.reset_session.side_effect = (
+        CapabilityEpochRotationBlocked("writer unavailable")
+    )
+
+    with patch("tools.async_delegation.interrupt_for_session") as interrupt_delegations:
+        result = await runner._handle_reset_command(_make_event("/new"))
+
+    assert "temporarily blocked" in str(result)
+    assert runner._running_agents[session_key] is agent
+    assert runner._running_agents_ts == {session_key: 123.0}
+    assert runner._session_run_generation == {session_key: 7}
+    assert runner._pending_messages == {session_key: "runner-pending"}
+    assert runner._queued_events == {session_key: ["queued-event"]}
+    assert runner._agent_cache[session_key] is agent
+    assert runner._session_model_overrides[session_key] == {"model": "old-model"}
+    agent.interrupt.assert_not_called()
+    runner._cleanup_agent_resources.assert_not_called()
+    runner._clear_session_boundary_security_state.assert_not_called()
+    adapter.interrupt_session_activity.assert_not_awaited()
+    adapter.get_pending_message.assert_not_called()
+    interrupt_delegations.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_successful_reset_keeps_slot_closed_until_cache_cleanup():
+    """Publish first; then interrupt, hard-clean, evict, and finally release."""
+    cleanup_started = threading.Event()
+    allow_cleanup = threading.Event()
+    order = []
+
+    def blocking_cleanup():
+        order.append("cleanup")
+        cleanup_started.set()
+        allow_cleanup.wait(timeout=5)
+
+    runner = _make_runner_with_cached_agent(blocking_cleanup)
+    session_key = build_session_key(_make_source())
+    agent = runner._agent_cache[session_key]
+    runner._running_agents[session_key] = agent
+    runner._running_agents_ts = {session_key: 123.0}
+    runner._session_run_generation = {session_key: 7}
+    runner._active_session_leases = {}
+    runner._busy_ack_ts = {}
+    runner._queued_events = {session_key: ["old-event"]}
+    runner._persist_active_agents = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.interrupt_session_activity = AsyncMock()
+    adapter.get_pending_message = MagicMock()
+
+    new_entry = runner.session_store.reset_session.return_value
+
+    def durable_reset(_session_key, **_kwargs):
+        order.append("durable-reset")
+        return new_entry
+
+    runner.session_store.reset_session.side_effect = durable_reset
+    agent.interrupt.side_effect = lambda _reason: order.append("interrupt")
+
+    reset_task = asyncio.create_task(
+        runner._handle_reset_command(_make_event("/new"))
+    )
+    for _ in range(200):
+        if cleanup_started.is_set():
+            break
+        await asyncio.sleep(0.005)
+
+    assert cleanup_started.is_set()
+    assert order[:3] == ["durable-reset", "interrupt", "cleanup"]
+    # The successor gate stays closed and the old cache remains identifiable
+    # throughout hard cleanup, so no new turn can reuse it in this window.
+    assert runner._running_agents[session_key] is agent
+    assert runner._agent_cache[session_key] is agent
+    assert session_key not in runner._pending_messages
+
+    allow_cleanup.set()
+    await reset_task
+
+    assert session_key not in runner._agent_cache
+    assert session_key not in runner._running_agents
+    assert session_key not in runner._queued_events
+    # The writer callback owns old-authority cleanup. A late handler-side clear
+    # after slot release could erase a successor turn's fresh approvals.
+    runner._clear_session_boundary_security_state.assert_not_called()

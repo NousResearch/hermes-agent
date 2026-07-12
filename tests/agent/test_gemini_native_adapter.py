@@ -511,3 +511,43 @@ def test_hermes_version_is_valid():
     assert _HERMES_VERSION != "0.0.0", (
         "Version should resolve from hermes_cli.__version__, not the fallback"
     )
+
+
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        # Content-policy block reasons must all surface as content_filter so the
+        # downstream refusal path (agent/conversation_loop.py) engages.
+        ("PROHIBITED_CONTENT", "content_filter"),
+        ("BLOCKLIST", "content_filter"),
+        ("SPII", "content_filter"),
+        ("IMAGE_SAFETY", "content_filter"),
+        # Anchors for the pre-existing mappings (guard against regressions).
+        ("SAFETY", "content_filter"),
+        ("RECITATION", "content_filter"),
+        ("STOP", "stop"),
+        ("MAX_TOKENS", "length"),
+    ],
+)
+def test_map_gemini_finish_reason_content_policy_blocks(reason, expected):
+    from agent.gemini_native_adapter import _map_gemini_finish_reason
+
+    assert _map_gemini_finish_reason(reason) == expected
+
+
+def test_translate_response_surfaces_policy_block_as_content_filter():
+    """A blocked Gemini turn (empty parts + PROHIBITED_CONTENT) must map to
+    content_filter, not the silent "stop" that hides the refusal."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {"parts": []},
+                "finishReason": "PROHIBITED_CONTENT",
+            }
+        ],
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    assert response.choices[0].finish_reason == "content_filter"

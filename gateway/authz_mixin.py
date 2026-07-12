@@ -342,6 +342,36 @@ class GatewayAuthorizationMixin:
                     if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                         return True
 
+        # Discord permits channel-only authorization only when no sender grant
+        # is configured. The adapter performs the channel check at intake;
+        # repeat it here because the gateway deliberately re-authorizes every
+        # event before persistence/dispatch. Do not return early when a Discord
+        # user/role or global user allowlist exists: those restrictions must be
+        # evaluated below. Threads inherit an allowed parent channel.
+        if source.platform == Platform.DISCORD and source.chat_type != "dm":
+            sender_grant_configured = any(
+                os.getenv(env_var, "").strip()
+                for env_var in (
+                    "DISCORD_ALLOWED_USERS",
+                    "DISCORD_ALLOWED_ROLES",
+                    "GATEWAY_ALLOWED_USERS",
+                )
+            )
+            raw_allowed_channels = os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
+            if raw_allowed_channels and not sender_grant_configured:
+                allowed_channel_ids = {
+                    channel_id.strip()
+                    for channel_id in raw_allowed_channels.split(",")
+                    if channel_id.strip()
+                }
+                source_channel_ids = {
+                    str(channel_id)
+                    for channel_id in (source.chat_id, source.parent_chat_id)
+                    if channel_id
+                }
+                if "*" in allowed_channel_ids or source_channel_ids & allowed_channel_ids:
+                    return True
+
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         # Checked before the no-user-id guard below: some platforms deliver
         # bot/automation traffic with no user_id at all -- e.g. Slack Workflow

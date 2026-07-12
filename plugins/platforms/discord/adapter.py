@@ -110,6 +110,8 @@ from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTr
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageAddressing,
+    MessageDisposition,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
@@ -1164,7 +1166,16 @@ class DiscordAdapter(BasePlatformAdapter):
                         self._warn_if_fail_closed_default()
                         return
                     _role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
-                
+
+                # Authorized ambient observation must run before the legacy
+                # multi-agent mention filter and before _handle_message's
+                # dispatch-only side effects (threads, backfill, downloads).
+                if await adapter_self._maybe_observe_room_message(
+                    message,
+                    role_authorized=_role_authorized,
+                ):
+                    return
+
                 # Multi-agent filtering: if the message mentions specific bots
                 # but NOT this bot, the sender is talking to another agent —
                 # stay silent.  Messages with no bot mentions (general chat)
@@ -1174,34 +1185,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                _raw_self_mention = self._self_is_explicitly_mentioned(message)
-                if not isinstance(message.channel, discord.DMChannel) and (
-                    message.mentions or _raw_self_mention
-                ):
-                    _self_mentioned = _raw_self_mention
-                    _other_bots_mentioned = any(
-                        m.bot and m != self._client.user
-                        for m in message.mentions
-                    )
-                    # If other bots are mentioned but we're not → not for us
-                    if _other_bots_mentioned and not _self_mentioned:
-                        return
-                    # If humans are mentioned but we're not → not for us
-                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
-                    # EXCEPT in free-response channels where the bot should
-                    # answer regardless of who is mentioned.
-                    _ignore_no_mention = os.getenv(
-                        "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
-                            return
+                if not adapter_self._discord_multi_agent_message_allowed(message):
+                    return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
 
@@ -4760,6 +4745,27 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_observation_enabled(self) -> bool:
+        """Return whether ambient Discord room observation is explicitly enabled."""
+
+        configured = self.config.extra.get("observe_unmentioned_group_messages", False)
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(configured)
+
+    def _discord_observed_channel_ids(self) -> set[str]:
+        """Return explicit Discord channel IDs eligible for ambient observation."""
+
+        raw = self.config.extra.get("observed_channels", [])
+        if isinstance(raw, (list, tuple, set)):
+            candidates = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            value = str(raw).strip() if raw is not None else ""
+            candidates = {part.strip() for part in value.split(",") if part.strip()}
+        # Observation is retention. Accept snowflake IDs only: no names or
+        # wildcard that could silently widen after a channel rename/reorg.
+        return {candidate for candidate in candidates if candidate.isdigit()}
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -4849,30 +4855,146 @@ class DiscordAdapter(BasePlatformAdapter):
         content = getattr(message, "content", "") or ""
         return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
 
-    def _self_is_explicitly_mentioned(self, message: Any) -> bool:
-        """Return True when this bot is explicitly @mentioned in the message.
+    def _raw_mentioned_role_ids(self, message: Any) -> set[str]:
+        """Extract Discord role-mention IDs from raw ``<@&ROLE_ID>`` tokens."""
 
-        Treats the bot as mentioned if it is either present in the resolved
-        ``message.mentions`` list OR referenced by its raw ``<@ID>`` / ``<@!ID>``
-        form in the message content.
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@&(\d+)>", content)}
+
+    def _role_is_managed_by_self(self, role: Any) -> bool:
+        """Return whether ``role`` is the current bot's managed Discord role."""
+
+        if not self._client or not self._client.user or role is None:
+            return False
+        tags = getattr(role, "tags", None)
+        return str(getattr(tags, "bot_id", "")) == str(self._client.user.id)
+
+    def _self_managed_role_ids(self, message: Any) -> set[str]:
+        """Return mentioned role IDs that Discord marks as managed by this bot."""
+
+        raw_role_ids = self._raw_mentioned_role_ids(message)
+        if not raw_role_ids:
+            return set()
+
+        roles = list(getattr(message, "role_mentions", []) or [])
+        resolved_ids = {str(getattr(role, "id", "")) for role in roles}
+        guild = getattr(message, "guild", None)
+        get_role = getattr(guild, "get_role", None)
+        if callable(get_role):
+            for role_id in raw_role_ids - resolved_ids:
+                try:
+                    role = get_role(int(role_id))
+                except (TypeError, ValueError):
+                    role = None
+                if role is not None:
+                    roles.append(role)
+
+        return {
+            str(getattr(role, "id", ""))
+            for role in roles
+            if str(getattr(role, "id", "")) in raw_role_ids
+            and self._role_is_managed_by_self(role)
+        }
+
+    def _self_is_explicitly_mentioned(self, message: Any) -> bool:
+        """Return True when this bot or its managed role is explicitly mentioned.
+
+        User mentions can be resolved through ``message.mentions`` or raw
+        ``<@ID>`` / ``<@!ID>`` content. Discord bot integrations also own a
+        managed role; an inline ``<@&ROLE_ID>`` counts only when RoleTags.bot_id
+        identifies the current bot, never merely by role name or assignment.
         """
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        return self._self_is_raw_mentioned(message)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
-        """Return True only when this bot has an inline mention token.
+        """Return True only when this bot has an inline user or managed-role token.
 
         Discord reply-pings can add the replied-to bot to ``message.mentions``
-        without a literal ``<@bot>`` token in ``message.content``. This helper
-        intentionally ignores the resolved mentions list so the bot admission
-        gate can distinguish an explicit cross-bot address from a reply chip.
+        without a literal token in ``message.content``. This helper intentionally
+        ignores that resolved user list so the bot admission gate can distinguish
+        an explicit cross-bot address from a reply chip.
         """
         if not self._client or not self._client.user:
             return False
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        raw_user_mention = str(self._client.user.id) in self._raw_mentioned_user_ids(
+            message
+        )
+        return raw_user_mention or bool(self._self_managed_role_ids(message))
+
+    def _discord_reply_to_self(self, message: Any) -> bool:
+        """Return True when a Discord reply targets a message authored by this bot."""
+
+        if not self._client or not self._client.user:
+            return False
+        reference = getattr(message, "reference", None)
+        resolved = getattr(reference, "resolved", None) if reference else None
+        author = getattr(resolved, "author", None) if resolved is not None else None
+        return bool(
+            author is not None
+            and str(getattr(author, "id", "")) == str(self._client.user.id)
+        )
+
+    def _discord_message_addressing(self, message: Any) -> MessageAddressing:
+        """Normalize Discord mention/reply facts without applying gateway policy."""
+
+        self_id = ""
+        if self._client and self._client.user:
+            self_id = str(self._client.user.id)
+        reply_to_self = self._discord_reply_to_self(message)
+        resolved_self_mention = any(
+            str(getattr(mention, "id", "")) == self_id
+            for mention in getattr(message, "mentions", [])
+        )
+        direct_mention = self._self_is_raw_mentioned(message) or (
+            resolved_self_mention and not reply_to_self
+        )
+        mentions_other_bots = False
+        mentions_other_users = False
+        for mention in getattr(message, "mentions", []):
+            if str(getattr(mention, "id", "")) == self_id:
+                continue
+            if getattr(mention, "bot", False):
+                mentions_other_bots = True
+            else:
+                mentions_other_users = True
+        return MessageAddressing(
+            direct_mention=direct_mention,
+            reply_to_self=reply_to_self,
+            mentions_other_bots=mentions_other_bots,
+            mentions_other_users=mentions_other_users,
+        )
+
+    def _discord_multi_agent_message_allowed(self, message: Any) -> bool:
+        """Apply Discord's existing bot/human mention admission rule."""
+
+        if discord is not None and isinstance(message.channel, discord.DMChannel):
+            return True
+        addressing = self._discord_message_addressing(message)
+        self_addressed = addressing.direct_mention or addressing.reply_to_self
+        if not getattr(message, "mentions", []) and not self_addressed:
+            return True
+        if addressing.mentions_other_bots and not self_addressed:
+            return False
+        ignore_no_mention = os.getenv(
+            "DISCORD_IGNORE_NO_MENTION",
+            "true",
+        ).lower() in {"true", "1", "yes"}
+        if (
+            ignore_no_mention
+            and not self_addressed
+            and not addressing.mentions_other_bots
+        ):
+            parent_id = None
+            if getattr(message.channel, "parent_id", None):
+                parent_id = str(message.channel.parent_id)
+            free_channels = self._discord_free_response_channels()
+            channel_keys = self._discord_channel_keys(message, parent_id)
+            return "*" in free_channels or bool(channel_keys & free_channels)
+        return True
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
@@ -6118,6 +6240,143 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    async def _maybe_observe_room_message(
+        self,
+        message: Any,
+        *,
+        role_authorized: bool = False,
+    ) -> bool:
+        """Emit one lightweight OBSERVE event for an eligible ambient message.
+
+        Returns True only when the message was consumed as an observation.
+        Dispatch candidates and ineligible traffic return False so the existing
+        Discord gates retain ownership of their behavior.
+        """
+
+        if not self._discord_observation_enabled():
+            return False
+        channel = getattr(message, "channel", None)
+        guild = getattr(message, "guild", None) or getattr(channel, "guild", None)
+        is_dm = bool(
+            discord is not None and isinstance(channel, discord.DMChannel)
+        )
+        if channel is None or guild is None or is_dm:
+            return False
+        if getattr(getattr(message, "author", None), "bot", False):
+            return False
+
+        channel_id = str(getattr(channel, "id", ""))
+        if channel_id not in self._discord_observed_channel_ids():
+            return False
+
+        is_thread = bool(
+            discord is not None and isinstance(channel, discord.Thread)
+        )
+        parent_channel_id = self._get_parent_channel_id(channel) if is_thread else None
+        channel_keys = self._discord_channel_keys(message, parent_channel_id)
+
+        # Observation is persistence: retain only from channels that also pass
+        # the adapter's established dispatch allow/ignore controls.
+        allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
+        if allowed_raw:
+            allowed = {part.strip() for part in allowed_raw.split(",") if part.strip()}
+            if "*" not in allowed and not (channel_keys & allowed):
+                return False
+        ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "").strip()
+        ignored = {part.strip() for part in ignored_raw.split(",") if part.strip()}
+        if "*" in ignored or channel_keys & ignored:
+            return False
+
+        addressing = self._discord_message_addressing(message)
+        if addressing.direct_mention or addressing.reply_to_self:
+            return False
+
+        # Observation mode must not steal messages from existing ambient
+        # dispatch modes (global mention-off, free-response, active bot threads,
+        # or voice-linked text channels).
+        if not self._discord_require_mention():
+            return False
+        free_channels = self._discord_free_response_channels()
+        if "*" in free_channels or channel_keys & free_channels:
+            return False
+        if (
+            is_thread
+            and channel_id in self._threads
+            and not self._discord_thread_require_mention()
+        ):
+            return False
+        voice_linked_ids = {str(value) for value in self._voice_text_channels.values()}
+        if channel_id in voice_linked_ids:
+            return False
+
+        content = str(getattr(message, "content", "") or "").strip()
+        metadata_lines = []
+        for attachment in list(getattr(message, "attachments", []) or []):
+            filename = " ".join(
+                str(getattr(attachment, "filename", None) or "attachment").split()
+            )
+            content_type = " ".join(
+                str(getattr(attachment, "content_type", None) or "unknown").split()
+            )
+            size = getattr(attachment, "size", None)
+            size_label = f"{size} bytes" if size is not None else "size unknown"
+            metadata_lines.append(
+                f"[Attachment: {filename}; {content_type}; {size_label}]"
+            )
+        event_text = "\n".join(part for part in [content, *metadata_lines] if part).strip()
+        if not event_text:
+            return False
+
+        thread_id = channel_id if is_thread else None
+        if is_thread:
+            chat_type = "thread"
+            chat_name = self._format_thread_chat_name(channel)
+        else:
+            chat_type = "group"
+            channel_name = getattr(channel, "name", channel_id)
+            chat_name = f"{guild.name} / #{channel_name}"
+        author = message.author
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(author.id),
+            user_name=getattr(author, "display_name", None)
+            or getattr(author, "name", None)
+            or str(author.id),
+            thread_id=thread_id,
+            chat_topic=self._get_effective_topic(channel, is_thread=is_thread),
+            is_bot=False,
+            guild_id=str(guild.id),
+            parent_chat_id=parent_channel_id,
+            message_id=str(message.id),
+            role_authorized=role_authorized,
+        )
+        reference = getattr(message, "reference", None)
+        resolved_reference = getattr(reference, "resolved", None) if reference else None
+        event = MessageEvent(
+            text=event_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=message,
+            message_id=str(message.id),
+            reply_to_message_id=(
+                str(reference.message_id)
+                if reference is not None and getattr(reference, "message_id", None) is not None
+                else None
+            ),
+            reply_to_text=(
+                getattr(resolved_reference, "content", None)
+                if resolved_reference is not None
+                else None
+            ),
+            timestamp=message.created_at,
+            addressing=addressing,
+            disposition=MessageDisposition.OBSERVE,
+        )
+        await self.handle_message(event)
+        return True
+
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -6146,6 +6405,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        addressing = self._discord_message_addressing(message)
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -6157,11 +6417,19 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._self_is_explicitly_mentioned(message):
+        if addressing.direct_mention or addressing.reply_to_self:
             mention_prefix = True
-            if self._client.user:
-                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if addressing.direct_mention and self._client and self._client.user:
+                normalized_content = normalized_content.replace(
+                    f"<@{self._client.user.id}>", ""
+                ).strip()
+                normalized_content = normalized_content.replace(
+                    f"<@!{self._client.user.id}>", ""
+                ).strip()
+                for role_id in self._self_managed_role_ids(message):
+                    normalized_content = normalized_content.replace(
+                        f"<@&{role_id}>", ""
+                    ).strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -6491,7 +6759,21 @@ class DiscordAdapter(BasePlatformAdapter):
         # to keep the partition rule clean.
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm and self._discord_history_backfill():
+        # Durable room observation is the single source of ambient context for
+        # explicitly observed channels. Running Discord's legacy history scan
+        # as well duplicates the same messages, persists them into the addressed
+        # user session, and can replay missed requests on a later turn.
+        _durable_observation_owns_context = (
+            not _is_dm
+            and self._discord_observation_enabled()
+            and str(getattr(message.channel, "id", ""))
+            in self._discord_observed_channel_ids()
+        )
+        if (
+            not _is_dm
+            and self._discord_history_backfill()
+            and not _durable_observation_owns_context
+        ):
             # Run backfill when there's a real gap to fill:
             #   - mention-gated channels with no free-response override
             #     (messages between bot turns aren't in the transcript)
@@ -6587,6 +6869,8 @@ class DiscordAdapter(BasePlatformAdapter):
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            addressing=addressing,
+            disposition=MessageDisposition.DISPATCH,
         )
 
         # Track thread participation so the bot won't require @mention for

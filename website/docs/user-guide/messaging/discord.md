@@ -317,6 +317,8 @@ discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  observe_unmentioned_group_messages: false  # Persist ambient context in explicit channels
+  observed_channels: []           # Exact numeric channel/thread IDs to observe
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
@@ -451,6 +453,49 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+#### `discord.observe_unmentioned_group_messages`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, Hermes can retain unmentioned messages from the exact channels or
+threads listed in `discord.observed_channels`. Observation is silent: it does not
+invoke the agent, run tools, add processing reactions, or send a response. On a
+later addressed message in the same room, Hermes injects up to 25 observations
+from the preceding six hours as attributed context.
+
+Both settings are required, so enabling observation without an explicit channel
+list retains nothing:
+
+```yaml
+discord:
+  require_mention: true
+  observe_unmentioned_group_messages: true
+  observed_channels:
+    - "123456789012345678"  # exact channel ID
+    - "234567890123456789"  # exact thread ID, if desired
+```
+
+`observed_channels` accepts a YAML list or comma-separated string. Entries must
+be numeric Discord snowflake IDs; channel names and wildcards are ignored so a
+rename or server reorganization cannot silently widen retention. Threads must be
+listed by their own ID rather than inheriting observation from a parent channel.
+
+Observation is limited to ordinary, unmentioned messages in mention-gated server
+rooms that also pass the existing allowed/ignored-channel and authorization
+checks. DMs, bot-authored messages, directly addressed messages, free-response
+channels, active bot threads, and voice-linked text channels keep their existing
+dispatch behavior and are not observed.
+
+Observed rows use a dedicated room namespace rather than an ordinary user or
+shared conversation transcript. In an observed channel, durable observation owns
+the missed-message context, so `history_backfill` is skipped for that room.
+
+:::warning Retention and privacy
+Ambient observation persists channel messages even though Hermes does not reply.
+Enable it only in channels whose participants expect that retention, and keep the
+explicit channel list as narrow as practical.
+:::
+
 #### `discord.history_backfill`
 
 **Type:** boolean — **Default:** `true`
@@ -463,6 +508,7 @@ Behavior by surface:
 - **Threads**: backfill scans the thread only — Discord's `channel.history()` on a thread returns only that thread's messages, not the parent channel. This is the right scope because threads are usually self-contained conversations.
 - **DMs**: skipped. Every DM message triggers the bot, so the session transcript is already complete — there's no mention gap to fill.
 - **Free-response channels** and **bot's own auto-created threads**: skipped for the same reason — no mention gating means no gap.
+- **Observed channels**: skipped because their bounded durable observation context owns the gap instead.
 
 Per-user sessions (`group_sessions_per_user: true`, the default) also benefit: a user's session is missing the context posted by other channel participants and the user's own messages from before they tagged the bot. Backfill fills both gaps.
 

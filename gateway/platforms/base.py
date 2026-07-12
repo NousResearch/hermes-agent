@@ -1704,6 +1704,24 @@ class MessageType(Enum):
     COMMAND = "command"  # /command style
 
 
+class MessageDisposition(str, Enum):
+    """Handling disposition for a normalized incoming message."""
+
+    DROP = "drop"
+    OBSERVE = "observe"
+    DISPATCH = "dispatch"
+
+
+@dataclass(frozen=True)
+class MessageAddressing:
+    """Platform-neutral facts describing how a message was addressed."""
+
+    direct_mention: bool = False
+    reply_to_self: bool = False
+    mentions_other_bots: bool = False
+    mentions_other_users: bool = False
+
+
 class ProcessingOutcome(Enum):
     """Result classification for message-processing lifecycle hooks."""
 
@@ -1778,6 +1796,13 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
+
+    # Platform-neutral routing facts. These are appended to preserve the
+    # positional order of the existing public MessageEvent constructor.
+    # Adapters populate facts here instead of encoding them in free-form
+    # metadata; dispatch remains the backwards-compatible default.
+    addressing: MessageAddressing = field(default_factory=MessageAddressing)
+    disposition: MessageDisposition = MessageDisposition.DISPATCH
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -4591,6 +4616,15 @@ class BasePlatformAdapter(ABC):
         enabling interruption support.
         """
         if not self._message_handler:
+            return
+
+        # Observation events are persistence-only. Route them directly to the
+        # gateway before command coercion, per-session guards, typing/reaction
+        # hooks, pending-message queues, or response delivery can create visible
+        # room side effects. The gateway's OBSERVE branch authorizes, persists,
+        # and returns without invoking an agent.
+        if event.disposition is MessageDisposition.OBSERVE:
+            await self._message_handler(event)
             return
 
         coerce_plaintext_gateway_command(event)

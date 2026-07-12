@@ -774,6 +774,10 @@ def _build_replay_entry(
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
 _OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
+_OBSERVED_ROOM_CONTEXT_HEADER = "[Observed room context — context only, not requests]"
+_CURRENT_ROOM_ADDRESSED_MESSAGE_HEADER = (
+    "[Current addressed message — answer only this unless it asks you to use room context]"
+)
 
 
 def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
@@ -961,6 +965,47 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
         return [{"type": "text", "text": prefix.rstrip()}] + wrapped
 
     return message
+
+
+def _wrap_current_message_with_room_context(message: Any, observed_context: Optional[str]) -> Any:
+    """Prepend generic observed-room context to the API-only current user turn."""
+
+    if not observed_context:
+        return message
+
+    prefix = (
+        f"{_OBSERVED_ROOM_CONTEXT_HEADER}\n"
+        f"{observed_context}\n\n"
+        f"{_CURRENT_ROOM_ADDRESSED_MESSAGE_HEADER}\n"
+    )
+
+    if isinstance(message, str):
+        return f"{prefix}{message}"
+
+    if isinstance(message, list):
+        wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
+        for part in wrapped:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part["text"] = f"{prefix}{part.get('text', '')}"
+                return wrapped
+        return [{"type": "text", "text": prefix.rstrip()}] + wrapped
+
+    return message
+
+
+def _apply_observed_context_persistence(
+    conversation_kwargs: Dict[str, Any],
+    *,
+    original_message: Any,
+    persist_override: Any,
+    observed_context: Optional[str],
+) -> None:
+    """Keep API-only context wrappers out of the persisted user transcript."""
+
+    if persist_override is not None:
+        conversation_kwargs["persist_user_message"] = persist_override
+    elif observed_context:
+        conversation_kwargs["persist_user_message"] = original_message
 
 
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
@@ -1760,6 +1805,7 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
+    MessageDisposition,
     MessageEvent,
     MessageType,
     _prefix_within_utf16_limit,
@@ -8893,6 +8939,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
+        is_observe = event.disposition is MessageDisposition.OBSERVE
+        if is_internal and is_observe:
+            logger.warning(
+                "Ignoring observe disposition on internal event: platform=%s chat=%s",
+                source.platform.value if source.platform else "unknown",
+                source.chat_id or "unknown",
+            )
+            return None
 
         # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
         # clock for real (user-originated) inbound only. Internal/system events
@@ -8953,9 +9007,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # authorizes every member of the listed chat regardless of
             # sender). Defer to _is_user_authorized so that path runs.
             if not self._is_user_authorized(source):
+                if is_observe:
+                    logger.debug(
+                        "Dropping unauthorized room observation without user identity: "
+                        "platform=%s chat=%s",
+                        source.platform.value,
+                        source.chat_id,
+                    )
+                    return None
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
         elif not self._is_user_authorized(source):
+            if is_observe:
+                logger.debug(
+                    "Dropping unauthorized room observation: user=%s platform=%s chat=%s",
+                    source.user_id,
+                    source.platform.value,
+                    source.chat_id,
+                )
+                return None
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if (
@@ -8996,7 +9066,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
+        if is_observe:
+            try:
+                from gateway.room_observation import persist_room_observation
+
+                observation_session_id = persist_room_observation(
+                    self.session_store,
+                    event,
+                )
+                logger.info(
+                    "Persisted authorized room observation: platform=%s chat=%s "
+                    "thread=%s session=%s",
+                    source.platform.value,
+                    source.chat_id,
+                    source.thread_id or "none",
+                    observation_session_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist authorized room observation: platform=%s chat=%s",
+                    source.platform.value,
+                    source.chat_id,
+                    exc_info=True,
+                )
+            return None
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -18546,16 +18641,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             #      - These must be passed through intact so the API sees valid
             #        assistant→tool sequences (dropping tool_calls causes 500 errors)
             #
-            # Telegram observed group context is handled structurally here:
-            # observed=True transcript rows are withheld from replayable
-            # history and attached to the current addressed message as
-            # API-only context, so persisted history stores only the real
-            # addressed user turn.
+            # Telegram keeps its upstream marker-based shared-transcript path.
+            # Generic room observations (currently Discord) load from a separate
+            # namespaced transcript. Both are API-only context; neither changes
+            # the persisted current addressed turn.
             agent_history, observed_group_context = _build_gateway_agent_history(
                 history,
                 channel_prompt=channel_prompt,
                 inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
             )
+            from gateway.room_observation import load_observed_room_context
+
+            generic_observed_room_context = load_observed_room_context(
+                getattr(self, "session_store", None),
+                source,
+            )
+            observed_context = generic_observed_room_context or observed_group_context
 
             # FTS write-corruption guard (#50502): when message persistence
             # fails silently through corrupt FTS triggers, the reloaded
@@ -18891,18 +18992,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     _run_message = message
 
-                _api_run_message = _wrap_current_message_with_observed_context(
-                    _run_message,
-                    observed_group_context,
-                )
+                if generic_observed_room_context:
+                    _api_run_message = _wrap_current_message_with_room_context(
+                        _run_message,
+                        generic_observed_room_context,
+                    )
+                else:
+                    _api_run_message = _wrap_current_message_with_observed_context(
+                        _run_message,
+                        observed_group_context,
+                    )
                 _conversation_kwargs = {
                     "conversation_history": agent_history,
                     "task_id": session_id,
                 }
-                if _persist_user_message_override is not None:
-                    _conversation_kwargs["persist_user_message"] = _persist_user_message_override
-                elif observed_group_context:
-                    _conversation_kwargs["persist_user_message"] = message
+                _apply_observed_context_persistence(
+                    _conversation_kwargs,
+                    original_message=message,
+                    persist_override=_persist_user_message_override,
+                    observed_context=observed_context,
+                )
                 if moa_config is not None:
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:

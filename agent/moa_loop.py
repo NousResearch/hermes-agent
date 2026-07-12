@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
 
 from agent.auxiliary_client import call_llm
@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 # references; this cap just protects against a pathologically large preset
 # opening dozens of sockets at once.
 _MAX_REFERENCE_WORKERS = 8
+
+# Timeout for each reference-model call in _run_references_parallel.
+# Without this, a hung model provider freezes the entire MoA turn.
+_REFERENCE_RESULT_TIMEOUT = 120
 
 
 class _RefAccounting:
@@ -380,7 +384,19 @@ def _run_references_parallel(
         # Collect every reference before returning — the aggregator needs the
         # complete set, so there is no early-exit / first-completed path here.
         for future, idx in futures.items():
-            results[idx] = future.result()
+            try:
+                results[idx] = future.result(timeout=_REFERENCE_RESULT_TIMEOUT)
+            except FuturesTimeoutError:
+                label = _slot_label(reference_models[idx])
+                logger.warning(
+                    "Reference model %s timed out after %ds — skipping",
+                    label, _REFERENCE_RESULT_TIMEOUT,
+                )
+                results[idx] = (
+                    label,
+                    f"[skipped: reference model timed out after {_REFERENCE_RESULT_TIMEOUT}s]",
+                    _RefAccounting(CanonicalUsage()),
+                )
 
     return [r for r in results if r is not None]
 

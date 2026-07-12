@@ -122,3 +122,88 @@ attestation before the next phase or runtime enablement.
    remain mechanically blocked.
 6. Run the fresh root collector and deterministic deployment preflight before
    gateway, writer, or Discord egress is enabled.
+
+## Phase 4 — packaged writer-only activation
+
+Runtime mutation is performed by the sealed wheel, not by importing this
+source-only `scripts.canary` package on the VM. Root first installs one strict
+staged discovery plan at the only accepted path:
+
+```bash
+<sealed-python> -I -m gateway.canonical_writer_activation install-native-plan \
+  --plan /etc/muncho/writer-activation/staged/native-observation-plan.json
+```
+
+The bootstrap owner confirmation is root-provisioned and out of band. Its
+receipt truthfully records
+`authority_kind=trusted_root_bootstrap_out_of_band_owner` and
+`cryptographic_owner_proof=false`; this is not a claim that a passkey or
+signature was verified. Renewals are installed append-only at
+`approvals/<scope>/<plan-sha>/<receipt-sha>.json`:
+
+```bash
+<sealed-python> -I -m gateway.canonical_writer_activation install-approval \
+  --staged-receipt /etc/muncho/writer-activation/staged/owner-approval.json
+<sealed-python> -I -m gateway.canonical_writer_activation install-external-iam \
+  --staged-receipt /etc/muncho/writer-activation/staged/external-iam-receipt.json \
+  --external-iam-policy-sha256 <exact-reviewed-policy-sha256>
+```
+
+The IAM helper archives both old and new generations before atomically
+replacing only the fixed live file under `/run`. The native observation plan
+contains no guessed mapping list or placeholder manifest. It binds the exact
+release, configs, canary users/groups/homes, SQL `/32`, TLS name and CA,
+retired-helper and Discord absence, and root-owned discovery policy. Before any
+identity mutation, the packaged lifecycle re-hashes every staged input and
+release file, verifies CA and credential provenance, performs TLS/PostgreSQL
+startup privilege attestation, and proves the services are stopped or absent.
+
+```bash
+<sealed-python> -I -m gateway.canonical_writer_activation observe-native \
+  --plan /etc/muncho/writer-activation/native-observation-plan.json \
+  --approved-plan-sha256 <exact-native-plan-sha256> \
+  --owner-approval-receipt \
+    /etc/muncho/writer-activation/approvals/native_observation/<plan-sha>/<approval-sha>.json \
+  --external-iam-receipt \
+    /run/muncho-canonical-preflight/external-iam-receipt.json
+```
+
+The observer starts writer then gateway without enabling either and always
+stops gateway then writer. Its durable stopped receipt binds the append-only
+live stage, host-preparation receipt and exact IAM receipt. Later consumers
+accept an expired receipt after reboot only on the same host and only after
+re-hashing current release/config/library inputs and rechecking current mapping
+policy; a cross-host replay remains invalid.
+
+Only that stopped receipt may build the single deployable v3 activation plan.
+The final plan is installed, comprehensively preflighted, and applied as:
+
+```bash
+<sealed-python> -I -m gateway.canonical_writer_activation install-plan \
+  --plan /etc/muncho/writer-activation/staged/activation-plan.json
+<sealed-python> -I -m gateway.canonical_writer_activation validate-plan \
+  --plan /etc/muncho/writer-activation/activation-plan.json
+<sealed-python> -I -m gateway.canonical_writer_activation apply \
+  --plan /etc/muncho/writer-activation/activation-plan.json \
+  --approved-plan-sha256 <exact-activation-plan-sha256> \
+  --owner-approval-receipt \
+    /etc/muncho/writer-activation/approvals/activation/<plan-sha>/<approval-sha>.json
+```
+
+`validate-plan` runs the same bounded preflight used under the activation lock.
+Each report is sealed append-only with distinct report-content and file
+digests. A failed preflight is blocked and retryable, not a forensic mutation
+quarantine. IAM must retain at least 720 seconds before mutation and is
+re-read/re-archived immediately before services start.
+
+`apply` serializes the whole lifecycle at the root-controlled
+`/run/muncho-writer-activation.lock`. It accepts only absent or byte-identical
+artifacts, runs a temporary non-enableable exporter, verifies the canonical
+export and `999:991 0640` identity, then removes the exporter and proves it
+absent. It starts writer and gateway, runs the packaged root collector, archives
+the exact root receipt, and always stops gateway followed by writer.
+
+Success and failure evidence is append-only and plan-addressed. A mutation
+failure creates a unique receipt plus fixed quarantine marker; preflight-only
+failures do not. No command enables a unit, creates a timer, starts Discord,
+invokes a shell, accepts a secret value, or infers a semantic decision.

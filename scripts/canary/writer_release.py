@@ -32,15 +32,13 @@ from typing import Any, Callable, Mapping, Sequence
 
 
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
-UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v1"
+UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v2"
 RELEASE_MANIFEST_NAME = "release-manifest.json"
 INCOMPLETE_MARKER_NAME = ".release-build-incomplete"
 BUILD_SCRATCH_NAME = ".release-build-scratch"
 SCRATCH_PROVENANCE_NAME = "provenance.json"
 SCRATCH_PROVENANCE_SCHEMA = "muncho-writer-release-scratch.v1"
-BUILD_CONSTRAINTS_RELATIVE_PATH = Path(
-    "scripts/canary/writer-build-constraints.txt"
-)
+BUILD_CONSTRAINTS_RELATIVE_PATH = Path("scripts/canary/writer-build-constraints.txt")
 WRITER_MODULE = "gateway.canonical_writer_bootstrap"
 GATEWAY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
 DEFAULT_RELEASE_BASE = Path("/opt/muncho-canary-releases")
@@ -52,6 +50,8 @@ DEFAULT_UV_EXECUTABLE = Path("/usr/local/bin/uv")
 DEFAULT_GIT_EXECUTABLE = Path("/usr/bin/git")
 WRITER_UNIT_NAME = "muncho-canonical-writer.service"
 GATEWAY_UNIT_NAME = "hermes-cloud-gateway.service"
+EXPORTER_UNIT_NAME = "muncho-canonical-writer-export.service"
+DEFAULT_EXPORT_LIMIT = 200_000
 TMPFILES_NAME = "muncho-canonical-writer.conf"
 
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -188,20 +188,18 @@ class ReleaseBuildSpec:
 
     @property
     def gateway_module_origin(self) -> Path:
-        return (
-            self.site_packages
-            / "gateway"
-            / "canonical_writer_gateway_bootstrap.py"
-        )
+        return self.site_packages / "gateway" / "canonical_writer_gateway_bootstrap.py"
 
     def validate(self) -> None:
-        if not isinstance(self.revision, str) or _REVISION_RE.fullmatch(
-            self.revision
-        ) is None:
+        if (
+            not isinstance(self.revision, str)
+            or _REVISION_RE.fullmatch(self.revision) is None
+        ):
             raise ValueError("release revision must be exact lowercase 40-char SHA")
-        if not isinstance(self.python_version, str) or _PYTHON_RE.fullmatch(
-            self.python_version
-        ) is None:
+        if (
+            not isinstance(self.python_version, str)
+            or _PYTHON_RE.fullmatch(self.python_version) is None
+        ):
             raise ValueError("release Python must be an exact supported patch version")
         source = _absolute_normalized_path(self.source_root, "source root")
         base = _absolute_normalized_path(self.release_base, "release base")
@@ -219,14 +217,12 @@ class ReleaseBuildSpec:
             self.build_scratch_root.parent != self.release_root
             or self.build_project_root.parent != self.build_scratch_root
             or self.wheel_output_root.parent != self.build_scratch_root
-            or len(
-                {
-                    self.build_scratch_root,
-                    self.build_project_root,
-                    self.wheel_output_root,
-                    self.wheel_artifact_root,
-                }
-            )
+            or len({
+                self.build_scratch_root,
+                self.build_project_root,
+                self.wheel_output_root,
+                self.wheel_artifact_root,
+            })
             != 4
             or self.wheel_artifact_root.parent != self.release_root
             or _is_within(self.wheel_artifact_root, self.build_scratch_root)
@@ -617,7 +613,11 @@ def _validate_root_source_tree(root: Path) -> None:
         for name in [*directories, *files]:
             path = Path(current) / name
             item = os.lstat(path)
-            if item.st_uid != 0 or item.st_gid != 0 or stat.S_IMODE(item.st_mode) & 0o022:
+            if (
+                item.st_uid != 0
+                or item.st_gid != 0
+                or stat.S_IMODE(item.st_mode) & 0o022
+            ):
                 raise PermissionError("release source tree is not root-controlled")
             if stat.S_ISLNK(item.st_mode):
                 if not _is_within(path.resolve(strict=True), resolved_root):
@@ -815,7 +815,9 @@ def _seal_release_tree(root: Path) -> None:
                 os.chown(path, 0, 0, follow_symlinks=False)
                 continue
             if not stat.S_ISDIR(item.st_mode):
-                raise ValueError("release contains an unsupported directory before sealing")
+                raise ValueError(
+                    "release contains an unsupported directory before sealing"
+                )
             os.chown(path, 0, 0, follow_symlinks=False)
             os.chmod(path, _SEALED_DIRECTORY_MODE, follow_symlinks=False)
     os.chown(root, 0, 0, follow_symlinks=False)
@@ -844,13 +846,14 @@ def _write_release_manifest(root: Path, manifest: ReleaseManifest) -> None:
 
 def _write_incomplete_marker(spec: ReleaseBuildSpec) -> None:
     path = spec.release_root / INCOMPLETE_MARKER_NAME
-    raw = _canonical_bytes(
-        {
+    raw = (
+        _canonical_bytes({
             "schema": RELEASE_SCHEMA,
             "revision": spec.revision,
             "state": "incomplete",
-        }
-    ) + b"\n"
+        })
+        + b"\n"
+    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -875,8 +878,8 @@ def _scratch_provenance_bytes(
     scratch_inode: int,
 ) -> bytes:
     source = os.lstat(spec.source_root)
-    return _canonical_bytes(
-        {
+    return (
+        _canonical_bytes({
             "schema": SCRATCH_PROVENANCE_SCHEMA,
             "revision": spec.revision,
             "source_root": str(spec.source_root),
@@ -885,8 +888,9 @@ def _scratch_provenance_bytes(
             "scratch_root": str(spec.build_scratch_root),
             "scratch_device": int(scratch_device),
             "scratch_inode": int(scratch_inode),
-        }
-    ) + b"\n"
+        })
+        + b"\n"
+    )
 
 
 def _write_scratch_provenance(
@@ -986,10 +990,15 @@ def _copy_built_wheel(spec: ReleaseBuildSpec, source: Path) -> Path:
         raise ValueError("scratch wheel is outside the exact output directory")
     destination = spec.wheel_artifact_root / source_path.name
     read_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(
-        os,
-        "O_CLOEXEC",
-        0,
+    write_flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(
+            os,
+            "O_CLOEXEC",
+            0,
+        )
     )
     if hasattr(os, "O_NOFOLLOW"):
         read_flags |= os.O_NOFOLLOW
@@ -1331,9 +1340,7 @@ class WriterOnlyUnitSpec:
     gateway_config: Path = Path("/etc/hermes/config.yaml")
     gateway_home: Path = Path("/var/lib/hermes-gateway")
     writer_runtime: Path = Path("/run/muncho-canonical-writer")
-    projection_directory: Path = Path(
-        "/var/lib/muncho-canonical-writer/projection"
-    )
+    projection_directory: Path = Path("/var/lib/muncho-canonical-writer/projection")
     gateway_runtime: Path = Path("/run/hermes-cloud-gateway")
     gateway_state: Path = Path("/var/lib/hermes-gateway")
     gateway_logs: Path = Path("/var/log/hermes-gateway")
@@ -1350,14 +1357,12 @@ class WriterOnlyUnitSpec:
         )
         if (
             self.writer_user == self.gateway_user
-            or len(
-                {
-                    self.writer_group,
-                    self.gateway_group,
-                    self.socket_client_group,
-                    self.projector_group,
-                }
-            )
+            or len({
+                self.writer_group,
+                self.gateway_group,
+                self.socket_client_group,
+                self.projector_group,
+            })
             != 4
         ):
             raise ValueError("writer-only runtime identities must be distinct")
@@ -1397,6 +1402,7 @@ class WriterOnlyUnitSpec:
 class SystemdUnitBundle:
     writer_service: str
     gateway_service: str
+    exporter_service: str
     tmpfiles: str
     contract: tuple[tuple[str, str], ...]
     sha256: str
@@ -1407,6 +1413,7 @@ class SystemdUnitBundle:
             "schema": self.schema,
             "writer_service": self.writer_service,
             "gateway_service": self.gateway_service,
+            "exporter_service": self.exporter_service,
             "tmpfiles": self.tmpfiles,
             "contract": dict(self.contract),
             "sha256": self.sha256,
@@ -1577,9 +1584,7 @@ def render_systemd_units(
         f"Group={spec.gateway_group}",
         f"SupplementaryGroups={spec.socket_client_group}",
         f"WorkingDirectory={release_root}",
-        (
-            f"ExecStart={interpreter} -I -m {GATEWAY_MODULE}"
-        ),
+        (f"ExecStart={interpreter} -I -m {GATEWAY_MODULE}"),
         "Restart=on-failure",
         "RestartSec=5s",
         "TimeoutStartSec=60s",
@@ -1599,6 +1604,46 @@ def render_systemd_units(
         "[Install]",
         "WantedBy=multi-user.target",
     ]
+    export_path = spec.projection_directory / "canonical-events.json"
+    exporter_lines = [
+        "# Temporary digest-bound projection export unit; remove after use.",
+        f"# ArtifactSHA256={manifest.artifact_sha256}",
+        f"# ModuleOrigin={writer_origin}",
+        "[Unit]",
+        "Description=Muncho Canonical projection export (isolated canary)",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        f"AssertPathIsDirectory={spec.projection_directory}",
+        f"AssertPathExists={spec.writer_config}",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        f"User={spec.writer_user}",
+        f"Group={spec.writer_group}",
+        f"SupplementaryGroups={spec.projector_group}",
+        f"WorkingDirectory={release_root}",
+        (
+            f"ExecStart={interpreter} -I -m {WRITER_MODULE} "
+            f"--config {spec.writer_config} --export-events {export_path} "
+            f"--export-limit {DEFAULT_EXPORT_LIMIT}"
+        ),
+        "TimeoutStartSec=300s",
+        "TimeoutStopSec=30s",
+        "KillMode=mixed",
+        "LimitCORE=0",
+        *_fixed_service_environment(
+            user=spec.writer_user,
+            home="/nonexistent",
+        ),
+        *_common_hardening(address_families="AF_UNIX AF_INET AF_INET6"),
+        "IPAddressDeny=any",
+        f"IPAddressAllow={spec.database_ip_allow[0]}",
+        f"BindReadOnlyPaths={release_root}",
+        f"ReadOnlyPaths={spec.writer_config}",
+        f"ReadWritePaths={spec.projection_directory}",
+        "StandardOutput=journal",
+        "StandardError=journal",
+    ]
     tmpfiles_lines = [
         "# type path mode user group age argument",
         (
@@ -1609,31 +1654,26 @@ def render_systemd_units(
             f"d {spec.projection_directory} 0750 {spec.writer_user} "
             f"{spec.projector_group} - -"
         ),
-        (
-            f"d {spec.gateway_runtime} 0700 {spec.gateway_user} "
-            f"{spec.gateway_group} - -"
-        ),
-        (
-            f"d {spec.gateway_state} 0700 {spec.gateway_user} "
-            f"{spec.gateway_group} - -"
-        ),
-        (
-            f"d {spec.gateway_logs} 0700 {spec.gateway_user} "
-            f"{spec.gateway_group} - -"
-        ),
+        (f"d {spec.gateway_runtime} 0700 {spec.gateway_user} {spec.gateway_group} - -"),
+        (f"d {spec.gateway_state} 0700 {spec.gateway_user} {spec.gateway_group} - -"),
+        (f"d {spec.gateway_logs} 0700 {spec.gateway_user} {spec.gateway_group} - -"),
     ]
     writer = "\n".join(writer_lines) + "\n"
     gateway = "\n".join(gateway_lines) + "\n"
+    exporter = "\n".join(exporter_lines) + "\n"
     tmpfiles = "\n".join(tmpfiles_lines) + "\n"
-    forbidden = re.compile(
-        r"(?im)^(?:EnvironmentFile|PassEnvironment|LoadCredential)="
-    )
-    if forbidden.search(writer) or forbidden.search(gateway):
+    forbidden = re.compile(r"(?im)^(?:EnvironmentFile|PassEnvironment|LoadCredential)=")
+    if (
+        forbidden.search(writer)
+        or forbidden.search(gateway)
+        or forbidden.search(exporter)
+    ):
         raise RuntimeError("writer-only units cannot inject environment or credentials")
     payload = {
         "schema": UNIT_BUNDLE_SCHEMA,
         "writer_service": writer,
         "gateway_service": gateway,
+        "exporter_service": exporter,
         "tmpfiles": tmpfiles,
         "contract": {
             "revision": manifest.revision,
@@ -1649,12 +1689,16 @@ def render_systemd_units(
             "writer_runtime": str(spec.writer_runtime),
             "writer_runtime_mode": "2750",
             "database_ip_allow": spec.database_ip_allow[0],
+            "exporter_unit": EXPORTER_UNIT_NAME,
+            "projection_export_path": str(export_path),
+            "projection_export_limit": str(DEFAULT_EXPORT_LIMIT),
         },
     }
     digest = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
     return SystemdUnitBundle(
         writer_service=writer,
         gateway_service=gateway,
+        exporter_service=exporter,
         tmpfiles=tmpfiles,
         contract=tuple(sorted(payload["contract"].items())),
         sha256=digest,
@@ -1667,6 +1711,8 @@ __all__ = [
     "BuildCommand",
     "GATEWAY_MODULE",
     "GATEWAY_UNIT_NAME",
+    "EXPORTER_UNIT_NAME",
+    "DEFAULT_EXPORT_LIMIT",
     "INCOMPLETE_MARKER_NAME",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_SCHEMA",

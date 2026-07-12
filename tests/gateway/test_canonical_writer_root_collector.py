@@ -8,6 +8,7 @@ import os
 import socket
 import stat
 import struct
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,7 @@ REVISION = "1" * 40
 ARTIFACT = "2" * 64
 PLAN = "3" * 64
 BOOT = "4" * 64
+HOST = "5" * 64
 SQL_PRIVATE_IP = "10.0.0.8"
 SQL_TLS_SERVER_NAME = "db.internal"
 
@@ -184,7 +186,6 @@ def _manifest_for(snapshot):
         {
             "schema": collector.MANIFEST_SCHEMA,
             "mode": collector.WRITER_ONLY_MODE,
-            "approved_plan_sha256": PLAN,
             "revision": REVISION,
             "artifact_sha256": ARTIFACT,
             "snapshot_policy_sha256": collector.snapshot_policy_sha256(
@@ -197,8 +198,20 @@ def _manifest_for(snapshot):
                 "writer_unit_fragment_sha256": "9" * 64,
                 "gateway_config_path": "/etc/hermes/config.yaml",
                 "gateway_config_sha256": "a" * 64,
+                "writer_config_path": "/etc/muncho-canonical-writer/writer.json",
                 "writer_config_sha256": "b" * 64,
                 "projection_export_path": "/var/lib/muncho-canonical-writer/projection/canonical-events.json",
+                "external_iam_policy_sha256": "c" * 64,
+                "external_iam_receipt_path": "/run/muncho-canonical-preflight/external-iam-receipt.json",
+                "legacy_helper_path": str(
+                    collector.LEGACY_CLOUD_SQL_HELPER_PATH
+                ),
+                "native_observation_plan_sha256": "f" * 64,
+                "native_observation_receipt_path": (
+                    f"/var/lib/muncho-writer-canary-evidence/{REVISION}/"
+                    f"{'f' * 64}/native-observation.json"
+                ),
+                "native_observation_receipt_sha256": "e" * 64,
             },
             "snapshot_template": copy.deepcopy(snapshot),
         }
@@ -218,6 +231,7 @@ def test_non_root_aborts_before_manifest_or_snapshot_access(monkeypatch):
         collector.collect_and_evaluate(
             "/must-not-be-read",
             "/must-not-be-written",
+            activation_plan_sha256=PLAN,
         )
 
     assert calls == []
@@ -877,7 +891,6 @@ def test_release_artifact_manifest_is_rehashed_against_live_tree(
         },
     }
     trusted = collector.TrustedDeploymentManifest(
-        approved_plan_sha256=PLAN,
         revision=REVISION,
         artifact_sha256=artifact,
         snapshot_policy_sha256="5" * 64,
@@ -923,6 +936,9 @@ def test_collects_hba_last_evaluates_in_process_and_writes_bounded_receipt(
     monkeypatch.setattr(collector, "_effective_uid", lambda: 0)
     monkeypatch.setattr(collector, "load_trusted_manifest", lambda _path: manifest)
     monkeypatch.setattr(collector, "_boot_id_sha256", lambda: BOOT)
+    monkeypatch.setattr(
+        collector, "current_host_identity_sha256", lambda: HOST
+    )
     monkeypatch.setattr(collector, "_current_unix", lambda: NOW)
     monkeypatch.setattr(
         collector,
@@ -933,7 +949,14 @@ def test_collects_hba_last_evaluates_in_process_and_writes_bounded_receipt(
     def live_collector(_manifest, *, now_unix):
         calls.append("snapshot")
         assert now_unix == NOW
-        return copy.deepcopy(snapshot)
+        live = copy.deepcopy(snapshot)
+        live["authoritative_external_evidence"] = {
+            "external_iam_receipt_sha256": "a" * 64,
+            "native_observation_receipt_sha256": "b" * 64,
+            "host_preparation_receipt_sha256": "3" * 64,
+            "legacy_helper_evidence_sha256": "4" * 64,
+        }
+        return live
 
     def hba_probe(_manifest, live_snapshot):
         calls.append("hba")
@@ -952,6 +975,13 @@ def test_collects_hba_last_evaluates_in_process_and_writes_bounded_receipt(
         return PreflightReport((PreflightCheck("focused.ok", True, "ok"),))
 
     monkeypatch.setattr(collector, "_authoritative_writer_only_report", evaluate)
+    monkeypatch.setattr(
+        collector,
+        "evaluate_snapshot",
+        lambda _snapshot: PreflightReport(
+            (PreflightCheck("full.ok", True, "ok"),)
+        ),
+    )
     monkeypatch.setattr(collector, "_collect_live_snapshot", live_collector)
     monkeypatch.setattr(
         collector,
@@ -994,10 +1024,17 @@ def test_collects_hba_last_evaluates_in_process_and_writes_bounded_receipt(
         "_write_root_receipt",
         lambda path, value: written.append((path, copy.deepcopy(value))),
     )
+    archived = []
+    monkeypatch.setattr(
+        collector,
+        "_write_append_only_root_evidence",
+        lambda path, value: archived.append((path, copy.deepcopy(value))),
+    )
 
     outcome = collector.collect_and_evaluate(
         "/etc/muncho/manifest.json",
         "/run/muncho-preflight/receipt.json",
+        activation_plan_sha256=PLAN,
     )
 
     assert calls == ["snapshot", "hba", "evaluate"]
@@ -1005,6 +1042,16 @@ def test_collects_hba_last_evaluates_in_process_and_writes_bounded_receipt(
     assert written == [
         ("/run/muncho-preflight/receipt.json", dict(outcome.receipt))
     ]
+    assert archived == [
+        (
+            Path(outcome.receipt["evidence_bundle_path"]),
+            archived[0][1],
+        )
+    ]
+    assert (
+        collector._sha256_json(archived[0][1])
+        == outcome.receipt["evidence_bundle_sha256"]
+    )
     assert outcome.receipt["ok"] is True
     assert outcome.receipt["boot_id_sha256"] == BOOT
     assert outcome.receipt["hba_receipt_sha256"] == active.sha256
@@ -1029,6 +1076,9 @@ def test_failed_in_process_report_never_writes_root_receipt(monkeypatch):
     monkeypatch.setattr(collector, "_effective_uid", lambda: 0)
     monkeypatch.setattr(collector, "load_trusted_manifest", lambda _path: manifest)
     monkeypatch.setattr(collector, "_boot_id_sha256", lambda: BOOT)
+    monkeypatch.setattr(
+        collector, "current_host_identity_sha256", lambda: HOST
+    )
     monkeypatch.setattr(collector, "_current_unix", lambda: NOW)
     monkeypatch.setattr(
         collector,
@@ -1045,6 +1095,13 @@ def test_failed_in_process_report_never_writes_root_receipt(monkeypatch):
         "_authoritative_writer_only_report",
         lambda *_args, **_kwargs: PreflightReport(
             (PreflightCheck("writer.failed", False, "blocked"),)
+        ),
+    )
+    monkeypatch.setattr(
+        collector,
+        "evaluate_snapshot",
+        lambda _snapshot: PreflightReport(
+            (PreflightCheck("full.ok", True, "ok"),)
         ),
     )
     monkeypatch.setattr(
@@ -1092,6 +1149,7 @@ def test_failed_in_process_report_never_writes_root_receipt(monkeypatch):
         collector.collect_and_evaluate(
             "/etc/muncho/manifest.json",
             "/run/muncho-preflight/receipt.json",
+            activation_plan_sha256=PLAN,
         )
 
     assert written == []
@@ -1175,7 +1233,7 @@ def test_manifest_shape_and_digests_are_strict():
 
     value = _manifest_for(snapshot).to_mapping()
     value["approved_plan_sha256"] = "A" * 64
-    with pytest.raises(ValueError, match="approved plan digest"):
+    with pytest.raises(ValueError, match="fields are not exact"):
         collector.TrustedDeploymentManifest.from_mapping(value)
 
     value = _manifest_for(snapshot).to_mapping()
@@ -1556,16 +1614,28 @@ def _valid_receipt(manifest):
         "ok": True,
         "mode": collector.WRITER_ONLY_MODE,
         "boot_id_sha256": BOOT,
+        "host_identity_sha256": HOST,
         "collected_at_unix": NOW,
         "collected_at_boottime_ns": 100_000_000_000,
         "expires_at_boottime_ns": 130_000_000_000,
         "manifest_sha256": manifest.manifest_sha256,
-        "approved_plan_sha256": PLAN,
+        "activation_plan_sha256": PLAN,
         "revision": REVISION,
         "artifact_sha256": ARTIFACT,
         "snapshot_policy_sha256": manifest.snapshot_policy_sha256,
         "snapshot_sha256": "5" * 64,
         "report_sha256": "6" * 64,
+        "full_report_sha256": "d" * 64,
+        "additive_report_sha256": "e" * 64,
+        "evidence_bundle_path": (
+            f"{collector.DEFAULT_ROOT_EVIDENCE_ROOT}/{REVISION}/{PLAN}/"
+            f"{'3' * 64}.json"
+        ),
+        "evidence_bundle_sha256": "3" * 64,
+        "external_iam_receipt_sha256": "f" * 64,
+        "native_observation_receipt_sha256": "1" * 64,
+        "host_preparation_receipt_sha256": "4" * 64,
+        "legacy_helper_evidence_sha256": "2" * 64,
         "hba_receipt_sha256": "7" * 64,
         "gateway_readiness_sha256": "8" * 64,
         "gateway_liveness_sha256": "c" * 64,
@@ -1593,6 +1663,206 @@ def _valid_receipt(manifest):
     }
 
 
+def test_root_evidence_bundle_recomputes_reports_and_rejects_tampered_detail(
+    monkeypatch,
+):
+    manifest = _manifest_for(_snapshot())
+    full = PreflightReport(
+        (PreflightCheck("full.check", True, "derived full detail"),)
+    ).to_dict()
+    additive = PreflightReport(
+        (PreflightCheck("additive.check", True, "derived additive detail"),)
+    ).to_dict()
+    combined = {
+        "ok": True,
+        "checks": full["checks"] + additive["checks"],
+    }
+    receipt = _valid_receipt(manifest)
+    snapshot = {
+        "root_preflight_identity": {
+            "boot_id_sha256": BOOT,
+            "host_identity_sha256": HOST,
+        },
+        "authoritative_external_evidence": {
+            name: receipt[name]
+            for name in (
+                "external_iam_receipt_sha256",
+                "native_observation_receipt_sha256",
+                "host_preparation_receipt_sha256",
+                "legacy_helper_evidence_sha256",
+            )
+        }
+    }
+    bundle, path, digest = collector._build_root_evidence_bundle(
+        manifest=manifest,
+        activation_plan_sha256=PLAN,
+        snapshot=snapshot,
+        full_report=full,
+        additive_report=additive,
+        combined_report=combined,
+    )
+    components = bundle["component_sha256"]
+    receipt.update(
+        {
+            "snapshot_sha256": components["snapshot_sha256"],
+            "full_report_sha256": components["full_report_sha256"],
+            "additive_report_sha256": components["additive_report_sha256"],
+            "report_sha256": components["combined_report_sha256"],
+            "evidence_bundle_path": str(path),
+            "evidence_bundle_sha256": digest,
+        }
+    )
+    monkeypatch.setattr(
+        collector,
+        "evaluate_snapshot",
+        lambda _snapshot: PreflightReport(
+            (PreflightCheck("full.check", True, "derived full detail"),)
+        ),
+    )
+    monkeypatch.setattr(
+        collector,
+        "_authoritative_writer_only_report",
+        lambda *_args, **_kwargs: PreflightReport(
+            (
+                PreflightCheck(
+                    "additive.check", True, "derived additive detail"
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        collector,
+        "_read_trusted_json",
+        lambda path_value, **_kwargs: bundle
+        if str(path_value) == str(path)
+        else {},
+    )
+    assert collector._validate_root_evidence_bundle(
+        receipt,
+        manifest,
+        expected_activation_plan_sha256=PLAN,
+    ) == bundle
+
+    tampered_full = copy.deepcopy(full)
+    tampered_full["checks"][0]["detail"] = "self-consistent but invented"
+    tampered_combined = {
+        "ok": True,
+        "checks": tampered_full["checks"] + additive["checks"],
+    }
+    tampered, tampered_path, tampered_digest = (
+        collector._build_root_evidence_bundle(
+            manifest=manifest,
+            activation_plan_sha256=PLAN,
+            snapshot=snapshot,
+            full_report=tampered_full,
+            additive_report=additive,
+            combined_report=tampered_combined,
+        )
+    )
+    tampered_components = tampered["component_sha256"]
+    receipt.update(
+        {
+            "full_report_sha256": tampered_components["full_report_sha256"],
+            "report_sha256": tampered_components["combined_report_sha256"],
+            "evidence_bundle_path": str(tampered_path),
+            "evidence_bundle_sha256": tampered_digest,
+        }
+    )
+    monkeypatch.setattr(
+        collector,
+        "_read_trusted_json",
+        lambda *_args, **_kwargs: tampered,
+    )
+    with pytest.raises(ValueError, match="derive from the snapshot"):
+        collector._validate_root_evidence_bundle(
+            receipt,
+            manifest,
+            expected_activation_plan_sha256=PLAN,
+        )
+
+
+def test_root_evidence_bundle_rejects_raw_secret_fields():
+    manifest = _manifest_for(_snapshot())
+    with pytest.raises(ValueError, match="forbidden secret field"):
+        collector._build_root_evidence_bundle(
+            manifest=manifest,
+            activation_plan_sha256=PLAN,
+            snapshot={"password": "not-archivable"},
+            full_report={"ok": True, "checks": []},
+            additive_report={"ok": True, "checks": []},
+            combined_report={"ok": True, "checks": []},
+        )
+
+
+def test_root_evidence_archive_is_append_only_and_collision_exact(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "root-preflight"
+    monkeypatch.setattr(collector, "DEFAULT_ROOT_EVIDENCE_ROOT", root)
+    monkeypatch.setattr(
+        collector,
+        "_ensure_root_evidence_directory",
+        lambda path: path.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(collector.os, "fchown", lambda *_args: None)
+    monkeypatch.setattr(
+        collector,
+        "_read_exact_root_evidence_bytes",
+        lambda path: path.read_bytes(),
+    )
+    monkeypatch.setattr(
+        collector,
+        "_read_trusted_json",
+        lambda path, **_kwargs: json.loads(path.read_text(encoding="utf-8")),
+    )
+    value = {"schema": "test", "value": 1}
+    digest = collector._sha256_json(value)
+    path = collector._root_evidence_bundle_path(
+        revision=REVISION,
+        activation_plan_sha256=PLAN,
+        bundle_sha256=digest,
+    )
+    collector._write_append_only_root_evidence(path, value)
+    assert json.loads(path.read_text(encoding="utf-8")) == value
+    collector._write_append_only_root_evidence(path, value)
+    with pytest.raises(RuntimeError, match="collided"):
+        collector._write_append_only_root_evidence(
+            path,
+            {"schema": "test", "value": 2},
+        )
+
+
+def test_exact_root_evidence_reader_accepts_unchanged_canonical_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "bundle.json"
+    raw = collector._canonical_bytes({"schema": "test", "value": 1})
+    path.write_bytes(raw)
+    path.chmod(0o400)
+    real_lstat = os.lstat
+    real_fstat = os.fstat
+
+    def projected(item):
+        return SimpleNamespace(
+            st_mode=item.st_mode,
+            st_nlink=item.st_nlink,
+            st_uid=0,
+            st_gid=0,
+            st_dev=item.st_dev,
+            st_ino=item.st_ino,
+            st_size=item.st_size,
+            st_mtime_ns=item.st_mtime_ns,
+        )
+
+    monkeypatch.setattr(collector, "_validate_parent_chain", lambda *_a, **_k: None)
+    monkeypatch.setattr(collector, "_has_posix_acl", lambda _path: False)
+    monkeypatch.setattr(collector.os, "lstat", lambda value: projected(real_lstat(value)))
+    monkeypatch.setattr(collector.os, "fstat", lambda fd: projected(real_fstat(fd)))
+    assert collector._read_exact_root_evidence_bytes(path) == raw
+
+
 @pytest.mark.parametrize(
     "boot,now",
     [("8" * 64, 110_000_000_000), (BOOT, 99_999_999_999), (BOOT, 130_000_000_001)],
@@ -1603,7 +1873,9 @@ def test_receipt_rejects_other_boot_future_and_expired_evidence(boot, now):
         collector._validate_receipt_mapping(
             _valid_receipt(manifest),
             manifest,
+            expected_activation_plan_sha256=PLAN,
             current_boot_id_sha256=boot,
+            current_host_identity_sha256_value=HOST,
             current_boottime_ns=now,
         )
 
@@ -1617,7 +1889,9 @@ def test_receipt_rejects_cgroup_main_pid_different_from_writer_main_pid():
         collector._validate_receipt_mapping(
             receipt,
             manifest,
+            expected_activation_plan_sha256=PLAN,
             current_boot_id_sha256=BOOT,
+            current_host_identity_sha256_value=HOST,
             current_boottime_ns=110_000_000_000,
         )
 
@@ -1643,6 +1917,9 @@ def test_validate_fresh_receipt_refences_live_services_and_invalidates_on_drift(
     )
     monkeypatch.setattr(collector, "_boot_id_sha256", lambda: BOOT)
     monkeypatch.setattr(
+        collector, "current_host_identity_sha256", lambda: HOST
+    )
+    monkeypatch.setattr(
         collector,
         "_current_boottime_ns",
         lambda: 110_000_000_000,
@@ -1657,9 +1934,18 @@ def test_validate_fresh_receipt_refences_live_services_and_invalidates_on_drift(
         "_invalidate_root_receipt",
         lambda path: invalidated.append(path),
     )
+    monkeypatch.setattr(
+        collector,
+        "_validate_root_evidence_bundle",
+        lambda *_args, **_kwargs: {},
+    )
 
     with pytest.raises(RuntimeError, match="PID drift"):
-        collector.validate_fresh_receipt("/run/preflight/receipt.json", "/manifest")
+        collector.validate_fresh_receipt(
+            "/run/preflight/receipt.json",
+            "/manifest",
+            activation_plan_sha256=PLAN,
+        )
 
     assert invalidated == ["/run/preflight/receipt.json"]
 
@@ -1685,7 +1971,11 @@ def test_validate_invalidates_old_receipt_when_manifest_load_fails(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="manifest drift"):
-        collector.validate_fresh_receipt("/run/preflight/receipt.json", "/manifest")
+        collector.validate_fresh_receipt(
+            "/run/preflight/receipt.json",
+            "/manifest",
+            activation_plan_sha256=PLAN,
+        )
 
     assert invalidated == ["/run/preflight/receipt.json"]
 

@@ -7,8 +7,11 @@ schema and scope validation, permissions, compare-and-swap transitions,
 idempotency, safety boundaries, and receipts.
 
 Publication of this code does **not** activate the boundary. Cloud cutover is a
-separate owner/passkey-approved deployment gate and is currently blocked by the
-items in [Cutover blockers](#cutover-blockers).
+separate owner-approved gate whose current bootstrap receipt records an exact
+root-provisioned, out-of-band confirmation and explicitly no cryptographic
+owner proof. A future runtime passkey capability is a separate authority and
+must not be inferred from this bootstrap. Cutover remains blocked by the items
+in [Cutover blockers](#cutover-blockers).
 
 ## Runtime boundary
 
@@ -430,6 +433,49 @@ preflight requires an exact one-shot argv, the same immutable release and
 config, a dedicated output directory, an exact hardened unit/timer schedule,
 and no other writer-UID cron, `at`, transient-unit, timer, or process surface.
 
+## Packaged activation and readiness gate
+
+The VM never imports the source-only `scripts.canary` namespace. The sealed
+wheel provides the sole native-observation and final-activation entry point at
+`gateway.canonical_writer_activation`, and the source planner exposes one
+deployable v3 plan builder that requires the exact stopped native receipt.
+
+The bootstrap approval receipt is an exact plan/scope/source/nonce/TTL binding,
+but its trust description is deliberately narrow:
+`authority_kind=trusted_root_bootstrap_out_of_band_owner` and
+`cryptographic_owner_proof=false`. It records a root-provisioned out-of-band
+owner confirmation; it does not claim a passkey or signature proof. Renewals
+are append-only and receipt-addressed, so a new TTL/nonce never overwrites the
+older evidence.
+
+The complete host lifecycle is serialized under a root-owned lock. Before any
+native identity change or final service start, the packaged preflight re-hashes
+the release, manifest, units, configs, CA and credential provenance; performs
+the exact TLS/PostgreSQL startup privilege attestation; verifies current NSS
+identities and complete primary/supplementary group membership; rejects
+systemd overrides/drop-ins, Discord authority and the retired helper; checks
+the same-host stopped receipt and its append-only stage; and requires fresh
+exact-policy IAM evidence. Passing and failing reports are sealed append-only
+under the plan evidence root with separate report and file digests.
+
+The fresh IAM receipt is archived before the replaceable `/run` copy can be
+renewed. A large minimum lifetime is required before mutation, and the current
+same-policy receipt is re-read and archived immediately before service start.
+The root preflight receipt binds the exact IAM digest actually used.
+
+Native live observation remains boot- and time-bounded through stage
+finalization. The resulting stopped receipt is durable: a later consumer may
+use it after its original boot/TTL only on the same host, after re-hashing the
+current release/config/library closure and comparing current native/kernel
+mapping policy. Cross-host replay and any artifact or mapping drift fail
+closed. Successful replay performs no second service mutation.
+
+Live canary services remain intentionally disabled until the installed-wheel
+probe and this comprehensive in-process preflight both pass on the isolated
+Cloud host. A preflight-only blocker is retryable and does not create a
+forensic mutation quarantine; a failure after approved mutation begins seals a
+unique failure receipt and the fixed quarantine marker.
+
 ## Required deployment evidence
 
 The deterministic preflight consumes three strict deployment blocks in
@@ -482,9 +528,10 @@ Cloud deployment must remain blocked until all of the following are complete:
    preclaim terminal fencing, one-snapshot multi-page export, and concurrent
    transactions. Static parsing and Python fakes do not validate PL/pgSQL
    execution.
-4. **Trusted root evidence collector.** Implement and review the authenticated,
-   fresh collector for gateway/writer code closure, local authority, systemd,
-   polkit, IAM, secret sources, socket, and privileged execution inventory.
+4. **Trusted root evidence collector.** Deploy the packaged, reviewed collector
+   and verify its fresh gateway/writer code-closure, local-authority, systemd,
+   polkit, IAM, secret-source, socket, and privileged-execution evidence on the
+   isolated Cloud host.
 5. **Legacy truth decision.** Owner-review and explicitly reseed accepted legacy
    events, or formally start a new trusted truth epoch. Until then legacy rows
    remain quarantined.
@@ -493,8 +540,9 @@ Cloud deployment must remain blocked until all of the following are complete:
    process before asserting the no-DM rule globally.
 7. **Owner-approved Cloud mutation plan.** Provision roles, immutable release,
    users, groups, config, CA, credential, systemd units, exporter state, IAM
-   removals, migration, canary, and rollback under the applicable owner/passkey
-   gate.
+   removals, migration, canary, and rollback under the exact out-of-band owner
+   gate. Any future passkey-backed runtime gate must issue its own distinct
+   cryptographic receipt.
 8. **Real isolated canary and forward-only rollback.** The current
    `muncho-auto-deploy-release` helper switches the sole production symlink,
    restarts the production gateway, has no traffic isolation, and does not

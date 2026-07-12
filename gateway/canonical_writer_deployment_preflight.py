@@ -402,6 +402,7 @@ _WRITER_DEPLOYMENT_POLICY_KEYS = {
     "module_origin",
     "projection_export_directory",
     "preapproved_external_native_executable_mappings",
+    "preapproved_kernel_executable_mappings",
     "read_write_paths",
     "revision",
     "runtime_directory",
@@ -452,6 +453,7 @@ _WRITER_PROCESS_ATTESTATION_KEYS = {
     "loaded_module_origins_complete",
     "mapped_executable_paths",
     "mapped_executable_paths_complete",
+    "kernel_executable_mappings",
     "observed_at_unix",
     "pid",
     "process_start_time_ticks",
@@ -532,6 +534,16 @@ def _writer_deployment_checks(
         approved_native_paths = tuple(
             path for path, _digest in approved_native_mappings
         )
+        approved_kernel_mappings = _strings(
+            policy.get("preapproved_kernel_executable_mappings")
+        )
+        if (
+            not approved_kernel_mappings
+            or approved_kernel_mappings
+            != tuple(sorted(set(approved_kernel_mappings)))
+            or not set(approved_kernel_mappings) <= {"[vdso]", "[vsyscall]"}
+        ):
+            raise ValueError("kernel executable mapping policy is invalid")
 
         raw_import_paths = policy.get("import_paths")
         if not isinstance(raw_import_paths, Sequence) or isinstance(
@@ -740,6 +752,9 @@ def _writer_deployment_checks(
         effective_import_paths = _strings(process.get("effective_import_paths"))
         loaded_module_origins = _strings(process.get("loaded_module_origins"))
         mapped_executable_paths = _strings(process.get("mapped_executable_paths"))
+        observed_kernel_mappings = _strings(
+            process.get("kernel_executable_mappings")
+        )
         expected_import_paths = tuple(
             sorted(
                 path
@@ -785,6 +800,7 @@ def _writer_deployment_checks(
                 for path in mapped_executable_paths
             )
             and observed_external_native_paths == approved_native_paths
+            and observed_kernel_mappings == approved_kernel_mappings
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
             and _empty_sequence(process.get("writable_code_mappings"))
@@ -907,6 +923,7 @@ _GATEWAY_DEPLOYMENT_POLICY_KEYS = {
     "module",
     "module_origin",
     "preapproved_external_native_executable_mappings",
+    "preapproved_kernel_executable_mappings",
     "read_write_paths",
     "revision",
     "unit_name",
@@ -953,6 +970,7 @@ _GATEWAY_PROCESS_ATTESTATION_KEYS = {
     "loaded_module_origins_complete",
     "mapped_executable_paths",
     "mapped_executable_paths_complete",
+    "kernel_executable_mappings",
     "observed_at_unix",
     "pid",
     "process_start_time_ticks",
@@ -1013,6 +1031,16 @@ def _gateway_deployment_checks(
         approved_native_paths = tuple(
             path for path, _digest in approved_native_mappings
         )
+        approved_kernel_mappings = _strings(
+            policy.get("preapproved_kernel_executable_mappings")
+        )
+        if (
+            not approved_kernel_mappings
+            or approved_kernel_mappings
+            != tuple(sorted(set(approved_kernel_mappings)))
+            or not set(approved_kernel_mappings) <= {"[vdso]", "[vsyscall]"}
+        ):
+            raise ValueError("kernel executable mapping policy is invalid")
         dynamic_loading_mode = str(
             policy.get("dynamic_python_loading_mode") or ""
         )
@@ -1187,6 +1215,9 @@ def _gateway_deployment_checks(
         )
         loaded_origins = _strings(process.get("loaded_module_origins"))
         mapped_paths = _strings(process.get("mapped_executable_paths"))
+        observed_kernel_mappings = _strings(
+            process.get("kernel_executable_mappings")
+        )
         observed_dynamic_paths = _strings(
             process.get("dynamic_python_discovery_paths")
         )
@@ -1235,6 +1266,7 @@ def _gateway_deployment_checks(
                 for path in mapped_paths
             )
             and observed_external_native_paths == approved_native_paths
+            and observed_kernel_mappings == approved_kernel_mappings
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
             and _empty_sequence(process.get("writable_code_mappings"))
@@ -1321,9 +1353,13 @@ def _gateway_deployment_checks(
 
 
 _AUTHORITY_IDENTITY_KEYS = {
+    "effective_capabilities",
     "effective_gid",
     "effective_uid",
+    "executable",
+    "no_new_privileges",
     "pid",
+    "process_start_time_ticks",
     "supplementary_gids",
 }
 _AUTHORITY_CHILDREN_KEYS = {"complete", "processes"}
@@ -1335,6 +1371,10 @@ _GROUP_POLICY_KEYS = {
     "gateway_dangerous_memberships",
     "unknown_privileged_gids",
     "writer_dangerous_memberships",
+    "gateway_account_gids",
+    "writer_account_gids",
+    "protected_group_memberships",
+    "projector_identity",
 }
 _AUTHORITY_DENIAL_KEYS = {
     "authorized_doas_commands",
@@ -1350,6 +1390,8 @@ _AUTHORITY_DENIAL_KEYS = {
     "can_write_cron_paths",
     "can_write_systemd_unit_paths",
     "effective_capabilities",
+    "writable_cron_paths",
+    "writable_systemd_unit_paths",
 }
 _PRIVILEGED_INVENTORY_KEYS = {
     "complete",
@@ -1362,6 +1404,35 @@ _PRIVILEGED_INVENTORY_KEYS = {
     "writer_uid_timer_units",
     "writer_uid_transient_units",
     "writer_uid_unattributed_processes",
+    "writer_unit_reverse_activation",
+    "gateway_uid_service_units",
+    "gateway_uid_timer_units",
+    "gateway_uid_transient_units",
+    "gateway_uid_cron_entries",
+    "gateway_uid_at_jobs",
+    "gateway_uid_process_executables",
+    "gateway_uid_unattributed_processes",
+    "gateway_unit_reverse_activation",
+}
+_REVERSE_ACTIVATION_EVIDENCE_KEYS = {
+    "unit_name",
+    "triggered_by",
+    "wanted_by",
+    "required_by",
+    "bound_by",
+    "upheld_by",
+    "requisite_of",
+    "on_success_of",
+    "on_failure_of",
+    "reverse_references",
+    "service_units",
+    "timer_units",
+    "socket_units",
+    "path_units",
+    "target_units",
+    "automount_units",
+    "other_units",
+    "transient_units",
 }
 _EXPORTER_POLICY_KEYS = {
     "artifact_digest_sha256",
@@ -1412,7 +1483,163 @@ _AUTHORITY_SURFACE_KEYS = {
     "observed_at_unix",
     "privileged_execution_inventory",
     "projection_exporter",
+    "writer_authority",
+    "user_systemd",
 }
+_USER_SYSTEMD_PRINCIPAL_KEYS = {
+    "uid",
+    "linger_path",
+    "linger_enabled",
+    "user_manager_unit",
+    "load_state",
+    "active_state",
+    "sub_state",
+    "main_pid",
+    "runtime_directory_exists",
+    "private_socket_exists",
+    "home_user_unit_path",
+    "home_user_unit_path_exists",
+    "home_user_unit_path_service_writable",
+    "home_directory_exists",
+    "evaluated_home_user_unit_paths",
+    "existing_home_user_unit_paths",
+    "service_writable_home_user_unit_paths",
+    "service_units",
+    "timer_units",
+    "activation_units",
+    "transient_units",
+    "runtime_service_units",
+    "runtime_timer_units",
+    "runtime_activation_units",
+    "global_service_units",
+    "global_timer_units",
+    "global_activation_units",
+    "global_generators",
+    "evaluated_global_unit_roots",
+    "existing_global_unit_roots",
+    "evaluated_global_generator_roots",
+    "existing_global_generator_roots",
+    "global_directories_protected",
+}
+
+_GLOBAL_USER_SYSTEMD_UNIT_ROOTS = (
+    "/etc/systemd/user",
+    "/usr/lib/systemd/user",
+    "/etc/xdg/systemd/user",
+    "/usr/local/lib/systemd/user",
+    "/usr/local/share/systemd/user",
+    "/usr/share/systemd/user",
+    "/run/systemd/user",
+)
+_GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS = (
+    "/etc/systemd/user-generators",
+    "/etc/xdg/systemd/user-generators",
+    "/usr/local/lib/systemd/user-generators",
+    "/usr/lib/systemd/user-generators",
+    "/run/systemd/user-generators",
+    "/etc/systemd/user-environment-generators",
+    "/usr/local/lib/systemd/user-environment-generators",
+    "/usr/lib/systemd/user-environment-generators",
+    "/run/systemd/user-environment-generators",
+)
+
+
+def _user_systemd_is_absent(
+    value: Any, *, uid: int, user_name: str
+) -> bool:
+    evidence = _mapping(value)
+    home = (
+        "/var/lib/hermes-gateway"
+        if user_name == "muncho-gateway"
+        else "/nonexistent"
+    )
+    expected_home_paths = (
+        f"{home}/.config/systemd/user",
+        f"{home}/.local/share/systemd/user",
+        f"{home}/.config/systemd/user-generators",
+        f"{home}/.local/share/systemd/user-generators",
+        f"{home}/.config/systemd/user-environment-generators",
+        f"{home}/.local/share/systemd/user-environment-generators",
+    )
+    existing_global_roots = evidence.get("existing_global_unit_roots")
+    existing_generator_roots = evidence.get("existing_global_generator_roots")
+    return (
+        set(evidence) == _USER_SYSTEMD_PRINCIPAL_KEYS
+        and evidence.get("uid") == uid
+        and evidence.get("linger_path")
+        == f"/var/lib/systemd/linger/{user_name}"
+        and evidence.get("linger_enabled") is False
+        and evidence.get("user_manager_unit") == f"user@{uid}.service"
+        and evidence.get("load_state") == "loaded"
+        and evidence.get("active_state") == "inactive"
+        and evidence.get("sub_state") == "dead"
+        and evidence.get("main_pid") == 0
+        and evidence.get("runtime_directory_exists") is False
+        and evidence.get("private_socket_exists") is False
+        and evidence.get("home_user_unit_path") == expected_home_paths[0]
+        and evidence.get("home_user_unit_path_exists") is False
+        and evidence.get("home_user_unit_path_service_writable") is False
+        and evidence.get("home_directory_exists")
+        is (user_name == "muncho-gateway")
+        and tuple(evidence.get("evaluated_home_user_unit_paths") or ())
+        == expected_home_paths
+        and _empty_sequence(evidence.get("existing_home_user_unit_paths"))
+        and _empty_sequence(
+            evidence.get("service_writable_home_user_unit_paths")
+        )
+        and _empty_sequence(evidence.get("service_units"))
+        and _empty_sequence(evidence.get("timer_units"))
+        and _empty_sequence(evidence.get("activation_units"))
+        and _empty_sequence(evidence.get("transient_units"))
+        and _empty_sequence(evidence.get("runtime_service_units"))
+        and _empty_sequence(evidence.get("runtime_timer_units"))
+        and _empty_sequence(evidence.get("runtime_activation_units"))
+        and evidence.get("global_directories_protected") is True
+        and _canonical_string_sequence(evidence.get("global_service_units"))
+        and _canonical_string_sequence(evidence.get("global_timer_units"))
+        and _canonical_string_sequence(evidence.get("global_activation_units"))
+        and _canonical_string_sequence(evidence.get("global_generators"))
+        and tuple(evidence.get("evaluated_global_unit_roots") or ())
+        == _GLOBAL_USER_SYSTEMD_UNIT_ROOTS
+        and _canonical_string_sequence(existing_global_roots)
+        and set(existing_global_roots).issubset(_GLOBAL_USER_SYSTEMD_UNIT_ROOTS)
+        and {"/etc/systemd/user", "/usr/lib/systemd/user"}.issubset(
+            existing_global_roots
+        )
+        and tuple(evidence.get("evaluated_global_generator_roots") or ())
+        == _GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS
+        and _canonical_string_sequence(existing_generator_roots)
+        and set(existing_generator_roots).issubset(
+            _GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS
+        )
+    )
+
+
+def _reverse_activation_is_absent(value: Any, *, unit_name: str) -> bool:
+    evidence = _mapping(value)
+    expected_gateway_edge = (
+        [DEFAULT_GATEWAY_UNIT] if unit_name == DEFAULT_WRITER_UNIT else []
+    )
+    return (
+        set(evidence) == _REVERSE_ACTIVATION_EVIDENCE_KEYS
+        and evidence.get("unit_name") == unit_name
+        and evidence.get("bound_by") == expected_gateway_edge
+        and evidence.get("reverse_references") == expected_gateway_edge
+        and evidence.get("service_units") == expected_gateway_edge
+        and all(
+            _empty_sequence(evidence.get(name))
+            for name in _REVERSE_ACTIVATION_EVIDENCE_KEYS
+            - {"unit_name", "bound_by", "reverse_references", "service_units"}
+        )
+    )
+
+
+def _canonical_string_sequence(value: Any) -> bool:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        return False
+    return value == sorted(set(value))
 
 
 def _strict_integers(value: Any) -> tuple[int, ...]:
@@ -1429,6 +1656,8 @@ def _authority_identity(
     value: Any,
     *,
     expected_pid: int,
+    expected_start_time_ticks: int,
+    expected_executable: str,
     expected_uid: int,
     expected_gid: int,
     expected_supplementary_gids: tuple[int, ...],
@@ -1442,11 +1671,18 @@ def _authority_identity(
         set(identity) == _AUTHORITY_IDENTITY_KEYS
         and type(identity.get("pid")) is int
         and identity.get("pid") == expected_pid
+        and type(identity.get("process_start_time_ticks")) is int
+        and identity.get("process_start_time_ticks") > 0
+        and identity.get("process_start_time_ticks")
+        == expected_start_time_ticks
         and type(identity.get("effective_uid")) is int
         and identity.get("effective_uid") == expected_uid
         and type(identity.get("effective_gid")) is int
         and identity.get("effective_gid") == expected_gid
         and supplementary == expected_supplementary_gids
+        and identity.get("no_new_privileges") is True
+        and identity.get("effective_capabilities") == []
+        and identity.get("executable") == expected_executable
     )
 
 
@@ -1539,6 +1775,7 @@ def _writer_authority_surface_checks(
     )
     writer_process = _mapping(writer_attestation.get("process"))
     gateway_process = _mapping(gateway_process_snapshot)
+    user_systemd = _mapping(surface.get("user_systemd"))
     shape_ok = (
         set(surface) == _AUTHORITY_SURFACE_KEYS
         and set(identities) == _AUTHORITY_IDENTITIES_KEYS
@@ -1547,6 +1784,7 @@ def _writer_authority_surface_checks(
         and set(exporter) == {"attestation", "policy"}
         and set(exporter_policy) == _EXPORTER_POLICY_KEYS
         and set(exporter_attestation) == _EXPORTER_ATTESTATION_KEYS
+        and set(user_systemd) == {"complete", "gateway", "writer"}
     )
     observed_at = _integer(surface.get("observed_at_unix"))
     fresh_root_evidence = (
@@ -1566,6 +1804,7 @@ def _writer_authority_surface_checks(
     exporter_manifest_exact = False
     exporter_state_safe = False
     inventory_exact = False
+    user_systemd_safe = False
     try:
         gateway_identity = identities.get("gateway")
         writer_identity = identities.get("writer")
@@ -1595,6 +1834,10 @@ def _writer_authority_surface_checks(
                 and _authority_identity(
                     child,
                     expected_pid=child_pid,
+                    expected_start_time_ticks=_integer(
+                        child.get("process_start_time_ticks")
+                    ),
+                    expected_executable=str(child.get("executable") or ""),
                     expected_uid=gateway_uid,
                     expected_gid=gateway_gid,
                     expected_supplementary_gids=tuple(
@@ -1615,6 +1858,10 @@ def _writer_authority_surface_checks(
             and _authority_identity(
                 gateway_identity,
                 expected_pid=_integer(gateway_process.get("pid")),
+                expected_start_time_ticks=_integer(
+                    gateway_process.get("process_start_time_ticks")
+                ),
+                expected_executable=str(writer_policy.get("interpreter") or ""),
                 expected_uid=gateway_uid,
                 expected_gid=gateway_gid,
                 expected_supplementary_gids=tuple(
@@ -1624,6 +1871,10 @@ def _writer_authority_surface_checks(
             and _authority_identity(
                 writer_identity,
                 expected_pid=_integer(writer_process.get("pid")),
+                expected_start_time_ticks=_integer(
+                    writer_process.get("process_start_time_ticks")
+                ),
+                expected_executable=str(writer_policy.get("interpreter") or ""),
                 expected_uid=writer_uid,
                 expected_gid=writer_gid,
                 expected_supplementary_gids=tuple(
@@ -1652,6 +1903,29 @@ def _writer_authority_surface_checks(
                 group_policy.get("writer_dangerous_memberships")
             )
             and not unknown_gids
+            and _strict_integers(group_policy.get("gateway_account_gids"))
+            == tuple(sorted((gateway_gid, socket_group_gid)))
+            and _strict_integers(group_policy.get("writer_account_gids"))
+            == tuple(sorted((writer_gid, projector_gid)))
+            and group_policy.get("protected_group_memberships")
+            == {
+                str(gateway_gid): ["muncho-gateway"],
+                str(writer_gid): ["muncho-canonical-writer"],
+                str(socket_group_gid): ["muncho-gateway"],
+                str(projector_gid): [
+                    "muncho-canonical-writer",
+                    "muncho-projector",
+                ],
+            }
+            and group_policy.get("projector_identity")
+            == {
+                "uid": 992,
+                "gid": projector_gid,
+                "home": "/nonexistent",
+                "shell": "/usr/sbin/nologin",
+                "gids": [projector_gid],
+                "process_pids": [],
+            }
         )
 
         enabled = exporter_policy.get("enabled")
@@ -1801,11 +2075,43 @@ def _writer_authority_surface_checks(
             and _empty_sequence(
                 inventory.get("writer_uid_unattributed_processes")
             )
+            and _reverse_activation_is_absent(
+                inventory.get("writer_unit_reverse_activation"),
+                unit_name=DEFAULT_WRITER_UNIT,
+            )
             and _empty_sequence(
                 inventory.get("gateway_writable_writer_unit_files")
             )
             and _empty_sequence(
                 inventory.get("gateway_child_writable_writer_unit_files")
+            )
+            and _strings(inventory.get("gateway_uid_service_units"))
+            == (DEFAULT_GATEWAY_UNIT,)
+            and _empty_sequence(inventory.get("gateway_uid_timer_units"))
+            and _empty_sequence(inventory.get("gateway_uid_transient_units"))
+            and _empty_sequence(inventory.get("gateway_uid_cron_entries"))
+            and _empty_sequence(inventory.get("gateway_uid_at_jobs"))
+            and _strings(inventory.get("gateway_uid_process_executables"))
+            == (str(writer_policy.get("interpreter") or ""),)
+            and _empty_sequence(
+                inventory.get("gateway_uid_unattributed_processes")
+            )
+            and _reverse_activation_is_absent(
+                inventory.get("gateway_unit_reverse_activation"),
+                unit_name=DEFAULT_GATEWAY_UNIT,
+            )
+        )
+        user_systemd_safe = (
+            user_systemd.get("complete") is True
+            and _user_systemd_is_absent(
+                user_systemd.get("gateway"),
+                uid=gateway_uid,
+                user_name="muncho-gateway",
+            )
+            and _user_systemd_is_absent(
+                user_systemd.get("writer"),
+                uid=writer_uid,
+                user_name="muncho-canonical-writer",
             )
         )
     except (TypeError, ValueError):
@@ -1842,6 +2148,12 @@ def _writer_authority_surface_checks(
             "gateway children must have no systemd, transient-unit, timer, cron, UID-switch, sudo/doas, capability, or polkit authority over the writer boundary",
         ),
         PreflightCheck(
+            "writer_authority.writer_denied",
+            fresh_root_evidence
+            and _authority_is_denied(surface.get("writer_authority")),
+            "writer must have no systemd, transient-unit, timer, cron, UID-switch, sudo/doas, capability, or polkit authority outside its service boundary",
+        ),
+        PreflightCheck(
             "writer_authority.exporter_manifest_exact",
             fresh_root_evidence and exporter_manifest_exact,
             "projection exporter policy must pin the same immutable artifact, exact one-shot argv, export path, and timer schedule",
@@ -1857,6 +2169,11 @@ def _writer_authority_surface_checks(
             "writer_authority.privileged_inventory_exact",
             fresh_root_evidence and inventory_exact,
             "writer UID services and timers must match the exact allow-list with no cron, at, transient, unattributed, or gateway-writable execution surface",
+        ),
+        PreflightCheck(
+            "writer_authority.user_systemd_absent",
+            fresh_root_evidence and user_systemd_safe,
+            "gateway and writer user managers, linger, runtime buses, per-user services, timers, and transient units must be absent",
         ),
     ]
 

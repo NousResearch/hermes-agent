@@ -32,13 +32,14 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
 from gateway.canonical_writer_db import (
+    CanonicalWriterDB,
     ManagedCloudSQLAdminHBAReceipt,
     collect_managed_cloudsqladmin_hba_receipt,
     managed_cloudsqladmin_hba_receipt_from_mapping,
@@ -47,8 +48,19 @@ from gateway.canonical_writer_db import (
 from gateway.canonical_writer_deployment_preflight import (
     _HARDENED_TRUE_PROPERTIES,
     _systemd_checks,
+    evaluate_snapshot,
     PreflightCheck,
     PreflightReport,
+)
+from gateway.canonical_writer_host_authority import (
+    DEFAULT_EXTERNAL_IAM_LIVE_PATH,
+    DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT,
+    LEGACY_CLOUD_SQL_HELPER_PATH,
+    NativeObservationReceipt,
+    collect_legacy_helper_absence,
+    collect_writer_authority_surface,
+    current_host_identity_sha256,
+    load_external_iam_receipt,
 )
 from gateway.canonical_writer_boundary import (
     DEFAULT_DISCORD_EDGE_SOCKET_PATH,
@@ -61,13 +73,19 @@ from gateway.canonical_writer_boundary import (
 from gateway.canonical_writer_postgres_backend import (
     CANONICAL_WRITER_MIGRATION_OWNER,
     PRODUCTION_CATALOG_SHA256,
+    PRODUCTION_STATEMENT_CATALOG,
 )
 
 
-MANIFEST_SCHEMA = "canonical-writer-deployment-manifest.v1"
-RECEIPT_SCHEMA = "canonical-writer-root-preflight-receipt.v1"
+MANIFEST_SCHEMA = "canonical-writer-deployment-manifest.v2"
+RECEIPT_SCHEMA = "canonical-writer-root-preflight-receipt.v2"
 WRITER_ONLY_MODE = "writer_only"
 RECEIPT_TTL_SECONDS = 30
+ROOT_EVIDENCE_BUNDLE_SCHEMA = "canonical-writer-root-evidence-bundle.v1"
+DEFAULT_ROOT_EVIDENCE_ROOT = Path(
+    "/var/lib/muncho-writer-canary-evidence/root-preflight"
+)
+_MAX_ROOT_EVIDENCE_BUNDLE_BYTES = 16 * 1024 * 1024
 ACTIVE_HBA_MAX_AGE_SECONDS = 30
 WRITER_LIVENESS_MAX_AGE_SECONDS = 5
 DEFAULT_GATEWAY_MANAGED_CONFIG_PATH = Path("/etc/hermes/config.yaml")
@@ -166,7 +184,6 @@ _MANIFEST_KEYS = frozenset(
     {
         "schema",
         "mode",
-        "approved_plan_sha256",
         "revision",
         "artifact_sha256",
         "snapshot_policy_sha256",
@@ -182,8 +199,15 @@ _HOST_CONTRACT_KEYS = frozenset(
         "writer_unit_fragment_sha256",
         "gateway_config_path",
         "gateway_config_sha256",
+        "writer_config_path",
         "writer_config_sha256",
         "projection_export_path",
+        "external_iam_policy_sha256",
+        "external_iam_receipt_path",
+        "legacy_helper_path",
+        "native_observation_receipt_path",
+        "native_observation_receipt_sha256",
+        "native_observation_plan_sha256",
     }
 )
 _RECEIPT_KEYS = frozenset(
@@ -192,16 +216,25 @@ _RECEIPT_KEYS = frozenset(
         "ok",
         "mode",
         "boot_id_sha256",
+        "host_identity_sha256",
         "collected_at_unix",
         "collected_at_boottime_ns",
         "expires_at_boottime_ns",
         "manifest_sha256",
-        "approved_plan_sha256",
+        "activation_plan_sha256",
         "revision",
         "artifact_sha256",
         "snapshot_policy_sha256",
         "snapshot_sha256",
         "report_sha256",
+        "full_report_sha256",
+        "additive_report_sha256",
+        "evidence_bundle_path",
+        "evidence_bundle_sha256",
+        "external_iam_receipt_sha256",
+        "native_observation_receipt_sha256",
+        "host_preparation_receipt_sha256",
+        "legacy_helper_evidence_sha256",
         "hba_receipt_sha256",
         "gateway_readiness_sha256",
         "gateway_liveness_sha256",
@@ -226,6 +259,33 @@ _RECEIPT_KEYS = frozenset(
         "writer_bpf_egress_direct_program_ids",
         "writer_bpf_egress_effective_program_ids",
         "failed_checks",
+    }
+)
+_ROOT_EVIDENCE_BUNDLE_KEYS = frozenset(
+    {
+        "schema",
+        "revision",
+        "activation_plan_sha256",
+        "boot_id_sha256",
+        "host_identity_sha256",
+        "manifest_sha256",
+        "artifact_sha256",
+        "snapshot_policy_sha256",
+        "manifest",
+        "snapshot",
+        "full_report",
+        "additive_report",
+        "combined_report",
+        "component_sha256",
+    }
+)
+_ROOT_EVIDENCE_COMPONENT_KEYS = frozenset(
+    {
+        "manifest_sha256",
+        "snapshot_sha256",
+        "full_report_sha256",
+        "additive_report_sha256",
+        "combined_report_sha256",
     }
 )
 _GATEWAY_LIVENESS_RECEIPT_KEYS = frozenset(
@@ -527,6 +587,7 @@ def _read_trusted_json(
     require_trusted_parents: bool = True,
     allowed_modes: frozenset[int] = frozenset({0o400}),
     maximum: int = _MAX_TRUSTED_JSON_BYTES,
+    require_canonical: bool = False,
 ) -> Mapping[str, Any]:
     path = _absolute_normalized_path(path_value)
     if require_trusted_parents:
@@ -576,12 +637,13 @@ def _read_trusted_json(
         raise ValueError("trusted JSON is not strict UTF-8 JSON") from exc
     if not isinstance(value, Mapping):
         raise ValueError("trusted JSON root must be an object")
+    if require_canonical and raw != _canonical_bytes(dict(value)):
+        raise ValueError("trusted JSON is not exact canonical bytes")
     return value
 
 
 @dataclass(frozen=True)
 class TrustedDeploymentManifest:
-    approved_plan_sha256: str
     revision: str
     artifact_sha256: str
     snapshot_policy_sha256: str
@@ -599,14 +661,11 @@ class TrustedDeploymentManifest:
             raise ValueError("deployment manifest schema is invalid")
         if value.get("mode") != WRITER_ONLY_MODE:
             raise ValueError("deployment manifest mode is not writer-only")
-        approved = value.get("approved_plan_sha256")
         revision = value.get("revision")
         artifact = value.get("artifact_sha256")
         policy = value.get("snapshot_policy_sha256")
         host_contract = value.get("host_contract")
         snapshot_template = value.get("snapshot_template")
-        if not isinstance(approved, str) or _SHA256_RE.fullmatch(approved) is None:
-            raise ValueError("approved plan digest is invalid")
         if not isinstance(revision, str) or _REVISION_RE.fullmatch(revision) is None:
             raise ValueError("release revision is invalid")
         if not isinstance(artifact, str) or _SHA256_RE.fullmatch(artifact) is None:
@@ -623,7 +682,10 @@ class TrustedDeploymentManifest:
             "gateway_unit_fragment_path",
             "writer_unit_fragment_path",
             "gateway_config_path",
+            "writer_config_path",
             "projection_export_path",
+            "native_observation_receipt_path",
+            "external_iam_receipt_path",
         ):
             raw_path = host_contract.get(name)
             if not isinstance(raw_path, str):
@@ -634,11 +696,37 @@ class TrustedDeploymentManifest:
             != str(DEFAULT_GATEWAY_MANAGED_CONFIG_PATH)
         ):
             raise ValueError("gateway managed config path is not pinned")
+        if host_contract.get("writer_config_path") != (
+            "/etc/muncho-canonical-writer/writer.json"
+        ):
+            raise ValueError("writer managed config path is not pinned")
+        if host_contract.get("gateway_unit_fragment_path") != (
+            "/etc/systemd/system/" + DEFAULT_GATEWAY_UNIT
+        ) or host_contract.get("writer_unit_fragment_path") != (
+            "/etc/systemd/system/" + DEFAULT_WRITER_UNIT
+        ):
+            raise ValueError("systemd unit fragment paths are not pinned")
+        if host_contract.get("projection_export_path") != (
+            "/var/lib/muncho-canonical-writer/projection/"
+            "canonical-events.json"
+        ):
+            raise ValueError("projection export path is not pinned")
+        if host_contract.get("external_iam_receipt_path") != str(
+            DEFAULT_EXTERNAL_IAM_LIVE_PATH
+        ):
+            raise ValueError("external IAM live receipt path is not pinned")
+        if host_contract.get("legacy_helper_path") != str(
+            LEGACY_CLOUD_SQL_HELPER_PATH
+        ):
+            raise ValueError("legacy helper path is not pinned")
         for name in (
             "gateway_unit_fragment_sha256",
             "writer_unit_fragment_sha256",
             "gateway_config_sha256",
             "writer_config_sha256",
+            "external_iam_policy_sha256",
+            "native_observation_receipt_sha256",
+            "native_observation_plan_sha256",
         ):
             digest = host_contract.get(name)
             if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
@@ -722,7 +810,6 @@ class TrustedDeploymentManifest:
         ):
             raise ValueError("snapshot template gateway policy is not minimal")
         return cls(
-            approved_plan_sha256=approved,
             revision=revision,
             artifact_sha256=artifact,
             snapshot_policy_sha256=policy,
@@ -735,7 +822,6 @@ class TrustedDeploymentManifest:
         return {
             "schema": self.schema,
             "mode": self.mode,
-            "approved_plan_sha256": self.approved_plan_sha256,
             "revision": self.revision,
             "artifact_sha256": self.artifact_sha256,
             "snapshot_policy_sha256": self.snapshot_policy_sha256,
@@ -755,6 +841,26 @@ def load_trusted_manifest(
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _privilege_attestation_mapping(value: Any) -> dict[str, Any]:
+    """Serialize the reviewed DB dataclass using evaluator field names."""
+
+    try:
+        result = asdict(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("database privilege attestation is not serializable") from exc
+    dependencies = result.pop("dependency_routine_identities", None)
+    if dependencies is None or "helper_routine_identities" in result:
+        raise RuntimeError("database helper attestation shape is invalid")
+    result["helper_routine_identities"] = dependencies
+    # Canonical JSON normalizes every dataclass tuple to the exact list shape
+    # consumed by the pure deployment evaluator without hand-maintained field
+    # copies that could omit a newly added structural identity.
+    normalized = json.loads(_canonical_bytes(result).decode("utf-8"))
+    if not isinstance(normalized, dict):
+        raise RuntimeError("database privilege attestation shape is invalid")
+    return normalized
 
 
 def snapshot_policy_projection(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -1527,18 +1633,37 @@ def _process_identity(pid: int) -> dict[str, Any]:
     ):
         raise RuntimeError("collector memory pressure payload is invalid")
     mapped_executable_paths: set[str] = set()
+    kernel_executable_mappings: set[str] = set()
     deleted_code_mappings: set[str] = set()
     writable_code_mappings: set[str] = set()
-    for line in maps.splitlines():
+
+    def executable_map_lines(value: str) -> tuple[str, ...]:
+        projected: list[str] = []
+        for raw_line in value.splitlines():
+            raw_fields = raw_line.split(maxsplit=5)
+            if len(raw_fields) < 5:
+                raise RuntimeError("collector process maps evidence is invalid")
+            raw_permissions = raw_fields[1]
+            if len(raw_permissions) != 4 or any(
+                character not in "rwxps-" for character in raw_permissions
+            ):
+                raise RuntimeError("collector process maps permissions are invalid")
+            if "x" in raw_permissions:
+                projected.append(raw_line)
+        return tuple(projected)
+
+    executable_maps_before = executable_map_lines(maps)
+    for line in executable_maps_before:
         fields = line.split(maxsplit=5)
-        if len(fields) < 5:
-            raise RuntimeError("collector process maps evidence is invalid")
         permissions = fields[1]
-        if len(fields) != 6 or "x" not in permissions:
-            continue
+        if len(fields) != 6:
+            raise RuntimeError("anonymous executable process mapping is forbidden")
         raw_path = fields[5]
-        if not raw_path.startswith("/"):
+        if raw_path in {"[vdso]", "[vsyscall]"}:
+            kernel_executable_mappings.add(raw_path)
             continue
+        if raw_path.startswith("[") or not raw_path.startswith("/"):
+            raise RuntimeError("unapproved executable process mapping is present")
         deleted = raw_path.endswith(" (deleted)")
         path = raw_path[: -len(" (deleted)")] if deleted else raw_path
         normalized = _absolute_normalized_path(path)
@@ -1579,7 +1704,15 @@ def _process_identity(pid: int) -> dict[str, Any]:
         if len(fields) >= 7 and fields[6] in socket_inodes and len(fields) == 8:
             unix_socket_paths.append(fields[7])
     start_after = _process_start_time_ticks(pid)
-    if start_before != start_after:
+    try:
+        maps_after = Path(f"/proc/{pid}/maps").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError("collector process maps fence is unavailable") from exc
+    if (
+        len(maps_after) > 16 * 1024 * 1024
+        or executable_map_lines(maps_after) != executable_maps_before
+        or start_before != start_after
+    ):
         raise RuntimeError("collector process rotated during collection")
     return {
         "pid": pid,
@@ -1597,6 +1730,7 @@ def _process_identity(pid: int) -> dict[str, Any]:
             for name in sorted(environment_value_sha256)
         },
         "mapped_executable_paths": sorted(mapped_executable_paths),
+        "kernel_executable_mappings": sorted(kernel_executable_mappings),
         "deleted_code_mappings": sorted(deleted_code_mappings),
         "writable_code_mappings": sorted(writable_code_mappings),
         "fd_targets": fd_targets,
@@ -3009,6 +3143,8 @@ def _verify_host_contract(
     ):
         if _sha256_trusted_file(str(contract[path_name])) != contract[digest_name]:
             raise RuntimeError(f"host contract {path_name} digest changed")
+    if writer_config_path != contract["writer_config_path"]:
+        raise RuntimeError("host contract writer config path changed")
     if _sha256_trusted_file(writer_config_path) != contract["writer_config_sha256"]:
         raise RuntimeError("host contract writer config digest changed")
 
@@ -3218,31 +3354,9 @@ def _collect_live_snapshot(
         name: gateway_systemd[name] for name in snapshot["systemd_properties"]
     }
 
-    authority = snapshot.get("writer_authority_surface")
-    if not isinstance(authority, dict):
-        raise ValueError("writer authority snapshot is not mutable")
     gateway_children = _child_pids(gateway_pid)
     if gateway_children:
         raise RuntimeError("writer-only gateway has unexpected child processes")
-    authority["complete"] = True
-    authority["collected_by_uid"] = 0
-    authority["observed_at_unix"] = now_unix
-    identities = authority.get("identities")
-    if not isinstance(identities, dict):
-        raise ValueError("writer authority identities are not mutable")
-    identities["gateway"] = {
-        "pid": gateway_pid,
-        "effective_uid": gateway_identity["effective_uid"],
-        "effective_gid": gateway_identity["effective_gid"],
-        "supplementary_gids": gateway_identity["supplementary_gids"],
-    }
-    identities["gateway_children"] = {"complete": True, "processes": []}
-    identities["writer"] = {
-        "pid": writer_pid,
-        "effective_uid": writer_identity["effective_uid"],
-        "effective_gid": writer_identity["effective_gid"],
-        "supplementary_gids": writer_identity["supplementary_gids"],
-    }
     if (
         gateway_identity["effective_gid"] != snapshot.get("gateway_gid")
         or writer_identity["effective_gid"] != snapshot.get("writer_gid")
@@ -3258,15 +3372,133 @@ def _collect_live_snapshot(
         writer_uid=int(snapshot["writer_uid"]),
         writer_pid=writer_pid,
     )
-    inventory = authority.get("privileged_execution_inventory")
-    if not isinstance(inventory, dict):
-        raise ValueError("writer process inventory is not mutable")
-    inventory["writer_uid_process_executables"] = [writer_identity["executable"]]
-    inventory["writer_uid_unattributed_processes"] = []
-    inventory["gateway_uid_process_executables"] = [
-        gateway_identity["executable"]
-    ]
-    inventory["gateway_uid_unattributed_processes"] = []
+    snapshot["writer_authority_surface"] = collect_writer_authority_surface(
+        snapshot,
+        gateway_pid=gateway_pid,
+        writer_pid=writer_pid,
+        observed_at_unix=now_unix,
+    )
+    helper_evidence = collect_legacy_helper_absence(
+        gateway_uid=int(snapshot["gateway_uid"]),
+        gateway_gids=tuple(snapshot["gateway_supplementary_gids"]),
+    )
+    snapshot["helper"] = {
+        "exists": helper_evidence["file_exists"],
+        "gateway_access": helper_evidence["gateway_access"],
+    }
+    external_iam = load_external_iam_receipt(
+        str(manifest.host_contract["external_iam_receipt_path"]),
+        expected_policy_sha256=str(
+            manifest.host_contract["external_iam_policy_sha256"]
+        ),
+        now_unix=now_unix,
+    )
+    snapshot["gateway_iam"] = external_iam.evaluator_projection()
+    snapshot["writer_iam"] = external_iam.evaluator_projection()
+    native_path = str(manifest.host_contract["native_observation_receipt_path"])
+    native_raw = _read_trusted_json(
+        native_path,
+        expected_uid=0,
+        expected_gid=0,
+    )
+    if _sha256_json(dict(native_raw)) != manifest.host_contract[
+        "native_observation_receipt_sha256"
+    ]:
+        raise RuntimeError("native observation receipt digest drifted")
+    native_receipt = NativeObservationReceipt.from_mapping(
+        native_raw,
+    )
+    if _mapping(native_receipt.value.get("plan")).get(
+        "host_identity_sha256"
+    ) != current_host_identity_sha256():
+        raise RuntimeError("native observation receipt belongs to another host")
+    if native_receipt.value.get("native_observation_plan_sha256") != (
+        manifest.host_contract["native_observation_plan_sha256"]
+    ):
+        raise RuntimeError("native observation plan digest drifted")
+    native_plan = _mapping(native_receipt.value.get("plan"))
+    if (
+        native_plan.get("external_iam_policy_sha256")
+        != manifest.host_contract["external_iam_policy_sha256"]
+        or native_receipt.value.get("external_iam_receipt_sha256")
+        != external_iam.sha256
+    ):
+        raise RuntimeError("native observation external IAM chain drifted")
+    expected_native_path = (
+        DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT
+        / manifest.revision
+        / str(manifest.host_contract["native_observation_plan_sha256"])
+        / "native-observation.json"
+    )
+    if Path(native_path) != expected_native_path:
+        raise RuntimeError("native observation receipt path is not plan-addressed")
+    host_preparation_path = expected_native_path.parent / "host-preparation.json"
+    host_preparation = _read_trusted_json(
+        host_preparation_path,
+        expected_uid=0,
+        expected_gid=0,
+    )
+    host_preparation_keys = {
+        "schema",
+        "revision",
+        "native_observation_plan_sha256",
+        "owner_approval_receipt_sha256",
+        "changed",
+        "before",
+        "after",
+        "prepared_at_unix",
+        "receipt_path",
+        "receipt_sha256",
+    }
+    host_preparation_unsigned = {
+        name: copy.deepcopy(item)
+        for name, item in host_preparation.items()
+        if name != "receipt_sha256"
+    }
+    if (
+        set(host_preparation) != host_preparation_keys
+        or host_preparation.get("schema") != "muncho-writer-host-preparation.v1"
+        or host_preparation.get("revision") != manifest.revision
+        or host_preparation.get("native_observation_plan_sha256")
+        != native_receipt.value.get("native_observation_plan_sha256")
+        or host_preparation.get("owner_approval_receipt_sha256")
+        != native_receipt.value.get("owner_approval_receipt_sha256")
+        or type(host_preparation.get("changed")) is not bool
+        or not isinstance(host_preparation.get("before"), Mapping)
+        or not isinstance(host_preparation.get("after"), Mapping)
+        or type(host_preparation.get("prepared_at_unix")) is not int
+        or host_preparation["prepared_at_unix"] < 0
+        or host_preparation.get("receipt_path") != str(host_preparation_path)
+        or host_preparation.get("receipt_sha256")
+        != _sha256_json(host_preparation_unsigned)
+        or native_receipt.value.get("host_preparation_receipt_sha256")
+        != host_preparation.get("receipt_sha256")
+    ):
+        raise RuntimeError("native host preparation evidence drifted")
+    snapshot["authoritative_external_evidence"] = {
+        "external_iam_receipt_sha256": external_iam.sha256,
+        "native_observation_receipt_sha256": native_receipt.sha256,
+        "host_preparation_receipt_sha256": host_preparation["receipt_sha256"],
+        "legacy_helper_evidence_sha256": _sha256_json(helper_evidence),
+    }
+    native_observation = _mapping(native_receipt.value.get("observation"))
+    for label in ("gateway", "writer"):
+        observed_native = _mapping(
+            native_observation.get(f"{label}_service")
+        ).get("external_native_mappings")
+        approved_native = _mapping(
+            _mapping(snapshot.get(f"{label}_deployment")).get("policy")
+        ).get("preapproved_external_native_executable_mappings")
+        observed_kernel = _mapping(
+            native_observation.get(f"{label}_service")
+        ).get("kernel_executable_mappings")
+        approved_kernel = _mapping(
+            _mapping(snapshot.get(f"{label}_deployment")).get("policy")
+        ).get("preapproved_kernel_executable_mappings")
+        if observed_native != approved_native or observed_kernel != approved_kernel:
+            raise RuntimeError(
+                f"{label} native observation does not match final policy"
+            )
 
     writer_socket = snapshot.get("socket")
     if not isinstance(writer_socket, dict):
@@ -3329,6 +3561,19 @@ def _collect_live_snapshot(
     writer_config = load_service_config(writer_config_path)
     if writer_config.discord_edge_authority.enabled:
         raise RuntimeError("writer-only config enables Discord authority")
+    privilege_attestation = CanonicalWriterDB(
+        config=writer_config.database,
+        privilege_policy=writer_config.privileges,
+        statements=PRODUCTION_STATEMENT_CATALOG,
+    ).startup_attest()
+    database_snapshot = snapshot.get("database")
+    if not isinstance(database_snapshot, dict):
+        raise ValueError("database snapshot is not mutable")
+    privilege_mapping = _privilege_attestation_mapping(privilege_attestation)
+    privilege_mapping["managed_cloudsqladmin_hba_rejection_sha256"] = (
+        writer_config.privileges.managed_cloudsqladmin_hba_rejection_sha256
+    )
+    database_snapshot["attestation"] = privilege_mapping
     try:
         database_address = ipaddress.ip_address(writer_config.database.host)
     except ValueError as exc:
@@ -3611,6 +3856,9 @@ def _collect_live_snapshot(
                 ),
                 "mapped_executable_paths": identity["mapped_executable_paths"],
                 "mapped_executable_paths_complete": True,
+                "kernel_executable_mappings": identity[
+                    "kernel_executable_mappings"
+                ],
                 "unexpected_import_origins": unexpected_imports,
                 "deleted_code_mappings": identity["deleted_code_mappings"],
                 "writable_code_mappings": identity["writable_code_mappings"],
@@ -4170,22 +4418,304 @@ def _positive_int(value: Any) -> int:
     return value
 
 
+_FORBIDDEN_EVIDENCE_SECRET_FIELDS = frozenset(
+    {
+        "password",
+        "passwd",
+        "passkey",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "private_key",
+        "client_secret",
+        "authorization",
+        "cookie",
+        "database_url",
+        "dsn",
+    }
+)
+_FORBIDDEN_EVIDENCE_VALUE_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/@\s:]+:[^/@\s]+@"),
+    re.compile(r"(?:^|\s)(?:ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}"),
+)
+
+
+def _assert_secret_free_evidence(value: Any, *, path: tuple[str, ...] = ()) -> None:
+    """Reject raw credentials while allowing paths, booleans and SHA evidence."""
+
+    if isinstance(value, Mapping):
+        for raw_name, item in value.items():
+            if not isinstance(raw_name, str):
+                raise ValueError("root evidence contains a non-string field name")
+            normalized = raw_name.strip().lower().replace("-", "_")
+            if normalized in _FORBIDDEN_EVIDENCE_SECRET_FIELDS:
+                raise ValueError(
+                    "root evidence contains a forbidden secret field: "
+                    + ".".join((*path, raw_name))
+                )
+            _assert_secret_free_evidence(item, path=(*path, raw_name))
+        return
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        for index, item in enumerate(value):
+            _assert_secret_free_evidence(item, path=(*path, str(index)))
+        return
+    if isinstance(value, str) and any(
+        pattern.search(value) for pattern in _FORBIDDEN_EVIDENCE_VALUE_PATTERNS
+    ):
+        raise ValueError(
+            "root evidence contains a forbidden secret-shaped value: "
+            + ".".join(path)
+        )
+
+
+def _ensure_root_evidence_directory(path: Path) -> None:
+    if not path.is_absolute() or DEFAULT_ROOT_EVIDENCE_ROOT not in (
+        path,
+        *path.parents,
+    ):
+        raise ValueError("root evidence directory escapes the pinned root")
+    try:
+        item = os.lstat(path)
+    except FileNotFoundError:
+        _validate_parent_chain(path.parent, expected_uid=0)
+        os.mkdir(path, 0o700)
+        os.chown(path, 0, 0, follow_symlinks=False)
+        item = os.lstat(path)
+    if (
+        stat.S_ISLNK(item.st_mode)
+        or not stat.S_ISDIR(item.st_mode)
+        or item.st_uid != 0
+        or item.st_gid != 0
+        or stat.S_IMODE(item.st_mode) != 0o700
+        or _has_posix_acl(path)
+    ):
+        raise ValueError("root evidence directory is not exact root-only state")
+
+
+def _root_evidence_bundle_path(
+    *,
+    revision: str,
+    activation_plan_sha256: str,
+    bundle_sha256: str,
+) -> Path:
+    if _REVISION_RE.fullmatch(revision) is None:
+        raise ValueError("root evidence revision is invalid")
+    for digest in (activation_plan_sha256, bundle_sha256):
+        if _SHA256_RE.fullmatch(digest) is None:
+            raise ValueError("root evidence address digest is invalid")
+    return (
+        DEFAULT_ROOT_EVIDENCE_ROOT
+        / revision
+        / activation_plan_sha256
+        / f"{bundle_sha256}.json"
+    )
+
+
+def _write_append_only_root_evidence(
+    path: Path,
+    value: Mapping[str, Any],
+) -> None:
+    raw = _canonical_bytes(dict(value))
+    if not raw or len(raw) > _MAX_ROOT_EVIDENCE_BUNDLE_BYTES:
+        raise ValueError("root evidence bundle size is invalid")
+    for directory in (
+        DEFAULT_ROOT_EVIDENCE_ROOT,
+        path.parent.parent,
+        path.parent,
+    ):
+        _ensure_root_evidence_directory(directory)
+    expected = _root_evidence_bundle_path(
+        revision=path.parent.parent.name,
+        activation_plan_sha256=path.parent.name,
+        bundle_sha256=path.stem,
+    )
+    if path != expected:
+        raise ValueError("root evidence path is not revision/plan/digest addressed")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        existing_raw = _read_exact_root_evidence_bytes(path)
+        existing = _read_trusted_json(
+            path,
+            expected_uid=0,
+            expected_gid=0,
+            maximum=_MAX_ROOT_EVIDENCE_BUNDLE_BYTES,
+            require_canonical=True,
+        )
+        if (
+            existing_raw != raw
+            or _sha256_json(existing) != path.stem
+            or existing != value
+        ):
+            raise RuntimeError("append-only root evidence bundle collided")
+        return
+    try:
+        os.fchown(descriptor, 0, 0)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("root evidence bundle write made no progress")
+            offset += written
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        descriptor = -1
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _read_exact_root_evidence_bytes(path: Path) -> bytes:
+    _validate_parent_chain(path.parent, expected_uid=0)
+    before = os.lstat(path)
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_uid != 0
+        or before.st_gid != 0
+        or stat.S_IMODE(before.st_mode) != 0o400
+        or _has_posix_acl(path)
+    ):
+        raise ValueError("root evidence bundle identity is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("root evidence bundle changed during open")
+        raw = _read_fd_bounded(
+            descriptor,
+            maximum=_MAX_ROOT_EVIDENCE_BUNDLE_BYTES,
+        )
+    finally:
+        os.close(descriptor)
+    after = os.lstat(path)
+    if (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ) != (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    ):
+        raise ValueError("root evidence bundle changed while reading")
+    return raw
+
+
+def _build_root_evidence_bundle(
+    *,
+    manifest: TrustedDeploymentManifest,
+    activation_plan_sha256: str,
+    snapshot: Mapping[str, Any],
+    full_report: Mapping[str, Any],
+    additive_report: Mapping[str, Any],
+    combined_report: Mapping[str, Any],
+) -> tuple[dict[str, Any], Path, str]:
+    manifest_value = manifest.to_mapping()
+    _assert_secret_free_evidence(
+        {
+            "manifest": manifest_value,
+            "snapshot": snapshot,
+            "full_report": full_report,
+            "additive_report": additive_report,
+            "combined_report": combined_report,
+        }
+    )
+    root_identity = _mapping(snapshot.get("root_preflight_identity"))
+    boot_id_sha256 = root_identity.get("boot_id_sha256")
+    host_identity_sha256 = root_identity.get("host_identity_sha256")
+    for digest in (boot_id_sha256, host_identity_sha256):
+        if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+            raise ValueError("root evidence host identity is incomplete")
+    component_sha256 = {
+        "manifest_sha256": _sha256_json(manifest_value),
+        "snapshot_sha256": _sha256_json(snapshot),
+        "full_report_sha256": _sha256_json(full_report),
+        "additive_report_sha256": _sha256_json(additive_report),
+        "combined_report_sha256": _sha256_json(combined_report),
+    }
+    bundle = {
+        "schema": ROOT_EVIDENCE_BUNDLE_SCHEMA,
+        "revision": manifest.revision,
+        "activation_plan_sha256": activation_plan_sha256,
+        "boot_id_sha256": boot_id_sha256,
+        "host_identity_sha256": host_identity_sha256,
+        "manifest_sha256": manifest.manifest_sha256,
+        "artifact_sha256": manifest.artifact_sha256,
+        "snapshot_policy_sha256": manifest.snapshot_policy_sha256,
+        "manifest": manifest_value,
+        "snapshot": copy.deepcopy(dict(snapshot)),
+        "full_report": copy.deepcopy(dict(full_report)),
+        "additive_report": copy.deepcopy(dict(additive_report)),
+        "combined_report": copy.deepcopy(dict(combined_report)),
+        "component_sha256": component_sha256,
+    }
+    _assert_secret_free_evidence(bundle)
+    bundle_sha256 = _sha256_json(bundle)
+    path = _root_evidence_bundle_path(
+        revision=manifest.revision,
+        activation_plan_sha256=activation_plan_sha256,
+        bundle_sha256=bundle_sha256,
+    )
+    return bundle, path, bundle_sha256
+
+
 def collect_and_evaluate(
     manifest_path: str | os.PathLike[str],
     receipt_path: str | os.PathLike[str],
+    *,
+    activation_plan_sha256: str,
 ) -> CollectorOutcome:
     """Collect, evaluate, and atomically receipt one authoritative preflight."""
 
     _require_root_linux()
+    if (
+        not isinstance(activation_plan_sha256, str)
+        or _SHA256_RE.fullmatch(activation_plan_sha256) is None
+    ):
+        raise ValueError("activation plan digest is invalid")
     with _collector_lock(receipt_path):
         _invalidate_root_receipt(receipt_path)
         manifest = load_trusted_manifest(manifest_path)
-        return _collect_and_evaluate_locked(manifest, receipt_path)
+        return _collect_and_evaluate_locked(
+            manifest,
+            receipt_path,
+            activation_plan_sha256=activation_plan_sha256,
+        )
 
 
 def _collect_and_evaluate_locked(
     manifest: TrustedDeploymentManifest,
     receipt_path: str | os.PathLike[str],
+    *,
+    activation_plan_sha256: str,
 ) -> CollectorOutcome:
     boot_before = _boot_id_sha256()
     snapshot = _collect_live_snapshot(manifest, now_unix=_current_unix())
@@ -4200,6 +4730,11 @@ def _collect_and_evaluate_locked(
     boot_after = _boot_id_sha256()
     if boot_before != boot_after:
         raise RuntimeError("host rebooted during canonical writer preflight")
+    host_identity_sha256 = current_host_identity_sha256()
+    snapshot["root_preflight_identity"] = {
+        "boot_id_sha256": boot_after,
+        "host_identity_sha256": host_identity_sha256,
+    }
     collected_at_boottime_ns = _current_boottime_ns()
     readiness = _validate_runtime_readiness(
         snapshot,
@@ -4213,7 +4748,8 @@ def _collect_and_evaluate_locked(
         current_boottime_ns=collected_at_boottime_ns,
     )
     code_closure = _validate_runtime_code_closure(snapshot)
-    report = _authoritative_writer_only_report(
+    full_report = evaluate_snapshot(snapshot)
+    additive_report = _authoritative_writer_only_report(
         snapshot,
         manifest,
         readiness=readiness,
@@ -4221,7 +4757,10 @@ def _collect_and_evaluate_locked(
         code_closure=code_closure,
         hba_sha256=hba_sha256,
     )
-    if not report.ok:
+    report = PreflightReport(
+        tuple(full_report.checks) + tuple(additive_report.checks)
+    )
+    if not full_report.ok or not additive_report.ok or not report.ok:
         failed = sorted(check.name for check in report.checks if not check.passed)
         raise RuntimeError(
             "canonical writer preflight failed: " + ",".join(failed)
@@ -4233,6 +4772,18 @@ def _collect_and_evaluate_locked(
         )
     )
     report_value = report.to_dict()
+    full_report_value = full_report.to_dict()
+    additive_report_value = additive_report.to_dict()
+    evidence_bundle, evidence_bundle_path, evidence_bundle_sha256 = (
+        _build_root_evidence_bundle(
+            manifest=manifest,
+            activation_plan_sha256=activation_plan_sha256,
+            snapshot=snapshot,
+            full_report=full_report_value,
+            additive_report=additive_report_value,
+            combined_report=report_value,
+        )
+    )
     failed_checks = sorted(
         check.name for check in report.checks if not check.passed
     )
@@ -4241,6 +4792,9 @@ def _collect_and_evaluate_locked(
         snapshot.get("writer_kernel_network_enforcement")
     )
     allowed_networks = network_enforcement.get("ip_address_allow")
+    external_evidence = _mapping(
+        snapshot.get("authoritative_external_evidence")
+    )
     if (
         not isinstance(allowed_networks, list)
         or len(allowed_networks) != 1
@@ -4252,18 +4806,35 @@ def _collect_and_evaluate_locked(
         "ok": report.ok,
         "mode": manifest.mode,
         "boot_id_sha256": boot_after,
+        "host_identity_sha256": host_identity_sha256,
         "collected_at_unix": collected_at_unix,
         "collected_at_boottime_ns": collected_at_boottime_ns,
         "expires_at_boottime_ns": (
             collected_at_boottime_ns + RECEIPT_TTL_SECONDS * 1_000_000_000
         ),
         "manifest_sha256": manifest.manifest_sha256,
-        "approved_plan_sha256": manifest.approved_plan_sha256,
+        "activation_plan_sha256": activation_plan_sha256,
         "revision": manifest.revision,
         "artifact_sha256": manifest.artifact_sha256,
         "snapshot_policy_sha256": manifest.snapshot_policy_sha256,
         "snapshot_sha256": _sha256_json(snapshot),
         "report_sha256": _sha256_json(report_value),
+        "full_report_sha256": _sha256_json(full_report_value),
+        "additive_report_sha256": _sha256_json(additive_report_value),
+        "evidence_bundle_path": str(evidence_bundle_path),
+        "evidence_bundle_sha256": evidence_bundle_sha256,
+        "external_iam_receipt_sha256": external_evidence.get(
+            "external_iam_receipt_sha256"
+        ),
+        "native_observation_receipt_sha256": external_evidence.get(
+            "native_observation_receipt_sha256"
+        ),
+        "host_preparation_receipt_sha256": external_evidence.get(
+            "host_preparation_receipt_sha256"
+        ),
+        "legacy_helper_evidence_sha256": external_evidence.get(
+            "legacy_helper_evidence_sha256"
+        ),
         "hba_receipt_sha256": hba_sha256,
         "gateway_readiness_sha256": readiness.gateway_sha256,
         "gateway_liveness_sha256": liveness.sha256,
@@ -4355,6 +4926,7 @@ def _collect_and_evaluate_locked(
     )
     if _boot_id_sha256() != boot_after:
         raise RuntimeError("host rebooted before canonical writer receipt commit")
+    _write_append_only_root_evidence(evidence_bundle_path, evidence_bundle)
     _write_root_receipt(receipt_path, receipt)
     return CollectorOutcome(report=report, receipt=receipt)
 
@@ -4443,13 +5015,29 @@ def _collector_lock(receipt_path_value: str | os.PathLike[str]):
     ):
         raise ValueError("collector receipt directory is not root-only")
     lock_path = parent / ".canonical-writer-preflight.lock"
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    try:
+        before = os.lstat(lock_path)
+    except FileNotFoundError:
+        before = None
+    if before is not None and (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_uid != 0
+        or before.st_gid != 0
+        or stat.S_IMODE(before.st_mode) != 0o600
+    ):
+        raise RuntimeError("collector lock identity is invalid")
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    if before is None:
+        flags |= os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(lock_path, flags, 0o600)
     try:
-        os.fchown(descriptor, 0, 0)
-        os.fchmod(descriptor, 0o600)
+        if before is None:
+            os.fchown(descriptor, 0, 0)
+            os.fchmod(descriptor, 0o600)
         observed = os.fstat(descriptor)
         if (
             not stat.S_ISREG(observed.st_mode)
@@ -4459,7 +5047,15 @@ def _collector_lock(receipt_path_value: str | os.PathLike[str]):
             or stat.S_IMODE(observed.st_mode) != 0o600
         ):
             raise RuntimeError("collector lock identity is invalid")
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if before is not None and (observed.st_dev, observed.st_ino) != (
+            before.st_dev,
+            before.st_ino,
+        ):
+            raise RuntimeError("collector lock identity changed during open")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("canonical writer collector lock is contended") from exc
         yield
     finally:
         try:
@@ -4485,11 +5081,154 @@ def _invalidate_root_receipt(path_value: str | os.PathLike[str]) -> None:
         os.close(descriptor)
 
 
+def _validate_root_evidence_bundle(
+    receipt: Mapping[str, Any],
+    manifest: TrustedDeploymentManifest,
+    *,
+    expected_activation_plan_sha256: str,
+) -> Mapping[str, Any]:
+    path_value = receipt.get("evidence_bundle_path")
+    bundle_sha256 = receipt.get("evidence_bundle_sha256")
+    if not isinstance(path_value, str) or not isinstance(bundle_sha256, str):
+        raise ValueError("root evidence bundle address is invalid")
+    expected_path = _root_evidence_bundle_path(
+        revision=manifest.revision,
+        activation_plan_sha256=expected_activation_plan_sha256,
+        bundle_sha256=bundle_sha256,
+    )
+    if _absolute_normalized_path(path_value) != expected_path:
+        raise ValueError("root evidence bundle path is not exact")
+    bundle = _read_trusted_json(
+        expected_path,
+        expected_uid=0,
+        expected_gid=0,
+        maximum=_MAX_ROOT_EVIDENCE_BUNDLE_BYTES,
+        require_canonical=True,
+    )
+    if (
+        set(bundle) != _ROOT_EVIDENCE_BUNDLE_KEYS
+        or bundle.get("schema") != ROOT_EVIDENCE_BUNDLE_SCHEMA
+        or _sha256_json(bundle) != bundle_sha256
+        or bundle.get("revision") != manifest.revision
+        or bundle.get("activation_plan_sha256")
+        != expected_activation_plan_sha256
+        or bundle.get("boot_id_sha256") != receipt.get("boot_id_sha256")
+        or bundle.get("host_identity_sha256")
+        != receipt.get("host_identity_sha256")
+        or bundle.get("manifest_sha256") != manifest.manifest_sha256
+        or bundle.get("artifact_sha256") != manifest.artifact_sha256
+        or bundle.get("snapshot_policy_sha256")
+        != manifest.snapshot_policy_sha256
+        or bundle.get("manifest") != manifest.to_mapping()
+    ):
+        raise ValueError("root evidence bundle identity drifted")
+    components = _mapping(bundle.get("component_sha256"))
+    snapshot = _mapping(bundle.get("snapshot"))
+    if _mapping(snapshot.get("root_preflight_identity")) != {
+        "boot_id_sha256": receipt.get("boot_id_sha256"),
+        "host_identity_sha256": receipt.get("host_identity_sha256"),
+    }:
+        raise ValueError("root evidence snapshot host identity drifted")
+    full_report = _mapping(bundle.get("full_report"))
+    additive_report = _mapping(bundle.get("additive_report"))
+    combined_report = _mapping(bundle.get("combined_report"))
+    if set(components) != _ROOT_EVIDENCE_COMPONENT_KEYS:
+        raise ValueError("root evidence component hash fields are not exact")
+    recomputed = {
+        "manifest_sha256": _sha256_json(bundle["manifest"]),
+        "snapshot_sha256": _sha256_json(snapshot),
+        "full_report_sha256": _sha256_json(full_report),
+        "additive_report_sha256": _sha256_json(additive_report),
+        "combined_report_sha256": _sha256_json(combined_report),
+    }
+    if components != recomputed or components != {
+        "manifest_sha256": receipt.get("manifest_sha256"),
+        "snapshot_sha256": receipt.get("snapshot_sha256"),
+        "full_report_sha256": receipt.get("full_report_sha256"),
+        "additive_report_sha256": receipt.get("additive_report_sha256"),
+        "combined_report_sha256": receipt.get("report_sha256"),
+    }:
+        raise ValueError("root evidence component hashes drifted")
+    for label, report in (
+        ("full", full_report),
+        ("additive", additive_report),
+        ("combined", combined_report),
+    ):
+        checks = report.get("checks")
+        if (
+            set(report) != {"ok", "checks"}
+            or report.get("ok") is not True
+            or not isinstance(checks, list)
+            or any(
+                not isinstance(check, Mapping)
+                or set(check) != {"name", "passed", "detail"}
+                or not isinstance(check.get("name"), str)
+                or not check["name"]
+                or check.get("passed") is not True
+                or not isinstance(check.get("detail"), str)
+                or not check["detail"]
+                for check in checks
+            )
+        ):
+            raise ValueError(f"root evidence {label} report is invalid")
+    if combined_report["checks"] != (
+        full_report["checks"] + additive_report["checks"]
+    ):
+        raise ValueError("root evidence combined report is not recomputable")
+    recomputed_full = evaluate_snapshot(snapshot).to_dict()
+    recomputed_additive = _authoritative_writer_only_report(
+        snapshot,
+        manifest,
+        readiness=RuntimeReadinessBinding(
+            gateway_sha256=str(receipt.get("gateway_readiness_sha256") or ""),
+            writer_sha256=str(
+                receipt.get("writer_runtime_attestation_sha256") or ""
+            ),
+        ),
+        liveness=RuntimeLivenessBinding(
+            sha256=str(receipt.get("gateway_liveness_sha256") or ""),
+            generation=int(receipt.get("gateway_liveness_generation") or 0),
+        ),
+        code_closure=RuntimeCodeClosureBinding(
+            gateway_sha256=str(
+                receipt.get("gateway_code_closure_sha256") or ""
+            ),
+            writer_sha256=str(
+                receipt.get("writer_code_closure_sha256") or ""
+            ),
+        ),
+        hba_sha256=str(receipt.get("hba_receipt_sha256") or ""),
+    ).to_dict()
+    recomputed_combined = {
+        "ok": recomputed_full["ok"] and recomputed_additive["ok"],
+        "checks": recomputed_full["checks"] + recomputed_additive["checks"],
+    }
+    if (
+        full_report != recomputed_full
+        or additive_report != recomputed_additive
+        or combined_report != recomputed_combined
+    ):
+        raise ValueError("root evidence reports do not derive from the snapshot")
+    external = _mapping(snapshot.get("authoritative_external_evidence"))
+    for name in (
+        "external_iam_receipt_sha256",
+        "native_observation_receipt_sha256",
+        "host_preparation_receipt_sha256",
+        "legacy_helper_evidence_sha256",
+    ):
+        if external.get(name) != receipt.get(name):
+            raise ValueError("root evidence external receipt chain drifted")
+    _assert_secret_free_evidence(bundle)
+    return bundle
+
+
 def _validate_receipt_mapping(
     value: Mapping[str, Any],
     manifest: TrustedDeploymentManifest,
     *,
+    expected_activation_plan_sha256: str,
     current_boot_id_sha256: str,
+    current_host_identity_sha256_value: str,
     current_boottime_ns: int,
 ) -> dict[str, Any]:
     if set(value) != _RECEIPT_KEYS:
@@ -4500,8 +5239,11 @@ def _validate_receipt_mapping(
         or value.get("ok") is not True
         or value.get("mode") != manifest.mode
         or value.get("boot_id_sha256") != current_boot_id_sha256
+        or value.get("host_identity_sha256")
+        != current_host_identity_sha256_value
         or value.get("manifest_sha256") != manifest.manifest_sha256
-        or value.get("approved_plan_sha256") != manifest.approved_plan_sha256
+        or value.get("activation_plan_sha256")
+        != expected_activation_plan_sha256
         or value.get("revision") != manifest.revision
         or value.get("artifact_sha256") != manifest.artifact_sha256
         or value.get("snapshot_policy_sha256")
@@ -4523,12 +5265,20 @@ def _validate_receipt_mapping(
         raise ValueError("root preflight receipt is stale or from the future")
     for name in (
         "boot_id_sha256",
+        "host_identity_sha256",
         "manifest_sha256",
-        "approved_plan_sha256",
+        "activation_plan_sha256",
         "artifact_sha256",
         "snapshot_policy_sha256",
         "snapshot_sha256",
         "report_sha256",
+        "full_report_sha256",
+        "additive_report_sha256",
+        "evidence_bundle_sha256",
+        "external_iam_receipt_sha256",
+        "native_observation_receipt_sha256",
+        "host_preparation_receipt_sha256",
+        "legacy_helper_evidence_sha256",
         "hba_receipt_sha256",
         "gateway_readiness_sha256",
         "gateway_liveness_sha256",
@@ -4594,16 +5344,28 @@ def _validate_receipt_mapping(
         )
     ):
         raise ValueError("root preflight receipt BPF programs are not effective")
+    _validate_root_evidence_bundle(
+        value,
+        manifest,
+        expected_activation_plan_sha256=expected_activation_plan_sha256,
+    )
     return dict(value)
 
 
 def validate_fresh_receipt(
     receipt_path: str | os.PathLike[str],
     manifest_path: str | os.PathLike[str],
+    *,
+    activation_plan_sha256: str,
 ) -> dict[str, Any]:
     """Validate the root filesystem authority and same-boot receipt TTL."""
 
     _require_root_linux()
+    if (
+        not isinstance(activation_plan_sha256, str)
+        or _SHA256_RE.fullmatch(activation_plan_sha256) is None
+    ):
+        raise ValueError("activation plan digest is invalid")
     with _collector_lock(receipt_path):
         try:
             manifest = load_trusted_manifest(manifest_path)
@@ -4615,7 +5377,11 @@ def validate_fresh_receipt(
             validated = _validate_receipt_mapping(
                 receipt,
                 manifest,
+                expected_activation_plan_sha256=activation_plan_sha256,
                 current_boot_id_sha256=_boot_id_sha256(),
+                current_host_identity_sha256_value=(
+                    current_host_identity_sha256()
+                ),
                 current_boottime_ns=_current_boottime_ns(),
             )
             _fence_live_activation(
@@ -4683,18 +5449,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("action", choices=("collect", "validate"))
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--approved-plan-sha256", required=True)
     arguments = parser.parse_args(argv)
     if arguments.action == "collect":
         value = dict(
             collect_and_evaluate(
                 arguments.manifest,
                 arguments.receipt,
+                activation_plan_sha256=arguments.approved_plan_sha256,
             ).receipt
         )
     else:
         value = validate_fresh_receipt(
             arguments.receipt,
             arguments.manifest,
+            activation_plan_sha256=arguments.approved_plan_sha256,
         )
     summary = {
         "ok": True,

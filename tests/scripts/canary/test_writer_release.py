@@ -117,9 +117,7 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
     assert sync_command.argv[sync_command.argv.index("--python") + 1] == str(
         spec.interpreter
     )
-    assert sync_command.environment()["UV_PROJECT_ENVIRONMENT"] == str(
-        spec.venv_root
-    )
+    assert sync_command.environment()["UV_PROJECT_ENVIRONMENT"] == str(spec.venv_root)
     assert sync_command.argv[sync_command.argv.index("--project") + 1] == str(
         spec.build_project_root
     )
@@ -252,9 +250,7 @@ def test_build_and_egg_info_writes_are_isolated_from_canonical_source(tmp_path):
         (project / "build").mkdir(exist_ok=True)
         (project / "test.egg-info").mkdir(exist_ok=True)
         if command.argv[1] == "build":
-            (spec.wheel_output_root / "test-1-py3-none-any.whl").write_bytes(
-                b"wheel"
-            )
+            (spec.wheel_output_root / "test-1-py3-none-any.whl").write_bytes(b"wheel")
 
     after = {
         path.relative_to(spec.source_root): path.read_bytes()
@@ -829,7 +825,29 @@ def test_hardened_writer_only_units_pin_identity_config_and_readiness():
         "writer_runtime": "/run/muncho-canonical-writer",
         "writer_runtime_mode": "2750",
         "database_ip_allow": "10.20.30.40/32",
+        "exporter_unit": "muncho-canonical-writer-export.service",
+        "projection_export_path": (
+            "/var/lib/muncho-canonical-writer/projection/canonical-events.json"
+        ),
+        "projection_export_limit": "200000",
     }
+    assert bundle.schema == "muncho-writer-only-systemd-bundle.v2"
+    assert "Type=oneshot" in bundle.exporter_service
+    assert "[Install]" not in bundle.exporter_service
+    assert ".timer" not in bundle.exporter_service
+    assert "SupplementaryGroups=muncho-projector" in bundle.exporter_service
+    assert "CapabilityBoundingSet=" in bundle.exporter_service
+    assert "NoNewPrivileges=yes" in bundle.exporter_service
+    assert "IPAddressDeny=any" in bundle.exporter_service
+    assert "IPAddressAllow=10.20.30.40/32" in bundle.exporter_service
+    assert (
+        "ReadWritePaths=/var/lib/muncho-canonical-writer/projection"
+        in bundle.exporter_service
+    )
+    assert "ReadWritePaths=/run/muncho-canonical-writer" not in (
+        bundle.exporter_service
+    )
+    assert "StandardOutput=journal" in bundle.exporter_service
     for rendered in (bundle.writer_service, bundle.gateway_service):
         assert "EnvironmentFile=" not in rendered
         assert "PassEnvironment=" not in rendered

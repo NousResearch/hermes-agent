@@ -157,6 +157,7 @@ def _writer_deployment():
                     "sha256": _WRITER_NATIVE_SHA256,
                 }
             ],
+            "preapproved_kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
         },
         "attestation": {
             "complete": True,
@@ -209,6 +210,7 @@ def _writer_deployment():
                 "mapped_executable_paths": sorted(
                     [_WRITER_INTERPRETER, _WRITER_NATIVE_PATH]
                 ),
+                "kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
                 "unexpected_import_origins": [],
                 "deleted_code_mappings": [],
                 "writable_code_mappings": [],
@@ -255,6 +257,7 @@ def _gateway_deployment(writer_deployment):
                     "sha256": _GATEWAY_NATIVE_SHA256,
                 }
             ],
+            "preapproved_kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
         },
         "attestation": {
             "complete": True,
@@ -301,6 +304,7 @@ def _gateway_deployment(writer_deployment):
                 "mapped_executable_paths": sorted(
                     [_WRITER_INTERPRETER, _GATEWAY_NATIVE_PATH]
                 ),
+                "kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
                 "unexpected_import_origins": [],
                 "deleted_code_mappings": [],
                 "writable_code_mappings": [],
@@ -335,6 +339,8 @@ def _denied_local_authority():
         "authorized_sudo_commands": [],
         "authorized_doas_commands": [],
         "effective_capabilities": [],
+        "writable_systemd_unit_paths": [],
+        "writable_cron_paths": [],
     }
 
 
@@ -361,16 +367,24 @@ def _writer_authority_surface(writer_deployment):
         "identities": {
             "gateway": {
                 "pid": 4242,
+                "process_start_time_ticks": 123456,
                 "effective_uid": 1001,
                 "effective_gid": 2000,
                 "supplementary_gids": [2000, 2001],
+                "no_new_privileges": True,
+                "effective_capabilities": [],
+                "executable": _WRITER_INTERPRETER,
             },
             "gateway_children": {"complete": True, "processes": []},
             "writer": {
                 "pid": 4343,
+                "process_start_time_ticks": 654321,
                 "effective_uid": 1002,
                 "effective_gid": 2002,
                 "supplementary_gids": [2002, 2003],
+                "no_new_privileges": True,
+                "effective_capabilities": [],
+                "executable": _WRITER_INTERPRETER,
             },
         },
         "group_policy": {
@@ -382,9 +396,29 @@ def _writer_authority_surface(writer_deployment):
             "gateway_child_dangerous_memberships": [],
             "writer_dangerous_memberships": [],
             "unknown_privileged_gids": [],
+            "gateway_account_gids": [2000, 2001],
+            "writer_account_gids": [2002, 2003],
+            "protected_group_memberships": {
+                "2000": ["muncho-gateway"],
+                "2001": ["muncho-gateway"],
+                "2002": ["muncho-canonical-writer"],
+                "2003": [
+                    "muncho-canonical-writer",
+                    "muncho-projector",
+                ],
+            },
+            "projector_identity": {
+                "uid": 992,
+                "gid": 2003,
+                "home": "/nonexistent",
+                "shell": "/usr/sbin/nologin",
+                "gids": [2003],
+                "process_pids": [],
+            },
         },
         "gateway_authority": _denied_local_authority(),
         "gateway_child_authority": _denied_local_authority(),
+        "writer_authority": _denied_local_authority(),
         "privileged_execution_inventory": {
             "complete": True,
             "writer_uid_service_units": ["muncho-canonical-writer.service"],
@@ -394,8 +428,55 @@ def _writer_authority_surface(writer_deployment):
             "writer_uid_at_jobs": [],
             "writer_uid_process_executables": [_WRITER_INTERPRETER],
             "writer_uid_unattributed_processes": [],
+            "writer_unit_reverse_activation": {
+                "unit_name": "muncho-canonical-writer.service",
+                "triggered_by": [],
+                "wanted_by": [],
+                "required_by": [],
+                "bound_by": ["hermes-cloud-gateway.service"],
+                "upheld_by": [],
+                "requisite_of": [],
+                "on_success_of": [],
+                "on_failure_of": [],
+                "reverse_references": ["hermes-cloud-gateway.service"],
+                "service_units": ["hermes-cloud-gateway.service"],
+                "timer_units": [],
+                "socket_units": [],
+                "path_units": [],
+                "target_units": [],
+                "automount_units": [],
+                "other_units": [],
+                "transient_units": [],
+            },
             "gateway_writable_writer_unit_files": [],
             "gateway_child_writable_writer_unit_files": [],
+            "gateway_uid_service_units": ["hermes-cloud-gateway.service"],
+            "gateway_uid_timer_units": [],
+            "gateway_uid_transient_units": [],
+            "gateway_uid_cron_entries": [],
+            "gateway_uid_at_jobs": [],
+            "gateway_uid_process_executables": [_WRITER_INTERPRETER],
+            "gateway_uid_unattributed_processes": [],
+            "gateway_unit_reverse_activation": {
+                "unit_name": "hermes-cloud-gateway.service",
+                "triggered_by": [],
+                "wanted_by": [],
+                "required_by": [],
+                "bound_by": [],
+                "upheld_by": [],
+                "requisite_of": [],
+                "on_success_of": [],
+                "on_failure_of": [],
+                "reverse_references": [],
+                "service_units": [],
+                "timer_units": [],
+                "socket_units": [],
+                "path_units": [],
+                "target_units": [],
+                "automount_units": [],
+                "other_units": [],
+                "transient_units": [],
+            },
         },
         "projection_exporter": {
             "policy": {
@@ -425,6 +506,107 @@ def _writer_authority_surface(writer_deployment):
                 "enabled": False,
                 "unit": {},
                 "timer": {},
+            },
+        },
+        "user_systemd": {
+            "complete": True,
+            "gateway": {
+                "uid": 1001,
+                "linger_path": "/var/lib/systemd/linger/muncho-gateway",
+                "linger_enabled": False,
+                "user_manager_unit": "user@1001.service",
+                "load_state": "loaded",
+                "active_state": "inactive",
+                "sub_state": "dead",
+                "main_pid": 0,
+                "runtime_directory_exists": False,
+                "private_socket_exists": False,
+                "home_user_unit_path": "/var/lib/hermes-gateway/.config/systemd/user",
+                "home_user_unit_path_exists": False,
+                "home_user_unit_path_service_writable": False,
+                "home_directory_exists": True,
+                "evaluated_home_user_unit_paths": [
+                    "/var/lib/hermes-gateway/.config/systemd/user",
+                    "/var/lib/hermes-gateway/.local/share/systemd/user",
+                    "/var/lib/hermes-gateway/.config/systemd/user-generators",
+                    "/var/lib/hermes-gateway/.local/share/systemd/user-generators",
+                    "/var/lib/hermes-gateway/.config/systemd/user-environment-generators",
+                    "/var/lib/hermes-gateway/.local/share/systemd/user-environment-generators",
+                ],
+                "existing_home_user_unit_paths": [],
+                "service_writable_home_user_unit_paths": [],
+                "service_units": [],
+                "timer_units": [],
+                "activation_units": [],
+                "transient_units": [],
+                "runtime_service_units": [],
+                "runtime_timer_units": [],
+                "runtime_activation_units": [],
+                "global_service_units": [],
+                "global_timer_units": [],
+                "global_activation_units": [],
+                "global_generators": [],
+                "evaluated_global_unit_roots": list(
+                    preflight._GLOBAL_USER_SYSTEMD_UNIT_ROOTS
+                ),
+                "existing_global_unit_roots": [
+                    "/etc/systemd/user",
+                    "/usr/lib/systemd/user",
+                ],
+                "evaluated_global_generator_roots": list(
+                    preflight._GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS
+                ),
+                "existing_global_generator_roots": [],
+                "global_directories_protected": True,
+            },
+            "writer": {
+                "uid": 1002,
+                "linger_path": "/var/lib/systemd/linger/muncho-canonical-writer",
+                "linger_enabled": False,
+                "user_manager_unit": "user@1002.service",
+                "load_state": "loaded",
+                "active_state": "inactive",
+                "sub_state": "dead",
+                "main_pid": 0,
+                "runtime_directory_exists": False,
+                "private_socket_exists": False,
+                "home_user_unit_path": "/nonexistent/.config/systemd/user",
+                "home_user_unit_path_exists": False,
+                "home_user_unit_path_service_writable": False,
+                "home_directory_exists": False,
+                "evaluated_home_user_unit_paths": [
+                    "/nonexistent/.config/systemd/user",
+                    "/nonexistent/.local/share/systemd/user",
+                    "/nonexistent/.config/systemd/user-generators",
+                    "/nonexistent/.local/share/systemd/user-generators",
+                    "/nonexistent/.config/systemd/user-environment-generators",
+                    "/nonexistent/.local/share/systemd/user-environment-generators",
+                ],
+                "existing_home_user_unit_paths": [],
+                "service_writable_home_user_unit_paths": [],
+                "service_units": [],
+                "timer_units": [],
+                "activation_units": [],
+                "transient_units": [],
+                "runtime_service_units": [],
+                "runtime_timer_units": [],
+                "runtime_activation_units": [],
+                "global_service_units": [],
+                "global_timer_units": [],
+                "global_activation_units": [],
+                "global_generators": [],
+                "evaluated_global_unit_roots": list(
+                    preflight._GLOBAL_USER_SYSTEMD_UNIT_ROOTS
+                ),
+                "existing_global_unit_roots": [
+                    "/etc/systemd/user",
+                    "/usr/lib/systemd/user",
+                ],
+                "evaluated_global_generator_roots": list(
+                    preflight._GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS
+                ),
+                "existing_global_generator_roots": [],
+                "global_directories_protected": True,
             },
         },
     }
@@ -2292,6 +2474,14 @@ def test_gateway_immutable_release_and_dynamic_loading_fail_closed(
             lambda value: value["writer_authority_surface"][
                 "privileged_execution_inventory"
             ]["writer_uid_unattributed_processes"].append("pid:9999"),
+            "writer_authority.privileged_inventory_exact",
+        ),
+        (
+            lambda value: value["writer_authority_surface"][
+                "privileged_execution_inventory"
+            ]["writer_unit_reverse_activation"]["socket_units"].append(
+                "injected.socket"
+            ),
             "writer_authority.privileged_inventory_exact",
         ),
         (

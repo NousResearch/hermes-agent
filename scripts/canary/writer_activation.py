@@ -41,6 +41,22 @@ from gateway.canonical_writer_root_collector import (
     TrustedDeploymentManifest,
     snapshot_policy_sha256,
 )
+from gateway.canonical_writer_host_authority import (
+    DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT,
+    LEGACY_CLOUD_SQL_HELPER_PATH,
+    NATIVE_OBSERVATION_PLAN_SCHEMA,
+    NativeObservationPlan,
+    NativeObservationReceipt,
+)
+from gateway.canonical_writer_activation import (
+    ACTIVATION_PLAN_SCHEMA as PACKAGED_ACTIVATION_PLAN_SCHEMA,
+    ActivationDigests as PackagedActivationDigests,
+    ActivationPaths as PackagedActivationPaths,
+    ActivationPlan as PackagedActivationPlan,
+    InstallArtifact,
+    NumericIdentities,
+    SystemdBundle as PackagedSystemdBundle,
+)
 from scripts.canary.writer_release import (
     GATEWAY_MODULE,
     TMPFILES_NAME,
@@ -53,20 +69,13 @@ from scripts.canary.writer_release import (
 )
 
 
-ACTIVATION_PLAN_SCHEMA = "muncho-writer-only-activation-plan.v2"
-DEFAULT_MANIFEST_PATH = Path(
-    "/etc/muncho/writer-activation/deployment-manifest.json"
-)
+ACTIVATION_PREVIEW_SCHEMA = "muncho-writer-only-activation-preview.v1"
+ACTIVATION_PLAN_SCHEMA = PACKAGED_ACTIVATION_PLAN_SCHEMA
+DEFAULT_MANIFEST_PATH = Path("/etc/muncho/writer-activation/deployment-manifest.json")
 DEFAULT_PLAN_PATH = Path("/etc/muncho/writer-activation/activation-plan.json")
-DEFAULT_RECEIPT_PATH = Path(
-    "/run/muncho-canonical-preflight/root-preflight.json"
-)
-DEFAULT_WRITER_UNIT_PATH = Path(
-    "/etc/systemd/system/muncho-canonical-writer.service"
-)
-DEFAULT_GATEWAY_UNIT_PATH = Path(
-    "/etc/systemd/system/hermes-cloud-gateway.service"
-)
+DEFAULT_RECEIPT_PATH = Path("/run/muncho-canonical-preflight/root-preflight.json")
+DEFAULT_WRITER_UNIT_PATH = Path("/etc/systemd/system/muncho-canonical-writer.service")
+DEFAULT_GATEWAY_UNIT_PATH = Path("/etc/systemd/system/hermes-cloud-gateway.service")
 DEFAULT_TMPFILES_PATH = Path("/etc/tmpfiles.d") / TMPFILES_NAME
 DEFAULT_PROJECTION_FILENAME = "canonical-events.json"
 ROOT_COLLECTOR_MODULE = "gateway.canonical_writer_root_collector"
@@ -132,10 +141,14 @@ def _absolute_normalized_path(
 class HostNumericIdentities:
     gateway_uid: int
     gateway_gid: int
+    gateway_home: str
     writer_uid: int
     writer_gid: int
+    writer_home: str
     socket_client_gid: int
+    projector_uid: int
     projector_gid: int
+    projector_home: str
     gateway_supplementary_gids: tuple[int, ...]
     writer_supplementary_gids: tuple[int, ...]
 
@@ -148,19 +161,28 @@ class HostNumericIdentities:
                 "writer_uid",
                 "writer_gid",
                 "socket_client_gid",
+                "projector_uid",
                 "projector_gid",
             )
         }
-        if values["gateway_uid"] == values["writer_uid"]:
-            raise ValueError("gateway and writer UIDs must be distinct")
-        if len(
-            {
+        if (
+            len({
+                values["gateway_uid"],
+                values["writer_uid"],
+                values["projector_uid"],
+            })
+            != 3
+        ):
+            raise ValueError("gateway, writer, and projector UIDs must be distinct")
+        if (
+            len({
                 values["gateway_gid"],
                 values["writer_gid"],
                 values["socket_client_gid"],
                 values["projector_gid"],
-            }
-        ) != 4:
+            })
+            != 4
+        ):
             raise ValueError("writer-only groups must be distinct")
         if self.gateway_supplementary_gids != tuple(
             sorted((self.gateway_gid, self.socket_client_gid))
@@ -171,25 +193,29 @@ class HostNumericIdentities:
         if self.writer_supplementary_gids != tuple(
             sorted((self.writer_gid, self.projector_gid))
         ):
-            raise ValueError(
-                "writer must have only its primary and projector groups"
-            )
+            raise ValueError("writer must have only its primary and projector groups")
+        if (
+            self.gateway_home != "/var/lib/hermes-gateway"
+            or self.writer_home != "/nonexistent"
+            or self.projector_home != "/nonexistent"
+        ):
+            raise ValueError("writer-only identity homes are not exact")
 
     def to_mapping(self) -> dict[str, Any]:
         self.validate()
         return {
             "gateway_uid": self.gateway_uid,
             "gateway_gid": self.gateway_gid,
+            "gateway_home": self.gateway_home,
             "writer_uid": self.writer_uid,
             "writer_gid": self.writer_gid,
+            "writer_home": self.writer_home,
             "socket_client_gid": self.socket_client_gid,
+            "projector_uid": self.projector_uid,
             "projector_gid": self.projector_gid,
-            "gateway_supplementary_gids": list(
-                self.gateway_supplementary_gids
-            ),
-            "writer_supplementary_gids": list(
-                self.writer_supplementary_gids
-            ),
+            "projector_home": self.projector_home,
+            "gateway_supplementary_gids": list(self.gateway_supplementary_gids),
+            "writer_supplementary_gids": list(self.writer_supplementary_gids),
         }
 
 
@@ -198,6 +224,7 @@ class ActivationDigests:
     approved_plan_sha256: str
     writer_unit_sha256: str
     gateway_unit_sha256: str
+    exporter_unit_sha256: str
     tmpfiles_sha256: str
     writer_config_sha256: str
     gateway_config_sha256: str
@@ -207,6 +234,7 @@ class ActivationDigests:
             "approved_plan_sha256",
             "writer_unit_sha256",
             "gateway_unit_sha256",
+            "exporter_unit_sha256",
             "tmpfiles_sha256",
             "writer_config_sha256",
             "gateway_config_sha256",
@@ -221,6 +249,7 @@ class ActivationDigests:
                 "approved_plan_sha256",
                 "writer_unit_sha256",
                 "gateway_unit_sha256",
+                "exporter_unit_sha256",
                 "tmpfiles_sha256",
                 "writer_config_sha256",
                 "gateway_config_sha256",
@@ -309,22 +338,15 @@ class PreapprovedNativeExecutablePolicy:
             raise ValueError(
                 f"{service} native mapping policy must be a non-empty tuple"
             )
-        if any(
-            type(item) is not ExternalNativeExecutableMapping
-            for item in values
-        ):
+        if any(type(item) is not ExternalNativeExecutableMapping for item in values):
             raise TypeError(
                 f"{service} native mapping policy contains an invalid entry"
             )
         paths = [item.path for item in values]
         if paths != sorted(paths):
-            raise ValueError(
-                f"{service} native mapping policy must be exactly sorted"
-            )
+            raise ValueError(f"{service} native mapping policy must be exactly sorted")
         if len(paths) != len(set(paths)):
-            raise ValueError(
-                f"{service} native mapping policy paths must be unique"
-            )
+            raise ValueError(f"{service} native mapping policy paths must be unique")
         for item in values:
             item.validate(artifact_root)
 
@@ -396,17 +418,16 @@ def _release_import_policy(manifest: ReleaseManifest) -> list[dict[str, str]]:
     except ValueError as exc:
         raise ValueError("release interpreter escapes artifact") from exc
     interpreter_entry = _entry_by_path(manifest, interpreter_relative)
-    if interpreter_entry.kind != "file" or _SHA256_RE.fullmatch(
-        interpreter_entry.sha256
-    ) is None:
+    if (
+        interpreter_entry.kind != "file"
+        or _SHA256_RE.fullmatch(interpreter_entry.sha256) is None
+    ):
         raise ValueError("release interpreter digest is invalid")
     python_parts = manifest.python_version.split(".")
     if len(python_parts) != 3:
         raise ValueError("release Python version is invalid")
     minor = f"{python_parts[0]}.{python_parts[1]}"
-    stdlib_pattern = re.compile(
-        rf"^python/[^/]+/lib/python{re.escape(minor)}$"
-    )
+    stdlib_pattern = re.compile(rf"^python/[^/]+/lib/python{re.escape(minor)}$")
     stdlib_candidates = [
         entry.path
         for entry in manifest.entries
@@ -572,6 +593,7 @@ def _snapshot_template(
         "preapproved_external_native_executable_mappings": (
             native_executable_policy.writer_mapping(root)
         ),
+        "preapproved_kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
     }
     gateway_policy = {
         "unit_name": DEFAULT_GATEWAY_UNIT,
@@ -594,6 +616,7 @@ def _snapshot_template(
         "preapproved_external_native_executable_mappings": (
             native_executable_policy.gateway_mapping(root)
         ),
+        "preapproved_kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
     }
     export_path = unit_spec.projection_directory / DEFAULT_PROJECTION_FILENAME
     exporter_policy = {
@@ -637,12 +660,8 @@ def _snapshot_template(
         "writer_uid": identities.writer_uid,
         "writer_gid": identities.writer_gid,
         "projector_gid": identities.projector_gid,
-        "gateway_supplementary_gids": list(
-            identities.gateway_supplementary_gids
-        ),
-        "writer_supplementary_gids": list(
-            identities.writer_supplementary_gids
-        ),
+        "gateway_supplementary_gids": list(identities.gateway_supplementary_gids),
+        "writer_supplementary_gids": list(identities.writer_supplementary_gids),
         "socket": {"expected_group_gid": identities.socket_client_gid},
         "gateway_process": {},
         "writer_deployment": {
@@ -677,7 +696,7 @@ def _snapshot_template(
 
 
 @dataclass(frozen=True)
-class ActivationPlan:
+class ActivationPreview:
     deployment_manifest: Mapping[str, Any]
     unit_bundle: SystemdUnitBundle
     identities: HostNumericIdentities
@@ -688,15 +707,11 @@ class ActivationPlan:
     collector_argv: tuple[str, ...]
     validator_argv: tuple[str, ...]
     sha256: str
-    schema: str = ACTIVATION_PLAN_SCHEMA
+    schema: str = ACTIVATION_PREVIEW_SCHEMA
 
     def unsigned_mapping(self) -> dict[str, Any]:
-        projection_path = (
-            Path(
-                self.deployment_manifest["host_contract"][
-                    "projection_export_path"
-                ]
-            )
+        projection_path = Path(
+            self.deployment_manifest["host_contract"]["projection_export_path"]
         )
         return {
             "schema": self.schema,
@@ -705,9 +720,7 @@ class ActivationPlan:
             "identities": self.identities.to_mapping(),
             "digests": self.digests.to_mapping(),
             "paths": self.paths.to_mapping(),
-            "deployment_manifest": json.loads(
-                json.dumps(self.deployment_manifest)
-            ),
+            "deployment_manifest": json.loads(json.dumps(self.deployment_manifest)),
             "systemd_bundle": self.unit_bundle.to_mapping(),
             "install_contract": {
                 "manifest_mode": "0400",
@@ -728,7 +741,7 @@ class ActivationPlan:
         return {**self.unsigned_mapping(), "plan_sha256": self.sha256}
 
 
-def build_activation_plan(
+def build_activation_preview(
     release: ReleaseManifest,
     unit_spec: WriterOnlyUnitSpec,
     writer_config: CanonicalWriterServiceConfig,
@@ -739,7 +752,7 @@ def build_activation_plan(
     sql_private_ip: str,
     sql_tls_server_name: str,
     paths: ActivationPaths = ActivationPaths(),
-) -> ActivationPlan:
+) -> ActivationPreview:
     identities.validate()
     digests.validate()
     paths.validate()
@@ -769,8 +782,8 @@ def build_activation_plan(
     unit_bundle = render_systemd_units(release, unit_spec)
     if (
         _sha256_text(unit_bundle.writer_service) != digests.writer_unit_sha256
-        or _sha256_text(unit_bundle.gateway_service)
-        != digests.gateway_unit_sha256
+        or _sha256_text(unit_bundle.gateway_service) != digests.gateway_unit_sha256
+        or _sha256_text(unit_bundle.exporter_service) != digests.exporter_unit_sha256
         or _sha256_text(unit_bundle.tmpfiles) != digests.tmpfiles_sha256
     ):
         raise ValueError("reviewed unit digest does not match rendered bundle")
@@ -795,17 +808,15 @@ def build_activation_plan(
         "projection_export_path": str(projection_path),
     }
     raw_manifest = {
-        "schema": MANIFEST_SCHEMA,
+        "schema": "muncho-writer-activation-preview-manifest.v1",
         "mode": WRITER_ONLY_MODE,
-        "approved_plan_sha256": digests.approved_plan_sha256,
         "revision": release.revision,
         "artifact_sha256": release.artifact_sha256,
         "snapshot_policy_sha256": snapshot_policy_sha256(snapshot),
         "host_contract": host_contract,
         "snapshot_template": snapshot,
     }
-    trusted = TrustedDeploymentManifest.from_mapping(raw_manifest)
-    deployment_manifest = trusted.to_mapping()
+    deployment_manifest = json.loads(json.dumps(raw_manifest))
     collector = (
         release.interpreter,
         "-I",
@@ -828,7 +839,7 @@ def build_activation_plan(
         "--receipt",
         str(paths.receipt_path),
     )
-    provisional = ActivationPlan(
+    provisional = ActivationPreview(
         deployment_manifest=deployment_manifest,
         unit_bundle=unit_bundle,
         identities=identities,
@@ -841,7 +852,7 @@ def build_activation_plan(
         sha256="",
     )
     plan_sha256 = _sha256_json(provisional.unsigned_mapping())
-    return ActivationPlan(
+    return ActivationPreview(
         deployment_manifest=provisional.deployment_manifest,
         unit_bundle=provisional.unit_bundle,
         identities=provisional.identities,
@@ -853,6 +864,377 @@ def build_activation_plan(
         validator_argv=provisional.validator_argv,
         sha256=plan_sha256,
     )
+
+
+def build_native_observation_plan(
+    release: ReleaseManifest,
+    unit_spec: WriterOnlyUnitSpec,
+    writer_config: CanonicalWriterServiceConfig,
+    identities: HostNumericIdentities,
+    digests: ActivationDigests,
+    *,
+    observation_id: str,
+    boot_id_sha256: str,
+    host_identity_sha256: str,
+    release_manifest_file_sha256: str,
+    database_ca_sha256: str,
+    external_iam_policy_sha256: str,
+    sql_private_ip: str,
+    sql_tls_server_name: str,
+) -> NativeObservationPlan:
+    """Build the separately approved discovery-only first-start plan."""
+
+    identities.validate()
+    digests.validate()
+    for value, label in (
+        (boot_id_sha256, "native boot identity"),
+        (host_identity_sha256, "native host identity"),
+        (release_manifest_file_sha256, "release manifest file"),
+        (database_ca_sha256, "database CA"),
+        (external_iam_policy_sha256, "external IAM policy"),
+    ):
+        _digest(value, label)
+    if (
+        release.artifact_sha256 != release.computed_artifact_sha256
+        or release.revision != Path(release.artifact_root).name
+    ):
+        raise ValueError("native observation release identity is invalid")
+    try:
+        address = ipaddress.ip_address(sql_private_ip)
+    except ValueError as exc:
+        raise ValueError("native observation SQL endpoint is invalid") from exc
+    if (
+        address.version != 4
+        or str(address) != sql_private_ip
+        or not address.is_private
+        or unit_spec.database_ip_allow != (f"{sql_private_ip}/32",)
+    ):
+        raise ValueError("native observation SQL boundary is not exact")
+    validate_tls_server_name(sql_tls_server_name)
+    database = writer_config.database
+    if (
+        database.host != sql_private_ip
+        or database.tls_server_name != sql_tls_server_name
+        or database.ca_file is None
+        or not database.ca_file.is_absolute()
+        or ".." in database.ca_file.parts
+        or database.ca_file != Path("/etc/muncho/trust/cloudsql-server-ca.pem")
+    ):
+        raise ValueError("native observation writer database binding drifted")
+    bundle = render_systemd_units(release, unit_spec)
+    if (
+        _sha256_text(bundle.writer_service) != digests.writer_unit_sha256
+        or _sha256_text(bundle.gateway_service) != digests.gateway_unit_sha256
+        or _sha256_text(bundle.exporter_service) != digests.exporter_unit_sha256
+    ):
+        raise ValueError("native observation unit digest drifted")
+    writer_argv = [
+        release.interpreter,
+        "-I",
+        "-m",
+        WRITER_MODULE,
+        "--config",
+        str(unit_spec.writer_config),
+    ]
+    gateway_argv = [
+        release.interpreter,
+        "-I",
+        "-m",
+        GATEWAY_MODULE,
+    ]
+    return NativeObservationPlan.from_mapping({
+        "schema": NATIVE_OBSERVATION_PLAN_SCHEMA,
+        "boot_id_sha256": boot_id_sha256,
+        "host_identity_sha256": host_identity_sha256,
+        "observation_id": observation_id,
+        "revision": release.revision,
+        "artifact_root": release.artifact_root,
+        "artifact_sha256": release.artifact_sha256,
+        "release_manifest_file_sha256": release_manifest_file_sha256,
+        "gateway_unit": {
+            "name": DEFAULT_GATEWAY_UNIT,
+            "path": str(DEFAULT_GATEWAY_UNIT_PATH),
+            "sha256": digests.gateway_unit_sha256,
+        },
+        "writer_unit": {
+            "name": DEFAULT_WRITER_UNIT,
+            "path": str(DEFAULT_WRITER_UNIT_PATH),
+            "sha256": digests.writer_unit_sha256,
+        },
+        "gateway_argv": gateway_argv,
+        "writer_argv": writer_argv,
+        "gateway_config": {
+            "path": str(unit_spec.gateway_config),
+            "sha256": digests.gateway_config_sha256,
+        },
+        "writer_config": {
+            "path": str(unit_spec.writer_config),
+            "sha256": digests.writer_config_sha256,
+        },
+        "identities": {
+            "gateway_uid": identities.gateway_uid,
+            "gateway_gid": identities.gateway_gid,
+            "gateway_home": identities.gateway_home,
+            "gateway_supplementary_gids": list(identities.gateway_supplementary_gids),
+            "writer_uid": identities.writer_uid,
+            "writer_gid": identities.writer_gid,
+            "writer_home": identities.writer_home,
+            "writer_supplementary_gids": list(identities.writer_supplementary_gids),
+            "socket_group_gid": identities.socket_client_gid,
+            "projector_uid": identities.projector_uid,
+            "projector_gid": identities.projector_gid,
+            "projector_home": identities.projector_home,
+        },
+        "database": {
+            "ip_network": f"{sql_private_ip}/32",
+            "tls_server_name": sql_tls_server_name,
+            "ca_path": str(database.ca_file),
+            "ca_sha256": database_ca_sha256,
+        },
+        "discord": {
+            "unit_name": DEFAULT_DISCORD_EDGE_UNIT,
+            "config_path": "/etc/muncho/discord-edge.json",
+            "token_path": "/etc/muncho/discord-edge-credentials/bot-token",
+            "socket_path": str(DEFAULT_DISCORD_EDGE_SOCKET_PATH),
+            "required_absent": True,
+        },
+        "native_discovery_policy": {
+            "allowed_roots": ["/usr/lib"],
+            "allowed_kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
+            "maximum_mappings": 256,
+            "required_owner_uid": 0,
+            "required_owner_gid": 0,
+            "require_regular": True,
+            "require_single_link": True,
+            "forbid_symlink": True,
+            "forbid_acl": True,
+            "forbid_xattrs": True,
+            "forbid_writable": True,
+            "forbid_deleted": True,
+            "exclude_artifact_root": True,
+            "digest_algorithm": "sha256",
+        },
+        "legacy_helper_path": str(LEGACY_CLOUD_SQL_HELPER_PATH),
+        "external_iam_policy_sha256": external_iam_policy_sha256,
+    })
+
+
+def build_activation_plan(
+    release: ReleaseManifest,
+    unit_spec: WriterOnlyUnitSpec,
+    writer_config: CanonicalWriterServiceConfig,
+    identities: HostNumericIdentities,
+    native_observation_receipt: NativeObservationReceipt,
+    *,
+    writer_config_sha256: str,
+    gateway_config_sha256: str,
+    release_manifest_file_sha256: str,
+    database_ca_sha256: str,
+    external_iam_policy_sha256: str,
+    external_iam_receipt_path: str | os.PathLike[str],
+    sql_private_ip: str,
+    sql_tls_server_name: str,
+    paths: PackagedActivationPaths,
+) -> PackagedActivationPlan:
+    """Build the sole deployable v3 plan from a stopped native receipt."""
+
+    if not isinstance(native_observation_receipt, NativeObservationReceipt):
+        raise TypeError("stopped native observation receipt is required")
+    identities.validate()
+    for value, label in (
+        (writer_config_sha256, "writer config"),
+        (gateway_config_sha256, "gateway config"),
+        (release_manifest_file_sha256, "release manifest file"),
+        (database_ca_sha256, "database CA"),
+        (external_iam_policy_sha256, "external IAM policy"),
+    ):
+        _digest(value, label)
+    native = native_observation_receipt.value
+    native_plan = NativeObservationPlan.from_mapping(native["plan"])
+    observed = native["observation"]
+    writer_native = tuple(
+        ExternalNativeExecutableMapping(**item)
+        for item in observed["writer_service"]["external_native_mappings"]
+    )
+    gateway_native = tuple(
+        ExternalNativeExecutableMapping(**item)
+        for item in observed["gateway_service"]["external_native_mappings"]
+    )
+    native_policy = PreapprovedNativeExecutablePolicy(
+        writer=writer_native,
+        gateway=gateway_native,
+    )
+    snapshot = _snapshot_template(
+        release,
+        unit_spec,
+        writer_config,
+        identities,
+        native_policy,
+        sql_ip=sql_private_ip,
+        sql_tls_server_name=sql_tls_server_name,
+    )
+    snapshot["writer_deployment"]["policy"][
+        "preapproved_kernel_executable_mappings"
+    ] = list(observed["writer_service"]["kernel_executable_mappings"])
+    snapshot["gateway_deployment"]["policy"][
+        "preapproved_kernel_executable_mappings"
+    ] = list(observed["gateway_service"]["kernel_executable_mappings"])
+    unit_bundle = render_systemd_units(release, unit_spec)
+    writer_unit_sha256 = _sha256_text(unit_bundle.writer_service)
+    gateway_unit_sha256 = _sha256_text(unit_bundle.gateway_service)
+    exporter_unit_sha256 = _sha256_text(unit_bundle.exporter_service)
+    tmpfiles_sha256 = _sha256_text(unit_bundle.tmpfiles)
+    receipt_path = (
+        DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT
+        / release.revision
+        / native_plan.sha256
+        / "native-observation.json"
+    )
+    iam_path = _absolute_normalized_path(
+        external_iam_receipt_path,
+        "external IAM receipt path",
+    )
+    host_contract = {
+        "gateway_unit_fragment_path": str(paths.gateway_unit_path),
+        "gateway_unit_fragment_sha256": gateway_unit_sha256,
+        "writer_unit_fragment_path": str(paths.writer_unit_path),
+        "writer_unit_fragment_sha256": writer_unit_sha256,
+        "gateway_config_path": str(paths.gateway_config_path),
+        "gateway_config_sha256": gateway_config_sha256,
+        "writer_config_path": str(paths.writer_config_path),
+        "writer_config_sha256": writer_config_sha256,
+        "projection_export_path": str(paths.projection_export_path),
+        "external_iam_policy_sha256": external_iam_policy_sha256,
+        "external_iam_receipt_path": str(iam_path),
+        "legacy_helper_path": str(LEGACY_CLOUD_SQL_HELPER_PATH),
+        "native_observation_plan_sha256": native_plan.sha256,
+        "native_observation_receipt_path": str(receipt_path),
+        "native_observation_receipt_sha256": native_observation_receipt.sha256,
+    }
+    trusted = TrustedDeploymentManifest.from_mapping({
+        "schema": MANIFEST_SCHEMA,
+        "mode": WRITER_ONLY_MODE,
+        "revision": release.revision,
+        "artifact_sha256": release.artifact_sha256,
+        "snapshot_policy_sha256": snapshot_policy_sha256(snapshot),
+        "host_contract": host_contract,
+        "snapshot_template": snapshot,
+    })
+    manifest = trusted.to_mapping()
+    manifest_sha256 = _sha256_json(manifest)
+    numeric = NumericIdentities.from_mapping(identities.to_mapping())
+    packaged_bundle = PackagedSystemdBundle.from_mapping(unit_bundle.to_mapping())
+    packaged_digests = PackagedActivationDigests(
+        native_observation_plan_sha256=native_plan.sha256,
+        native_observation_receipt_sha256=native_observation_receipt.sha256,
+        release_manifest_file_sha256=release_manifest_file_sha256,
+        database_ca_sha256=database_ca_sha256,
+        external_iam_policy_sha256=external_iam_policy_sha256,
+        deployment_manifest_sha256=manifest_sha256,
+        writer_unit_sha256=writer_unit_sha256,
+        gateway_unit_sha256=gateway_unit_sha256,
+        exporter_unit_sha256=exporter_unit_sha256,
+        tmpfiles_sha256=tmpfiles_sha256,
+        writer_config_sha256=writer_config_sha256,
+        gateway_config_sha256=gateway_config_sha256,
+    )
+    artifacts = {
+        "manifest": InstallArtifact(
+            source_path=None,
+            target_path=paths.manifest_path,
+            sha256=manifest_sha256,
+            mode=0o400,
+            uid=0,
+            gid=0,
+            maximum_bytes=8 * 1024 * 1024,
+        ),
+        "writer_unit": InstallArtifact(
+            source_path=None,
+            target_path=paths.writer_unit_path,
+            sha256=writer_unit_sha256,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=256 * 1024,
+        ),
+        "gateway_unit": InstallArtifact(
+            source_path=None,
+            target_path=paths.gateway_unit_path,
+            sha256=gateway_unit_sha256,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=256 * 1024,
+        ),
+        "tmpfiles": InstallArtifact(
+            source_path=None,
+            target_path=paths.tmpfiles_path,
+            sha256=tmpfiles_sha256,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=256 * 1024,
+        ),
+        "writer_config": InstallArtifact(
+            source_path=paths.writer_config_source_path,
+            target_path=paths.writer_config_path,
+            sha256=writer_config_sha256,
+            mode=0o440,
+            uid=0,
+            gid=numeric.writer_gid,
+            maximum_bytes=2 * 1024 * 1024,
+        ),
+        "gateway_config": InstallArtifact(
+            source_path=paths.gateway_config_source_path,
+            target_path=paths.gateway_config_path,
+            sha256=gateway_config_sha256,
+            mode=0o444,
+            uid=0,
+            gid=0,
+            maximum_bytes=2 * 1024 * 1024,
+        ),
+    }
+    base_collector = (
+        release.interpreter,
+        "-I",
+        "-m",
+        ROOT_COLLECTOR_MODULE,
+        "collect",
+        "--manifest",
+        str(paths.manifest_path),
+        "--receipt",
+        str(paths.root_receipt_path),
+    )
+    base_validator = (
+        release.interpreter,
+        "-I",
+        "-m",
+        ROOT_COLLECTOR_MODULE,
+        "validate",
+        "--manifest",
+        str(paths.manifest_path),
+        "--receipt",
+        str(paths.root_receipt_path),
+    )
+    unsigned = {
+        "schema": PACKAGED_ACTIVATION_PLAN_SCHEMA,
+        "revision": release.revision,
+        "identities": identities.to_mapping(),
+        "paths": paths.to_mapping(),
+        "digests": packaged_digests.to_mapping(),
+        "deployment_manifest": manifest,
+        "native_observation_receipt": native_observation_receipt.to_mapping(),
+        "systemd_bundle": packaged_bundle.to_mapping(),
+        "install_artifacts": {
+            name: item.to_mapping() for name, item in sorted(artifacts.items())
+        },
+        "collector_argv": list(base_collector),
+        "validator_argv": list(base_validator),
+    }
+    return PackagedActivationPlan.from_mapping({
+        **unsigned,
+        "activation_plan_sha256": _sha256_json(unsigned),
+    })
 
 
 def _effective_uid() -> int:
@@ -951,44 +1333,42 @@ def _write_root_json(path: Path, value: Mapping[str, Any]) -> None:
         raise RuntimeError("activation JSON was not root-sealed")
 
 
-def _validate_activation_plan(plan: ActivationPlan) -> None:
-    if not isinstance(plan, ActivationPlan):
-        raise TypeError("activation plan is required")
-    if plan.schema != ACTIVATION_PLAN_SCHEMA:
-        raise ValueError("activation plan schema is invalid")
+def _validate_activation_preview(plan: ActivationPreview) -> None:
+    if not isinstance(plan, ActivationPreview):
+        raise TypeError("activation preview is required")
+    if plan.schema != ACTIVATION_PREVIEW_SCHEMA:
+        raise ValueError("activation preview schema is invalid")
     plan.paths.validate()
     plan.identities.validate()
     plan.digests.validate()
     if plan.sha256 != _sha256_json(plan.unsigned_mapping()):
         raise ValueError("activation plan digest is invalid")
-    trusted = TrustedDeploymentManifest.from_mapping(plan.deployment_manifest)
-    connection = trusted.snapshot_template.get("database", {}).get(
-        "connection", {}
-    )
+    manifest = plan.deployment_manifest
+    if manifest.get("schema") != "muncho-writer-activation-preview-manifest.v1":
+        raise ValueError("activation preview manifest schema is invalid")
+    host = manifest.get("host_contract", {})
+    snapshot = manifest.get("snapshot_template", {})
+    connection = snapshot.get("database", {}).get("connection", {})
     if (
-        trusted.approved_plan_sha256 != plan.digests.approved_plan_sha256
-        or trusted.host_contract["writer_unit_fragment_sha256"]
-        != plan.digests.writer_unit_sha256
-        or trusted.host_contract["gateway_unit_fragment_sha256"]
-        != plan.digests.gateway_unit_sha256
-        or trusted.host_contract["writer_config_sha256"]
-        != plan.digests.writer_config_sha256
-        or trusted.host_contract["gateway_config_sha256"]
-        != plan.digests.gateway_config_sha256
+        host.get("writer_unit_fragment_sha256") != plan.digests.writer_unit_sha256
+        or host.get("gateway_unit_fragment_sha256") != plan.digests.gateway_unit_sha256
+        or host.get("writer_config_sha256") != plan.digests.writer_config_sha256
+        or host.get("gateway_config_sha256") != plan.digests.gateway_config_sha256
         or _sha256_text(plan.unit_bundle.writer_service)
         != plan.digests.writer_unit_sha256
         or _sha256_text(plan.unit_bundle.gateway_service)
         != plan.digests.gateway_unit_sha256
-        or _sha256_text(plan.unit_bundle.tmpfiles)
-        != plan.digests.tmpfiles_sha256
+        or _sha256_text(plan.unit_bundle.exporter_service)
+        != plan.digests.exporter_unit_sha256
+        or _sha256_text(plan.unit_bundle.tmpfiles) != plan.digests.tmpfiles_sha256
         or connection.get("host") != plan.sql_private_ip
         or connection.get("tls_server_name") != plan.sql_tls_server_name
     ):
         raise ValueError("activation plan host digests are inconsistent")
     interpreter = str(
-        plan.deployment_manifest["snapshot_template"]["writer_deployment"][
-            "policy"
-        ]["interpreter"]
+        plan.deployment_manifest["snapshot_template"]["writer_deployment"]["policy"][
+            "interpreter"
+        ]
     )
     collector = (
         interpreter,
@@ -1016,14 +1396,17 @@ def _validate_activation_plan(plan: ActivationPlan) -> None:
         raise ValueError("activation root collector argv is inconsistent")
 
 
-def write_root_collector_manifest(plan: ActivationPlan) -> None:
-    _validate_activation_plan(plan)
+def write_root_collector_manifest_preview(plan: ActivationPreview) -> None:
+    _validate_activation_preview(plan)
     _write_root_json(plan.paths.manifest_path, plan.deployment_manifest)
 
 
-def write_root_activation_plan(plan: ActivationPlan) -> None:
-    _validate_activation_plan(plan)
+def write_root_activation_preview(plan: ActivationPreview) -> None:
+    _validate_activation_preview(plan)
     _write_root_json(plan.paths.plan_path, plan.to_mapping())
+
+
+ActivationPlan = PackagedActivationPlan
 
 
 __all__ = [
@@ -1036,6 +1419,5 @@ __all__ = [
     "PreapprovedNativeExecutablePolicy",
     "ROOT_COLLECTOR_MODULE",
     "build_activation_plan",
-    "write_root_activation_plan",
-    "write_root_collector_manifest",
+    "build_native_observation_plan",
 ]

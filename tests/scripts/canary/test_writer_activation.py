@@ -28,6 +28,11 @@ from gateway.canonical_writer_root_collector import (
     TrustedDeploymentManifest,
     snapshot_policy_sha256,
 )
+from gateway import canonical_writer_host_authority as host_authority
+from gateway.canonical_writer_activation import (
+    ActivationPaths as PackagedActivationPaths,
+    ActivationPlan as PackagedActivationPlan,
+)
 from gateway.canonical_writer_deployment_preflight import evaluate_snapshot
 from scripts.canary import writer_activation
 from scripts.canary.writer_activation import (
@@ -36,9 +41,10 @@ from scripts.canary.writer_activation import (
     ExternalNativeExecutableMapping,
     HostNumericIdentities,
     PreapprovedNativeExecutablePolicy,
-    build_activation_plan,
-    write_root_activation_plan,
-    write_root_collector_manifest,
+    build_activation_preview as build_activation_plan,
+    build_native_observation_plan,
+    write_root_activation_preview as write_root_activation_plan,
+    write_root_collector_manifest_preview as write_root_collector_manifest,
 )
 from scripts.canary.writer_release import (
     ReleaseManifest,
@@ -116,13 +122,11 @@ def _release(*, extra_entries: tuple[TreeEntry, ...] = ()) -> ReleaseManifest:
         python_version="3.11.15",
         interpreter=str(root / "venv/bin/python"),
         writer_module_origin=str(
-            root
-            / "venv/lib/python3.11/site-packages/gateway/"
+            root / "venv/lib/python3.11/site-packages/gateway/"
             "canonical_writer_bootstrap.py"
         ),
         gateway_module_origin=str(
-            root
-            / "venv/lib/python3.11/site-packages/gateway/"
+            root / "venv/lib/python3.11/site-packages/gateway/"
             "canonical_writer_gateway_bootstrap.py"
         ),
         entries=entries,
@@ -138,13 +142,167 @@ def _identities() -> HostNumericIdentities:
     return HostNumericIdentities(
         gateway_uid=2101,
         gateway_gid=3101,
+        gateway_home="/var/lib/hermes-gateway",
         writer_uid=2102,
         writer_gid=3102,
+        writer_home="/nonexistent",
         socket_client_gid=3103,
+        projector_uid=2103,
         projector_gid=3104,
+        projector_home="/nonexistent",
         gateway_supplementary_gids=(3101, 3103),
         writer_supplementary_gids=(3102, 3104),
     )
+
+
+def _canary_identities() -> HostNumericIdentities:
+    return HostNumericIdentities(
+        gateway_uid=993,
+        gateway_gid=992,
+        gateway_home="/var/lib/hermes-gateway",
+        writer_uid=999,
+        writer_gid=994,
+        writer_home="/nonexistent",
+        socket_client_gid=990,
+        projector_uid=992,
+        projector_gid=991,
+        projector_home="/nonexistent",
+        gateway_supplementary_gids=(990, 992),
+        writer_supplementary_gids=(991, 994),
+    )
+
+
+def _canary_writer_config() -> CanonicalWriterServiceConfig:
+    config = _writer_config()
+    identities = _canary_identities()
+    return replace(
+        config,
+        gateway_uid=identities.gateway_uid,
+        writer_uid=identities.writer_uid,
+        writer_gid=identities.writer_gid,
+        socket_gid=identities.socket_client_gid,
+        projector_gid=identities.projector_gid,
+        database=replace(
+            config.database,
+            ca_file=Path("/etc/muncho/trust/cloudsql-server-ca.pem"),
+            credential=replace(
+                config.database.credential,
+                expected_uid=identities.writer_uid,
+                expected_gid=identities.writer_gid,
+            ),
+        ),
+    )
+
+
+def _stopped_native_receipt():
+    release = _release()
+    unit_spec = _unit_spec()
+    digests = _digests(release, unit_spec)
+    plan = build_native_observation_plan(
+        release,
+        unit_spec,
+        _canary_writer_config(),
+        _canary_identities(),
+        digests,
+        observation_id="11111111-1111-4111-8111-111111111111",
+        boot_id_sha256="b" * 64,
+        host_identity_sha256="c" * 64,
+        release_manifest_file_sha256="d" * 64,
+        database_ca_sha256="e" * 64,
+        external_iam_policy_sha256="f" * 64,
+        sql_private_ip=SQL_PRIVATE_IP,
+        sql_tls_server_name=SQL_TLS_SERVER_NAME,
+    )
+    observed = 1_000_000_000
+
+    def live(label, pid):
+        identities = plan.value["identities"]
+        return {
+            "unit_name": plan.value[f"{label}_unit"]["name"],
+            "active_state": "active",
+            "sub_state": "running",
+            "unit_file_state": "disabled",
+            "main_pid": pid,
+            "start_time_ticks": pid + 100,
+            "argv": list(plan.value[f"{label}_argv"]),
+            "external_native_mappings": [
+                {
+                    "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+                    "sha256": "a" * 64,
+                }
+            ],
+            "kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
+            "process_authority": {
+                "pid": pid,
+                "process_start_time_ticks": pid + 100,
+                "effective_uid": identities[f"{label}_uid"],
+                "effective_gid": identities[f"{label}_gid"],
+                "supplementary_gids": identities[f"{label}_supplementary_gids"],
+                "no_new_privileges": True,
+                "effective_capabilities": [],
+                "executable": plan.value[f"{label}_argv"][0],
+            },
+        }
+
+    discord = {
+        "unit_name": "muncho-discord-egress.service",
+        "unit_exists": False,
+        "unit_enabled": False,
+        "unit_active": False,
+        "main_pid": 0,
+        "config_exists": False,
+        "token_exists": False,
+        "socket_exists": False,
+        "process_pids": [],
+    }
+    observation = {
+        "boot_id_sha256": "b" * 64,
+        "host_identity_sha256": "c" * 64,
+        "observed_at_unix": 2_000_000_000,
+        "observed_at_boottime_ns": observed,
+        "expires_at_boottime_ns": observed
+        + host_authority.NATIVE_OBSERVATION_TTL_SECONDS * 1_000_000_000,
+        "gateway_service": live("gateway", 4242),
+        "writer_service": live("writer", 4343),
+        "discord_absence": discord,
+        "legacy_helper_absence": {
+            "path": str(host_authority.LEGACY_CLOUD_SQL_HELPER_PATH),
+            "file_exists": False,
+            "file_symlink": False,
+            "parent_exists": False,
+            "parent_symlink": False,
+            "gateway_access": {"read": False, "write": False, "execute": False},
+        },
+    }
+
+    def stopped(label):
+        return {
+            "unit_name": plan.value[f"{label}_unit"]["name"],
+            "load_state": "loaded",
+            "active_state": "inactive",
+            "sub_state": "dead",
+            "unit_file_state": "disabled",
+            "main_pid": 0,
+        }
+
+    return host_authority.NativeObservationReceipt.from_mapping({
+        "schema": host_authority.NATIVE_OBSERVATION_RECEIPT_SCHEMA,
+        "native_observation_plan_sha256": plan.sha256,
+        "owner_approval_receipt_sha256": "1" * 64,
+        "host_preparation_receipt_sha256": "2" * 64,
+        "external_iam_receipt_sha256": "3" * 64,
+        "plan": plan.to_mapping(),
+        "observation": observation,
+        "final_state": {
+            "boot_id_sha256": "b" * 64,
+            "host_identity_sha256": "c" * 64,
+            "finalized_at_unix": 2_000_000_001,
+            "finalized_at_boottime_ns": observed + 1_000_000_000,
+            "gateway_service": stopped("gateway"),
+            "writer_service": stopped("writer"),
+            "discord_absence": discord,
+        },
+    })
 
 
 def _hba_receipt() -> ManagedCloudSQLAdminHBAReceipt:
@@ -190,10 +348,7 @@ def _writer_config() -> CanonicalWriterServiceConfig:
             user="canonical_writer",
             ca_file=Path("/etc/muncho-canonical-writer/server-ca.pem"),
             credential=CredentialSource(
-                path=Path(
-                    "/etc/muncho-canonical-writer-credentials/"
-                    "database-password"
-                ),
+                path=Path("/etc/muncho-canonical-writer-credentials/database-password"),
                 expected_uid=identities.writer_uid,
                 expected_gid=identities.writer_gid,
             ),
@@ -243,9 +398,10 @@ def _digests(
         gateway_unit_sha256=hashlib.sha256(
             bundle.gateway_service.encode("utf-8")
         ).hexdigest(),
-        tmpfiles_sha256=hashlib.sha256(
-            bundle.tmpfiles.encode("utf-8")
+        exporter_unit_sha256=hashlib.sha256(
+            bundle.exporter_service.encode("utf-8")
         ).hexdigest(),
+        tmpfiles_sha256=hashlib.sha256(bundle.tmpfiles.encode("utf-8")).hexdigest(),
         writer_config_sha256=WRITER_CONFIG_SHA256,
         gateway_config_sha256=GATEWAY_CONFIG_SHA256,
     )
@@ -267,9 +423,7 @@ def _plan():
 
 
 def _activation_snapshot_with_live_code_closure():
-    snapshot = json.loads(
-        json.dumps(_plan().deployment_manifest["snapshot_template"])
-    )
+    snapshot = json.loads(json.dumps(_plan().deployment_manifest["snapshot_template"]))
     collected_at_unix = 1_800_000_000
     snapshot["collected_at_unix"] = collected_at_unix
 
@@ -285,9 +439,7 @@ def _activation_snapshot_with_live_code_closure():
         )
         approved_native_paths = [
             item["path"]
-            for item in policy[
-                "preapproved_external_native_executable_mappings"
-            ]
+            for item in policy["preapproved_external_native_executable_mappings"]
         ]
         process = {
             "complete": True,
@@ -315,6 +467,9 @@ def _activation_snapshot_with_live_code_closure():
                 policy["interpreter"],
                 *approved_native_paths,
             ],
+            "kernel_executable_mappings": list(
+                policy["preapproved_kernel_executable_mappings"]
+            ),
             "unexpected_import_origins": [],
             "deleted_code_mappings": [],
             "writable_code_mappings": [],
@@ -329,15 +484,13 @@ def _activation_snapshot_with_live_code_closure():
                 "process": process,
             }
         else:
-            process.update(
-                {
-                    "dynamic_python_discovery_complete": True,
-                    "dynamic_python_loading_mode": "disabled",
-                    "dynamic_python_discovery_paths": [],
-                    "dynamic_python_loaded_origins": [],
-                    "dynamic_python_writable_paths": [],
-                }
-            )
+            process.update({
+                "dynamic_python_discovery_complete": True,
+                "dynamic_python_loading_mode": "disabled",
+                "dynamic_python_discovery_paths": [],
+                "dynamic_python_loaded_origins": [],
+                "dynamic_python_writable_paths": [],
+            })
             deployment["attestation"] = {
                 "complete": False,
                 "unit": {},
@@ -348,24 +501,22 @@ def _activation_snapshot_with_live_code_closure():
 
 
 def _checks_by_name(snapshot):
-    return {
-        check.name: check
-        for check in evaluate_snapshot(snapshot).checks
-    }
+    return {check.name: check for check in evaluate_snapshot(snapshot).checks}
 
 
-def test_plan_is_collector_valid_and_binds_release_host_and_sql_contracts():
+def test_preview_binds_release_host_and_sql_contracts_without_being_deployable():
     plan = _plan()
-    trusted = TrustedDeploymentManifest.from_mapping(
-        plan.deployment_manifest
-    )
-    snapshot = trusted.snapshot_template
-    host = trusted.host_contract
+    snapshot = plan.deployment_manifest["snapshot_template"]
+    host = plan.deployment_manifest["host_contract"]
 
-    assert trusted.approved_plan_sha256 == APPROVED_PLAN_SHA256
-    assert trusted.revision == REVISION
-    assert trusted.snapshot_policy_sha256 == snapshot_policy_sha256(snapshot)
-    assert plan.schema == "muncho-writer-only-activation-plan.v2"
+    assert "approved_plan_sha256" not in plan.deployment_manifest
+    assert plan.deployment_manifest["revision"] == REVISION
+    assert plan.deployment_manifest["snapshot_policy_sha256"] == snapshot_policy_sha256(
+        snapshot
+    )
+    assert plan.schema == "muncho-writer-only-activation-preview.v1"
+    with pytest.raises(ValueError, match="manifest schema"):
+        TrustedDeploymentManifest.from_mapping(plan.deployment_manifest)
     assert plan.sql_private_ip == SQL_PRIVATE_IP
     assert plan.sql_tls_server_name == SQL_TLS_SERVER_NAME
     assert snapshot["database"]["connection"] == {
@@ -377,26 +528,110 @@ def test_plan_is_collector_valid_and_binds_release_host_and_sql_contracts():
     }
     assert snapshot["gateway_uid"] == _identities().gateway_uid
     assert snapshot["writer_uid"] == _identities().writer_uid
-    assert snapshot["socket"]["expected_group_gid"] == (
-        _identities().socket_client_gid
-    )
-    assert host["gateway_unit_fragment_sha256"] == (
-        plan.digests.gateway_unit_sha256
-    )
-    assert host["writer_unit_fragment_sha256"] == (
-        plan.digests.writer_unit_sha256
-    )
+    assert snapshot["socket"]["expected_group_gid"] == (_identities().socket_client_gid)
+    assert host["gateway_unit_fragment_sha256"] == (plan.digests.gateway_unit_sha256)
+    assert host["writer_unit_fragment_sha256"] == (plan.digests.writer_unit_sha256)
     assert host["gateway_config_sha256"] == GATEWAY_CONFIG_SHA256
     assert host["writer_config_sha256"] == WRITER_CONFIG_SHA256
-    assert plan.unit_bundle.contract == render_systemd_units(
-        _release(), _unit_spec()
-    ).contract
+    assert (
+        plan.unit_bundle.contract
+        == render_systemd_units(_release(), _unit_spec()).contract
+    )
+
+
+def test_native_observation_plan_is_separate_discovery_only_and_digest_bound():
+    release = _release()
+    unit_spec = _unit_spec()
+    digests = _digests(release, unit_spec)
+
+    plan = build_native_observation_plan(
+        release,
+        unit_spec,
+        _canary_writer_config(),
+        _canary_identities(),
+        digests,
+        observation_id="11111111-1111-4111-8111-111111111111",
+        boot_id_sha256="8" * 64,
+        host_identity_sha256="9" * 64,
+        release_manifest_file_sha256="a" * 64,
+        database_ca_sha256="b" * 64,
+        external_iam_policy_sha256="c" * 64,
+        sql_private_ip=SQL_PRIVATE_IP,
+        sql_tls_server_name=SQL_TLS_SERVER_NAME,
+    )
+
+    value = plan.to_mapping()
+    assert len(plan.sha256) == 64
+    assert "external_native_mappings" not in value
+    assert "deployment_manifest_sha256" not in value
+    assert value["native_discovery_policy"] == {
+        "allowed_roots": ["/usr/lib"],
+        "allowed_kernel_executable_mappings": ["[vdso]", "[vsyscall]"],
+        "maximum_mappings": 256,
+        "required_owner_uid": 0,
+        "required_owner_gid": 0,
+        "require_regular": True,
+        "require_single_link": True,
+        "forbid_symlink": True,
+        "forbid_acl": True,
+        "forbid_xattrs": True,
+        "forbid_writable": True,
+        "forbid_deleted": True,
+        "exclude_artifact_root": True,
+        "digest_algorithm": "sha256",
+    }
+    assert value["gateway_argv"] == [
+        release.interpreter,
+        "-I",
+        "-m",
+        "gateway.canonical_writer_gateway_bootstrap",
+    ]
+    assert value["writer_argv"] == [
+        release.interpreter,
+        "-I",
+        "-m",
+        "gateway.canonical_writer_bootstrap",
+        "--config",
+        "/etc/muncho-canonical-writer/writer.json",
+    ]
+
+
+def test_single_final_builder_round_trips_packaged_v3_from_stopped_receipt():
+    release = _release()
+    unit_spec = _unit_spec()
+    digests = _digests(release, unit_spec)
+    plan = writer_activation.build_activation_plan(
+        release,
+        unit_spec,
+        _canary_writer_config(),
+        _canary_identities(),
+        _stopped_native_receipt(),
+        writer_config_sha256=digests.writer_config_sha256,
+        gateway_config_sha256=digests.gateway_config_sha256,
+        release_manifest_file_sha256="d" * 64,
+        database_ca_sha256="e" * 64,
+        external_iam_policy_sha256="f" * 64,
+        external_iam_receipt_path=(
+            "/run/muncho-canonical-preflight/external-iam-receipt.json"
+        ),
+        sql_private_ip=SQL_PRIVATE_IP,
+        sql_tls_server_name=SQL_TLS_SERVER_NAME,
+        paths=PackagedActivationPaths(),
+    )
+    encoded = json.dumps(
+        plan.to_mapping(),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    reparsed = PackagedActivationPlan.from_mapping(json.loads(encoded))
+
+    assert plan.schema == "muncho-writer-only-activation-plan.v3"
+    assert reparsed.to_mapping() == plan.to_mapping()
+    assert reparsed.sha256 == plan.sha256
 
 
 def test_activation_snapshot_flows_exact_linux_groups_to_packaged_preflight():
-    snapshot = json.loads(
-        json.dumps(_plan().deployment_manifest["snapshot_template"])
-    )
+    snapshot = json.loads(json.dumps(_plan().deployment_manifest["snapshot_template"]))
 
     assert snapshot["gateway_supplementary_gids"] == [3101, 3103]
     assert snapshot["writer_supplementary_gids"] == [3102, 3104]
@@ -425,9 +660,7 @@ def test_packaged_preflight_rejects_linux_groups_without_primary_gid(
     missing_primary,
     failed_check,
 ):
-    snapshot = json.loads(
-        json.dumps(_plan().deployment_manifest["snapshot_template"])
-    )
+    snapshot = json.loads(json.dumps(_plan().deployment_manifest["snapshot_template"]))
     snapshot[field] = missing_primary
 
     assert not _checks_by_name(snapshot)[failed_check].passed
@@ -440,12 +673,18 @@ def test_activation_native_mapping_policy_flows_to_packaged_code_closure():
         NATIVE_B.to_mapping(_release().artifact_root),
     ]
 
-    assert snapshot["writer_deployment"]["policy"][
-        "preapproved_external_native_executable_mappings"
-    ] == expected
-    assert snapshot["gateway_deployment"]["policy"][
-        "preapproved_external_native_executable_mappings"
-    ] == expected
+    assert (
+        snapshot["writer_deployment"]["policy"][
+            "preapproved_external_native_executable_mappings"
+        ]
+        == expected
+    )
+    assert (
+        snapshot["gateway_deployment"]["policy"][
+            "preapproved_external_native_executable_mappings"
+        ]
+        == expected
+    )
     checks = _checks_by_name(snapshot)
     for name in (
         "writer_deployment.policy_valid",
@@ -482,34 +721,33 @@ def test_plan_pins_minimal_immutable_import_roots_and_collector_argv():
     ]
     assert all(len(item["digest_sha256"]) == 64 for item in import_paths)
     assert gateway_policy["import_paths"] == import_paths
-    assert gateway_policy["module"] == (
-        "gateway.canonical_writer_gateway_bootstrap"
-    )
+    assert gateway_policy["module"] == ("gateway.canonical_writer_gateway_bootstrap")
     assert gateway_policy["exec_start"] == [
         _release().interpreter,
         "-I",
         "-m",
         "gateway.canonical_writer_gateway_bootstrap",
     ]
-    assert gateway_policy["read_write_paths"] == [
-        "/run/hermes-cloud-gateway"
-    ]
+    assert gateway_policy["read_write_paths"] == ["/run/hermes-cloud-gateway"]
     expected_native = [
         NATIVE_A.to_mapping(_release().artifact_root),
         NATIVE_B.to_mapping(_release().artifact_root),
     ]
-    assert writer_policy[
-        "preapproved_external_native_executable_mappings"
-    ] == expected_native
-    assert gateway_policy[
-        "preapproved_external_native_executable_mappings"
-    ] == expected_native
+    assert (
+        writer_policy["preapproved_external_native_executable_mappings"]
+        == expected_native
+    )
+    assert (
+        gateway_policy["preapproved_external_native_executable_mappings"]
+        == expected_native
+    )
     mutated_snapshot = json.loads(json.dumps(snapshot))
     mutated_snapshot["writer_deployment"]["policy"][
         "preapproved_external_native_executable_mappings"
     ][0]["sha256"] = "8" * 64
-    assert snapshot_policy_sha256(mutated_snapshot) != (
-        plan.deployment_manifest["snapshot_policy_sha256"]
+    assert (
+        snapshot_policy_sha256(mutated_snapshot)
+        != (plan.deployment_manifest["snapshot_policy_sha256"])
     )
     assert writer_policy["bind_read_only_paths"] == [
         f"/opt/muncho-canary-releases/{REVISION}"
@@ -526,10 +764,13 @@ def test_plan_pins_minimal_immutable_import_roots_and_collector_argv():
         "/run/muncho-canonical-preflight/root-preflight.json",
     )
     assert plan.validator_argv[4] == "validate"
-    assert all(item not in {"sh", "bash", "/bin/sh", "/bin/bash"} for item in (
-        plan.collector_argv[0],
-        plan.validator_argv[0],
-    ))
+    assert all(
+        item not in {"sh", "bash", "/bin/sh", "/bin/bash"}
+        for item in (
+            plan.collector_argv[0],
+            plan.validator_argv[0],
+        )
+    )
 
 
 def test_native_mapping_policy_is_mandatory_and_non_empty():
@@ -586,8 +827,7 @@ def test_native_mapping_policy_is_mandatory_and_non_empty():
                 writer=(
                     ExternalNativeExecutableMapping(
                         path=(
-                            f"/opt/muncho-canary-releases/{REVISION}/"
-                            "venv/lib/native.so"
+                            f"/opt/muncho-canary-releases/{REVISION}/venv/lib/native.so"
                         ),
                         sha256="8" * 64,
                     ),
@@ -700,7 +940,7 @@ def test_plan_contains_policy_and_paths_but_no_secret_values():
         ),
         (
             {"schema": "muncho-writer-only-activation-plan.v1"},
-            "plan schema",
+            "preview schema",
         ),
     ],
 )
@@ -817,9 +1057,7 @@ def test_plan_rejects_writer_config_or_host_identity_drift():
                 config,
                 privileges=replace(
                     config.privileges,
-                    managed_cloudsqladmin_hba_rejection_receipt=(
-                        mismatched_receipt
-                    ),
+                    managed_cloudsqladmin_hba_rejection_receipt=(mismatched_receipt),
                     managed_cloudsqladmin_hba_rejection_sha256=(
                         mismatched_receipt.sha256
                     ),

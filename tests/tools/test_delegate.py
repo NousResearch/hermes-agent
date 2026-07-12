@@ -1346,6 +1346,87 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         mock_resolve.assert_called_once()
         self.assertEqual(mock_resolve.call_args.kwargs.get("requested"), "bedrock")
 
+    # ── Per-call model / provider override tests ──────────────────────
+
+    def test_call_model_overrides_configured_model(self):
+        """call_model takes priority over delegation.model in config."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "configured-model", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent, call_model="override-model")
+        self.assertEqual(creds["model"], "override-model")
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_call_provider_overrides_configured_provider(self, mock_resolve):
+        """call_provider takes priority over delegation.provider in config."""
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "", "provider": "openrouter"}
+        creds = _resolve_delegation_credentials(cfg, parent, call_provider="openai-codex", call_model="gpt-5.5")
+        self.assertEqual(creds["model"], "gpt-5.5")
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(creds["api_key"], "sk-test")
+        mock_resolve.assert_called_once_with(
+            requested="openai-codex", target_model="gpt-5.5"
+        )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_call_model_prefix_resolves_credentials(self, mock_resolve):
+        """call_model with prefix resolves full credentials via runtime provider."""
+        mock_resolve.return_value = {
+            "provider": "copilot-acp",
+            "base_url": "",
+            "api_key": "copilot-token",
+            "api_mode": "chat_completions",
+            "command": "copilot",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "some-config-model", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent, call_model="copilot/gpt-5.5")
+        self.assertEqual(creds["model"], "copilot/gpt-5.5")
+        self.assertEqual(creds["provider"], "copilot-acp")
+        self.assertEqual(creds["base_url"], "")
+        mock_resolve.assert_called_once_with(
+            requested="copilot-acp", target_model="copilot/gpt-5.5"
+        )
+
+    def test_call_model_without_prefix_leaves_provider_none(self):
+        """call_model without a '/' prefix does NOT auto-detect a provider."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent, call_model="gpt-5.5")
+        self.assertEqual(creds["model"], "gpt-5.5")
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+
+    def test_call_model_no_prefix_when_no_config_provider(self):
+        """call_model without a slash and no config provider → model passed, provider=None."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "deepseek/deepseek-v4-pro", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent, call_model="gpt-5.5")
+        self.assertEqual(creds["model"], "gpt-5.5")
+        self.assertIsNone(creds["provider"])
+
+    def test_call_model_with_prefix_keeps_config_untouched(self):
+        """Prefix extraction only fires for call_model, not configured_model."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": ""}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Without call_model, the config model stays and provider stays None
+        self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
+        self.assertIsNone(creds["provider"])
+        self.assertIsNone(creds["base_url"])
+        self.assertIsNone(creds["api_key"])
+
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

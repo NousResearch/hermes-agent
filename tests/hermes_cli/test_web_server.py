@@ -1966,6 +1966,9 @@ class TestWebServerEndpoints:
         schema = data["fields"]
         assert len(schema) > 100  # Should have 150+ fields
         assert "model" in schema
+        update_notice = schema["updates.gateway_shutdown_notification"]
+        assert update_notice["type"] == "boolean"
+        assert update_notice["category"] == "general"
         # Verify category_order is a non-empty list
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
@@ -1976,6 +1979,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         defaults = resp.json()
         assert "model" in defaults
+        assert defaults["updates"]["gateway_shutdown_notification"] is True
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")

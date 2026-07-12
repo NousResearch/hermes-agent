@@ -423,7 +423,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     reasoningEffort: 'Subagent Reasoning Effort'
   },
   updates: {
-    nonInteractiveLocalChanges: 'In-App Update Local Changes'
+    nonInteractiveLocalChanges: 'In-App Update Local Changes',
+    gatewayShutdownNotification: 'Update Shutdown Notifications'
   }
 })
 
@@ -494,7 +495,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   updates: {
     nonInteractiveLocalChanges:
-      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
+      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.',
+    gatewayShutdownNotification:
+      'Send gateway shutdown warnings when Desktop or CLI updates pause messaging gateways. Other shutdown and restart notices are unchanged.'
   }
 })
 
@@ -630,6 +633,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'delegation.max_concurrent_children',
       'delegation.child_timeout_seconds',
       'delegation.reasoning_effort',
+      'updates.gateway_shutdown_notification',
       'updates.non_interactive_local_changes'
     ]
   }

@@ -8783,6 +8783,30 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _update_gateway_shutdown_notification_enabled(profile_path: Path) -> bool:
+    """Read the per-profile update shutdown-notification preference.
+
+    Missing, malformed, or non-boolean values preserve the historical visible
+    behavior. Failing loud is safer than letting a damaged config silently mute
+    manual-looking interruption warnings.
+    """
+    config_path = Path(profile_path) / "config.yaml"
+    if not config_path.exists():
+        return True
+    try:
+        from utils import fast_safe_load
+
+        with open(config_path, encoding="utf-8") as config_file:
+            config = fast_safe_load(config_file) or {}
+        updates = config.get("updates") if isinstance(config, dict) else None
+        if not isinstance(updates, dict):
+            return True
+        value = updates.get("gateway_shutdown_notification", True)
+        return value if isinstance(value, bool) else True
+    except Exception:
+        return True
+
+
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     """Write a planned-stop marker into a specific profile home."""
     try:
@@ -8796,11 +8820,11 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
             "target_start_time": _get_process_start_time(pid),
             "stopper_pid": os.getpid(),
             "written_at": datetime.now(timezone.utc).isoformat(),
-            # Desktop/CLI updates intentionally stop and later restart the
-            # gateway. Active tasks are still drained/interrupted normally,
-            # but routine maintenance should not emit the generic shutdown
-            # warning users need for other stop paths.
-            "suppress_notification": True,
+            # Only quiet the update when this profile explicitly opted out.
+            # The default remains user-visible for backward compatibility.
+            "suppress_notification": not (
+                _update_gateway_shutdown_notification_enabled(profile_path)
+            ),
         }
         atomic_json_write(
             Path(profile_path) / ".gateway-planned-stop.json",

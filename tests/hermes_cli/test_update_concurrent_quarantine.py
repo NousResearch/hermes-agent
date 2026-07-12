@@ -452,6 +452,40 @@ def test_quarantine_actionable_warning_when_everything_fails(
 # ---------------------------------------------------------------------------
 
 
+def test_update_gateway_shutdown_notification_defaults_visible(tmp_path):
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+
+    assert cli_main._update_gateway_shutdown_notification_enabled(profile_home) is True
+    assert cli_main._write_update_planned_stop_marker(profile_home, 101) is True
+
+    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    assert marker["suppress_notification"] is False
+
+
+def test_update_gateway_shutdown_notification_can_be_disabled(tmp_path):
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    (profile_home / "config.yaml").write_text(
+        "updates:\n  gateway_shutdown_notification: false\n",
+        encoding="utf-8",
+    )
+
+    assert cli_main._update_gateway_shutdown_notification_enabled(profile_home) is False
+    assert cli_main._write_update_planned_stop_marker(profile_home, 101) is True
+
+    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    assert marker["suppress_notification"] is True
+
+
+def test_update_gateway_shutdown_notification_fails_visible(tmp_path):
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    (profile_home / "config.yaml").write_text("updates: [", encoding="utf-8")
+
+    assert cli_main._update_gateway_shutdown_notification_enabled(profile_home) is True
+
+
 @patch.object(cli_main, "_is_windows", return_value=True)
 def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     _winp,
@@ -464,6 +498,10 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "updates:\n  gateway_shutdown_notification: false\n",
+        encoding="utf-8",
+    )
     profile_proc = SimpleNamespace(profile="work", path=profile_home, pid=101)
 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [101, 202])

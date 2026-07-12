@@ -3085,6 +3085,11 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Send the normal gateway shutdown/interruption notice when a Desktop or
+        # CLI update intentionally pauses messaging gateways. True preserves the
+        # historical behavior. Set false for quiet update maintenance; manual
+        # stops, restarts, and unexpected shutdowns remain visible.
+        "gateway_shutdown_notification": True,
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

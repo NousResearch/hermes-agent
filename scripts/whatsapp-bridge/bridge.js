@@ -34,6 +34,8 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { createIdempotencyStore } from './idempotency_store.js';
+import { createIdempotencyMiddleware } from './idempotency_middleware.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -116,6 +118,13 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+const IDEMPOTENCY_TTL_MS = parseInt(process.env.WHATSAPP_IDEMPOTENCY_TTL_MS || '86400000', 10);
+const IDEMPOTENCY_MAX_ENTRIES = parseInt(process.env.WHATSAPP_IDEMPOTENCY_MAX_ENTRIES || '10000', 10);
+const _idempotencyStore = createIdempotencyStore({
+  ttlMs: IDEMPOTENCY_TTL_MS,
+  maxEntries: IDEMPOTENCY_MAX_ENTRIES,
+});
+const _idempotencyMiddleware = createIdempotencyMiddleware(_idempotencyStore);
 
 // --- Send queue: serialise all sock.sendMessage() calls across concurrent
 //     HTTP handlers so a single Baileys socket never has overlapping sends.
@@ -807,6 +816,11 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Deduplicate authenticated mutating sends. The bounded in-memory store keeps
+// only request hashes and successful responses; requests without an
+// Idempotency-Key preserve legacy behavior.
+app.use(_idempotencyMiddleware.express);
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {

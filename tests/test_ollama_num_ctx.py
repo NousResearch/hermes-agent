@@ -7,9 +7,8 @@ Covers:
 
 from unittest.mock import patch, MagicMock
 
-import pytest
 
-from agent.model_metadata import query_ollama_num_ctx
+from agent.model_metadata import query_ollama_num_ctx, query_ollama_supports_vision
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -132,4 +131,46 @@ class TestQueryOllamaNumCtx:
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("model", "http://localhost:11434")
 
+        assert result is None
+
+
+class TestQueryOllamaSupportsVision:
+    """Test Ollama /api/show vision capability detection."""
+
+    def test_returns_true_when_capabilities_include_vision(self):
+        show_data = {"capabilities": ["completion", "vision"]}
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_supports_vision("gemma4:e2b", "http://localhost:11434/v1")
+
+        assert result is True
+
+    def test_returns_false_when_capabilities_exclude_vision(self):
+        show_data = {"capabilities": ["completion", "tools"]}
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_supports_vision("gemma4:31b", "http://localhost:11434/v1")
+
+        assert result is False
+
+    def test_falls_back_to_model_info_vision_block_count(self):
+        show_data = {"model_info": {"gemma3.vision.block_count": 27}}
+        mock_ctx, _ = _mock_httpx_client(show_data)
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+            import httpx
+            with patch.object(httpx, "Client", return_value=mock_ctx):
+                result = query_ollama_supports_vision("llava", "http://localhost:11434")
+
+        assert result is True
+
+    def test_returns_none_for_non_ollama_server(self):
+        with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"):
+            result = query_ollama_supports_vision("llava", "http://localhost:8000/v1")
         assert result is None

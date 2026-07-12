@@ -58,7 +58,7 @@ def _install_fake_agent(monkeypatch):
 
 def _make_adapter():
     _ensure_discord_mock()
-    from gateway.platforms.discord import DiscordAdapter
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = object.__new__(DiscordAdapter)
     adapter.config = MagicMock()
@@ -75,7 +75,6 @@ def _make_runner():
     runner._service_tier = None
     runner._provider_routing = {}
     runner._fallback_model = None
-    runner._smart_model_routing = {}
     runner._running_agents = {}
     runner._pending_model_notes = {}
     runner._session_db = None

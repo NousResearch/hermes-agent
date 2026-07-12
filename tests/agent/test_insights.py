@@ -2,16 +2,16 @@
 
 import time
 import pytest
-from pathlib import Path
 
 from hermes_state import SessionDB
 from agent.insights import (
     InsightsEngine,
     _estimate_cost,
-    _format_duration,
     _bar_chart,
-    _has_known_pricing,
-    _DEFAULT_PRICING,
+)
+from agent.usage_pricing import (
+    format_duration_compact as _format_duration,
+    has_known_pricing as _has_known_pricing,
 )
 
 
@@ -51,6 +51,12 @@ def populated_db(db):
     db.append_message("s1", role="assistant", content="I found the bug. Let me fix it.",
                       tool_calls=[{"function": {"name": "patch"}}])
     db.append_message("s1", role="tool", content="patched successfully", tool_name="patch")
+    db.append_message(
+        "s1",
+        role="assistant",
+        content="Let me load the PR workflow skill.",
+        tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"github-pr-workflow"}'}}],
+    )
     db.append_message("s1", role="user", content="Thanks!")
     db.append_message("s1", role="assistant", content="You're welcome!")
 
@@ -88,6 +94,12 @@ def populated_db(db):
     db.append_message("s3", role="assistant", content="And search files",
                       tool_calls=[{"function": {"name": "search_files"}}])
     db.append_message("s3", role="tool", content="found stuff", tool_name="search_files")
+    db.append_message(
+        "s3",
+        role="assistant",
+        content="Load the debugging skill.",
+        tool_calls=[{"function": {"name": "skill_view", "arguments": '{"name":"systematic-debugging"}'}}],
+    )
 
     # Session 4: Discord, same model as s1, ended, 1 day ago
     db.create_session(
@@ -100,6 +112,15 @@ def populated_db(db):
     db.update_token_counts("s4", input_tokens=10000, output_tokens=5000)
     db.append_message("s4", role="user", content="Quick question")
     db.append_message("s4", role="assistant", content="Sure, go ahead")
+    db.append_message(
+        "s4",
+        role="assistant",
+        content="Load and update GitHub skills.",
+        tool_calls=[
+            {"function": {"name": "skill_view", "arguments": '{"name":"github-pr-workflow"}'}},
+            {"function": {"name": "skill_manage", "arguments": '{"name":"github-code-review"}'}},
+        ],
+    )
 
     # Session 5: Old session, 45 days ago (should be excluded from 30-day window)
     db.create_session(
@@ -299,6 +320,76 @@ class TestInsightsPopulated:
         claude = next(m for m in models if "claude-sonnet" in m["model"])
         assert claude["sessions"] == 2
 
+    def test_model_breakdown_splits_mid_session_switch(self, db):
+        """A session that switches models mid-flight is split across both
+        models in the breakdown, not dumped on the initial model (#51607).
+        """
+        now = time.time()
+        db.create_session(session_id="sw", source="cli",
+                          model="deepseek/deepseek-v4-pro")
+        # 40k tokens on deepseek, then switch and 50k on opus.
+        db.update_token_counts("sw", input_tokens=40000, output_tokens=8000,
+                               model="deepseek/deepseek-v4-pro",
+                               billing_provider="deepseek", api_call_count=2)
+        db.update_session_model("sw", "anthropic/claude-opus-4.8")
+        db.update_token_counts("sw", input_tokens=50000, output_tokens=4000,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="openrouter", api_call_count=3)
+        db._conn.commit()
+
+        report = InsightsEngine(db).generate(days=30)
+        models = {m["model"]: m for m in report["models"]}
+        assert "deepseek-v4-pro" in models
+        assert "claude-opus-4.8" in models
+        # Tokens attributed to the model that actually incurred them.
+        assert models["deepseek-v4-pro"]["input_tokens"] == 40000
+        assert models["claude-opus-4.8"]["input_tokens"] == 50000
+        assert models["claude-opus-4.8"]["api_calls"] == 3
+        # The summary row's single model would have hidden one of these.
+        assert models["deepseek-v4-pro"]["total_tokens"] == 48000
+        assert models["claude-opus-4.8"]["total_tokens"] == 54000
+
+    def test_partial_per_model_rows_preserve_session_totals(self, db):
+        """A partial rolling-upgrade row must not hide aggregate residuals."""
+        db.create_session(session_id="partial", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "partial", input_tokens=100, output_tokens=20,
+            model="gpt-4o", billing_provider="openai", api_call_count=1,
+        )
+        db.update_token_counts(
+            "partial", input_tokens=1000, output_tokens=200,
+            model="gpt-4o", billing_provider="openai", api_call_count=10,
+            absolute=True,
+        )
+
+        report = InsightsEngine(db).generate(days=30)
+        model = next(m for m in report["models"] if m["model"] == "gpt-4o")
+        assert model["input_tokens"] == 1000
+        assert model["output_tokens"] == 200
+        assert model["api_calls"] == 10
+        assert sum(m["total_tokens"] for m in report["models"]) == \
+            report["overview"]["total_tokens"]
+
+    def test_overview_cost_matches_per_model_stored_cost(self, db):
+        db.create_session(session_id="cost", source="cli", model="model-a")
+        db.update_token_counts(
+            "cost", input_tokens=10, model="model-a", billing_provider="custom",
+            estimated_cost_usd=1.25, actual_cost_usd=1.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        db.update_session_model("cost", "model-b")
+        db.update_session_billing_route("cost", provider="custom-b", base_url=None)
+        db.update_token_counts(
+            "cost", input_tokens=20, model="model-b", billing_provider="custom-b",
+            estimated_cost_usd=2.5, actual_cost_usd=2.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+
+        report = InsightsEngine(db).generate(days=30)
+        assert sum(m["cost"] for m in report["models"]) == pytest.approx(3.75)
+        assert report["overview"]["estimated_cost"] == pytest.approx(3.75)
+        assert report["overview"]["actual_cost"] == pytest.approx(3.0)
+
     def test_platform_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
@@ -331,6 +422,35 @@ class TestInsightsPopulated:
         # Percentages should sum to ~100%
         total_pct = sum(t["percentage"] for t in tools)
         assert total_pct == pytest.approx(100.0, abs=0.1)
+
+    def test_skill_breakdown(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        skills = report["skills"]
+
+        assert skills["summary"]["distinct_skills_used"] == 3
+        assert skills["summary"]["total_skill_loads"] == 3
+        assert skills["summary"]["total_skill_edits"] == 1
+        assert skills["summary"]["total_skill_actions"] == 4
+
+        top_skill = skills["top_skills"][0]
+        assert top_skill["skill"] == "github-pr-workflow"
+        assert top_skill["view_count"] == 2
+        assert top_skill["manage_count"] == 0
+        assert top_skill["total_count"] == 2
+        assert top_skill["last_used_at"] is not None
+
+    def test_skill_breakdown_respects_days_filter(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=3)
+        skills = report["skills"]
+
+        assert skills["summary"]["distinct_skills_used"] == 2
+        assert skills["summary"]["total_skill_loads"] == 2
+        assert skills["summary"]["total_skill_edits"] == 1
+
+        skill_names = [s["skill"] for s in skills["top_skills"]]
+        assert "systematic-debugging" not in skill_names
 
     def test_activity_patterns(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -401,6 +521,7 @@ class TestTerminalFormatting:
         assert "Overview" in text
         assert "Models Used" in text
         assert "Top Tools" in text
+        assert "Top Skills" in text
         assert "Activity Patterns" in text
         assert "Notable Sessions" in text
 
@@ -465,12 +586,12 @@ class TestGatewayFormatting:
         assert "**" in text  # Markdown bold
 
     def test_gateway_format_hides_cost(self, populated_db):
+        """Gateway format omits dollar figures and internal cache details."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
         assert "$" not in text
-        assert "Est. cost" not in text
         assert "cache" not in text.lower()
 
     def test_gateway_format_shows_models(self, populated_db):
@@ -545,7 +666,6 @@ class TestEdgeCases:
 
     def test_tool_usage_from_tool_calls_json(self, db):
         """Tool usage should be extracted from tool_calls JSON when tool_name is NULL."""
-        import json as _json
         db.create_session(session_id="s1", source="cli", model="test")
         # Assistant message with tool_calls (this is what CLI produces)
         db.append_message("s1", role="assistant", content="Let me search",

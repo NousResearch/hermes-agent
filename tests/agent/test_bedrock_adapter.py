@@ -10,12 +10,22 @@ Covers:
 """
 
 import json
-import os
-import time
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from contextlib import contextmanager
+from types import ModuleType
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@contextmanager
+def _mock_botocore_session(*, return_value=None, side_effect=None):
+    """Patch botocore.session even when botocore is not installed."""
+    botocore_mod = ModuleType("botocore")
+    session_mod = ModuleType("botocore.session")
+    session_mod.get_session = MagicMock(return_value=return_value, side_effect=side_effect)
+    botocore_mod.session = session_mod
+    with patch.dict("sys.modules", {"botocore": botocore_mod, "botocore.session": session_mod}):
+        yield session_mod.get_session
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +127,24 @@ class TestResolveBedrocRegion:
 
     def test_defaults_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        assert resolve_bedrock_region({}) == "us-east-1"
+        from unittest.mock import MagicMock
+        mock_session = MagicMock()
+        mock_session.get_config_variable.return_value = None
+        with _mock_botocore_session(return_value=mock_session):
+            assert resolve_bedrock_region({}) == "us-east-1"
+
+    def test_falls_back_to_botocore_profile_region(self):
+        from agent.bedrock_adapter import resolve_bedrock_region
+        from unittest.mock import MagicMock
+        mock_session = MagicMock()
+        mock_session.get_config_variable.return_value = "eu-central-1"
+        with _mock_botocore_session(return_value=mock_session):
+            assert resolve_bedrock_region({}) == "eu-central-1"
+
+    def test_botocore_failure_falls_back_to_us_east_1(self):
+        from agent.bedrock_adapter import resolve_bedrock_region
+        with _mock_botocore_session(side_effect=Exception("no botocore")):
+            assert resolve_bedrock_region({}) == "us-east-1"
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +605,74 @@ class TestBuildConverseKwargs:
         assert kwargs["inferenceConfig"]["temperature"] == 0.7
         assert kwargs["inferenceConfig"]["topP"] == 0.9
 
+    def test_omits_sampling_params_for_bedrock_opus_4_7(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-opus-4-7-20260101-v1:0",
+            "us.anthropic.claude-opus-4-7",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+            assert "temperature" not in kwargs["inferenceConfig"]
+            assert "topP" not in kwargs["inferenceConfig"]
+
+    def test_omits_sampling_params_for_bedrock_opus_4_8_variants(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-opus-4-8-20270101-v1:0",
+            "us.anthropic.claude-opus-4-8",
+            "anthropic.claude-opus-4.8",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.5,
+                top_p=0.95,
+            )
+
+            assert "temperature" not in kwargs["inferenceConfig"]
+            assert "topP" not in kwargs["inferenceConfig"]
+
+    def test_keeps_sampling_params_for_bedrock_non_restricted_models(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-sonnet-4-6-20250514-v1:0",
+            "anthropic.claude-haiku-4-5",
+            "test-model",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+            assert kwargs["inferenceConfig"].get("temperature") == 0.7
+            assert kwargs["inferenceConfig"].get("topP") == 0.9
+
+    def test_bedrock_opus_strips_sampling_params_but_keeps_stop_sequences(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-opus-4-8",
+            messages=[{"role": "user", "content": "Hi"}],
+            temperature=0.7,
+            top_p=0.9,
+            stop_sequences=["END"],
+        )
+
+        assert "temperature" not in kwargs["inferenceConfig"]
+        assert "topP" not in kwargs["inferenceConfig"]
+        assert kwargs["inferenceConfig"]["stopSequences"] == ["END"]
+
     def test_includes_guardrail_config(self):
         from agent.bedrock_adapter import build_converse_kwargs
         guardrail = {
@@ -976,6 +1071,7 @@ class TestStreamConverseWithCallbacks:
             events, on_reasoning_delta=lambda t: reasoning.append(t),
         )
         assert reasoning == ["Let me think..."]
+        assert result.choices[0].message.reasoning_content == "Let me think..."
 
 
 # ---------------------------------------------------------------------------
@@ -1230,3 +1326,389 @@ class TestEmptyTextBlockFix:
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("Hello")
         assert blocks[0]["text"] == "Hello"
+
+
+# ---------------------------------------------------------------------------
+# Stale-connection detection and per-region client invalidation
+# ---------------------------------------------------------------------------
+
+class TestInvalidateRuntimeClient:
+    """Per-region eviction used to discard dead/stale bedrock-runtime clients."""
+
+    def test_evicts_only_the_target_region(self):
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            invalidate_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+        _bedrock_runtime_client_cache["us-east-1"] = "dead-client"
+        _bedrock_runtime_client_cache["us-west-2"] = "live-client"
+
+        evicted = invalidate_runtime_client("us-east-1")
+
+        assert evicted is True
+        assert "us-east-1" not in _bedrock_runtime_client_cache
+        assert _bedrock_runtime_client_cache["us-west-2"] == "live-client"
+
+    def test_returns_false_when_region_not_cached(self):
+        from agent.bedrock_adapter import invalidate_runtime_client, reset_client_cache
+        reset_client_cache()
+        assert invalidate_runtime_client("eu-west-1") is False
+
+
+class TestIsStaleConnectionError:
+    """Classifier that decides whether an exception warrants client eviction."""
+
+    def test_detects_botocore_connection_closed_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_stale_connection_error
+        from botocore.exceptions import ConnectionClosedError
+        exc = ConnectionClosedError(endpoint_url="https://bedrock.example")
+        assert is_stale_connection_error(exc) is True
+
+    def test_detects_botocore_endpoint_connection_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_stale_connection_error
+        from botocore.exceptions import EndpointConnectionError
+        exc = EndpointConnectionError(endpoint_url="https://bedrock.example")
+        assert is_stale_connection_error(exc) is True
+
+    def test_detects_botocore_read_timeout(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_stale_connection_error
+        from botocore.exceptions import ReadTimeoutError
+        exc = ReadTimeoutError(endpoint_url="https://bedrock.example")
+        assert is_stale_connection_error(exc) is True
+
+    def test_detects_urllib3_protocol_error(self):
+        from agent.bedrock_adapter import is_stale_connection_error
+        from urllib3.exceptions import ProtocolError
+        exc = ProtocolError("Connection broken")
+        assert is_stale_connection_error(exc) is True
+
+    def test_detects_library_internal_assertion_error(self):
+        """A bare AssertionError raised from inside urllib3/botocore signals
+        a corrupted connection-pool invariant and should trigger eviction."""
+        from agent.bedrock_adapter import is_stale_connection_error
+
+        # Fabricate an AssertionError whose traceback's last frame belongs
+        # to a module named "urllib3.connectionpool". We do this by exec'ing
+        # a tiny `assert False` under a fake globals dict — the resulting
+        # frame's ``f_globals["__name__"]`` is what the classifier inspects.
+        fake_globals = {"__name__": "urllib3.connectionpool"}
+        try:
+            exec("def _boom():\n    assert False\n_boom()", fake_globals)
+        except AssertionError as exc:
+            assert is_stale_connection_error(exc) is True
+        else:
+            pytest.fail("AssertionError not raised")
+
+    def test_detects_botocore_internal_assertion_error(self):
+        """Same as above but for a frame inside the botocore namespace."""
+        from agent.bedrock_adapter import is_stale_connection_error
+        fake_globals = {"__name__": "botocore.httpsession"}
+        try:
+            exec("def _boom():\n    assert False\n_boom()", fake_globals)
+        except AssertionError as exc:
+            assert is_stale_connection_error(exc) is True
+        else:
+            pytest.fail("AssertionError not raised")
+
+    def test_ignores_application_assertion_error(self):
+        """AssertionError from application code (not urllib3/botocore) should
+        NOT be classified as stale — those are real test/code bugs."""
+        from agent.bedrock_adapter import is_stale_connection_error
+        try:
+            assert False, "test-only"  # noqa: B011
+        except AssertionError as exc:
+            assert is_stale_connection_error(exc) is False
+
+    def test_ignores_unrelated_exceptions(self):
+        from agent.bedrock_adapter import is_stale_connection_error
+        assert is_stale_connection_error(ValueError("bad input")) is False
+        assert is_stale_connection_error(KeyError("missing")) is False
+
+
+class TestCallConverseInvalidatesOnStaleError:
+    """call_converse / call_converse_stream evict the cached client when the
+    boto3 call raises a stale-connection error — so the next invocation
+    reconnects instead of reusing the dead socket."""
+
+    def test_converse_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ConnectionClosedError
+
+        reset_client_cache()
+        dead_client = MagicMock()
+        dead_client.converse.side_effect = ConnectionClosedError(
+            endpoint_url="https://bedrock.example",
+        )
+        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+
+        with pytest.raises(ConnectionClosedError):
+            call_converse(
+                region="us-east-1",
+                model="anthropic.claude-3-sonnet-20240229-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert "us-east-1" not in _bedrock_runtime_client_cache, (
+            "stale client should have been evicted so the retry reconnects"
+        )
+
+    def test_converse_stream_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse_stream,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ConnectionClosedError
+
+        reset_client_cache()
+        dead_client = MagicMock()
+        dead_client.converse_stream.side_effect = ConnectionClosedError(
+            endpoint_url="https://bedrock.example",
+        )
+        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+
+        with pytest.raises(ConnectionClosedError):
+            call_converse_stream(
+                region="us-east-1",
+                model="anthropic.claude-3-sonnet-20240229-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert "us-east-1" not in _bedrock_runtime_client_cache
+
+    def test_converse_does_not_evict_on_non_stale_error(self):
+        """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ClientError
+
+        reset_client_cache()
+        live_client = MagicMock()
+        live_client.converse.side_effect = ClientError(
+            error_response={"Error": {"Code": "ValidationException", "Message": "bad"}},
+            operation_name="Converse",
+        )
+        _bedrock_runtime_client_cache["us-east-1"] = live_client
+
+        with pytest.raises(ClientError):
+            call_converse(
+                region="us-east-1",
+                model="anthropic.claude-3-sonnet-20240229-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client, (
+            "validation errors do not indicate a dead connection — keep the client"
+        )
+
+    def test_converse_leaves_successful_client_in_cache(self):
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse,
+            reset_client_cache,
+        )
+
+        reset_client_cache()
+        live_client = MagicMock()
+        live_client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+        _bedrock_runtime_client_cache["us-east-1"] = live_client
+
+        call_converse(
+            region="us-east-1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client
+
+
+class TestStreamingAccessDeniedDetection:
+    """is_streaming_access_denied_error() recognizes IAM denials of
+    bedrock:InvokeModelWithResponseStream (InvokeModel-only policies)."""
+
+    def _denied_client_error(self):
+        from botocore.exceptions import ClientError
+        return ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User: arn:aws:iam::123456789012:user/x is not "
+                        "authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream on resource: "
+                        "arn:aws:bedrock:us-east-1::foundation-model/"
+                        "anthropic.claude-3-sonnet-20240229-v1:0"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+
+    def test_matches_access_denied_client_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        assert is_streaming_access_denied_error(self._denied_client_error()) is True
+
+    def test_ignores_access_denied_for_other_actions(self):
+        """AccessDenied on InvokeModel itself is NOT a streaming-only denial."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from botocore.exceptions import ClientError
+        exc = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: bedrock:InvokeModel"
+                    ),
+                }
+            },
+            operation_name="Converse",
+        )
+        assert is_streaming_access_denied_error(exc) is False
+
+    def test_ignores_validation_error_mentioning_action(self):
+        """Non-authz ClientErrors don't match even if the action name appears."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from botocore.exceptions import ClientError
+        exc = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "ValidationException",
+                    "Message": "InvokeModelWithResponseStream input malformed",
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        assert is_streaming_access_denied_error(exc) is False
+
+    def test_matches_wrapped_sdk_permission_error(self):
+        """Non-ClientError wrappers (AnthropicBedrock SDK) match on message."""
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        exc = RuntimeError(
+            "PermissionDeniedError: user is not authorized to perform: "
+            "bedrock:InvokeModelWithResponseStream"
+        )
+        assert is_streaming_access_denied_error(exc) is True
+
+    def test_ignores_unrelated_errors(self):
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        assert is_streaming_access_denied_error(ValueError("boom")) is False
+        assert is_streaming_access_denied_error(
+            RuntimeError("stream not supported")
+        ) is False
+
+
+class TestCallConverseStreamIamFallback:
+    """call_converse_stream() falls back to converse() when IAM denies the
+    streaming action — InvokeModel-only policies keep working."""
+
+    def test_falls_back_to_converse_on_streaming_denial(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse_stream,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ClientError
+
+        reset_client_cache()
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+        _bedrock_runtime_client_cache["us-east-1"] = client
+
+        result = call_converse_stream(
+            region="us-east-1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        client.converse.assert_called_once()
+        assert result.choices[0].message.content == "hi"
+        # Not a stale connection — client stays cached.
+        assert _bedrock_runtime_client_cache.get("us-east-1") is client
+
+
+# ---------------------------------------------------------------------------
+# boto3 version check
+# ---------------------------------------------------------------------------
+
+
+class TestRequireBoto3VersionCheck:
+    """Test that _require_boto3() rejects boto3 versions older than 1.34.59."""
+
+    def test_raises_runtime_error_when_boto3_too_old(self):
+        """boto3 < 1.34.59 should raise RuntimeError with upgrade instructions."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.34.46"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            with pytest.raises(RuntimeError, match="does not support converse_stream"):
+                _require_boto3()
+
+    def test_accepts_boto3_at_minimum_version(self):
+        """boto3 == 1.34.59 should be accepted."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.34.59"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            result = _require_boto3()
+            assert result is fake_boto3
+
+    def test_accepts_newer_boto3(self):
+        """boto3 > 1.34.59 should be accepted."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.42.89"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            result = _require_boto3()
+            assert result is fake_boto3
+
+    def test_accepts_boto3_with_unparseable_version(self):
+        """If version string can't be parsed, don't block on version check."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "dev"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            result = _require_boto3()
+            assert result is fake_boto3

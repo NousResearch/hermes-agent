@@ -61,14 +61,16 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 - `dialecticCadence` — how often the dialectic LLM fires (LLM call frequency)
 - `dialecticDepth` — how many `.chat()` passes per dialectic invocation (1–3, depth of reasoning)
 
+The auto-injected dialectic also scales its reasoning level by query length (longer query → deeper reasoning, capped at `reasoningLevelCap`); see [Query-Adaptive Reasoning Level](./honcho.md#query-adaptive-reasoning-level).
+
 **Setup Wizard:**
 ```bash
-hermes honcho setup        # (legacy command) 
-# or
-hermes memory setup        # select "honcho"
+hermes memory setup        # select "honcho" — runs the Honcho-specific post-setup
 ```
 
-**Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
+
+**Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>
 <summary>Full config reference</summary>
@@ -82,7 +84,7 @@ hermes memory setup        # select "honcho"
 | `workspace` | host key | Shared workspace ID |
 | `contextTokens` | `null` (uncapped) | Token budget for auto-injected context per turn. Truncates at word boundaries |
 | `contextCadence` | `1` | Minimum turns between `context()` API calls (base layer refresh) |
-| `dialecticCadence` | `3` | Minimum turns between `peer.chat()` LLM calls. Only applies to `hybrid`/`context` modes |
+| `dialecticCadence` | `2` | Minimum turns between `peer.chat()` LLM calls. Recommended 1–5. Only applies to `hybrid`/`context` modes |
 | `dialecticDepth` | `1` | Number of `.chat()` passes per dialectic invocation. Clamped 1–3. Pass 0: cold/warm prompt, pass 1: self-audit, pass 2: reconciliation |
 | `dialecticDepthLevels` | `null` | Optional array of reasoning levels per pass, e.g. `["minimal", "low", "medium"]`. Overrides proportional defaults |
 | `dialecticReasoningLevel` | `'low'` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
@@ -95,6 +97,9 @@ hermes memory setup        # select "honcho"
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, `global` |
+| `pinUserPeer` | `false` | Gateway only. When `true`, every non-agent gateway user collapses to `peerName`; the pin overrides all aliases |
+| `userPeerAliases` | `{}` | Gateway only. Maps runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
+| `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |
 
 </details>
 
@@ -140,23 +145,76 @@ hermes memory setup        # select "honcho"
 If you previously used `hermes honcho setup`, your config and all server-side data are intact. Just re-enable through the setup wizard again or manually set `memory.provider: honcho` to reactivate via the new system.
 :::
 
-**Multi-agent / Profiles:**
+**Multi-peer setup:**
 
-Each Hermes profile gets its own Honcho AI peer while sharing the same workspace -- all profiles see the same user representation, but each agent builds its own identity and observations.
+Honcho models conversations as peers exchanging messages — one user peer plus one AI peer per Hermes profile, all sharing a workspace. The workspace is the shared environment: the user peer is global across profiles, each AI peer is its own identity. Every AI peer builds an independent representation / card from its own observations, so a `coder` profile stays code-oriented while a `writer` profile stays editorial against the same user.
+
+The mapping:
+
+| Concept | What it is |
+|---------|-----------|
+| **Workspace** | Shared environment. All Hermes profiles under one workspace see the same user identity. |
+| **User peer** (`peerName`) | The human. Shared across profiles in the workspace. |
+| **AI peer** (`aiPeer`) | One per Hermes profile. Host key `hermes` → default; `hermes.<profile>` for others. |
+| **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on) or `unified` (single-observer pool). |
+
+### New profile, fresh Honcho peer
 
 ```bash
-hermes profile create coder --clone   # creates honcho peer "coder", inherits config from default
+hermes profile create coder --clone
 ```
 
-What `--clone` does: creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The peer is eagerly created in Honcho so it exists before first message.
+`--clone` creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
 
-For profiles created before Honcho was set up:
+### Existing profiles, backfill Honcho peers
 
 ```bash
-hermes honcho sync   # scans all profiles, creates host blocks for any missing ones
+hermes honcho sync
 ```
 
-This inherits settings from the default `hermes` host block and creates new AI peers for each profile. Idempotent -- skips profiles that already have a host block.
+Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
+
+### Per-profile observation
+
+Each host block can override the observation config independently. Example: a code-focused profile where the AI peer observes the user but doesn't self-model:
+
+```json
+"hermes.coder": {
+  "aiPeer": "coder",
+  "observation": {
+    "user": { "observeMe": true, "observeOthers": true },
+    "ai":   { "observeMe": false, "observeOthers": true }
+  }
+}
+```
+
+**Observation toggles (one set per peer):**
+
+| Toggle | Effect |
+|--------|--------|
+| `observeMe` | Honcho builds a representation of this peer from its own messages |
+| `observeOthers` | This peer observes the other peer's messages (feeds cross-peer reasoning) |
+
+Presets via `observationMode`:
+
+- **`"directional"`** (default) — all four flags on. Full mutual observation; enables cross-peer dialectic.
+- **`"unified"`** — user `observeMe: true`, AI `observeOthers: true`, rest false. Single-observer pool; AI models the user but not itself, user peer only self-models.
+
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — synced back at session init.
+
+See the [Honcho page](./honcho.md#observation-directional-vs-unified) for the full observation reference.
+
+### Gateway identity mapping
+
+The peer model above covers CLI, TUI, and desktop sessions, where every conversation resolves to `peerName`. The [gateway](../../developer-guide/gateway-internals.md) adds a second axis: users arrive with platform-native runtime IDs (Telegram UID, Discord snowflake, Slack user), and three keys decide which peer each ID resolves to.
+
+| Key | Effect |
+|-----|--------|
+| `pinUserPeer: true` | Every non-agent gateway user collapses to `peerName`. The pin is checked first, so it overrides all aliases — pick it only when no user-side identity needs its own peer |
+| `userPeerAliases` | Maps specific runtime IDs to peers (`{"7654321": "alice"}`). The home for routing distinct identities — including agents that each carry their own peer |
+| `runtimePeerPrefix` | Namespaces any unmapped runtime ID (`telegram_7654321`) so platforms with same-shaped IDs don't collide |
+
+Off-gateway these keys do nothing. `hermes memory setup` only prompts for them when it detects a connected gateway platform. See the [Honcho page](./honcho.md#gateway-identity-mapping) for the resolver ladder and the setup flow.
 
 <details>
 <summary>Full honcho.json example (multi-profile)</summary>
@@ -181,7 +239,7 @@ This inherits settings from the default `hermes` host block and creates new AI p
       },
       "dialecticReasoningLevel": "low",
       "dialecticDynamic": true,
-      "dialecticCadence": 3,
+      "dialecticCadence": 2,
       "dialecticDepth": 1,
       "dialecticMaxChars": 600,
       "contextCadence": 1,
@@ -214,7 +272,7 @@ This inherits settings from the default `hermes` host block and creates new AI p
 
 </details>
 
-See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 
 ---
@@ -243,6 +301,8 @@ hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
 echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+# Authenticated servers should use a user/admin API key:
+echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 ```
 
 **Key features:**
@@ -250,35 +310,86 @@ echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 - Automatic memory extraction on session commit (profile, preferences, entities, events, cases, patterns)
 - `viking://` URI scheme for hierarchical knowledge browsing
 
+`OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
+`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+
 ---
 
 ### Mem0
 
-Server-side LLM fact extraction with semantic search, reranking, and automatic deduplication.
+Server-side LLM fact extraction with semantic search, reranking, and automatic deduplication. Three connection modes: **Platform** (Mem0 Cloud), **self-hosted dashboard** (a Mem0 server you run via Docker), and **OSS** (Mem0 in-process with your own LLM + vector store).
 
 | | |
 |---|---|
 | **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
-| **Requires** | `pip install mem0ai` + API key |
-| **Data storage** | Mem0 Cloud |
-| **Cost** | Mem0 pricing |
+| **Requires** | `pip install mem0ai` + API key (platform), a running Mem0 server (self-hosted dashboard), or an LLM + vector store (OSS) |
+| **Data storage** | Mem0 Cloud (platform), your own Mem0 server (self-hosted dashboard), or in-process (OSS) |
+| **Cost** | Mem0 pricing (platform) / free (self-hosted or OSS) |
 
-**Tools:** `mem0_profile` (all stored memories), `mem0_search` (semantic search + reranking), `mem0_conclude` (store verbatim facts)
+**Tools (4):** `mem0_search` (semantic search; optional reranking in platform mode, off by default), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
 
-**Setup:**
+**Setup (Platform):**
 ```bash
-hermes memory setup    # select "mem0"
+hermes memory setup    # select "mem0" → "Platform"
 # Or manually:
 hermes config set memory.provider mem0
 echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-**Config:** `$HERMES_HOME/mem0.json`
+**Setup (OSS):**
+```bash
+hermes memory setup    # select "mem0" → "Open Source (self-hosted)"
+# Or via flags:
+hermes memory setup mem0 --mode oss --oss-llm openai --oss-llm-key sk-... --oss-vector qdrant
+```
+
+Preview without writing files:
+```bash
+hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
+```
+
+**Setup (Self-Hosted Dashboard):** connect to a Mem0 server you run via Docker (the dashboard's REST API):
+
+```bash
+hermes memory setup    # select "mem0" → "Self-hosted server"
+# Or via flags:
+hermes memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
+```
+
+Or configure manually — either as env vars:
+
+```bash
+echo "MEM0_HOST=http://localhost:8888" >> ~/.hermes/.env
+echo "MEM0_API_KEY=your-admin-api-key" >> ~/.hermes/.env
+```
+
+or in `mem0.json`:
+
+```json
+{ "host": "http://localhost:8888", "api_key": "your-admin-api-key" }
+```
+
+The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/memories` routes. `api_key` is optional (omit only for `AUTH_DISABLED` servers). Don't set `mode: oss` — it takes precedence over `host`.
+
+**Config:** `$HERMES_HOME/mem0.json` (behavioral settings). Only the secret `MEM0_API_KEY` belongs in `~/.hermes/.env`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-managed, in-process) |
+| `host` | — | Self-hosted Mem0 server URL (Docker dashboard). Routes over HTTP with `X-API-Key`; don't combine with `mode: oss` |
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
+| `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+
+**OSS supported providers:**
+
+| Component | Providers |
+|-----------|-----------|
+| LLM | openai, ollama |
+| Embedder | openai, ollama |
+| Vector Store | qdrant (local/server), pgvector |
+
+**Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 
 ---
 
@@ -318,7 +429,11 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `retain_async` | `true` | Process retain asynchronously on the server |
-| `tags` | — | Tags applied when storing memories |
+| `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
+| `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
+| `retain_source` | — | Optional `metadata.source` attached to retained memories |
+| `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
+| `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
@@ -422,7 +537,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 | | |
 |---|---|
 | **Best for** | Semantic recall with user profiling and session-level graph building |
-| **Requires** | `pip install supermemory` + [API key](https://supermemory.ai) |
+| **Requires** | `pip install supermemory` + [API key](http://app.supermemory.ai/integrations?connect=hermes) |
 | **Data storage** | Supermemory Cloud |
 | **Cost** | Supermemory pricing |
 
@@ -453,11 +568,11 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 **Key features:**
 - Automatic context fencing — strips recalled memories from captured turns to prevent recursive memory pollution
-- Session-end conversation ingest for richer graph-level knowledge building
+- Full-session ingest — the entire conversation is sent once at session boundaries
+- Session-end conversation ingest (to `/v4/conversations`) for richer profile + graph building in Supermemory
 - Profile facts injected on first turn and at configurable intervals
-- Trivial message filtering (skips "ok", "thanks", etc.)
 - **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `hermes-{identity}` → `hermes-coder`) to isolate memories per Hermes profile
-- **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations (sync, prefetch) stay on the primary container.
+- **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations stay on the primary container.
 
 <details>
 <summary>Multi-container example</summary>
@@ -475,6 +590,27 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 **Support:** [Discord](https://supermemory.link/discord) · [support@supermemory.com](mailto:support@supermemory.com)
 
+### Memori
+
+Structured long-term memory using Memori Cloud, with background completed-turn capture, tool-aware turn context, and explicit recall tools for facts, summaries, quota, signup, and feedback.
+
+| | |
+|---|---|
+| **Best for** | Agent-controlled recall with structured project and session attribution |
+| **Requires** | `pip install hermes-memori` + `hermes-memori install` + [Memori API key](https://app.memorilabs.ai/signup) |
+| **Data storage** | Memori Cloud |
+| **Cost** | Memori pricing |
+
+**Tools:** `memori_recall` (search long-term memory), `memori_recall_summary` (summarized context), `memori_quota` (usage/quota), `memori_signup` (request signup email), `memori_feedback` (send integration feedback)
+
+**Setup:**
+```bash
+pip install hermes-memori
+hermes-memori install
+hermes config set memory.provider memori
+hermes memory setup
+```
+
 ---
 
 ## Provider Comparison
@@ -483,16 +619,17 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
-| **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
+| **Mem0** | Cloud/Self-hosted | Free/Paid | 4 | `mem0ai` | Server-side LLM extraction + self-hosted/OSS modes |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
 
 ## Profile Isolation
 
-Each provider's data is isolated per [profile](/docs/user-guide/profiles):
+Each provider's data is isolated per [profile](/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
@@ -501,4 +638,4 @@ Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 ## Building a Memory Provider
 
-See the [Developer Guide: Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) for how to create your own.
+See the [Developer Guide: Memory Provider Plugins](/developer-guide/memory-provider-plugin) for how to create your own.

@@ -10,9 +10,7 @@ so it can run without optional dependencies like firecrawl.
 
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, MagicMock
-from types import SimpleNamespace
 
 import pytest
 
@@ -32,7 +30,6 @@ def _stub_resolve_provider_client(provider, model, async_mode, **kw):
 @pytest.fixture(autouse=True)
 def _clean_client_cache():
     """Clear the client cache before each test."""
-    import importlib
     # We need to patch before importing
     with patch.dict("sys.modules", {}):
         pass
@@ -48,7 +45,7 @@ class TestCrossLoopCacheIsolation:
 
     def test_same_loop_reuses_client(self):
         """Within a single event loop, the same client should be returned."""
-        from agent.auxiliary_client import _get_cached_client, _client_cache
+        from agent.auxiliary_client import _get_cached_client
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

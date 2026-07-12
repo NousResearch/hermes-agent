@@ -1,9 +1,8 @@
 """Tests for interrupt handling in concurrent tool execution."""
 
-import concurrent.futures
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,6 +22,10 @@ def _make_agent(monkeypatch):
 
     class _Stub:
         _interrupt_requested = False
+        _interrupt_message = None
+        # Bind to this thread's ident so interrupt() targets a real tid.
+        _execution_thread_id = threading.current_thread().ident
+        _interrupt_thread_signal_pending = False
         log_prefix = ""
         quiet_mode = True
         verbose_logging = False
@@ -40,6 +43,15 @@ def _make_agent(monkeypatch):
         _current_tool = None
         _last_activity = 0
         _print_fn = print
+        # Worker-thread tracking state mirrored from AIAgent.__init__ so the
+        # real interrupt() method can fan out to concurrent-tool workers.
+        _active_children: list = []
+
+        def __init__(self):
+            # Instance-level (not class-level) so each test gets a fresh set.
+            self._tool_worker_threads: set = set()
+            self._tool_worker_threads_lock = threading.Lock()
+            self._active_children_lock = threading.Lock()
 
         def _touch_activity(self, desc):
             self._last_activity = time.time()
@@ -60,8 +72,14 @@ def _make_agent(monkeypatch):
             return False
 
     stub = _Stub()
-    # Bind the real methods
+    # Bind the real methods under test
     stub._execute_tool_calls_concurrent = _ra.AIAgent._execute_tool_calls_concurrent.__get__(stub)
+    stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
+    stub.clear_interrupt = _ra.AIAgent.clear_interrupt.__get__(stub)
+    # /steer injection (added in PR #12116) fires after every concurrent
+    # tool batch. Stub it as a no-op — this test exercises interrupt
+    # fanout, not steer injection.
+    stub._apply_pending_steer_to_tool_results = lambda *a, **kw: None
     stub._invoke_tool = MagicMock(side_effect=lambda *a, **kw: '{"ok": true}')
     return stub
 
@@ -78,45 +96,6 @@ class _FakeAssistantMsg:
         self.tool_calls = tool_calls
 
 
-def test_concurrent_interrupt_cancels_pending(monkeypatch):
-    """When _interrupt_requested is set during concurrent execution,
-    the wait loop should exit early and cancelled tools get interrupt messages."""
-    agent = _make_agent(monkeypatch)
-
-    # Create a tool that blocks until interrupted
-    barrier = threading.Event()
-
-    original_invoke = agent._invoke_tool
-
-    def slow_tool(name, args, task_id, call_id=None):
-        if name == "slow_one":
-            # Block until the test sets the interrupt
-            barrier.wait(timeout=10)
-            return '{"slow": true}'
-        return '{"fast": true}'
-
-    agent._invoke_tool = MagicMock(side_effect=slow_tool)
-
-    tc1 = _FakeToolCall("fast_one", call_id="tc_fast")
-    tc2 = _FakeToolCall("slow_one", call_id="tc_slow")
-    msg = _FakeAssistantMsg([tc1, tc2])
-    messages = []
-
-    def _set_interrupt_after_delay():
-        time.sleep(0.3)
-        agent._interrupt_requested = True
-        barrier.set()  # unblock the slow tool
-
-    t = threading.Thread(target=_set_interrupt_after_delay)
-    t.start()
-
-    agent._execute_tool_calls_concurrent(msg, messages, "test_task")
-    t.join()
-
-    # Both tools should have results in messages
-    assert len(messages) == 2
-    # The interrupt was detected
-    assert agent._interrupt_requested is True
 
 
 def test_concurrent_preflight_interrupt_skips_all(monkeypatch):
@@ -137,3 +116,30 @@ def test_concurrent_preflight_interrupt_skips_all(monkeypatch):
     assert "skipped due to user interrupt" in messages[1]["content"]
     # _invoke_tool should never have been called
     agent._invoke_tool.assert_not_called()
+
+
+
+
+def test_clear_interrupt_clears_worker_tids(monkeypatch):
+    """After clear_interrupt(), stale worker-tid bits must be cleared so the
+    next turn's tools — which may be scheduled onto recycled tids — don't
+    see a false interrupt."""
+    from tools.interrupt import is_interrupted, set_interrupt
+
+    agent = _make_agent(monkeypatch)
+    # Simulate a worker having registered but not yet exited cleanly (e.g. a
+    # hypothetical bug in the tear-down).  Put a fake tid in the set and
+    # flag it interrupted.
+    fake_tid = threading.current_thread().ident  # use real tid so is_interrupted can see it
+    with agent._tool_worker_threads_lock:
+        agent._tool_worker_threads.add(fake_tid)
+    set_interrupt(True, fake_tid)
+    assert is_interrupted() is True  # sanity
+
+    agent.clear_interrupt()
+
+    assert is_interrupted() is False, (
+        "clear_interrupt() did not clear the interrupt bit for a tracked "
+        "worker tid — stale interrupt can leak into the next turn"
+    )
+

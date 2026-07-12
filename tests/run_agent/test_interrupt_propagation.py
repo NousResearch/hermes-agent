@@ -4,13 +4,12 @@ Reproduces the CLI scenario: user sends a message while delegate_task is
 running, main thread calls parent.interrupt(), child should stop.
 """
 
-import json
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
-from tools.interrupt import set_interrupt, is_interrupted, _interrupt_event
+from tools.interrupt import set_interrupt, is_interrupted
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
@@ -33,6 +32,11 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent._active_children = []
         agent._active_children_lock = threading.Lock()
         agent.quiet_mode = True
+        # Provider/model/base_url are read by stale-timeout resolution paths;
+        # the specific values don't matter for interrupt tests.
+        agent.provider = "openrouter"
+        agent.model = "test/model"
+        agent._base_url = "http://localhost:1234"
         return agent
 
     def test_parent_interrupt_sets_child_flag(self):

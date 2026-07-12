@@ -212,7 +212,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
-| [**hermes-tweet**](/docs/user-guide/skills/optional/social-media/social-media-hermes-tweet) | Native Hermes Agent plugin workflow for Xquik X automation. Use when the user wants Hermes-native tools for X search, account reads, trends, posts, replies, likes, reposts, follows, direct messages, monitors, extraction jobs, draws, medi... |
+| [**hermes-tweet**](/docs/user-guide/skills/optional/social-media/social-media-hermes-tweet) | Use Xquik tools for read and gated X workflows. |
 
 ## software-development
 

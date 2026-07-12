@@ -1,11 +1,8 @@
 ---
 name: hermes-tweet
-description: >
-  Native Hermes Agent plugin workflow for Xquik X automation. Use when the user wants Hermes-native
-  tools for X search, account reads, trends, posts, replies, likes, reposts, follows, direct messages,
-  monitors, extraction jobs, draws, media, or action-gated X workflows through the Hermes Tweet plugin.
+description: Use Xquik tools for read and gated X workflows.
 version: 0.1.6
-author: Xquik
+author: Burak Bayır (kriptoburak), Xquik
 license: MIT
 category: social-media
 metadata:
@@ -19,9 +16,10 @@ required_environment_variables:
     required_for: tweet_read, /xstatus, /xtrends, and authenticated Xquik API calls
 ---
 
-# Hermes Tweet
+# Hermes Tweet Skill
 
 Hermes Tweet is a native Hermes Agent plugin for Xquik. It exposes safe endpoint discovery, authenticated read calls, status and trends slash commands, and default-disabled write actions.
+It does not enable write actions unless the action gate is set and the user approves the exact operation.
 
 ## When to Use
 
@@ -32,6 +30,27 @@ Hermes Tweet is a native Hermes Agent plugin for Xquik. It exposes safe endpoint
 - The user asks whether X write actions are enabled, blocked, or safe to run
 
 Use the bundled `xurl` skill instead when the user explicitly wants the official X developer CLI path or has already configured `xurl`.
+
+## Prerequisites
+
+- Hermes Agent with plugin commands and official optional skills available
+- Network access to install the plugin and call authenticated Xquik endpoints
+- `XQUIK_API_KEY` for `tweet_read`, `/xstatus`, `/xtrends`, and other authenticated calls; `tweet_explore` does not need it
+- `HERMES_TWEET_ENABLE_ACTIONS=true` only when the user explicitly requests write-like or spend-like actions
+
+## How to Run
+
+1. Install and enable the plugin from a terminal:
+
+   ```bash
+   hermes plugins install Xquik-dev/hermes-tweet --enable
+   hermes plugins enable hermes-tweet
+   hermes tools list
+   ```
+
+2. Add `XQUIK_API_KEY` to `~/.hermes/.env` for persistent local setup.
+3. In an active CLI session, run `/reload` after changing the environment. For gateway use, run `hermes gateway restart`, then start a new session.
+4. Start with `tweet_explore`, then use `tweet_read` only after the API key is configured.
 
 ## Quick Reference
 
@@ -55,7 +74,7 @@ Use the bundled `xurl` skill instead when the user explicitly wants the official
    hermes tools list
    ```
 
-2. Configure `XQUIK_API_KEY` in the local Hermes environment. Prefer `~/.hermes/.env` for persistent local setup. Restart Hermes or run `/reload` in an active session after changing environment variables.
+2. Configure `XQUIK_API_KEY` in the local Hermes environment. Prefer `~/.hermes/.env` for persistent local setup. In an active CLI session, run `/reload` after changing environment variables. For gateway use, run `hermes gateway restart`, then start a new session.
 
 3. Start with `tweet_explore`. It reads the bundled endpoint catalog and does not need network access or an API key.
 
@@ -76,7 +95,7 @@ Use the bundled `xurl` skill instead when the user explicitly wants the official
 
 ## Pitfalls
 
-- `tweet_read` may be hidden when `XQUIK_API_KEY` is missing. Configure the key, then reload or restart Hermes
+- `tweet_read` may be hidden when `XQUIK_API_KEY` is missing. Configure the key, then run `/reload` in an active CLI session or run `hermes gateway restart` and start a new session
 - Bare `hermes tools` opens an interactive tool UI on Hermes v0.12.0. Use `hermes tools list` for scriptable checks
 - One-shot `hermes -z "/xstatus"` can route slash-prefixed text as a model prompt. Verify slash commands in an active CLI or gateway session
 - A plugin installed from Git or PyPI can still be disabled in `plugins.enabled`. Confirm both installation and enablement

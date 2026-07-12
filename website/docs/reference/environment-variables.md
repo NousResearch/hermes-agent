@@ -478,6 +478,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `API_SERVER_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API server directly (for example `http://localhost:3000,http://127.0.0.1:3000`). Default: disabled. |
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |
 | `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). `API_SERVER_KEY` is still required on loopback; use a narrow `API_SERVER_CORS_ORIGINS` allowlist for browser access. |
+| `API_SERVER_SSL` | Enable native TLS on the API server (`true`/`false`, default: `false`). |
+| `API_SERVER_SSL_CERTFILE` | PEM certificate chain for native API-server TLS. Defaults to `$HERMES_HOME/certs/hermes-tailscale.crt` (`~/.hermes/certs/...` for the default profile). |
+| `API_SERVER_SSL_KEYFILE` | PEM private key for native API-server TLS. Defaults to `$HERMES_HOME/certs/hermes-tailscale.key`; on POSIX it must be owner-only (`0600`). |
 | `API_SERVER_MODEL_NAME` | Model name advertised on `/v1/models`. Defaults to the profile name (or `hermes-agent` for the default profile). Useful for multi-user setups where frontends like Open WebUI need distinct model names per connection. |
 | `GATEWAY_PROXY_URL` | URL of a remote Hermes API server to forward messages to ([proxy mode](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Also configurable via `gateway.proxy_url` in `config.yaml`. |
 | `GATEWAY_PROXY_KEY` | Bearer token for authenticating with the remote API server in proxy mode. Must match `API_SERVER_KEY` on the remote host. |
@@ -500,6 +503,7 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS` | Access-token lifetime for the basic provider (default 12h). Overrides `dashboard.basic_auth.session_ttl_seconds`. |
 | `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | OAuth client id (`agent:{instance_id}`) for the gated/public dashboard, activating the Nous (`plugins/dashboard_auth/nous`) provider. Overrides `dashboard.oauth.client_id`. Provision it with `hermes dashboard register`. |
 | `HERMES_DASHBOARD_PUBLIC_URL` | Complete public URL the dashboard is reached at, for OAuth callback construction behind reverse proxies. Overrides `dashboard.public_url`. |
+| `HERMES_DASHBOARD_TRUSTED_HOSTS` | Comma-separated exact hostnames accepted by the Host-header guard while the dashboard remains loopback-bound behind a trusted reverse proxy. Trusted names are honored only for loopback proxy peers. Do not use wildcards; restrict proxy access at the network layer too. |
 | `HERMES_DASHBOARD_OIDC_ISSUER` | OIDC issuer URL for the bundled self-hosted OIDC provider (`plugins/dashboard_auth/self_hosted`). Required to activate it. Overrides `dashboard.oauth.self_hosted.issuer`. |
 | `HERMES_DASHBOARD_OIDC_CLIENT_ID` | Public OIDC client id (authorization-code + PKCE) for the self-hosted OIDC provider. Required to activate it. Overrides `dashboard.oauth.self_hosted.client_id`. |
 | `HERMES_DASHBOARD_OIDC_SCOPES` | Requested OIDC scopes for the self-hosted OIDC provider (default `openid profile email`). Overrides `dashboard.oauth.self_hosted.scopes`. |

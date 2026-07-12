@@ -413,7 +413,15 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default) |
 | `API_SERVER_KEY` | _(required)_ | Bearer token for auth |
 | `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
+| `API_SERVER_SSL` | `false` | Enable native HTTPS |
+| `API_SERVER_SSL_CERTFILE` | `$HERMES_HOME/certs/hermes-tailscale.crt` | PEM certificate chain |
+| `API_SERVER_SSL_KEYFILE` | `$HERMES_HOME/certs/hermes-tailscale.key` | PEM private key; must be `0600` on POSIX |
 | `API_SERVER_MODEL_NAME` | _(profile name)_ | Model name on `/v1/models`. Defaults to profile name, or `hermes-agent` for default profile. |
+
+Native TLS is useful when binding directly to a private overlay-network address.
+Keep bearer authentication enabled even with HTTPS. Hermes refuses to start the
+TLS listener when either file is missing or when the private key is readable by
+the group or other users.
 
 ### config.yaml
 

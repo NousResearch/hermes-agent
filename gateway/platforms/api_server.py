@@ -148,13 +148,17 @@ def _parse_request_reasoning_config(body: Dict[str, Any]) -> Optional[Dict[str, 
     if not isinstance(raw_effort, str):
         raise ValueError("'reasoning_effort' must be a string")
 
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from hermes_constants import VALID_REASONING_EFFORTS
 
-    reasoning_config = parse_reasoning_effort(raw_effort)
-    if reasoning_config is None:
+    # The config-file parser also accepts human-friendly YAML aliases such as
+    # "false" and "disabled". Keep this external request contract canonical.
+    normalized_effort = raw_effort.strip().lower()
+    if normalized_effort == "none":
+        return {"enabled": False}
+    if normalized_effort not in VALID_REASONING_EFFORTS:
         choices = ", ".join(("none", *VALID_REASONING_EFFORTS))
         raise ValueError(f"'reasoning_effort' must be one of: {choices}")
-    return reasoning_config
+    return {"enabled": True, "effort": normalized_effort}
 
 
 def _normalize_chat_content(

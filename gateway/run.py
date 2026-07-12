@@ -1744,6 +1744,7 @@ from gateway.config import (
     load_gateway_config,
 )
 from gateway.session import (
+    AsyncSessionStore,
     SessionStore,
     SessionSource,
     SessionContext,
@@ -2853,6 +2854,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 key, max_active_age=_bg_max_age_seconds,
             ),
         )
+        # One enforced loop-side boundary for the synchronous SessionStore.
+        # Sync helpers keep using ``session_store`` directly; async gateway
+        # handlers call this facade and await every operation.
+        self._async_session_store = AsyncSessionStore(self.session_store)
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -4080,6 +4085,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _running_agent_count(self) -> int:
         return len(self._running_agents)
 
+    def _active_cron_job_count(self) -> int:
+        """Count of cron jobs currently executing, from the cron scheduler's
+        own in-flight tracking (``cron.scheduler._running_job_ids``).
+
+        Cron jobs run through a standalone ``AIAgent`` on the scheduler's own
+        thread pool (``cron/scheduler.py::run_job``), entirely outside
+        ``self._running_agents`` — the dict every OTHER active-work check on
+        this class (``_running_agent_count``, ``_drain_active_agents``) reads.
+        Without this, the shutdown drain is structurally blind to in-flight
+        cron work: it can report ``active_at_start=0`` and proceed straight
+        to killing tool subprocesses while a cron job's terminal command is
+        still running (#60432). Best-effort: returns 0 if the cron module
+        can't be imported (e.g. a minimal test double for this class).
+        """
+        try:
+            from cron.scheduler import get_running_job_ids
+            return len(get_running_job_ids())
+        except Exception:
+            return 0
+
     # ── scale-to-zero idle detection / dormant-quiesce (Phase 0) ──────────────
     # The gateway-side BEHAVIOUR that consumes the relay scale-to-zero primitives
     # (gateway-gateway Phase 5). Pure logic lives in gateway/scale_to_zero.py; the
@@ -4767,7 +4792,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Load reasoning effort from config.yaml.
 
         Reads agent.reasoning_effort from config.yaml. Valid: "none",
-        "minimal", "low", "medium", "high", "xhigh". Returns None to use
+        "minimal", "low", "medium", "high", "xhigh", "max", "ultra". Returns None to use
         default (medium).
         """
         from hermes_constants import parse_reasoning_effort
@@ -4988,6 +5013,74 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         return None
 
+    def _refresh_fallback_model(self) -> list | None:
+        """Re-read fallback_providers from disk for the next agent create/reuse.
+
+        Cron already does this per job via ``get_fallback_chain``; the gateway
+        previously froze ``self._fallback_model`` at process start, so a chain
+        configured (or changed) after ``hermes gateway`` was running never
+        reached messaging sessions even though the same process's cron jobs
+        fell back correctly. Fixes #60955.
+
+        A TRANSIENT read/parse failure (user mid-edit of config.yaml with a
+        non-atomic write) keeps the last known-good chain instead of wiping a
+        cached agent's working fallback for that turn.  Only a successful read
+        that genuinely lacks the key clears the chain.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if not cfg_path.exists():
+                self._fallback_model = None
+                return self._fallback_model
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+        except Exception:
+            # Transient failure — keep last known-good chain.
+            logger.debug(
+                "fallback_providers refresh: config.yaml read failed; "
+                "keeping last known-good chain", exc_info=True,
+            )
+            return self._fallback_model
+        self._fallback_model = get_fallback_chain(cfg) or None
+        return self._fallback_model
+
+    @staticmethod
+    def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
+        """Keep a cached agent's fallback chain aligned with current config.
+
+        Skips rewrite while a cooldown is holding the agent on an already-
+        activated fallback provider — ``restore_primary_runtime`` owns that
+        turn-scoped lifecycle. When primary is active (or cooldown expired),
+        replace the chain so mid-uptime ``fallback_providers`` edits take
+        effect without requiring a gateway restart (#60955).
+        """
+        if agent is None:
+            return
+        new_chain = list(chain or [])
+        rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
+        if (
+            getattr(agent, "_fallback_activated", False)
+            and rate_limited_until > time.monotonic()
+        ):
+            return
+        old_chain = list(getattr(agent, "_fallback_chain", []) or [])
+        agent._fallback_chain = new_chain
+        agent._fallback_model = new_chain[0] if new_chain else None
+        if not getattr(agent, "_fallback_activated", False):
+            agent._fallback_index = 0
+        # A config edit signals the user changed something — drop the
+        # session-scoped unavailability memo so re-configured entries
+        # (e.g. credentials added mid-uptime for a previously-failing
+        # provider) get retried instead of staying suppressed for the
+        # cached agent's lifetime.  Only on actual content change, so
+        # the per-message no-op refresh keeps the memo's rate-limiting
+        # benefit (#60955).
+        if new_chain != old_chain:
+            unavailable = getattr(agent, "_unavailable_fallback_keys", None)
+            if unavailable:
+                unavailable.clear()
+
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
             session_key: agent
@@ -5086,7 +5179,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return False
 
-    def _session_has_compression_in_flight(self, session_key: str) -> bool:
+    async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """Return True when a compression lock is held for this session's id.
 
         Context compression is interrupt-protected (#23975) but gateway
@@ -5094,27 +5187,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         the pre-rotation parent while compression is mid-flight, producing
         orphaned compression siblings (#56391). Callers demote interrupt to
         queue when this returns True.
+
+        Both blocking sources — the ``session_store`` lock + JSON load, and the
+        SQLite ``get_compression_lock_holder`` SELECT — are offloaded to a
+        worker thread so a large state.db never freezes the event loop (#5).
         """
         session_store = getattr(self, "session_store", None)
         if not session_key or session_store is None:
             return False
         try:
-            with session_store._lock:  # noqa: SLF001 — snapshot entry under lock
-                session_store._ensure_loaded_locked()  # noqa: SLF001
-                entry = session_store._entries.get(session_key)  # noqa: SLF001
-            session_id = getattr(entry, "session_id", None) if entry is not None else None
-            if not session_id:
-                return False
+            session_id = await asyncio.to_thread(
+                self._lookup_session_id_under_store_lock, session_store, session_key
+            )
         except Exception:
+            return False
+        if not session_id:
             return False
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return False
-        db = getattr(session_db, "_db", session_db)
+        raw_db = getattr(session_db, "_db", session_db)
         try:
-            return bool(db.get_compression_lock_holder(str(session_id)))
+            holder = await asyncio.to_thread(
+                raw_db.get_compression_lock_holder, str(session_id)
+            )
+            return bool(holder)
         except Exception:
             return False
+
+    @staticmethod
+    def _lookup_session_id_under_store_lock(session_store, session_key: str):
+        """Sync helper run in the thread pool: read session_id under the store lock."""
+        # noqa: SLF001 — intentional private access; runs off the event loop.
+        with session_store._lock:  # noqa: SLF001
+            session_store._ensure_loaded_locked()  # noqa: SLF001
+            entry = session_store._entries.get(session_key)  # noqa: SLF001
+        return getattr(entry, "session_id", None) if entry is not None else None
 
     # Hard cap on per-session pending follow-ups for busy_input_mode=queue
     # (and the draining/steer-fallback/subagent-demotion paths that share
@@ -5338,7 +5446,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             effective_mode = "queue"
         demoted_for_compression = (
             effective_mode == "interrupt"
-            and self._session_has_compression_in_flight(session_key)
+            and await self._session_has_compression_in_flight(session_key)
         )
         if demoted_for_compression:
             logger.info(
@@ -5550,18 +5658,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
         last_active_count = self._running_agent_count()
+        last_cron_count = self._active_cron_job_count()
         last_status_at = 0.0
 
         def _maybe_update_status(force: bool = False) -> None:
-            nonlocal last_active_count, last_status_at
+            nonlocal last_active_count, last_cron_count, last_status_at
             now = asyncio.get_running_loop().time()
             active_count = self._running_agent_count()
-            if force or active_count != last_active_count or (now - last_status_at) >= 1.0:
+            cron_count = self._active_cron_job_count()
+            if (
+                force
+                or active_count != last_active_count
+                or cron_count != last_cron_count
+                or (now - last_status_at) >= 1.0
+            ):
                 self._update_runtime_status("draining")
                 last_active_count = active_count
+                last_cron_count = cron_count
                 last_status_at = now
 
-        if not self._running_agents:
+        # Cron jobs run on the scheduler's own thread pool, outside
+        # ``self._running_agents`` — fold their in-flight count into the
+        # same wait/timeout this method already applies to chat sessions,
+        # or a cron job's tool work gets killed with zero warning the
+        # instant it's the only active thing running (#60432).
+        if not self._running_agents and last_cron_count == 0:
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -5570,10 +5691,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return snapshot, True
 
         deadline = asyncio.get_running_loop().time() + timeout
-        while self._running_agents and asyncio.get_running_loop().time() < deadline:
+        while (
+            (self._running_agents or self._active_cron_job_count())
+            and asyncio.get_running_loop().time() < deadline
+        ):
             _maybe_update_status()
             await asyncio.sleep(0.1)
-        timed_out = bool(self._running_agents)
+        timed_out = bool(self._running_agents) or bool(self._active_cron_job_count())
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
@@ -5611,7 +5735,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source = None
             try:
                 if getattr(self, "session_store", None) is not None:
-                    self.session_store._ensure_loaded()
+                    await self.async_session_store._ensure_loaded()
                     entry = self.session_store._entries.get(session_key)
                     source = getattr(entry, "origin", None) if entry else None
             except Exception as e:
@@ -6881,7 +7005,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         else:
             try:
-                suspended = self.session_store.suspend_recently_active()
+                suspended = await self.async_session_store.suspend_recently_active()
                 if suspended:
                     logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
             except Exception as e:
@@ -7442,13 +7566,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Make sure there's an entry in the session_store for this key. If
         # the home channel has never been used, get_or_create_session
         # creates one; switch_session then re-points it.
-        self.session_store.get_or_create_session(dest_source)
+        await self.async_session_store.get_or_create_session(dest_source)
 
         # Re-bind the destination key to the CLI session_id. switch_session
         # ends the prior session in SQLite and reopens the CLI session under
         # the new key. The CLI's transcript becomes the active one for the
         # gateway from this moment on.
-        switched = self.session_store.switch_session(session_key, cli_session_id)
+        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
         if switched is None:
             raise RuntimeError(
                 f"could not switch session key {session_key} → {cli_session_id}"
@@ -7525,13 +7649,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _MAX_FINALIZE_RETRIES = 3
         while self._running:
             try:
-                self.session_store._ensure_loaded()
+                await self.async_session_store._ensure_loaded()
                 # Collect expired sessions first, then log a single summary.
                 _expired_entries = []
                 for key, entry in list(self.session_store._entries.items()):
                     if entry.expiry_finalized:
                         continue
-                    if not self.session_store._is_session_expired(entry):
+                    if not await self.async_session_store._is_session_expired(entry):
                         continue
                     _expired_entries.append((key, entry))
 
@@ -7615,7 +7739,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # state.db (single write-path, #9006) — also drops
                         # the persisted /model override, since finalization
                         # is a conversation boundary.
-                        self.session_store.set_expiry_finalized(entry)
+                        await self.async_session_store.set_expiry_finalized(entry)
                         logger.debug(
                             "Session expiry finalized for %s",
                             entry.session_id,
@@ -7630,7 +7754,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Marking as finalized to prevent infinite retry loop.",
                                 failures, entry.session_id, e,
                             )
-                            self.session_store.set_expiry_finalized(
+                            await self.async_session_store.set_expiry_finalized(
                                 entry, clear_model_override=False
                             )
                             _finalize_failures.pop(entry.session_id, None)
@@ -7683,7 +7807,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             getattr(self.config, "session_store_max_age_days", 0) or 0
                         )
                         if _max_age > 0:
-                            _pruned = self.session_store.prune_old_entries(_max_age)
+                            _pruned = await self.async_session_store.prune_old_entries(_max_age)
                             if _pruned:
                                 logger.info(
                                     "SessionStore prune: dropped %d stale entries",
@@ -7945,6 +8069,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("process_registry.kill_all (%s) error: %s", phase, _e)
                 try:
+                    # Any cron job still dispatched at this instant just had
+                    # its tool subprocess killed above (kill_all() has no
+                    # per-job-ID targeting — it's a global sweep). Its agent
+                    # thread is still alive in this process and may go on to
+                    # produce a plausible-looking final response from the
+                    # now-truncated tool output; mark the run interrupted so
+                    # the scheduler can never report that as success (#60432).
+                    # No-op when no cron job is in flight.
+                    from cron.scheduler import mark_running_jobs_interrupted
+                    _interrupted = mark_running_jobs_interrupted(
+                        f"Gateway shutdown ({phase}) killed the job's tool "
+                        "subprocess before the run finished."
+                    )
+                    if _interrupted:
+                        logger.warning(
+                            "Shutdown (%s): marked %d in-flight cron job(s) interrupted: %s",
+                            phase, len(_interrupted), ", ".join(_interrupted),
+                        )
+                except Exception as _e:
+                    logger.debug("mark_running_jobs_interrupted (%s) error: %s", phase, _e)
+                try:
                     from tools.async_delegation import interrupt_all as _interrupt_async
                     _async_n = _interrupt_async(reason=f"gateway shutdown ({phase})")
                     if _async_n:
@@ -7996,7 +8141,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
                 try:
-                    self.session_store.mark_resume_pending(
+                    await self.async_session_store.mark_resume_pending(
                         _sk,
                         "restart_timeout" if self._restart_requested else "shutdown_timeout",
                     )
@@ -8004,16 +8149,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
+            _cron_at_start = self._active_cron_job_count()
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
-                "timed_out=%s, active_at_start=%d, active_now=%d)",
+                "timed_out=%s, active_at_start=%d, active_now=%d, "
+                "cron_at_start=%d, cron_now=%d)",
                 _phase_elapsed(),
                 time.monotonic() - _drain_started_at,
                 timed_out,
                 len(active_agents),
                 self._running_agent_count(),
+                _cron_at_start,
+                self._active_cron_job_count(),
             )
 
             if not timed_out:
@@ -8023,7 +8172,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for _sk in _pre_drain_keys:
                     if _sk not in self._running_agents:
                         try:
-                            self.session_store.clear_resume_pending(_sk)
+                            await self.async_session_store.clear_resume_pending(_sk)
                         except Exception as _e:
                             logger.debug(
                                 "clear_resume_pending after drain failed for %s: %s",
@@ -8032,9 +8181,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if timed_out:
                 logger.warning(
-                    "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
+                    "Gateway drain timed out after %.1fs with %d active agent(s) "
+                    "and %d in-flight cron job(s); interrupting remaining work.",
                     timeout,
                     self._running_agent_count(),
+                    self._active_cron_job_count(),
                 )
                 # Mark forcibly-interrupted sessions as resume_pending BEFORE
                 # interrupting the agents.  This preserves each session's
@@ -8064,7 +8215,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        self.session_store.mark_resume_pending(_sk, _resume_reason)
+                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
@@ -9437,7 +9588,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the id out from under it, forking orphaned compression
             # siblings. Demote to queue semantics so the follow-up waits
             # for the in-flight compression + rotation to land.
-            if self._session_has_compression_in_flight(_quick_key):
+            if await self._session_has_compression_in_flight(_quick_key):
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "
                     "because context compression is in flight (#56391)",
@@ -9478,7 +9629,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
+                    target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         target_command = target.lstrip("/")
@@ -9890,7 +10041,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         return f"Quick command '/{command}' has no command defined."
                 elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
+                    target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
                         target_command = target.lstrip("/")
@@ -10144,7 +10295,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # on error. Let the user drive the next turn.
                 if _final_text.strip():
                     try:
-                        session_entry = self.session_store.get_or_create_session(source)
+                        session_entry = await self.async_session_store.get_or_create_session(source)
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
@@ -10460,8 +10611,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.model_metadata import get_model_context_length_async
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
-                _msg_runtime = _resolve_runtime_agent_kwargs()
                 _msg_config_ctx = None
+                _msg_cfg = None
+                _msg_model_cfg = {}
+                _msg_custom_providers = []
                 try:
                     _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
@@ -10469,13 +10622,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
                         if _msg_raw_ctx is not None:
                             _msg_config_ctx = int(_msg_raw_ctx)
+                    try:
+                        from hermes_cli.config import get_compatible_custom_providers
+
+                        _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
+                    except Exception:
+                        _msg_custom_providers = _msg_cfg.get("custom_providers") or []
                 except Exception:
                     pass
+                # Resolve the session's actual model/provider/base_url the
+                # same way the hygiene compression block does (~11080).
+                # GatewayRunner has no self._model/self._base_url attrs
+                # (that was copy-pasted from HermesCLI, which does carry
+                # self.model/self.base_url), so using them here always raised
+                # AttributeError, silently caught below, meaning this feature
+                # never ran.
+                _msg_model, _msg_runtime = self._resolve_session_agent_runtime(
+                    source=source,
+                    session_key=session_key,
+                    user_config=_msg_cfg,
+                )
+                _msg_base_url = _msg_runtime.get("base_url") or ""
+                # A global model.context_length belongs to the configured
+                # model, not a session /model or channel override. Prefer a
+                # matching per-custom-provider model limit when available.
+                _msg_configured_model = (
+                    _msg_model_cfg.get("default") or _msg_model_cfg.get("model")
+                    if isinstance(_msg_model_cfg, dict)
+                    else _msg_model_cfg
+                )
+                if _msg_model != _msg_configured_model:
+                    _msg_config_ctx = None
+                if _msg_custom_providers and _msg_base_url:
+                    try:
+                        from hermes_cli.config import get_custom_provider_context_length
+
+                        _msg_custom_ctx = get_custom_provider_context_length(
+                            model=_msg_model,
+                            base_url=_msg_base_url,
+                            custom_providers=_msg_custom_providers,
+                        )
+                        if _msg_custom_ctx:
+                            _msg_config_ctx = _msg_custom_ctx
+                    except Exception:
+                        pass
                 _msg_ctx_len = await get_model_context_length_async(
-                    self._model,
-                    base_url=self._base_url or _msg_runtime.get("base_url") or "",
+                    _msg_model,
+                    base_url=_msg_base_url,
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
+                    provider=_msg_runtime.get("provider") or "",
+                    custom_providers=_msg_custom_providers,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
@@ -10494,9 +10691,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _ctx_result.expanded:
                     message_text = _ctx_result.message
             except Exception as exc:
-                logger.debug("@ context reference expansion failed: %s", exc)
+                logger.warning("@ context reference expansion failed: %s", exc)
+                logger.debug("@ context reference expansion failure detail", exc_info=True)
 
         return message_text
+
+    async def _prepare_profile_scoped_inbound_message_text(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        history: List[Dict[str, Any]],
+        session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Run inbound preprocessing under the routed profile when multiplexed."""
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                return await self._prepare_inbound_message_text(
+                    event=event,
+                    source=source,
+                    history=history,
+                    session_key=session_key,
+                )
+        return await self._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=history,
+            session_key=session_key,
+        )
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
@@ -10524,6 +10746,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cached_sources.popitem(last=False)
         except Exception:
             pass
+
+    @property
+    def async_session_store(self) -> AsyncSessionStore:
+        """Return the single async facade for this runner's SessionStore."""
+        facade = getattr(self, "_async_session_store", None)
+        if facade is None or facade._store is not self.session_store:
+            facade = AsyncSessionStore(self.session_store)
+            self._async_session_store = facade
+        return facade
 
     def _get_cached_session_source(self, session_key: str):
         if not session_key:
@@ -10568,8 +10799,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        pinned_session_id = str(
+            (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
+        ).strip()
+        if pinned_session_id and pinned_session_id != session_entry.session_id:
+            # Fail closed (#55578): the spawning session may have ENDED since
+            # dispatch (user /new-reset, compression rotation whose parent was
+            # closed). switch_session() re-opens ended sessions, so pinning
+            # blindly would RESURRECT a conversation the user explicitly
+            # ended and inject into it — the same illicit-revival class as
+            # the ws_orphan_reap loop (#60609). A completion whose spawning
+            # session is dead is dropped from injection; the subagent's
+            # output remains in the delegation records.
+            pinned_row = None
+            try:
+                if self._session_db is not None:
+                    # AsyncSessionDB already offloads to a thread.
+                    pinned_row = await self._session_db.get_session(pinned_session_id)
+            except Exception:
+                pinned_row = None
+            if pinned_row is None or pinned_row.get("ended_at"):
+                logger.warning(
+                    "Async-delegation completion pinned to session %s, which is "
+                    "%s — dropping injection instead of resurrecting it "
+                    "(#55578 fail-closed; result remains in the delegation "
+                    "records).",
+                    pinned_session_id,
+                    "unknown" if pinned_row is None else "ended",
+                )
+                return
+            prior_session_id = session_entry.session_id
+            switched = await self.async_session_store.switch_session(session_key, pinned_session_id)
+            if switched is not None:
+                session_entry = switched
+                logger.info(
+                    "Pinned async-delegation completion to spawning session %s "
+                    "(was %s) for routing key %s (#57498)",
+                    pinned_session_id,
+                    prior_session_id,
+                    session_key,
+                )
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
@@ -10610,7 +10881,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # lane session is ended cleanly. Mutating session_entry in
                     # place here created a split-brain state where the JSON
                     # index pointed at one id but code downstream used another.
-                    switched = self.session_store.switch_session(session_key, bound_session_id)
+                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
                         session_entry = switched
                 # If the stored binding pointed at a parent, rewrite it to the
@@ -10798,7 +11069,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
         # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -11004,6 +11275,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ]
 
                             if len(_hyg_msgs) >= 4:
+                                _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -11012,15 +11284,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
-                                    session_db=getattr(self._session_db, "_db", self._session_db),
+                                    session_db=_hyg_session_db,
                                 )
                                 try:
-                                    # The hygiene agent rotates the session
-                                    # forward to a continuation id that becomes
-                                    # the gateway session's live row. It must
-                                    # never finalize on close() — close() would
-                                    # end the newly rotated session the gateway
-                                    # entry now points at.
+                                    # Gateway hygiene runs before the user turn
+                                    # starts and already owns the session binding.
+                                    # Prefer in-place compaction here: it archives
+                                    # old rows under the same session id instead of
+                                    # minting a continuation child that then has to
+                                    # be published back to SessionStore/topic
+                                    # bindings.  If no SessionDB is available,
+                                    # compress_context leaves this flag false and
+                                    # the guard below preserves the transcript.
+                                    _hyg_agent.compression_in_place = True
+                                    _bind_hyg_state = getattr(
+                                        getattr(_hyg_agent, "context_compressor", None),
+                                        "bind_session_state",
+                                        None,
+                                    )
+                                    if callable(_bind_hyg_state):
+                                        _bind_hyg_state(
+                                            _hyg_session_db,
+                                            session_entry.session_id,
+                                        )
+                                    # It must never finalize on close() — close()
+                                    # would end the live gateway session row.
                                     _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
@@ -11044,7 +11332,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     )
                                     if _hyg_rotated:
                                         session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
+                                        await self.async_session_store._save()
                                         await asyncio.to_thread(
                                             self._sync_telegram_topic_binding,
                                             source, session_entry,
@@ -11052,20 +11340,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         )
 
                                     # Only rewrite the transcript when rotation produced
-                                    # a NEW session id OR in-place compaction succeeded.
+                                    # a NEW session id.  In-place compaction does NOT
+                                    # need a rewrite: archive_and_compact() has already
+                                    # soft-archived the previous active rows and inserted
+                                    # the compacted messages as the new active set inside
+                                    # _compress_context().  Calling rewrite_transcript()
+                                    # after in-place compaction would invoke
+                                    # replace_messages(active_only=False) which DELETEs
+                                    # ALL rows — including the archived turns that
+                                    # archive_and_compact() deliberately preserved
+                                    # (silent data loss, #61145).
+                                    #
                                     # The danger this guards against (mirrors the
-                                    # /compress fix #44794/#39704): the hygiene agent is
-                                    # built WITHOUT a session_db, so _compress_context
-                                    # cannot rotate — if it also wasn't in-place, the
-                                    # session_id is unchanged for a FAILURE reason, and an
-                                    # unconditional rewrite_transcript() would DELETE the
-                                    # original messages and replace them with only the
-                                    # compressed summary (permanent data loss, #21301).
-                                    if _hyg_rotated or _hyg_in_place:
-                                        self.session_store.rewrite_transcript(
+                                    # /compress fix #44794/#39704): if _compress_context
+                                    # returns a summary but neither rotates nor completes
+                                    # archive_and_compact(), the session_id is unchanged
+                                    # for a FAILURE reason, and an unconditional
+                                    # rewrite_transcript() would DELETE the original
+                                    # messages and replace them with only the compressed
+                                    # summary (permanent data loss, #21301).
+                                    if _hyg_rotated:
+                                        await self.async_session_store.rewrite_transcript(
                                             session_entry.session_id, _compressed
                                         )
                                         # Reset stored token count — transcript rewritten
+                                        session_entry.last_prompt_tokens = 0
+                                        history = _compressed
+                                        _new_count = len(_compressed)
+                                        _new_tokens = estimate_messages_tokens_rough(
+                                            _compressed
+                                        )
+                                    elif _hyg_in_place:
+                                        # archive_and_compact() already persisted the
+                                        # compacted transcript inside _compress_context.
+                                        # Reset counts to match the new active set.
                                         session_entry.last_prompt_tokens = 0
                                         history = _compressed
                                         _new_count = len(_compressed)
@@ -11169,7 +11477,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
 
         # First-message onboarding -- only on the very first interaction ever
-        if not history and not self.session_store.has_any_sessions():
+        if not history and not await self.async_session_store.has_any_sessions():
             # Default first-contact note: a brief self-introduction.
             _intro_note = (
                 "\n\n[System note: This is the user's very first message ever. "
@@ -11254,7 +11562,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_inbound_message_text(
+        message_text = await self._prepare_profile_scoped_inbound_message_text(
             event=event,
             source=source,
             history=history,
@@ -11413,7 +11721,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
                 self._clear_restart_failure_count(session_key)
                 try:
-                    self.session_store.clear_resume_pending(session_key)
+                    await self.async_session_store.clear_resume_pending(session_key)
                 except Exception as _e:
                     logger.debug(
                         "clear_resume_pending failed for %s: %s",
@@ -11435,8 +11743,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 if session_entry.session_id == _run_start_session_id:
                     session_entry.session_id = agent_result["session_id"]
-                    self.session_store._save()
-                    self.session_store._record_gateway_session_peer(
+                    await self.async_session_store._save()
+                    await self.async_session_store._record_gateway_session_peer(
                         session_entry.session_id,
                         session_key,
                         source,
@@ -11634,7 +11942,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                new_entry = self.session_store.reset_session(session_key)
+                new_entry = await self.async_session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
@@ -11678,7 +11986,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass  # Skip all transcript writes — don't grow a broken session
             elif not history:
                 tool_defs = agent_result.get("tools", [])
-                self.session_store.append_to_transcript(
+                await self.async_session_store.append_to_transcript(
                     session_entry.session_id,
                     {
                         "role": "session_meta",
@@ -11732,7 +12040,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # after transient failures). #47237
                 _skip_persist = (
                     event.message_id
-                    and self.session_store.has_platform_message_id(
+                    and await self.async_session_store.has_platform_message_id(
                         session_entry.session_id, str(event.message_id)
                     )
                 )
@@ -11743,7 +12051,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         event.message_id, session_entry.session_id,
                     )
                 else:
-                    self.session_store.append_to_transcript(
+                    await self.async_session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
@@ -11769,13 +12077,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
-                    self.session_store.append_to_transcript(
+                    await self.async_session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
                     )
                     if response:
-                        self.session_store.append_to_transcript(
+                        await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts},
                             skip_db=agent_persisted,
@@ -11800,7 +12108,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
-                        self.session_store.append_to_transcript(
+                        await self.async_session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
@@ -11808,7 +12116,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.
-            self.session_store.update_session(
+            await self.async_session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
@@ -11908,7 +12216,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if 'message_text' in locals() and message_text is not None and session_entry is not None:
                     _already_persisted = False
                     try:
-                        _recent_transcript = self.session_store.load_transcript(session_entry.session_id)
+                        _recent_transcript = await self.async_session_store.load_transcript(session_entry.session_id)
                     except Exception:
                         _recent_transcript = []
                     for _msg in reversed(_recent_transcript[-10:]):
@@ -11936,7 +12244,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         }
                         if getattr(event, "message_id", None):
                             _user_entry["message_id"] = str(event.message_id)
-                        self.session_store.append_to_transcript(
+                        await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
                             _user_entry,
                         )
@@ -12391,7 +12699,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 20
 
-    def _get_goal_manager_for_event(self, event: "MessageEvent"):
+    async def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
 
         Returns ``(manager, session_entry)`` or ``(None, None)`` if the
@@ -12403,7 +12711,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal manager unavailable: %s", exc)
             return None, None
         try:
-            session_entry = self.session_store.get_or_create_session(event.source)
+            session_entry = await self.async_session_store.get_or_create_session(event.source)
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
             return None, None
@@ -13124,7 +13432,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    fallback_model=self._fallback_model,
+                    # Reload from disk — do not reuse the startup snapshot (#60955).
+                    fallback_model=self._refresh_fallback_model(),
                 )
                 try:
                     return agent.run_conversation(
@@ -13845,8 +14154,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             }
             try:
-                session_entry = self.session_store.get_or_create_session(event.source)
-                self.session_store.append_to_transcript(
+                session_entry = await self.async_session_store.get_or_create_session(event.source)
+                await self.async_session_store.append_to_transcript(
                     session_entry.session_id, reload_msg
                 )
             except Exception:
@@ -15080,6 +15389,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
         chat_id = str(evt.get("chat_id") or derived_chat_id or "").strip()
         if not platform_name or not chat_type or not chat_id:
+            logger.warning(
+                "Synthetic event source unresolvable: "
+                "session_key=%r platform=%r chat_type=%r chat_id=%r "
+                "evt_type=%s",
+                session_key, platform_name, chat_type, chat_id,
+                evt.get("type", "?"),
+            )
             return None
 
         try:
@@ -15132,12 +15448,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return
         try:
+            metadata = {}
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            if parent_session_id:
+                metadata["gateway_session_id"] = parent_session_id
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
                 message_id=str(evt.get("message_id") or "").strip() or None,
+                metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -16302,7 +16623,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if url:
             return url.rstrip("/")
         cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("proxy_url", "").strip()
+        url = (cfg.get("gateway") or {}).get("proxy_url")
+        url = (url or "").strip()
         if url:
             return url.rstrip("/")
         return None
@@ -17933,6 +18255,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             logger.debug("Reusing cached agent for session %s", session_key)
                             reused_cached_agent = True
 
+            # Lock released — refresh the fallback chain from disk for the
+            # reused agent OUTSIDE the cache lock (config.yaml read is disk
+            # I/O; the idle-sweep watcher contends on this lock and stalls
+            # Discord heartbeats — same reasoning as #52197).  A chain
+            # configured after this agent was cached (or after gateway start)
+            # must reach the next turn (#60955).  Per-session turn
+            # serialization (_running_agents) keeps this safe post-lock.
+            if reused_cached_agent and agent is not None:
+                self._apply_fallback_chain_to_agent(
+                    agent, self._refresh_fallback_model(),
+                )
+
             # Lock released — now schedule cleanup of any cross-process-evicted
             # agent on a daemon thread so memory-provider shutdown / socket
             # teardown never blocks the gateway event loop or the cache lock
@@ -17985,7 +18319,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    fallback_model=self._fallback_model,
+                    # Reload from disk — do not reuse the startup snapshot (#60955).
+                    fallback_model=self._refresh_fallback_model(),
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -19575,7 +19910,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                             exc_info=True,
                         )
-                    next_message = await self._prepare_inbound_message_text(
+                    next_message = await self._prepare_profile_scoped_inbound_message_text(
                         event=pending_event,
                         source=next_source,
                         history=updated_history,

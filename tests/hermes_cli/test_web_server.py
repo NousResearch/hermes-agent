@@ -267,6 +267,84 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
+    def test_status_active_session_count_uses_read_only_db(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as web_server
+        import hermes_state
+
+        # Satisfy the fresh-install guard: read_only opens require the DB
+        # file to already exist.
+        fake_db_path = tmp_path / "state.db"
+        fake_db_path.touch()
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", fake_db_path)
+
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                captured["read_only"] = kwargs.get("read_only")
+
+            def list_sessions_rich(self, limit, compact_rows=False):
+                captured["limit"] = limit
+                captured["compact_rows"] = compact_rows
+                return [
+                    {"ended_at": None, "last_active": 95},
+                    {"ended_at": 99, "last_active": 99},
+                    {"ended_at": None, "last_active": -300},
+                ]
+
+            def close(self):
+                captured["closed"] = True
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr(web_server.time, "time", lambda: 100)
+
+        assert web_server._count_status_active_sessions() == 1
+        assert captured == {
+            "read_only": True, "limit": 50, "compact_rows": True, "closed": True
+        }
+
+    def test_status_active_session_count_fresh_install_returns_zero(self, monkeypatch, tmp_path):
+        """No state.db yet (fresh install): return 0 without attempting a
+        read-only open, which would raise OperationalError on every poll."""
+        import hermes_cli.web_server as web_server
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "absent.db")
+
+        def _boom(*a, **k):
+            raise AssertionError("SessionDB must not be constructed when db file is absent")
+
+        monkeypatch.setattr("hermes_state.SessionDB", _boom)
+        assert web_server._count_status_active_sessions() == 0
+
+    def test_get_status_degrades_when_active_session_count_fails(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        def _locked_count():
+            raise TimeoutError("database is locked")
+
+        monkeypatch.setattr(web_server, "_count_status_active_sessions", _locked_count)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["active_sessions"] == 0
+
+    def test_get_status_uses_cached_gateway_pid_probe(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        calls = {"get_running_pid_cached": 0}
+
+        def _cached_pid():
+            calls["get_running_pid_cached"] += 1
+            return None
+
+        monkeypatch.setattr(web_server, "get_running_pid_cached", _cached_pid)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert calls["get_running_pid_cached"] == 1
+
     def test_gateway_drain_begin_writes_marker(self):
         from gateway import drain_control
 
@@ -785,6 +863,107 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
+    # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
+
+    def test_chat_image_upload_writes_to_default_profile_images(self):
+        from hermes_constants import get_hermes_home
+
+        data_url = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": data_url, "filename": "../../clip.png"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        target = Path(data["path"])
+        assert data["ok"] is True
+        assert data["mime_type"] == "image/png"
+        assert target.parent == get_hermes_home() / "images"
+        assert target.name.startswith("dashboard_")
+        assert target.name.endswith("_clip.png")
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_chat_image_upload_writes_to_requested_profile_images(self):
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=worker",
+            json={
+                "data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=",
+                "filename": "drop.gif",
+            },
+        )
+
+        assert resp.status_code == 200
+        target = Path(resp.json()["path"])
+        assert target.parent == worker_home / "images"
+        assert target.is_file()
+        assert target.read_bytes().startswith(b"GIF89a")
+
+    def test_chat_image_upload_rejects_non_image_payload(self):
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:text/plain;base64,aGVsbG8="},
+        )
+
+        assert resp.status_code == 400
+        assert "image" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_rejects_spoofed_image_payload(self):
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:image/png;base64,aGVsbG8=", "filename": "fake.png"},
+        )
+
+        assert resp.status_code == 400
+        assert "unsupported image type" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_rejects_unknown_profile(self):
+        resp = self.client.post(
+            "/api/chat/image-upload?profile=missing-profile",
+            json={"data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="},
+        )
+
+        assert resp.status_code == 404
+        assert "does not exist" in resp.json()["detail"]
+
+    def test_chat_image_upload_enforces_image_size_cap(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_CHAT_IMAGE_UPLOAD_MAX_BYTES", 4)
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={
+                "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAE=",
+                "filename": "large.png",
+            },
+        )
+
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"].lower()
+
+    def test_chat_image_upload_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.post(
+            "/api/chat/image-upload",
+            json={"data_url": "data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA="},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+
+        assert resp.status_code == 401
+
     # ── Dashboard font override ─────────────────────────────────────────
 
     def test_get_dashboard_font_defaults_to_theme(self):
@@ -900,6 +1079,70 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert captured["list"] == 3
         assert captured["count"] == 3
+
+    def _create_session_with_heavy_fields(self, session_id: str) -> None:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id=session_id,
+                source="cli",
+                system_prompt="# SOUL.md\n" + ("prompt body " * 500),
+                model_config={"temperature": 0.7, "notes": "x" * 200},
+            )
+        finally:
+            db.close()
+
+    def test_get_sessions_strips_heavy_fields_by_default(self):
+        """List rows must omit system_prompt/model_config.
+
+        system_prompt is the fully rendered prompt (tens of KB per row) and
+        dominated the sidebar payload (96% of a 528KB response); no list UI
+        reads it. Detail reads (GET /api/sessions/{id}) stay complete.
+        """
+        self._create_session_with_heavy_fields("lean-list-row")
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-list-row"]
+        assert rows, "created session missing from list"
+        row = rows[0]
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+        # The light fields the sidebar actually renders must survive.
+        for key in ("id", "source", "started_at", "message_count", "is_active"):
+            assert key in row
+
+    def test_get_sessions_full_param_keeps_heavy_fields(self):
+        """?full=1 is the escape hatch for callers that need complete rows."""
+        self._create_session_with_heavy_fields("full-list-row")
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0&full=1")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "full-list-row"]
+        assert rows, "created session missing from list"
+        row = rows[0]
+        assert row["system_prompt"].startswith("# SOUL.md")
+        assert "temperature" in (row["model_config"] or "")
+
+    def test_profiles_sessions_strips_heavy_fields_by_default(self):
+        """The cross-profile aggregate applies the same list projection."""
+        self._create_session_with_heavy_fields("lean-profiles-row")
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        assert rows, "created session missing from profiles list"
+        row = rows[0]
+        assert "system_prompt" not in row
+        assert "model_config" not in row
+        assert row["profile"] == "default"
+
+        full = self.client.get("/api/profiles/sessions?limit=20&offset=0&full=1")
+        assert full.status_code == 200
+        full_rows = [s for s in full.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        assert full_rows and full_rows[0]["system_prompt"].startswith("# SOUL.md")
 
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
@@ -1083,6 +1326,29 @@ class TestWebServerEndpoints:
         )
         assert worker_resp.status_code == 200
         assert worker_resp.json()["session_id"] == "worker-tip"
+
+    def test_latest_descendant_survives_parent_cycle(self):
+        """Regression for the #39140 CTE salvage: a corrupted parent chain
+        that loops (a -> b -> a) must terminate (UNION dedup) instead of
+        recursing forever like UNION ALL would."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="cyc-a", source="cli")
+            db.create_session(
+                session_id="cyc-b", source="cli", parent_session_id="cyc-a"
+            )
+            db._conn.execute(
+                "UPDATE sessions SET parent_session_id='cyc-b' WHERE id='cyc-a'"
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/cyc-a/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "cyc-b"
 
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
@@ -1566,6 +1832,36 @@ class TestWebServerEndpoints:
             "pid": 99,
         }
 
+    def test_action_status_tails_large_log_without_read_text(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        log_path = tmp_path / web_server._ACTION_LOG_FILES["hermes-update"]
+        log_path.write_text(
+            "stale-start\n"
+            + ("x" * (web_server._ACTION_LOG_TAIL_MAX_BYTES + 1024))
+            + "\ntail-one\ntail-two\n",
+            encoding="utf-8",
+        )
+        assert log_path.stat().st_size > web_server._ACTION_LOG_TAIL_MAX_BYTES
+
+        original_read_text = Path.read_text
+
+        def fail_if_status_reads_whole_log(path, *args, **kwargs):
+            if path == log_path:
+                raise AssertionError("action status must not read the entire log")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fail_if_status_reads_whole_log)
+
+        resp = self.client.get("/api/actions/hermes-update/status?lines=3")
+
+        assert resp.status_code == 200
+        assert resp.json()["lines"] == ["tail-one", "tail-two"]
+
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -1579,7 +1875,7 @@ class TestWebServerEndpoints:
             def get_connected_platforms(self):
                 return [_Platform("telegram")]
 
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -1611,7 +1907,7 @@ class TestWebServerEndpoints:
             def get_connected_platforms(self):
                 return []
 
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -5019,7 +5315,7 @@ class TestStatusRemoteGateway:
         """When local PID check fails and remote probe succeeds, gateway shows running."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
@@ -5041,7 +5337,7 @@ class TestStatusRemoteGateway:
         """When local PID check succeeds, the remote probe is never called."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -5064,7 +5360,7 @@ class TestStatusRemoteGateway:
         """When GATEWAY_HEALTH_URL is unset, no probe is attempted."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -5078,7 +5374,7 @@ class TestStatusRemoteGateway:
         """Remote gateway running but PID not in response — pid should be None."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
@@ -5117,7 +5413,7 @@ class TestGatewayBusyReadout:
         """gateway_busy is True iff running AND active_agents > 0."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -5135,7 +5431,7 @@ class TestGatewayBusyReadout:
         """A running gateway with zero in-flight turns is drainable, not busy."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -5153,7 +5449,7 @@ class TestGatewayBusyReadout:
         gate dominates."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "draining",
             "platforms": {},
@@ -5169,7 +5465,7 @@ class TestGatewayBusyReadout:
         active_agents 0 — never a spurious busy that would wedge NAS."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -5185,9 +5481,9 @@ class TestGatewayBusyReadout:
         wins over the file."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
-        # File says running with active turns, but get_running_pid()==None and
+        # File says running with active turns, but get_running_pid_cached()==None and
         # get_runtime_status_running_pid finds no live PID → gateway_running False.
         monkeypatch.setattr(ws, "get_runtime_status_running_pid", lambda *_a, **_k: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
@@ -5206,7 +5502,7 @@ class TestGatewayBusyReadout:
         float so NAS can size its poll deadline without out-of-band knowledge."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
@@ -5224,7 +5520,7 @@ class TestGatewayBusyReadout:
         produce a spurious busy — it degrades to 0/not-busy."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: 1234)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},

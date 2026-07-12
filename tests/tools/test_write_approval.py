@@ -439,3 +439,54 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
     r = json.loads(memory_tool("add", "memory", None, store=store))
     assert r["success"] is False
     assert wa.pending_count("memory") == 0
+
+
+class TestSkillGist:
+    """skill_gist builds a heuristic one-line summary for a pending skill write.
+
+    Pure, no model call — every branch is verifiable from the function source.
+    """
+
+    def test_create_with_frontmatter_description(self):
+        from tools import write_approval as wa
+        content = "---\ndescription: My cool skill\n---\nprint('hi')\n"
+        assert (
+            wa.skill_gist("create", "demo", content=content)
+            == f"create 'demo' — My cool skill ({len(content)} chars)"
+        )
+
+    def test_edit_without_description_uses_size_only(self):
+        from tools import write_approval as wa
+        content = "no frontmatter here"
+        assert (
+            wa.skill_gist("edit", "demo", content=content)
+            == f"rewrite 'demo' ({len(content)} chars)"
+        )
+
+    def test_large_content_reports_kb(self):
+        from tools import write_approval as wa
+        content = "x" * 2048  # >= 1024 bytes -> KB rounding
+        assert wa.skill_gist("create", "big", content=content) == "create 'big' (3 KB)"
+
+    def test_create_without_content_falls_through(self):
+        from tools import write_approval as wa
+        assert wa.skill_gist("create", "demo") == "create 'demo'"
+
+    def test_patch_counts_lines(self):
+        from tools import write_approval as wa
+        assert (
+            wa.skill_gist("patch", "demo", file_path="SKILL.md",
+                          old_string="a\nb", new_string="x\ny\nz")
+            == "patch 'demo' SKILL.md (+3/-2 lines)"
+        )
+
+    def test_patch_defaults_target_and_empty_strings(self):
+        from tools import write_approval as wa
+        assert wa.skill_gist("patch", "demo") == "patch 'demo' SKILL.md (+0/-0 lines)"
+
+    def test_file_actions_and_unknown_fallback(self):
+        from tools import write_approval as wa
+        assert wa.skill_gist("write_file", "demo", file_path="a.py") == "write a.py in 'demo'"
+        assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
+        assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
+        assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"

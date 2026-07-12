@@ -1798,7 +1798,7 @@ requires-dist = [
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.6" },
-    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
+    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
     { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==1.26.0" },
@@ -2190,7 +2190,7 @@ wheels = [
 
 [[package]]
 name = "lark-oapi"
-version = "1.5.3"
+version = "1.6.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -2200,7 +2200,7 @@ dependencies = [
     { name = "websockets" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/ff/2ece5d735ebfa2af600a53176f2636ae47af2bf934e08effab64f0d1e047/lark_oapi-1.5.3-py3-none-any.whl", hash = "sha256:fda6b32bb38d21b6bdaae94979c600b94c7c521e985adade63a54e4b3e20cc36", size = 6993016, upload-time = "2026-01-27T08:21:49.307Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/ad/1ab04db5d549ad1a7a2cd33682b1c38dee1d65019cb24fd7a23270e6337d/lark_oapi-1.6.8-py3-none-any.whl", hash = "sha256:9b443a5d47a7d204dd42dc40896c8b75087cc35788e45c48c140806d7df7e5e8", size = 7798300, upload-time = "2026-06-02T07:40:05.492Z" },
 ]
 
 [[package]]

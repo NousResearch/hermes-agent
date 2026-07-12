@@ -34,6 +34,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
+    AsyncSessionStore,
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
@@ -85,6 +86,8 @@ def _model_switch_skew_guard() -> Optional[str]:
 
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
+
+    async_session_store: AsyncSessionStore
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
@@ -167,6 +170,24 @@ class GatewaySlashCommandsMixin:
         if _qe is not None:
             _qe.pop(session_key, None)
 
+        # The old conversation's in-flight async delegations end WITH it
+        # (#55578): after the reset rotates the session id, their completions
+        # would have no live owner — a dangling subagent can only burn tokens
+        # and park an orphaned payload on the shared queue. Interrupt by the
+        # expiring durable session id (delegations dispatched from gateway
+        # chats are pinned to it via parent_session_id) and by the routing
+        # key as a fallback for older records.
+        try:
+            from tools.async_delegation import interrupt_for_session
+
+            interrupt_for_session(
+                session_key=session_key,
+                parent_session_id=str(getattr(old_entry, "session_id", "") or ""),
+                reason="session_reset",
+            )
+        except Exception:
+            pass
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
@@ -180,7 +201,7 @@ class GatewaySlashCommandsMixin:
             pass
 
         # Reset the session
-        new_entry = self.session_store.reset_session(session_key)
+        new_entry = await self.async_session_store.reset_session(session_key)
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
@@ -245,7 +266,7 @@ class GatewaySlashCommandsMixin:
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_default")
         else:
             # No existing session, just create one
-            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+            new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
@@ -477,7 +498,7 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
 
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
 
         connected_platforms = [p.value for p in self.adapters.keys()]
 
@@ -1043,7 +1064,7 @@ class GatewaySlashCommandsMixin:
         """
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
 
         agent = self._running_agents.get(session_key)
@@ -1580,7 +1601,7 @@ class GatewaySlashCommandsMixin:
                         _sess_db = getattr(_self, "_session_db", None)
                         if _sess_db is not None:
                             try:
-                                _sess_entry = _self.session_store.get_or_create_session(
+                                _sess_entry = await _self.async_session_store.get_or_create_session(
                                     event.source
                                 )
                                 await _sess_db.update_session_model(
@@ -1611,7 +1632,7 @@ class GatewaySlashCommandsMixin:
                         # store so the picked model survives a gateway restart
                         # (api_key is never persisted).
                         try:
-                            _self.session_store.set_model_override(
+                            await _self.async_session_store.set_model_override(
                                 _session_key,
                                 _self._session_model_overrides[_session_key],
                             )
@@ -1822,7 +1843,7 @@ class GatewaySlashCommandsMixin:
             _sess_db = getattr(self, "_session_db", None)
             if _sess_db is not None:
                 try:
-                    _sess_entry = self.session_store.get_or_create_session(source)
+                    _sess_entry = await self.async_session_store.get_or_create_session(source)
                     # If this session was auto-reset, consume the flag so the
                     # next regular message's cleanup does not wipe the model
                     # override just stored below (Closes #48031).
@@ -1860,8 +1881,9 @@ class GatewaySlashCommandsMixin:
             # api_key/api_mode are never persisted — they are re-resolved via
             # runtime provider resolution on rehydration.
             try:
-                self.session_store.set_model_override(
-                    session_key, self._session_model_overrides[session_key]
+                await self.async_session_store.set_model_override(
+                    session_key,
+                    self._session_model_overrides[session_key],
                 )
             except Exception:
                 logger.debug(
@@ -2124,8 +2146,8 @@ class GatewaySlashCommandsMixin:
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
         
         # Find the last user message
         last_user_msg = None
@@ -2141,10 +2163,10 @@ class GatewaySlashCommandsMixin:
         
         # Truncate history to before the last user message and persist
         truncated = history[:last_user_idx]
-        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
+        await self.async_session_store.rewrite_transcript(session_entry.session_id, truncated)
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
-        
+
         # Re-send by creating a fake text event with the old message
         retry_event = MessageEvent(
             text=last_user_msg,
@@ -2171,7 +2193,7 @@ class GatewaySlashCommandsMixin:
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
 
-        mgr, session_entry = self._get_goal_manager_for_event(event)
+        mgr, session_entry = await self._get_goal_manager_for_event(event)
         if mgr is None:
             return t("gateway.goal.unavailable")
 
@@ -2305,7 +2327,7 @@ class GatewaySlashCommandsMixin:
         to invoke while the agent is running.
         """
         args = (event.get_command_args() or "").strip()
-        mgr, _session_entry = self._get_goal_manager_for_event(event)
+        mgr, _session_entry = await self._get_goal_manager_for_event(event)
         if mgr is None:
             return t("gateway.goal.unavailable")
         if not mgr.has_goal():
@@ -2372,8 +2394,8 @@ class GatewaySlashCommandsMixin:
             if n < 1:
                 n = 1
 
-        session_entry = self.session_store.get_or_create_session(source)
-        result = self.session_store.rewind_session(session_entry.session_id, n)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        result = await self.async_session_store.rewind_session(session_entry.session_id, n)
 
         if result is None:
             return t("gateway.undo.nothing")
@@ -2711,7 +2733,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.reasoning.reset_done")
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
+        elif effort in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
             parsed = {"enabled": True, "effort": effort}
         else:
             return t(
@@ -3072,8 +3094,8 @@ class GatewaySlashCommandsMixin:
         https://code.claude.com/docs/en/whats-new/2026-w20).
         """
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
 
         if not history or len(history) < 4:
             return t("gateway.compress.not_enough")
@@ -3244,32 +3266,40 @@ class GatewaySlashCommandsMixin:
                 # at it; in place the original transcript is untouched) and lets
                 # the outer handler surface a "compress failed" banner instead.
                 #
-                # The rewrite runs when EITHER rotation produced a new id OR
-                # in-place compaction succeeded. It is skipped in the THIRD
-                # case: _compress_context could NOT rotate AND was not in-place
-                # (e.g. legacy mode but _session_db unavailable / the DB split
-                # raised) — there session_id is unchanged for a FAILURE reason,
-                # and rewrite_transcript() would DELETE the original messages and
-                # replace them with only the compressed summary (permanent data
-                # loss #44794, #39704). In in-place mode the unchanged id is
-                # SUCCESS, so the rewrite is exactly right (and is the durable
-                # write when the throwaway /compress agent has no _session_db of
-                # its own).
-                if rotated or _in_place:
-                    if not self.session_store.rewrite_transcript(
+                # Only rewrite the transcript when rotation produced a NEW
+                # session id.  In-place compaction does NOT need a rewrite:
+                # archive_and_compact() has already soft-archived the previous
+                # active rows and inserted the compacted messages as the new
+                # active set inside _compress_context().  Calling
+                # rewrite_transcript() after in-place compaction would invoke
+                # replace_messages(active_only=False) which DELETEs ALL rows —
+                # including the archived turns that archive_and_compact()
+                # deliberately preserved (silent data loss, #61145).
+                #
+                # The third case: _compress_context could NOT rotate AND was
+                # not in-place (e.g. legacy mode but _session_db unavailable /
+                # the DB split raised) — there session_id is unchanged for a
+                # FAILURE reason, and rewrite_transcript() would DELETE the
+                # original messages and replace them with only the compressed
+                # summary (permanent data loss #44794, #39704).
+                if rotated:
+                    if not await self.async_session_store.rewrite_transcript(
                         new_session_id, compressed
                     ):
                         raise RuntimeError(
                             f"failed to persist compressed transcript for "
                             f"session {new_session_id}"
                         )
-                    if rotated:
-                        session_entry.session_id = new_session_id
-                        self.session_store._save()
-                        await asyncio.to_thread(
-                            self._sync_telegram_topic_binding,
-                            source, session_entry, reason="compress-command",
-                        )
+                    session_entry.session_id = new_session_id
+                    await self.async_session_store._save()
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding,
+                        source, session_entry, reason="compress-command",
+                    )
+                elif _in_place:
+                    # archive_and_compact() already persisted the compacted
+                    # transcript inside _compress_context — nothing to do.
+                    pass
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
@@ -3278,7 +3308,7 @@ class GatewaySlashCommandsMixin:
                         "it (#44794)."
                     )
                 # Reset stored token count — transcript changed, old value is stale
-                self.session_store.update_session(
+                await self.async_session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
                 new_tokens = estimate_request_tokens_rough(
@@ -3427,7 +3457,7 @@ class GatewaySlashCommandsMixin:
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
         session_id = session_entry.session_id
 
         if not self._session_db:
@@ -3610,7 +3640,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.resume.blocked_not_owner", name=name)
 
         # Check if already on that session
-        current_entry = self.session_store.get_or_create_session(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
 
@@ -3618,7 +3648,7 @@ class GatewaySlashCommandsMixin:
         self._release_running_agent_state(session_key)
 
         # Switch the session entry to point at the old session
-        new_entry = self.session_store.switch_session(session_key, target_id)
+        new_entry = await self.async_session_store.switch_session(session_key, target_id)
         if not new_entry:
             return t("gateway.resume.switch_failed")
         self._clear_session_boundary_security_state(session_key)
@@ -3655,7 +3685,7 @@ class GatewaySlashCommandsMixin:
         title = await self._session_db.get_session_title(target_id) or name
 
         # Count messages for context
-        history = self.session_store.load_transcript(target_id)
+        history = await self.async_session_store.load_transcript(target_id)
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
@@ -3706,7 +3736,7 @@ class GatewaySlashCommandsMixin:
         # `/sessions all` and enumerate other origins' session ids / titles /
         # previews / sources — the enumeration half of the /resume IDOR.
         cross_origin = include_all and self._resume_caller_is_admin(source)
-        current_entry = self.session_store.get_or_create_session(source)
+        current_entry = await self.async_session_store.get_or_create_session(source)
         rows = await asyncio.to_thread(
             query_session_listing,
             getattr(self._session_db, "_db", self._session_db),
@@ -3755,8 +3785,8 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         # Load the current session and its transcript
-        current_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(current_entry.session_id)
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        history = await self.async_session_store.load_transcript(current_entry.session_id)
         if not history:
             return t("gateway.branch.no_conversation")
 
@@ -3823,7 +3853,7 @@ class GatewaySlashCommandsMixin:
             pass
 
         # Switch the session store entry to the new session
-        new_entry = self.session_store.switch_session(session_key, new_session_id)
+        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(session_key)
@@ -3941,7 +3971,7 @@ class GatewaySlashCommandsMixin:
         api_key = getattr(agent, "api_key", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
         if not provider and getattr(self, "_session_db", None) is not None:
             try:
-                _entry_for_billing = self.session_store.get_or_create_session(source)
+                _entry_for_billing = await self.async_session_store.get_or_create_session(source)
                 persisted = await self._session_db.get_session(_entry_for_billing.session_id) or {}
             except Exception:
                 persisted = {}
@@ -4014,7 +4044,9 @@ class GatewaySlashCommandsMixin:
             # Same engine the desktop popover uses (PR #54907). The system
             # prompt / tools / skills / memory slices read off the live agent;
             # the conversation slice is estimated from the session transcript.
-            breakdown_lines = self._context_breakdown_lines(agent, source)
+            breakdown_lines = await asyncio.to_thread(
+                self._context_breakdown_lines, agent, source
+            )
             if breakdown_lines:
                 lines.append("")
                 lines.extend(breakdown_lines)
@@ -4029,8 +4061,8 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         # No agent at all -- check session history for a rough count
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
         if history:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]

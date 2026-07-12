@@ -8,10 +8,26 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
 
 import types
 
-from run_agent import AIAgent
-from tools.delegate_tool import _get_max_concurrent_children
+import pytest
 
-MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
+from run_agent import AIAgent
+
+# Pin the concurrency limit instead of reading the runtime config.
+# _cap_delegate_task_calls() resolves _get_max_concurrent_children() at CALL
+# time (inside a per-test hermetic HERMES_HOME), but this module previously
+# froze the value at IMPORT time — before the hermetic fixture ran — so a
+# developer machine with delegation.max_concurrent_children in the real
+# ~/.hermes/config.yaml saw a different limit at import vs call and the
+# truncation tests failed locally while passing on CI.
+MAX_CONCURRENT_CHILDREN = 3
+
+
+@pytest.fixture(autouse=True)
+def _pin_max_concurrent_children(monkeypatch):
+    monkeypatch.setattr(
+        "tools.delegate_tool._get_max_concurrent_children",
+        lambda: MAX_CONCURRENT_CHILDREN,
+    )
 
 
 # ---------------------------------------------------------------------------

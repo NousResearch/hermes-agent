@@ -31,6 +31,24 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+
+def workspace_key(row: Dict[str, Any]) -> Optional[str]:
+    """A session's workspace grouping key: its git repo root when known, else
+    its cwd.
+
+    Branch is deliberately excluded so checking out a new branch doesn't
+    fragment a workspace's session history. Returns None for cwd-less (unbound)
+    sessions. Both fields are already recorded on ``sessions`` — this just picks
+    the coarser identity for grouping/filtering.
+    """
+    root = (row.get("git_repo_root") or "").strip()
+    if root:
+        return root
+
+    cwd = (row.get("cwd") or "").strip()
+    return cwd or None
+
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -122,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -753,6 +771,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
+    effect_disposition TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -765,6 +784,27 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS session_model_usage (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    billing_provider TEXT NOT NULL DEFAULT '',
+    billing_base_url TEXT NOT NULL DEFAULT '',
+    billing_mode TEXT NOT NULL DEFAULT '',
+    api_call_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0,
+    cost_status TEXT,
+    cost_source TEXT,
+    first_seen REAL,
+    last_seen REAL,
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -793,6 +833,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -1553,6 +1595,50 @@ class SessionDB:
                     # means consumers fall back to sessions.json for those
                     # rows until the gateway rewrites them.
                     logger.debug("v18 gateway metadata backfill skipped: %s", exc)
+            if current_version < 20:
+                # v20: per-model usage attribution (issue #51607). Going
+                # forward update_token_counts() records each API call into
+                # session_model_usage keyed by the live model, but existing
+                # sessions only have their aggregate totals on the sessions
+                # row. Seed one usage row per historical session from those
+                # aggregates so insights reads uniformly from the new table.
+                # INSERT OR IGNORE keeps it idempotent: if newer code already
+                # wrote a (session_id, model, provider) row for a session, the
+                # PK conflict skips the stale aggregate rather than doubling it.
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO session_model_usage (
+                               session_id, model, billing_provider,
+                               billing_base_url, billing_mode,
+                               api_call_count, input_tokens,
+                               output_tokens, cache_read_tokens,
+                               cache_write_tokens, reasoning_tokens,
+                               estimated_cost_usd, actual_cost_usd,
+                               cost_status, cost_source, first_seen, last_seen
+                           )
+                           SELECT id, COALESCE(model, 'unknown'),
+                                  COALESCE(billing_provider, ''),
+                                  COALESCE(billing_base_url, ''),
+                                  COALESCE(billing_mode, ''),
+                                  COALESCE(api_call_count, 0),
+                                  COALESCE(input_tokens, 0),
+                                  COALESCE(output_tokens, 0),
+                                  COALESCE(cache_read_tokens, 0),
+                                  COALESCE(cache_write_tokens, 0),
+                                  COALESCE(reasoning_tokens, 0),
+                                  COALESCE(estimated_cost_usd, 0),
+                                  COALESCE(actual_cost_usd, 0),
+                                  cost_status, cost_source,
+                                  started_at, COALESCE(ended_at, started_at)
+                           FROM sessions
+                           WHERE COALESCE(input_tokens, 0)
+                                 + COALESCE(output_tokens, 0)
+                                 + COALESCE(cache_read_tokens, 0)
+                                 + COALESCE(cache_write_tokens, 0)
+                                 + COALESCE(reasoning_tokens, 0) > 0"""
+                    )
+                except sqlite3.OperationalError:
+                    pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -2480,6 +2566,11 @@ class SessionDB:
                    model = COALESCE(model, ?),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
+        has_accounted_usage = bool(
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd or actual_cost_usd
+        )
         params = (
             input_tokens,
             output_tokens,
@@ -2492,16 +2583,166 @@ class SessionDB:
             cost_status,
             cost_source,
             pricing_version,
-            billing_provider,
-            billing_base_url,
-            billing_mode,
-            model,
+            billing_provider if has_accounted_usage else None,
+            billing_base_url if has_accounted_usage else None,
+            billing_mode if has_accounted_usage else None,
+            model if has_accounted_usage else None,
             api_call_count,
             session_id,
         )
+        # Per-model usage attribution.  ``update_token_counts`` is the single
+        # chokepoint every per-API-call delta flows through (CLI, gateway, cron,
+        # delegated runs — see conversation_loop / codex_runtime), and each call
+        # carries the model/provider *active at the time of that call*.  The
+        # ``sessions`` row only keeps one (model, billing_provider) pair, so a
+        # mid-session ``/model`` switch otherwise attributes every token to the
+        # initial model (issue #51607).  Recording the per-call delta into
+        # session_model_usage keyed by the live model preserves an accurate
+        # per-model breakdown regardless of how many times the user switches.
+        #
+        # Only the incremental path records here. Absolute cumulative updates
+        # cannot be split back into routes; Insights reconciles any positive
+        # residual against the aggregate session row instead.
+        record_model_usage = (not absolute) and (
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd
+        )
+
         def _do(conn):
+            row = conn.execute(
+                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            existing_model = row["model"] if row is not None else None
+            existing_provider = row["billing_provider"] if row is not None else None
+            existing_api_calls = int((row["api_call_count"] if row is not None else 0) or 0)
+
+            # Session creation records the requested primary route before any API
+            # call. If it fails and fallback succeeds, the first accounted usage
+            # event is the first authoritative route. After that, preserve the
+            # legacy row: one row cannot represent mixed-provider usage.
+            first_accounted_route = (
+                existing_api_calls == 0
+                and has_accounted_usage
+                and bool(model)
+                and bool(billing_provider)
+                and (existing_model != model or existing_provider != billing_provider)
+            )
+            if first_accounted_route:
+                conn.execute(
+                    """UPDATE sessions
+                       SET model = ?, billing_provider = ?,
+                       billing_base_url = ?, billing_mode = ?
+                       WHERE id = ?""",
+                    (model, billing_provider, billing_base_url, billing_mode, session_id),
+                )
             conn.execute(sql, params)
+            if record_model_usage:
+                self._record_model_usage(
+                    conn,
+                    session_id,
+                    model=model,
+                    billing_provider=billing_provider,
+                    billing_base_url=billing_base_url,
+                    billing_mode=billing_mode,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    estimated_cost_usd=estimated_cost_usd,
+                    actual_cost_usd=actual_cost_usd,
+                    cost_status=cost_status,
+                    cost_source=cost_source,
+                    api_call_count=api_call_count,
+                )
         self._execute_write(_do)
+
+    def _record_model_usage(
+        self,
+        conn,
+        session_id: str,
+        *,
+        model: Optional[str],
+        billing_provider: Optional[str],
+        billing_base_url: Optional[str],
+        billing_mode: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        reasoning_tokens: int,
+        estimated_cost_usd: Optional[float],
+        actual_cost_usd: Optional[float],
+        cost_status: Optional[str],
+        cost_source: Optional[str],
+        api_call_count: int,
+    ) -> None:
+        """Accumulate a per-API-call usage delta into session_model_usage.
+
+        Runs inside the caller's write transaction (after the ``sessions``
+        UPDATE) so the per-model rows stay consistent with the summary row.
+        When the caller omits the model/provider (some paths only pass token
+        deltas), fall back to the values already recorded on the session row —
+        the same COALESCE-from-session behaviour the summary update uses.
+        """
+        row = conn.execute(
+            "SELECT model, billing_provider, billing_base_url, billing_mode "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        sess_model = row["model"] if row is not None else None
+        sess_provider = row["billing_provider"] if row is not None else None
+        sess_base_url = row["billing_base_url"] if row is not None else None
+        sess_billing_mode = row["billing_mode"] if row is not None else None
+
+        eff_model = model or sess_model or "unknown"
+        eff_provider = billing_provider or sess_provider or ""
+        eff_base_url = billing_base_url or sess_base_url or ""
+        eff_billing_mode = billing_mode or sess_billing_mode or ""
+        now = time.time()
+        conn.execute(
+            """INSERT INTO session_model_usage (
+                   session_id, model, billing_provider, billing_base_url, billing_mode,
+                   api_call_count, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                   estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                   first_seen, last_seen
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode)
+               DO UPDATE SET
+                   api_call_count = api_call_count + excluded.api_call_count,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   cost_status = COALESCE(excluded.cost_status, cost_status),
+                   cost_source = COALESCE(excluded.cost_source, cost_source),
+                   last_seen = excluded.last_seen""",
+            (
+                session_id,
+                eff_model,
+                eff_provider,
+                eff_base_url,
+                eff_billing_mode,
+                api_call_count or 0,
+                input_tokens or 0,
+                output_tokens or 0,
+                cache_read_tokens or 0,
+                cache_write_tokens or 0,
+                reasoning_tokens or 0,
+                float(estimated_cost_usd or 0.0),
+                float(actual_cost_usd or 0.0),
+                cost_status,
+                cost_source,
+                now,
+                now,
+            ),
+        )
 
     def ensure_session(
         self,
@@ -2947,6 +3188,28 @@ class SessionDB:
             current = child_id
         return current
 
+    # Columns excluded from compact_rows projections: only the payload-heavy
+    # blob no list consumer renders. Everything else — including gateway
+    # routing fields and desktop sidebar fields like git_branch — stays, and
+    # the projection is derived from SCHEMA_SQL so columns added later via
+    # declarative reconciliation are included automatically instead of
+    # silently dropping out of list rows.
+    _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
+    _session_compact_cols_sql: Optional[str] = None
+
+    @classmethod
+    def _compact_session_cols(cls) -> str:
+        """SELECT list for compact_rows: every ``sessions`` column declared in
+        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        prefix used by list_sessions_rich/_get_session_rich_row queries."""
+        if cls._session_compact_cols_sql is None:
+            declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
+            cls._session_compact_cols_sql = ", ".join(
+                f"s.{name}" for name in declared
+                if name not in cls._SESSION_COMPACT_EXCLUDED
+            )
+        return cls._session_compact_cols_sql
+
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 
@@ -2988,6 +3251,7 @@ class SessionDB:
         archived_only: bool = False,
         id_query: str = None,
         search_query: str = None,
+        compact_rows: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3021,6 +3285,12 @@ class SessionDB:
         its forward compression chain). A punctuation-stripped variant is also
         matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
         ``order_by_last_active`` path.
+
+        Pass ``compact_rows=True`` for dashboard and picker callers that only
+        need lightweight metadata. This omits the ``system_prompt`` blob from
+        the SELECT so SQLite never copies it out of the B-tree page — a
+        significant I/O saving on large databases where the blob routinely
+        runs to tens of kilobytes per row.
         """
         where_clauses = []
         params = []
@@ -3138,6 +3408,7 @@ class SessionDB:
                 outer_where = (
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -3161,7 +3432,7 @@ class SessionDB:
                     FROM chain
                     GROUP BY root_id
                 )
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3184,8 +3455,9 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            _sel = self._compact_session_cols() if compact_rows else "s.*"
             query = f"""
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3236,7 +3508,7 @@ class SessionDB:
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
-                tip_row = self._get_session_rich_row(tip_id)
+                tip_row = self._get_session_rich_row(tip_id, compact_rows=compact_rows)
                 if not tip_row:
                     projected.append(s)
                     continue
@@ -3322,13 +3594,17 @@ class SessionDB:
             runs.append(s)
         return runs
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
+
+        Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
+        ``list_sessions_rich`` for details).
         """
-        query = """
-            SELECT s.*,
+        _sel = self._compact_session_cols() if compact_rows else "s.*"
+        query = f"""
+            SELECT {_sel},
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
@@ -3420,6 +3696,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        effect_disposition: Optional[str] = None,
         timestamp: Any = None,
     ) -> int:
         """
@@ -3470,10 +3747,10 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3481,6 +3758,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
+                    effect_disposition,
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -3562,10 +3840,10 @@ class SessionDB:
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3573,6 +3851,7 @@ class SessionDB:
                     msg.get("tool_call_id"),
                     tool_calls_json,
                     msg.get("tool_name"),
+                    msg.get("effect_disposition"),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -3710,7 +3989,11 @@ class SessionDB:
 
 
     def get_messages(
-        self, session_id: str, include_inactive: bool = False
+        self,
+        session_id: str,
+        include_inactive: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -3721,14 +4004,25 @@ class SessionDB:
 
         Ordered by AUTOINCREMENT id (true insertion order) rather than
         timestamp — see c03acca50 for the WSL2 clock-regression rationale.
+
+        When ``limit`` is provided, returns at most ``limit`` messages
+        starting from ``offset`` (0-based, in insertion order). Enables
+        pagination for the API endpoint to avoid loading entire transcripts.
+        ``offset`` alone (without ``limit``) also pages — SQLite requires a
+        LIMIT clause for OFFSET, so it's emitted as ``LIMIT -1`` (unbounded).
         """
         active_clause = "" if include_inactive else " AND active = 1"
+        sql = (
+            "SELECT * FROM messages WHERE session_id = ?"
+            f"{active_clause} ORDER BY id"
+        )
+        params: list = [session_id]
+        if limit is not None or offset:
+            # SQLite's OFFSET requires LIMIT; -1 means "no limit".
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else limit, offset])
         with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM messages WHERE session_id = ?"
-                f"{active_clause} ORDER BY id",
-                (session_id,),
-            )
+            cursor = self._conn.execute(sql, params)
             rows = cursor.fetchall()
         result = []
         for row in rows:
@@ -4053,7 +4347,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
@@ -4081,6 +4375,8 @@ class SessionDB:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
+            if row["effect_disposition"]:
+                msg["effect_disposition"] = row["effect_disposition"]
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

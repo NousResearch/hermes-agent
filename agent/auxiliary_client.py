@@ -2847,14 +2847,34 @@ def _is_payment_error(exc: Exception) -> bool:
     resets — and should trigger the same provider-fallback logic.
     """
     status = getattr(exc, "status_code", None)
-    if status == 402:
-        return True
     err_lower = str(exc).lower()
+    has_usage_limit = any(kw in err_lower for kw in (
+        "usage limit",
+        "key limit exceeded",
+        "quota",
+    ))
+    has_usage_limit_retry_signal = any(kw in err_lower for kw in (
+        "try again",
+        "retry",
+        "resets at",
+        "resets in",
+        "reset in",
+        "wait",
+        "requests remaining",
+        "periodic",
+        "window",
+    ))
+    if status == 402:
+        if has_usage_limit and has_usage_limit_retry_signal:
+            return False
+        return True
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
     # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers
     # uses different language but is semantically identical to credit exhaustion.
     if status in {402, 403, 404, 429, None}:
+        if has_usage_limit:
+            return not has_usage_limit_retry_signal
         if any(kw in err_lower for kw in (
             "credits", "insufficient funds",
             "can only afford", "billing",
@@ -2898,6 +2918,22 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     """
     status = getattr(exc, "status_code", None)
     err_lower = str(exc).lower()
+    has_usage_limit = any(kw in err_lower for kw in (
+        "usage limit",
+        "key limit exceeded",
+        "quota",
+    ))
+    has_usage_limit_retry_signal = any(kw in err_lower for kw in (
+        "try again",
+        "retry",
+        "resets at",
+        "resets in",
+        "reset in",
+        "wait",
+        "requests remaining",
+        "periodic",
+        "window",
+    ))
 
     # OpenAI SDK's RateLimitError sometimes omits .status_code —
     # detect by class name so we don't miss these.  (PR #8023 pattern)
@@ -2905,6 +2941,8 @@ def _is_rate_limit_error(exc: Exception) -> bool:
         return True
 
     if status == 429:
+        if has_usage_limit:
+            return has_usage_limit_retry_signal
         # Distinguish rate-limit from billing: billing keywords are handled
         # by _is_payment_error, everything else on 429 is a rate limit.
         if any(kw in err_lower for kw in (

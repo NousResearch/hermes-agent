@@ -291,6 +291,21 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    def test_429_usage_limit_without_retry_is_billing(self):
+        e = MockAPIError("The usage limit has been reached", status_code=429)
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.4")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_usage_limit_with_reset_is_rate_limit(self):
+        e = MockAPIError(
+            "Weekly usage limit reached. Resets in 6hr 29min.",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.4")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_403_plan_entitlement_billing(self):
         e = MockAPIError("This plan does not include the requested model", status_code=403)
         result = classify_api_error(e)
@@ -2066,4 +2081,3 @@ class Test408RequestTimeout:
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
         assert result.should_compress is False
-

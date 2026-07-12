@@ -17,6 +17,11 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Allow the kanban notifier path-validator to upload artifacts the
+    # tests write under ``tmp_path``. Without this, every artifact-delivery
+    # test silently drops files because ``tmp_path`` isn't inside the
+    # default ``MEDIA_DELIVERY_SAFE_ROOTS`` cache dirs.
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
     kb.init_db()
     return home
 
@@ -181,8 +186,8 @@ async def test_notifier_second_blocked_delivers(kanban_home):
         tid = kb.create_task(conn, title="test task", assignee="worker1")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
 
-        # Cycle 1: blocked
-        kb.block_task(conn, tid, reason="first block")
+        # Cycle 1: blocked for one reason
+        kb.block_task(conn, tid, reason="first block", kind="needs_input")
     finally:
         conn.close()
 
@@ -192,14 +197,18 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    # Cycle 2: unblock → block run again
+    # Cycle 2: unblock → block again for a DIFFERENT reason. A distinct
+    # block cause must still notify. (A *same*-cause re-block instead trips
+    # the unblock-loop breaker and routes to triage — covered by
+    # test_kanban_block_kinds.py; here we exercise two genuinely different
+    # blocks, which is the case the user wants notified twice.)
     runner._running = True
     tick_count = 0
 
     conn = kb.connect()
     try:
         kb.unblock_task(conn, tid)
-        kb.block_task(conn, tid, reason="second block")
+        kb.block_task(conn, tid, reason="second block", kind="capability")
     finally:
         conn.close()
 
@@ -293,7 +302,6 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
-    from unittest.mock import patch
 
     runner = object.__new__(GatewayRunner)
 
@@ -482,7 +490,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
 
 @pytest.mark.asyncio
-async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path):
+async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
     """When a completed event carries ``artifacts`` in its payload, the
     notifier uploads each file to the subscribed chat as a native
     attachment. Images batch through send_multiple_images; documents
@@ -493,6 +501,13 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path):
     from gateway.run import GatewayRunner
     from gateway.config import Platform
     from tools import kanban_tools as kt
+
+    # ``_deliver_kanban_artifacts`` routes candidates through
+    # ``BasePlatformAdapter.filter_local_delivery_paths``, which only accepts
+    # paths under ``MEDIA_DELIVERY_SAFE_ROOTS`` or roots explicitly allowlisted
+    # via ``HERMES_MEDIA_ALLOW_DIRS``. Test fixtures live under ``tmp_path``,
+    # so allowlist it for the duration of the test.
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
     # Materialize real files so os.path.isfile passes inside the helper.
     chart_path = tmp_path / "q3-revenue.png"
@@ -572,7 +587,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path):
+async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
     """Missing artifact paths are silently skipped — they may have been
     referenced by name only. The notifier must not crash and must still
     deliver any artifacts that do exist."""
@@ -580,6 +595,10 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     from gateway.run import GatewayRunner
     from gateway.config import Platform
     from tools import kanban_tools as kt
+
+    # Allow ``tmp_path`` through the media-delivery safety filter. See the
+    # companion test for the full explanation.
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
     real_pdf = tmp_path / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")

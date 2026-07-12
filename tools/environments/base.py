@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ def _popen_bash(
     Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
     this and call :func:`_pipe_stdin` directly.
     """
+    kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -355,11 +357,16 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
-        # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Full capture: env vars, functions, aliases, shell options.
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        _quoted_cwd = shlex.quote(self.cwd)
+        # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
+        # the Windows subclass override converts a native ``C:\Users\x`` cwd to
+        # the Git-Bash ``/c/Users/x`` form the bootstrap ``cd`` can resolve.
+        # Without this the snapshot bootstrap ``cd`` below fails on Windows and
+        # ``pwd -P`` captures the login shell's directory, not ``terminal.cwd``.
+        _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
         # ``C:/Users/...``-shaped paths without glob-splitting the colon or
         # tripping on drive letters.  On POSIX this is a no-op (no colons /
@@ -369,20 +376,60 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Use atomic file replacement: assemble the snapshot in a temp file,
+        # then mv it over the final path.  This prevents concurrent source()
+        # calls from reading a half-written snapshot when another terminal
+        # command finishes and rewrites the env vars (issue #38249).  `mv` is
+        # atomic on POSIX when src and dest are on the same filesystem, so
+        # source() either sees the old complete snapshot or the new complete
+        # one — never a partial/truncated file.
+        #
+        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
+        # bash PID, but in ``&``-launched subshells (how concurrent terminal
+        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
+        # writers would pick the SAME temp name, clobber each other's temp
+        # mid-write, and mv would then publish a torn file (the corruption is
+        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
+        # and is genuinely unique per writer, which closes the race.  The
+        # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
+        # with ``$BASHPID`` left outside the quotes so it still expands.
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
-            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
+            f"umask 077\n"
+            f"export -p > {_snap_tmp}\n"
+            # Dump function definitions, filtering out private (``_``-prefixed)
+            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
+            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
+            # is line-based: it strips the function *header* line but leaves the
+            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
+            # makes every sourced command fail (e.g. exit 127).  Selecting the
+            # wanted names with ``declare -F`` first, then dumping only those
+            # whole definitions, preserves the filter's intent without ever
+            # tearing a function body.  The non-empty guard matters: bare
+            # ``declare -f`` with no name args dumps ALL functions, so an empty
+            # name list (only private funcs present) would otherwise leak the
+            # very functions we meant to drop.
+            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
+            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
+            f">> {_snap_tmp} 2>/dev/null || true\n"
+            f"alias -p >> {_snap_tmp}\n"
+            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
+            f"echo 'set +e' >> {_snap_tmp}\n"
+            f"echo 'set +u' >> {_snap_tmp}\n"
+            # Publish atomically only if assembly succeeded; otherwise drop the
+            # partial temp rather than leave it to be sourced or orphaned.
+            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            if int(result.get("returncode") or 0) != 0:
+                raise RuntimeError(
+                    f"snapshot bootstrap failed with exit code {result.get('returncode')}"
+                )
             self._snapshot_ready = True
             self._update_cwd(result)
             logger.info(
@@ -425,6 +472,14 @@ class BaseEnvironment(ABC):
         # :meth:`init_session` for the same fix on the bootstrap block.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Use atomic file replacement for env snapshot updates (issue #38249).
+        # Assemble into a per-writer-unique temp file, then mv to atomically
+        # replace the snapshot so concurrent source() calls never read a
+        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
+        # subshell PID — unique per concurrent ``&``-launched writer — so two
+        # writers never share a temp name and clobber each other before the mv.
+        # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
 
         parts = []
 
@@ -448,10 +503,19 @@ class BaseEnvironment(ABC):
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
+        # Restrict Hermes metadata files without changing the user's command
+        # umask. Snapshot files may contain env-carried secrets.
+        parts.append("umask 077")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (atomic replacement to avoid races).
+        # Chain mv on the export succeeding so a failed/partial dump never
+        # replaces a good snapshot; drop the temp on failure so it isn't
+        # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(
+                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
+            )
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
         parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
@@ -524,8 +588,50 @@ class BaseEnvironment(ABC):
         # U+FFFD substitution rather than clobbering the whole buffer.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
+        def _drain_iterable(stream):
+            # Fallback path: ``stream`` is not backed by a real OS file
+            # descriptor (no usable ``fileno()``).  This covers in-memory
+            # ProcessHandle adapters that expose stdout as a plain iterator of
+            # already-collected output (the legacy ``for line in proc.stdout``
+            # contract) rather than a live pipe.  Iterate it to EOF.  Without
+            # this, the drain thread would raise an unhandled exception and die
+            # silently, losing all of the process's output.
+            try:
+                for piece in stream:
+                    if piece is None:
+                        continue
+                    if isinstance(piece, bytes):
+                        output_chunks.append(decoder.decode(piece))
+                    else:
+                        output_chunks.append(str(piece))
+            except Exception:
+                pass
+            finally:
+                try:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        output_chunks.append(tail)
+                except Exception:
+                    pass
+
         def _drain():
-            fd = proc.stdout.fileno()
+            # Resolve a real OS file descriptor up front.  Real subprocesses and
+            # the SDK ``_ThreadedProcessHandle`` (os.pipe-backed) both return an
+            # integer fd here.  Mocks / iterator-style stdout streams either lack
+            # ``fileno()`` entirely or return a non-integer — in that case fall
+            # back to draining the stream as an iterable instead of crashing the
+            # thread (issue: 'list_iterator' object has no attribute 'fileno').
+            stream = proc.stdout
+            if stream is None:
+                return
+            fileno = getattr(stream, "fileno", None)
+            try:
+                fd = fileno() if callable(fileno) else None
+            except Exception:
+                fd = None
+            if not isinstance(fd, int) or fd < 0:
+                _drain_iterable(stream)
+                return
             # select.select does NOT work on pipe fds on Windows (only sockets).
             # Use blocking os.read in a daemon thread instead — safe because
             # EOF arrives promptly when bash exits.
@@ -609,6 +715,7 @@ class BaseEnvironment(ABC):
             )
 
         try:
+            _poll_sleep = 0.005
             while proc.poll() is None:
                 _iter_count += 1
                 if is_interrupted():
@@ -662,7 +769,17 @@ class BaseEnvironment(ABC):
                     _last_heartbeat = time.monotonic()
                     _cb_was_none = _cb_now_none
 
-                time.sleep(0.2)
+                # Adaptive poll: start at 5ms so fast commands (echo, pwd,
+                # date, cat short files) return in ~6ms instead of being
+                # stuck waiting for the next 200ms tick. Back off
+                # exponentially toward 200ms so long-running commands
+                # (builds, tests, sleeps) don't pay measurable CPU in the
+                # poll loop. For an `echo` this saves ~195ms per tool call;
+                # for a 10s build the steady-state poll rate is identical
+                # to the old behavior.
+                time.sleep(_poll_sleep)
+                if _poll_sleep < 0.2:
+                    _poll_sleep = min(_poll_sleep * 1.5, 0.2)
         except (KeyboardInterrupt, SystemExit):
             # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
             # while we were polling.  The local backend spawns subprocesses
@@ -780,18 +897,18 @@ class BaseEnvironment(ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
+        rewrite_compound_background: bool = True,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}."""
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
-        # Guard against the `A && B &` subshell-wait trap: bash forks a
-        # subshell for the compound that then waits for an infinite B (a
-        # server, `yes > /dev/null`, etc.), leaking the subshell forever.
-        # Rewriting to `A && { B & }` runs B as a plain background in the
-        # current shell — no subshell wait.
-        from tools.terminal_tool import _rewrite_compound_background
-        exec_command = _rewrite_compound_background(exec_command)
+        # Guard against the `A && B &` subshell-wait trap by default.
+        # Some callers (spawn_via_env) already produce shell-safe wrappers and
+        # pass rewrite_compound_background=False.
+        if rewrite_compound_background:
+            from tools.terminal_tool import _rewrite_compound_background
+            exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
 
@@ -840,4 +957,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

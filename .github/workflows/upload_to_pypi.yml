@@ -5,11 +5,11 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - 'v20*'  # CalVer tags: v2026.5.15, v2026.5.15.2, etc.
+      - "v20*" # CalVer tags: v2026.5.15, v2026.5.15.2, etc.
   workflow_dispatch:
     inputs:
       confirm_tag:
-        description: 'Tag to publish (e.g. v2026.5.15). Must already exist.'
+        description: "Tag to publish (e.g. v2026.5.15). Must already exist."
         required: true
         type: string
 
@@ -27,7 +27,7 @@ jobs:
     name: Build distribution 📦
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           # On workflow_dispatch, check out the confirmed tag.
@@ -43,17 +43,17 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.13'
+          python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Build web dashboard
         run: cd web && npm ci && npm run build
@@ -81,7 +81,7 @@ jobs:
         run: uv build --sdist --wheel
 
       - name: Upload distribution artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: python-package-distributions
           path: dist/
@@ -94,17 +94,17 @@ jobs:
       name: pypi
       url: https://pypi.org/p/hermes-agent
     permissions:
-      id-token: write  # OIDC trusted publishing
+      id-token: write # OIDC trusted publishing
 
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-package-distributions
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           skip-existing: true
 
@@ -116,12 +116,12 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # attach assets to the existing release
-      id-token: write   # sigstore signing
+      contents: write # attach assets to the existing release
+      id-token: write # sigstore signing
 
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-package-distributions
           path: dist/
@@ -145,7 +145,7 @@ jobs:
 
       - name: Sign with Sigstore
         if: env.skip_sign != 'true'
-        uses: sigstore/gh-action-sigstore-python@f514d46b907ebcd5bedc05145c03b69c1edd8b46  # v3.0.0
+        uses: sigstore/gh-action-sigstore-python@04cffa1d795717b140764e8b640de88853c92acc # v3.3.0
         with:
           inputs: >-
             ./dist/*.tar.gz

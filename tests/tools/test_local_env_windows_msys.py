@@ -18,16 +18,18 @@ and ``os.path.isdir`` so the MSYS path tests as "missing" exactly like
 on the real OS.
 """
 
-import os
 from unittest.mock import patch
 
-import pytest
 
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
+    _make_run_env,
     _msys_to_windows_path,
     _resolve_safe_cwd,
+    _sanitize_subprocess_env,
+    _windows_to_msys_path,
+    hermes_subprocess_env,
 )
 
 
@@ -66,10 +68,48 @@ class TestMsysToWindowsPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("/tmp/foo") == "/tmp/foo"
         assert _msys_to_windows_path("/home/x") == "/home/x"
+        # /mnt/<name>/... only translates when <name> is a single drive letter.
+        assert _msys_to_windows_path("/mnt/home/x") == "/mnt/home/x"
+
+    def test_translates_cygdrive_and_wsl_mnt_forms(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _msys_to_windows_path("/cygdrive/c/Users/NVIDIA") == r"C:\Users\NVIDIA"
+        assert _msys_to_windows_path("/mnt/d/Projects/foo") == r"D:\Projects\foo"
+        assert _msys_to_windows_path("/cygdrive/c") == "C:\\"
+        assert _msys_to_windows_path("/mnt/c/") == "C:\\"
 
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _windows_to_msys_path — reverse translation for bash builtin cd
+# ---------------------------------------------------------------------------
+
+class TestWindowsToMsysPath:
+    def test_noop_on_non_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert _windows_to_msys_path(r"C:\Users\NVIDIA") == r"C:\Users\NVIDIA"
+
+    def test_translates_backslash_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path(r"C:\Users\NVIDIA") == "/c/Users/NVIDIA"
+        assert _windows_to_msys_path(r"D:\Projects\foo bar") == "/d/Projects/foo bar"
+
+    def test_translates_forward_slash_native_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path("C:/Users/NVIDIA") == "/c/Users/NVIDIA"
+
+    def test_translates_drive_root(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path(r"C:\\") == "/c/"
+        assert _windows_to_msys_path("D:/") == "/d/"
+
+    def test_does_not_translate_non_drive_path(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_to_msys_path("/tmp/foo") == "/tmp/foo"
+        assert _windows_to_msys_path(r"\\server\share") == r"\\server\share"
 
 
 # ---------------------------------------------------------------------------
@@ -198,3 +238,91 @@ class TestExtractCwdFromOutputWindowsMsys:
             env._extract_cwd_from_output(result)
 
         assert env.cwd == str(new_dir)
+
+
+# ---------------------------------------------------------------------------
+# MSYS_NO_PATHCONV — native Windows command flags (#56700)
+# ---------------------------------------------------------------------------
+
+class TestWindowsMsysPathconvDefaults:
+    def test_make_run_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({})
+        assert run_env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_sanitize_subprocess_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env = _sanitize_subprocess_env({})
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_hermes_subprocess_env_sets_msys_no_pathconv_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        env = hermes_subprocess_env()
+        assert env.get("MSYS_NO_PATHCONV") == "1"
+
+    def test_no_pathconv_not_set_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert "MSYS_NO_PATHCONV" not in _make_run_env({})
+
+    def test_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({"MSYS_NO_PATHCONV": "0"})
+        assert run_env.get("MSYS_NO_PATHCONV") == "0"
+
+    def test_msys2_arg_conv_excl_set_on_windows(self, monkeypatch):
+        # MSYS2-proper / Cygwin bash ignore MSYS_NO_PATHCONV; they honor
+        # MSYS2_ARG_CONV_EXCL. Both must be set on every env builder.
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _make_run_env({}).get("MSYS2_ARG_CONV_EXCL") == "*"
+        assert _sanitize_subprocess_env({}).get("MSYS2_ARG_CONV_EXCL") == "*"
+        assert hermes_subprocess_env().get("MSYS2_ARG_CONV_EXCL") == "*"
+
+    def test_msys2_arg_conv_excl_not_set_on_posix(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert "MSYS2_ARG_CONV_EXCL" not in _make_run_env({})
+
+    def test_msys2_arg_conv_excl_respects_user_override(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        run_env = _make_run_env({"MSYS2_ARG_CONV_EXCL": "/custom"})
+        assert run_env.get("MSYS2_ARG_CONV_EXCL") == "/custom"
+
+
+# ---------------------------------------------------------------------------
+# Command wrapping — native Windows cwd must be Git Bash-friendly for cd
+# ---------------------------------------------------------------------------
+
+class TestWrapCommandWindowsNativeCwd:
+    def test_wrap_command_converts_native_cwd_for_builtin_cd(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=r"C:\Users\liush", timeout=10)
+
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("pwd", r"C:\Users\liush")
+
+        assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
+        assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped
+
+    def test_init_session_bootstrap_converts_native_cwd_for_cd(self, monkeypatch):
+        """The snapshot bootstrap ``cd`` must also use the Git-Bash path form,
+        not just ``_wrap_command`` — otherwise ``pwd -P`` captures the login
+        shell's directory instead of ``terminal.cwd`` on Windows."""
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        captured = {}
+
+        def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["script"] = cmd_string
+            raise RuntimeError("stop after capturing bootstrap")
+
+        monkeypatch.setattr(LocalEnvironment, "_run_bash", fake_run_bash)
+
+        # init_session swallows the exception and falls back; we only need the
+        # captured bootstrap script to assert the cd target was converted.
+        LocalEnvironment(cwd=r"C:\Users\liush", timeout=10)
+
+        assert "builtin cd -- /c/Users/liush 2>/dev/null || true" in captured["script"]
+        assert r"C:\Users\liush" not in captured["script"]

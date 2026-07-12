@@ -34,12 +34,18 @@ from agent.prompt_builder import (
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    STEER_CHANNEL_NOTE,
+    TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    drain_truncation_warnings,
 )
+from agent.runtime_cwd import resolve_context_cwd
+from utils import is_truthy_value
 
 
 def _ra():
@@ -55,6 +61,85 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> str:
+    """Apply a per-platform prompt-hint override to the default hint.
+
+    Reads ``agent._platform_hint_overrides`` (populated from
+    ``config.yaml`` ``platform_hints`` by ``agent_init``) and resolves the
+    effective hint for *platform_key*:
+
+      * ``replace`` — substitute the default hint entirely.
+      * ``append``  — keep the default and append the extra text.
+      * a bare string value — treated as ``append`` (convenience shorthand).
+
+    Precedence: ``replace`` wins over ``append`` if both are present.
+    Override text is added on top of (not instead of) the SOUL/context/
+    memory tiers — it only affects the platform-hint segment, so other
+    platforms are unaffected and general system instructions still apply.
+
+    Defensive: any malformed entry falls back to the unmodified default so
+    a bad config value can never break prompt assembly or leak across
+    platforms.
+    """
+    if not platform_key:
+        return default_hint
+    overrides = getattr(agent, "_platform_hint_overrides", None)
+    if not isinstance(overrides, dict) or not overrides:
+        return default_hint
+    spec = overrides.get(platform_key)
+    if spec is None:
+        return default_hint
+
+    # Shorthand: a bare string is treated as append text.
+    if isinstance(spec, str):
+        extra = spec.strip()
+        return f"{default_hint}\n\n{extra}".strip() if extra else default_hint
+
+    if not isinstance(spec, dict):
+        return default_hint
+
+    replace_text = spec.get("replace")
+    if isinstance(replace_text, str) and replace_text.strip():
+        base = replace_text.strip()
+    else:
+        base = default_hint
+
+    append_text = spec.get("append")
+    if isinstance(append_text, str) and append_text.strip():
+        return f"{base}\n\n{append_text.strip()}".strip()
+    return base
+
+
+_TUI_EMBEDDED_PANE_CLARIFIER = (
+    " You're in its embedded terminal pane, beside the GUI chat — the user can "
+    "select your output (Option-drag on macOS, Shift-drag elsewhere) and press "
+    "Cmd/Ctrl+L to send it to the chat composer."
+)
+
+
+def _tui_embedded_pane_clarifier(hint: str) -> str:
+    """Append the desktop-embedded-terminal-pane clarifier to a tui hint.
+
+    Triggered by ``HERMES_DESKTOP_TERMINAL=1`` (set by ``main.cjs`` only on the
+    shell env of the desktop's embedded TUI PTY — never on the chat backend).
+    This is a runtime-surface qualifier, not a config override, so it lives at
+    the resolution site rather than inside ``_resolve_platform_hint`` (which
+    is purely the config-platform_hints override applier). Byte-stable for the
+    cache: called once per session build, deterministically from env state.
+
+    Idempotent and empty-safe: re-applying on an already-augmented hint is a
+    no-op, and an empty input returns empty (we never synthesize the
+    clarifier without its tui framing).
+    """
+    if not hint:
+        return hint
+    if _TUI_EMBEDDED_PANE_CLARIFIER in hint:
+        return hint
+    if not is_truthy_value(os.getenv("HERMES_DESKTOP_TERMINAL")):
+        return hint
+    return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -80,6 +165,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # we resolve through ``_ra()`` to honor those patches.
     _r = _ra()
 
+    # Resolve the model's context window once so context-file caps can scale
+    # to it (dynamic cap — see prompt_builder._dynamic_context_file_max_chars).
+    # None falls back to the historical flat default. This value is stable for
+    # the life of the conversation, so it does not threaten prompt caching.
+    _ctx_len: Optional[int] = None
+    _cc = getattr(agent, "context_compressor", None)
+    if _cc is not None:
+        _cc_len = getattr(_cc, "context_length", None)
+        if isinstance(_cc_len, int) and _cc_len > 0:
+            _ctx_len = _cc_len
+
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
@@ -88,7 +184,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
-        _soul_content = _r.load_soul_md()
+        _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
@@ -99,6 +195,26 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    # Universal task-completion / no-fabrication guidance.  Applied to ALL
+    # models regardless of tool_use_enforcement gating — the failure modes
+    # this targets (stopping after a stub; fabricating output when a real
+    # path is blocked) are not model-family specific.  Gated only by
+    # config.yaml ``agent.task_completion_guidance`` (default True) so
+    # users who want a leaner prompt can turn it off.
+    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Universal parallel-tool-call guidance.  Tells the model to batch
+    # independent tool calls into one assistant turn rather than emitting one
+    # call per turn — the runtime already runs independent calls concurrently
+    # (read-only tools always; non-overlapping path-scoped file ops), so the
+    # only thing missing was steering the model to produce the batch.  Cuts
+    # round-trips and the resent-context cost that compounds over a long
+    # conversation.  Gated by config.yaml ``agent.parallel_tool_call_guidance``
+    # (default True) and only injected when tools are actually loaded.
+    if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
@@ -121,11 +237,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 
-    # Computer-use (macOS) — goes in as its own block rather than being
-    # merged into tool_guidance because the content is multi-paragraph.
+    # Steering only lands inside tool results, so it's only reachable when the
+    # agent has tools. Static text → byte-stable prompt (no cache hit).
+    if agent.valid_tool_names:
+        stable_parts.append(STEER_CHANNEL_NOTE)
+
+    # Computer-use — goes in as its own block rather than being merged into
+    # tool_guidance because the content is multi-paragraph. The guidance is
+    # rendered for the host platform so Windows/Linux hosts don't see
+    # macOS-only wording (Mac, Space, cmd+s).
     if "computer_use" in agent.valid_tool_names:
-        from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-        stable_parts.append(COMPUTER_USE_GUIDANCE)
+        from agent.prompt_builder import computer_use_guidance
+        stable_parts.append(computer_use_guidance())
 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
@@ -175,9 +298,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
+        # Focus mode (opt-in) demotes non-coding skill categories to
+        # names-only in the index (never hidden — skill_view/skills_list
+        # reach everything, and every name stays visible for recall). The
+        # default coding posture leaves the index untouched.
+        _compact_cats = frozenset()
+        try:
+            from agent.coding_context import coding_compact_skill_categories
+
+            _compact_cats = coding_compact_skill_categories(
+                platform=agent.platform, cwd=resolve_context_cwd()
+            )
+        except Exception:
+            _compact_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
+            compact_categories=_compact_cats or None,
         )
     else:
         skills_prompt = ""
@@ -205,18 +342,98 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
+    # Coding posture (base Hermes, any interactive coding surface in a code
+    # workspace — see agent/coding_context.py). The operating brief + the live
+    # git/workspace snapshot are built once here and cached for the session;
+    # the snapshot is never re-probed per turn (that would break the prompt
+    # cache), so the brief tells the model to re-check git before relying on it.
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_blocks
+
+            stable_parts.extend(
+                coding_system_blocks(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
+
+    # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
+    # something is non-default so the model can pick the right install
+    # strategy without discovering by failure.  Emits a single line; emits
+    # NOTHING when the environment is clean (no token cost).  Skipped
+    # entirely for remote terminal backends (the host's Python state is
+    # irrelevant when tools run inside docker/modal/ssh).  Gated by
+    # config.yaml ``agent.environment_probe`` (default True).
+    if getattr(agent, "_environment_probe", True):
+        try:
+            from tools.env_probe import get_environment_probe_line
+            _probe_line = get_environment_probe_line()
+            if _probe_line:
+                stable_parts.append(_probe_line)
+        except Exception:
+            # Probe failure must never block prompt build.
+            pass
+
+    # Active-profile hint — names the Hermes profile the agent is running
+    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
+    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
+    # for the lifetime of the agent — profile name doesn't change
+    # mid-session, so this doesn't break the prompt cache.
+    # See file_safety._resolve_active_profile_name + classify_cross_profile_target
+    # for the matching tool-side guard.
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        active_profile = _resolve_active_profile_name()
+    except Exception:
+        active_profile = "default"
+    if active_profile == "default":
+        stable_parts.append(
+            "Active Hermes profile: default. Other profiles (if any) live "
+            "under ~/.hermes/profiles/<name>/. Each profile has its own "
+            "skills/, plugins/, cron/, and memories/ that affect a different "
+            "session than this one. Do not modify another profile's "
+            "skills/plugins/cron/memories unless the user explicitly directs "
+            "you to."
+        )
+    else:
+        stable_parts.append(
+            f"Active Hermes profile: {active_profile}. This session reads "
+            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
+            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
+            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"different session run from a different shell. Do NOT modify "
+            f"another profile's skills/plugins/cron/memories unless the user "
+            f"explicitly directs you to. The cross-profile write guard will "
+            f"refuse such writes by default; pass cross_profile=True only "
+            f"after explicit direction."
+        )
+
     platform_key = (agent.platform or "").lower().strip()
+    # Resolve the built-in/plugin default hint for this platform, then apply
+    # any per-platform override from config (platform_hints.<platform>).
+    _default_hint = ""
     if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
+        _default_hint = PLATFORM_HINTS[platform_key]
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:
             from gateway.platform_registry import platform_registry
             _entry = platform_registry.get(platform_key)
             if _entry and _entry.platform_hint:
-                stable_parts.append(_entry.platform_hint)
+                _default_hint = _entry.platform_hint
         except Exception:
             pass
+
+    _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
+    if platform_key == "tui" and _effective_hint:
+        _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
+    if _effective_hint:
+        stable_parts.append(_effective_hint)
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
@@ -234,13 +451,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
 
     if not agent.skip_context_files:
-        # Use TERMINAL_CWD for context file discovery when set (gateway
-        # mode).  The gateway process runs from the hermes-agent install
-        # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-        # other dev files — inflating token usage by ~10k for no benefit.
-        _context_cwd = os.getenv("TERMINAL_CWD") or None
+        # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
+        # CLI), None lets build_context_files_prompt fall back to the launch
+        # dir — the user's real cwd there, but the install dir for the gateway
+        # daemon, which is why the gateway sets TERMINAL_CWD.
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=_context_cwd, skip_soul=_soul_loaded)
+            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+            context_length=_ctx_len)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
@@ -307,7 +524,14 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+
+    # Surface context-file truncation warnings through the normal agent status
+    # channel so gateway/CLI users see them in chat instead of only in logs.
+    for warning in drain_truncation_warnings():
+        agent._emit_status(warning)
+
+    return joined
 
 
 def invalidate_system_prompt(agent: Any) -> None:

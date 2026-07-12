@@ -171,8 +171,12 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
     with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
         # Start first message (will block at barrier)
         task1 = asyncio.create_task(runner._handle_message(event1))
-        # Yield so task1 enters slow_inner and sentinel is set
-        await asyncio.sleep(0)
+        # Yield until task1 has claimed the sentinel (it crosses a few awaits
+        # before the claim; don't assume a fixed number of scheduler slices).
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                break
 
         # Verify sentinel is set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
@@ -331,6 +335,42 @@ async def test_command_messages_do_not_leave_sentinel():
 
 
 @pytest.mark.asyncio
+async def test_start_command_is_noop_and_does_not_show_help():
+    """Telegram /start is a platform ping; it must not dump /help output."""
+    runner = _make_runner()
+    event = _make_event(text="/start")
+    session_key = build_session_key(event.source)
+
+    runner._handle_help_command = AsyncMock(return_value="Help text")
+
+    result = await runner._handle_message(event)
+
+    assert result == ""
+    runner._handle_help_command.assert_not_awaited()
+    assert session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_start_command_is_noop_during_active_session():
+    """A mid-run /start must not interrupt the active agent or show commands."""
+    runner = _make_runner()
+    event = _make_event(text="/start")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    runner._handle_help_command = AsyncMock(return_value="Help text")
+
+    result = await runner._handle_message(event)
+
+    assert result == ""
+    runner._handle_help_command.assert_not_awaited()
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("command_text", "handler_attr", "handler_result"),
     [
@@ -381,7 +421,10 @@ async def test_stop_during_sentinel_force_cleans_session():
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
         task1 = asyncio.create_task(runner._handle_message(event1))
-        await asyncio.sleep(0)
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                break
 
         # Sentinel should be set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL

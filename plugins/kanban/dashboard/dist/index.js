@@ -24,6 +24,23 @@
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
+  // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
+  // Fall back to a native <input type="checkbox"> shim so older hosts that
+  // predate the design-system rollout still render. The shim normalises
+  // Radix's onCheckedChange(checked) signature to native onChange(event).
+  const Checkbox = SDK.components.Checkbox || function (props) {
+    const { checked, onCheckedChange, className, onClick, ...rest } = props;
+    return h("input", Object.assign({
+      type: "checkbox",
+      checked: !!checked,
+      className: className,
+      onClick: onClick,
+      onChange: function (e) {
+        if (onCheckedChange) onCheckedChange(e.target.checked);
+      },
+    }, rest));
+  };
+
   // useI18n is a hook each component calls locally. Older host dashboards
   // may not expose it yet; fall back to a shim so the bundle still renders
   // English against an older host SDK. English fallback strings live
@@ -317,6 +334,48 @@
     );
     return html;
   }
+  const MARKDOWN_ALLOWED_TAGS = new Set([
+    "a",
+    "code",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "li",
+    "p",
+    "pre",
+    "strong",
+    "ul",
+  ]);
+  function escapeAttribute(value) {
+    return escapeHtml(value).replace(/`/g, "&#96;");
+  }
+  function sanitizeMarkdownAttrs(tag, attrs) {
+    if (tag === "a") {
+      const hrefMatch =
+        /\shref=(["'])(.*?)\1/i.exec(attrs) ||
+        /\shref=([^\s>]+)/i.exec(attrs);
+      const href = hrefMatch ? (hrefMatch[2] || hrefMatch[1] || "").trim() : "";
+      if (!/^(https?:\/\/|mailto:)/i.test(href)) return "";
+      return ` href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer"`;
+    }
+    if (tag === "pre" && /\sclass=(["'])hermes-kanban-md-code\1/i.test(attrs)) {
+      return ' class="hermes-kanban-md-code"';
+    }
+    return "";
+  }
+  function sanitizeMarkdownHtml(html) {
+    return String(html || "").replace(
+      /<\/?([a-zA-Z][A-Za-z0-9-]*)([^>]*)>/g,
+      (match, rawTag, attrs) => {
+        const tag = rawTag.toLowerCase();
+        if (!MARKDOWN_ALLOWED_TAGS.has(tag)) return "";
+        if (/^<\s*\//.test(match)) return `</${tag}>`;
+        return `<${tag}${sanitizeMarkdownAttrs(tag, attrs || "")}>`;
+      },
+    );
+  }
 
   function MarkdownBlock(props) {
     const enabled = props.enabled !== false;
@@ -325,7 +384,7 @@
     }
     return h("div", {
       className: "hermes-kanban-md",
-      dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || "") },
+      dangerouslySetInnerHTML: { __html: sanitizeMarkdownHtml(renderMarkdown(props.source || "")) },
     });
   }
 
@@ -571,52 +630,62 @@
       wsClosedRef.current = false;
       function openWs() {
         if (wsClosedRef.current) return;
-        const token = window.__HERMES_SESSION_TOKEN__ || "";
-        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const qsParams = {
-          since: String(cursorRef.current || 0),
-          token: token,
-        };
+        // Build the WS URL via the host SDK so the correct auth param is used
+        // in BOTH modes: single-use ?ticket= in gated OAuth mode, ?token= in
+        // loopback. Reading window.__HERMES_SESSION_TOKEN__ directly (the old
+        // path) sends an empty token and is rejected in gated mode. buildWsUrl
+        // also applies the dashboard base-path prefix for reverse-proxied
+        // deployments, which the old inline URL did not. It's async (gated
+        // mode mints a fresh ticket per connect), so resolve then open.
+        const wsParams = { since: String(cursorRef.current || 0) };
         // Pin the WS stream to the currently-selected board so events
         // from other boards don't bleed in. Includes "default" so the
         // dashboard's own board pin always wins over the server-side
         // ``current`` file — same rationale as ``withBoard()`` above.
         // Regression: #20879.
-        if (board) qsParams.board = board;
-        const qs = new URLSearchParams(qsParams);
-        const url = `${proto}//${window.location.host}${API}/events?${qs}`;
-        let ws;
-        try { ws = new WebSocket(url); } catch (_e) { return; }
-        wsRef.current = ws;
-        ws.onopen = function () { wsBackoffRef.current = 1000; };
-        ws.onmessage = function (ev) {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
-              cursorRef.current = msg.cursor || cursorRef.current;
-              // Stamp per-task signal so the TaskDrawer can reload itself.
-              setTaskEventTick(function (prev) {
-                const next = Object.assign({}, prev);
-                for (const e of msg.events) {
-                  if (e && e.task_id) next[e.task_id] = (next[e.task_id] || 0) + 1;
-                }
-                return next;
-              });
-              scheduleReload();
-            }
-          } catch (_e) { /* ignore */ }
-        };
-        ws.onclose = function (ev) {
+        if (board) wsParams.board = board;
+        SDK.buildWsUrl(`${API}/events`, wsParams).then(function (url) {
           if (wsClosedRef.current) return;
-          if (ev && ev.code === 1008) {
-            setError(tx(t, "wsAuthFailed",
-              "WebSocket auth failed — reload the page to refresh the session token."));
-            return;
-          }
+          let ws;
+          try { ws = new WebSocket(url); } catch (_e) { return; }
+          wsRef.current = ws;
+          ws.onopen = function () { wsBackoffRef.current = 1000; };
+          ws.onmessage = function (ev) {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
+                cursorRef.current = msg.cursor || cursorRef.current;
+                // Stamp per-task signal so the TaskDrawer can reload itself.
+                setTaskEventTick(function (prev) {
+                  const next = Object.assign({}, prev);
+                  for (const e of msg.events) {
+                    if (e && e.task_id) next[e.task_id] = (next[e.task_id] || 0) + 1;
+                  }
+                  return next;
+                });
+                scheduleReload();
+              }
+            } catch (_e) { /* ignore */ }
+          };
+          ws.onclose = function (ev) {
+            if (wsClosedRef.current) return;
+            if (ev && ev.code === 1008) {
+              setError(tx(t, "wsAuthFailed",
+                "WebSocket auth failed — reload the page to refresh the session token."));
+              return;
+            }
+            const delay = Math.min(wsBackoffRef.current, 30000);
+            wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
+            setTimeout(openWs, delay);
+          };
+        }).catch(function () {
+          // Ticket mint / URL build failed (e.g. session expired). Back off
+          // and retry; a hard auth failure surfaces via the 1008 close path.
+          if (wsClosedRef.current) return;
           const delay = Math.min(wsBackoffRef.current, 30000);
           wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
           setTimeout(openWs, delay);
-        };
+        });
       }
       openWs();
       return function () {
@@ -1003,6 +1072,7 @@
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
+          boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
           failedIds,
@@ -1627,6 +1697,8 @@
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
               "Resolved: " + (settings.resolved_orchestrator_profile || "default")),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              "Owns the root task after fan-out (wakes back up to judge completion). Does not drive how tasks split — configure the decomposer model under auxiliary.kanban_decomposer."),
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
@@ -1648,11 +1720,10 @@
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestration mode"),
             h("label", { className: "flex items-center gap-2 text-xs h-8" },
-              h("input", {
-                type: "checkbox",
+              h(Checkbox, {
                 checked: !!settings.auto_decompose,
-                onChange: function (e) {
-                  saveSettings({ auto_decompose: !!e.target.checked });
+                onCheckedChange: function (checked) {
+                  saveSettings({ auto_decompose: checked === true });
                 },
               }),
               "Auto-decompose triage tasks",
@@ -1669,7 +1740,7 @@
           h(Label, { className: "text-xs text-muted-foreground" },
             "Profile descriptions"),
           h("div", { className: "text-[10px] text-muted-foreground pb-2" },
-            "Descriptions guide the orchestrator's routing. Click ⚗ to auto-generate, or edit and save."),
+            "Descriptions guide the decomposer's routing. Click ⚗ to auto-generate, or edit and save."),
           profiles.length === 0
             ? h("div", { className: "text-xs text-muted-foreground" }, "No profiles installed.")
             : h("div", { className: "flex flex-col gap-2" },
@@ -1908,10 +1979,9 @@
             }),
           ),
           h("label", { className: "flex items-center gap-2 text-xs" },
-            h("input", {
-              type: "checkbox",
+            h(Checkbox, {
               checked: switchTo,
-              onChange: function (e) { setSwitchTo(e.target.checked); },
+              onCheckedChange: function (checked) { setSwitchTo(checked === true); },
             }),
             tx(t, "switchAfterCreate", "Switch to this board after creating it"),
           ),
@@ -1981,19 +2051,17 @@
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: props.includeArchived,
-          onChange: function (e) { props.setIncludeArchived(e.target.checked); },
+          onCheckedChange: function (checked) { props.setIncludeArchived(checked === true); },
         }),
         tx(t, "showArchived", "Show archived"),
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Group the Running column by assigned profile" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: props.laneByProfile,
-          onChange: function (e) { props.setLaneByProfile(e.target.checked); },
+          onCheckedChange: function (checked) { props.setLaneByProfile(checked === true); },
         }),
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
@@ -2122,10 +2190,9 @@
         }, tx(t, "apply", "Apply")),
       ),
       h("label", { className: "hermes-kanban-bulk-reclaim-first", title: "Reclaim any active claims before reassigning" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: reclaimFirst,
-          onChange: function (e) { setReclaimFirst(e.target.checked); },
+          onCheckedChange: function (checked) { setReclaimFirst(checked === true); },
         }),
         "Reclaim first",
       ),
@@ -2207,6 +2274,93 @@
   // -------------------------------------------------------------------------
 
   function BoardColumns(props) {
+    const columnsRef = useRef(null);
+    const panRef = useRef({ isPanning: false, startX: 0, scrollLeft: 0 });
+    const [isPanning, setIsPanning] = useState(false);
+    const [isScrollable, setIsScrollable] = useState(false);
+
+    const checkScrollable = useCallback(function () {
+      const el = columnsRef.current;
+      setIsScrollable(!!el && el.scrollWidth > el.clientWidth + 1);
+    }, []);
+
+    useEffect(function () {
+      checkScrollable();
+      const el = columnsRef.current;
+      if (!el) return undefined;
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(checkScrollable);
+        observer.observe(el);
+        return function () { observer.disconnect(); };
+      }
+      window.addEventListener("resize", checkScrollable);
+      return function () { window.removeEventListener("resize", checkScrollable); };
+    }, [checkScrollable, props.board]);
+
+    const isPanBlockedTarget = useCallback(function (target) {
+      if (!target) return true;
+      if (target.closest && target.closest(".hermes-kanban-card")) return true;
+      if (target.closest && target.closest(".hermes-kanban-column-add")) return true;
+      if (target.closest && target.closest(".hermes-kanban-col-check")) return true;
+      if (target.closest && target.closest("button,input,textarea,select,a,[role='button']")) return true;
+      return false;
+    }, []);
+
+    const stopPan = useCallback(function () {
+      const el = columnsRef.current;
+      if (!panRef.current.isPanning) return;
+      panRef.current.isPanning = false;
+      setIsPanning(false);
+      if (el) {
+        // Keep cursor feedback instant even before React flushes the state update.
+        el.classList.remove("hermes-kanban-columns--panning");
+        el.style.userSelect = "";
+      }
+      if (panRef.current.cleanup) panRef.current.cleanup();
+      panRef.current.cleanup = null;
+    }, []);
+
+    useEffect(function () {
+      return function () { stopPan(); };
+    }, [stopPan]);
+
+    const handleMouseDown = useCallback(function (e) {
+      if (e.button !== 0) return;
+      if (isPanBlockedTarget(e.target)) return;
+      const el = columnsRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      // Preserve the native horizontal scrollbar as a fallback; grab-pan starts above it.
+      if (e.clientY >= rect.bottom - 20) return;
+      if (el.scrollWidth <= el.clientWidth) return;
+
+      panRef.current.isPanning = true;
+      panRef.current.startX = e.clientX;
+      panRef.current.scrollLeft = el.scrollLeft;
+      setIsPanning(true);
+      el.classList.add("hermes-kanban-columns--panning");
+      el.style.userSelect = "none";
+
+      function onMouseMove(ev) {
+        if (!panRef.current.isPanning) return;
+        const dx = ev.clientX - panRef.current.startX;
+        el.scrollLeft = panRef.current.scrollLeft - dx;
+        ev.preventDefault();
+      }
+      function onMouseUp() { stopPan(); }
+
+      if (panRef.current.cleanup) panRef.current.cleanup();
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp, { once: true });
+      window.addEventListener("blur", onMouseUp, { once: true });
+      panRef.current.cleanup = function () {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        window.removeEventListener("blur", onMouseUp);
+      };
+      e.preventDefault();
+    }, [isPanBlockedTarget, stopPan]);
+
     const handleDragStart = useCallback(function (e) {
       const card = e.target.closest && e.target.closest(".hermes-kanban-card");
       if (!card) return;
@@ -2216,11 +2370,22 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
-    return h("div", { className: "hermes-kanban-columns", onDragStart: handleDragStart, onDragEnd: handleDragEnd },
+    return h("div", {
+      ref: columnsRef,
+      className: cn(
+        "hermes-kanban-columns",
+        isScrollable ? "hermes-kanban-columns--scrollable" : "",
+        isPanning ? "hermes-kanban-columns--panning" : "",
+      ),
+      onDragStart: handleDragStart,
+      onDragEnd: handleDragEnd,
+      onMouseDown: handleMouseDown,
+    },
       props.board.columns.map(function (col) {
         return h(Column, {
           key: col.name,
           column: col,
+          boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
@@ -2313,14 +2478,12 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
           checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
-          onChange: function (e) {
-            e.stopPropagation();
+          onCheckedChange: function () {
             if (props.selectAllInColumn) props.selectAllInColumn(props.column.name);
           },
           onClick: function (e) { e.stopPropagation(); },
@@ -2343,6 +2506,8 @@
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
+        defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
+        defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
         },
@@ -2461,8 +2626,7 @@
         if (props.toggleSelected) props.toggleSelected(t.id, false);
       }
     };
-    const handleCheckbox = function (e) {
-      e.stopPropagation();
+    const handleCheckedChange = function () {
       props.toggleSelected(t.id, true);
     };
 
@@ -2495,11 +2659,10 @@
               title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
             },
-              h("input", {
-                type: "checkbox",
+              h(Checkbox, {
                 className: "hermes-kanban-card-check",
                 checked: props.selected,
-                onChange: handleCheckbox,
+                onCheckedChange: handleCheckedChange,
                 onClick: function (e) { e.stopPropagation(); },
                 "aria-label": `Select task ${t.id}`,
               }),
@@ -2586,12 +2749,20 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
-    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
-    // takes a path (dispatcher derives one from the assignee profile otherwise);
-    // `dir` requires a path. Backend enforces the rule — we only hide/show the
-    // input here to save vertical space in the common `scratch` case.
-    const [workspaceKind, setWorkspaceKind] = useState("scratch");
-    const [workspacePath, setWorkspacePath] = useState("");
+    // A board with a configured workdir defaults to a persistent workspace:
+    // worktree for git repositories, dir for ordinary directories. Boards
+    // without one keep scratch for disposable research and ops tasks.
+    const defaultWorkspaceKind = props.defaultWorkspaceKind || "scratch";
+    const defaultWorkspacePath = props.defaultWorkspacePath || "";
+    const [workspaceKind, setWorkspaceKind] = useState(defaultWorkspaceKind);
+    const [workspacePath, setWorkspacePath] = useState(defaultWorkspacePath);
+    // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
+    // loop — a judge re-checks the card after each turn and the worker keeps
+    // going in the same session until done, or the turn budget runs out
+    // (which blocks the card for review). goalMaxTurns is optional; blank
+    // = backend default.
+    const [goalMode, setGoalMode] = useState(false);
+    const [goalMaxTurns, setGoalMaxTurns] = useState("");
 
     const submit = function () {
       const trimmed = title.trim();
@@ -2618,16 +2789,24 @@
       }
       const wpTrim = workspacePath.trim();
       if (wpTrim) body.workspace_path = wpTrim;
+      // Goal-mode toggle. Only send the keys when enabled so the request
+      // shape stays small and old dispatchers ignore it cleanly.
+      if (goalMode) {
+        body.goal_mode = true;
+        const gmt = parseInt(goalMaxTurns, 10);
+        if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
+      }
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind("scratch"); setWorkspacePath("");
+      setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
+      setGoalMode(false); setGoalMaxTurns("");
     };
 
     const showPathInput = workspaceKind !== "scratch";
     const pathPlaceholder = workspaceKind === "dir"
-      ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
+      ? tx(t, "workspacePathDir", "workspace path (required without a board workdir)")
       : tx(t, "workspacePathOptional",
-          "workspace path (optional, derived from assignee if blank)");
+          "repository path (optional when the board has a workdir)");
 
     return h("div", { className: "hermes-kanban-inline-create" },
       h("textarea", {
@@ -2677,15 +2856,41 @@
         title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
         className: "h-7 text-xs",
       }),
+      h("div", { className: "flex gap-2 items-center" },
+        h("label", {
+          className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
+          title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
+        },
+          h("input", {
+            type: "checkbox",
+            checked: goalMode,
+            onChange: function (e) { setGoalMode(!!e.target.checked); },
+            className: "h-3.5 w-3.5 accent-current",
+          }),
+          tx(t, "goalMode", "goal mode"),
+        ),
+        goalMode ? h(Input, {
+          type: "number",
+          value: goalMaxTurns,
+          onChange: function (e) { setGoalMaxTurns(e.target.value); },
+          placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
+          className: "h-7 text-xs w-40",
+          title: "Turn budget for the goal loop. Blank = backend default (20).",
+          min: 1,
+        }) : null,
+      ),
       h("div", { className: "flex gap-2" },
         h(Select, Object.assign({
           value: workspaceKind,
-          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
-          className: "h-7 text-xs w-28",
+          title: "Choose whether task files are temporary or preserved after completion.",
+          className: "h-7 text-xs flex-1",
         }, selectChangeHandler(setWorkspaceKind)),
-          h(SelectOption, { value: "scratch" }, "scratch"),
-          h(SelectOption, { value: "worktree" }, "worktree"),
-          h(SelectOption, { value: "dir" }, "dir"),
+          h(SelectOption, { value: "scratch" },
+            tx(t, "workspaceScratch", "Temporary — deleted on completion")),
+          h(SelectOption, { value: "worktree" },
+            tx(t, "workspaceWorktree", "Git worktree — preserved")),
+          h(SelectOption, { value: "dir" },
+            tx(t, "workspaceDir", "Directory — preserved")),
         ),
         showPathInput ? h(Input, {
           value: workspacePath,
@@ -2694,6 +2899,11 @@
           className: "h-7 text-xs flex-1",
         }) : null,
       ),
+      workspaceKind === "scratch" ? h("div", {
+        className: "text-xs text-destructive",
+        role: "alert",
+      }, tx(t, "workspaceScratchWarning",
+        "This workspace and any files left in it are deleted when the task completes.")) : null,
       h(Select, Object.assign({
         value: parent,
         className: "h-7 text-xs",
@@ -2733,6 +2943,8 @@
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
+    const [uploadBusy, setUploadBusy] = useState(false);
+    const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
@@ -2779,6 +2991,51 @@
         load();
         props.onRefresh();
       }).catch(function (e) { setErr(String(e.message || e)); });
+    };
+
+    // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
+    // so the browser sets the multipart boundary. Auth rides the session
+    // cookie + bearer token, matching the rest of the dashboard.
+    const handleUpload = function (fileList) {
+      const files = Array.prototype.slice.call(fileList || []);
+      if (!files.length) return;
+      setUploadBusy(true);
+      setUploadErr(null);
+      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
+      // Upload sequentially so a partial failure leaves a clear state.
+      let chain = Promise.resolve();
+      files.forEach(function (f) {
+        chain = chain.then(function () {
+          const fd = new FormData();
+          fd.append("file", f, f.name);
+          // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+          // gated cookie) and applies the dashboard base-path prefix. The old
+          // hand-rolled Authorization:Bearer + credentials:'same-origin' sent
+          // an empty token and 401'd in gated mode.
+          return SDK.authedFetch(url, { method: "POST", body: fd })
+            .then(function (resp) {
+              if (!resp.ok) {
+                return resp.text().then(function (txt) {
+                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+                });
+              }
+            });
+        });
+      });
+      chain.then(function () {
+        load();
+        props.onRefresh();
+      }).catch(function (e) {
+        setUploadErr(String(e.message || e));
+      }).finally(function () {
+        setUploadBusy(false);
+      });
+    };
+
+    const handleDeleteAttachment = function (attachmentId) {
+      return SDK.fetchJSON(withBoard(`${API}/attachments/${attachmentId}`, boardSlug), { method: "DELETE" })
+        .then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
 
     const doPatch = function (patch, opts) {
@@ -2938,6 +3195,10 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onUpload: handleUpload,
+          onDeleteAttachment: handleDeleteAttachment,
+          uploadBusy: uploadBusy,
+          uploadErr: uploadErr,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -2960,11 +3221,119 @@
     );
   }
 
+  function _fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  // Attachments section in the task drawer (#35338). Upload button +
+  // list with download links and a delete (×) per row. The download
+  // link hits GET /attachments/:id which streams the file; the worker
+  // context surfaces the same files' absolute paths so a kanban worker
+  // can read them with the file/terminal tools.
+  function AttachmentsSection(props) {
+    const i18n = props.i18n;
+    const atts = props.attachments || [];
+    const fileRef = useRef(null);
+    const [dlErr, setDlErr] = useState(null);
+    // Download via authenticated fetch → blob → synthetic anchor click.
+    // A plain <a href> can't carry the auth the dashboard middleware requires,
+    // so fetch authenticated and hand the browser a blob URL instead.
+    function downloadAttachment(a) {
+      // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+      // gated cookie) and applies the dashboard base-path prefix. The old
+      // hand-rolled Authorization:Bearer + credentials:'same-origin' sent an
+      // empty token and 401'd in gated mode.
+      const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
+      setDlErr(null);
+      SDK.authedFetch(url)
+        .then(function (resp) {
+          if (!resp.ok) {
+            return resp.text().then(function (txt) {
+              throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+            });
+          }
+          return resp.blob();
+        })
+        .then(function (blob) {
+          const objUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = objUrl;
+          link.download = a.filename || "attachment";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(function () { URL.revokeObjectURL(objUrl); }, 10000);
+        })
+        .catch(function (e) { setDlErr(String(e.message || e)); });
+    }
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        `${tx(i18n, "attachments", "Attachments")} (${atts.length})`),
+      h("input", {
+        ref: fileRef,
+        type: "file",
+        multiple: true,
+        style: { display: "none" },
+        onChange: function (e) {
+          if (props.onUpload) props.onUpload(e.target.files);
+          // Reset so selecting the same file again re-triggers onChange.
+          try { e.target.value = ""; } catch (_e) { /* ignore */ }
+        },
+      }),
+      h("div", { className: "flex items-center gap-2 mb-2" },
+        h(Button, {
+          size: "sm",
+          variant: "outline",
+          disabled: !!props.uploadBusy,
+          onClick: function () { if (fileRef.current) fileRef.current.click(); },
+        }, props.uploadBusy
+            ? tx(i18n, "uploading", "Uploading…")
+            : tx(i18n, "uploadFile", "Upload file")),
+      ),
+      (props.uploadErr || dlErr)
+        ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
+        : null,
+      atts.length === 0
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(i18n, "noAttachments", "— no attachments —"))
+        : atts.map(function (a) {
+            return h("div", {
+              key: a.id,
+              className: "flex items-center justify-between gap-2 py-1 text-sm",
+            },
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-attachment-link truncate",
+                title: a.filename,
+                onClick: function () { downloadAttachment(a); },
+              }, a.filename),
+              h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" },
+                _fmtBytes(a.size)),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-drawer-close",
+                title: tx(i18n, "removeAttachment", "Remove attachment"),
+                onClick: function () {
+                  if (window.confirm(tx(i18n, "confirmRemoveAttachment",
+                      "Remove this attachment?"))) {
+                    if (props.onDelete) props.onDelete(a.id);
+                  }
+                },
+              }, "×"),
+            );
+          }),
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
     const comments = props.data.comments || [];
     const events = props.data.events || [];
+    const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
@@ -2996,6 +3365,12 @@
         (t.skills && t.skills.length > 0) ? h(MetaRow, {
           label: tx(i18n, "skills", "Skills"),
           value: t.skills.join(", "),
+        }) : null,
+        t.goal_mode ? h(MetaRow, {
+          label: tx(i18n, "goalMode", "Goal mode"),
+          value: t.goal_max_turns
+            ? `on (max ${t.goal_max_turns} turns)`
+            : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
@@ -3034,6 +3409,15 @@
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
         h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
       ) : null,
+      h(AttachmentsSection, {
+        attachments: attachments,
+        boardSlug: props.boardSlug,
+        onUpload: props.onUpload,
+        onDelete: props.onDeleteAttachment,
+        uploadBusy: props.uploadBusy,
+        uploadErr: props.uploadErr,
+        i18n: i18n,
+      }),
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" },
           `${tx(i18n, "comments", "Comments")} (${comments.length})`),
@@ -3514,9 +3898,9 @@
         }, specifyBusy ? "Specifying…" : "✨ Specify")
       : null;
 
-    // "Decompose" is the orchestrator-driven fan-out. Like Specify, only
+    // "Decompose" is the built-in decomposer fan-out. Like Specify, only
     // makes sense on triage-column tasks — elsewhere the backend short-
-    // circuits with ok:false. When the orchestrator returns fanout:false
+    // circuits with ok:false. When the decomposer returns fanout:false
     // we render the same single-task message as Specify; when it fans
     // out we report the child count for quick at-a-glance verification.
     const decomposeButton = (task.status === "triage" && props.onDecompose)

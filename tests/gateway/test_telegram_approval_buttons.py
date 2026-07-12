@@ -1,6 +1,5 @@
 """Tests for Telegram inline keyboard approval buttons."""
 
-import asyncio
 import os
 import sys
 from pathlib import Path
@@ -47,7 +46,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
 
 
@@ -493,7 +492,11 @@ class TestTelegramApprovalCallback:
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
             with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
-                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
+                # Allow the caller — the new fail-closed allowlist gate
+                # (#24457) rejects empty TELEGRAM_ALLOWED_USERS, but this
+                # test isn't exercising that gate; it's verifying the
+                # update_prompt callback still writes the response.
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}):
                     await adapter._handle_callback_query(update, context)
 
         # Should NOT have triggered approval resolution

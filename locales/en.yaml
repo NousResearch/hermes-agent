@@ -103,6 +103,7 @@ gateway:
     not_enough:            "Not enough conversation to compress (need at least 4 messages)."
     no_provider:           "No provider configured -- cannot compress."
     nothing_to_do:         "Nothing to compress yet (the transcript is still all protected context)."
+    aggressive_unsupported: "--aggressive is not supported; use '/compress here [N]' to keep only recent exchanges, or /undo to drop turns."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration."
     aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
@@ -121,6 +122,8 @@ gateway:
     no_pending:            "No pending command to deny."
     denied_singular:       "❌ Command denied."
     denied_plural:         "❌ Commands denied ({count} commands)."
+    denied_reason_singular: "❌ Command denied. Reason relayed to the agent: \"{reason}\""
+    denied_reason_plural:  "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
@@ -164,6 +167,15 @@ gateway:
     subscribed_suffix:     "(subscribed — you'll be notified when {task_id} completes or blocks)"
     truncated_suffix:      "… (truncated; use `hermes kanban …` in your terminal for full output)"
     no_output:             "(no output)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "No personalities configured in `{path}/config.yaml`"
@@ -234,12 +246,21 @@ gateway:
 
   resume:
     db_unavailable:        "Session database not available."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.\nUse quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.\nUse `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.\nFuture messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "No named sessions found.\nUse `/title My Session` to name your current session, then `/resume My Session` to return to it later."
     list_header:           "📋 **Named Sessions**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nUsage: `/resume <session name>`"
+    list_footer_numbered:  "\nUsage: `/resume <session name>` or `/resume <number>` (e.g. `/resume 1` for the most recent)"
     list_failed:           "Could not list sessions: {error}"
+    out_of_range:          "Resume index {index} is out of range.\nUse `/resume` with no arguments to see available sessions."
     not_found:             "No session found matching '**{name}**'.\nUse `/resume` with no arguments to see available sessions."
     already_on:            "📌 Already on session **{name}**."
     switch_failed:         "Failed to switch session."
@@ -263,11 +284,21 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway Status**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Session ID:** `{session_id}`"
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
+    tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"
     state_no:              "No"
@@ -302,7 +333,8 @@ gateway:
 
   undo:
     nothing:               "Nothing to undo."
-    removed:               "↩️ Undid {count} message(s).\nRemoved: \"{preview}\""
+    removed:               "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
 
   update:
     platform_not_messaging:  "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
@@ -325,11 +357,24 @@ gateway:
     label_cost_included:      "Cost: included"
     label_context:            "Context: {used} / {total} ({pct}%)"
     label_compressions:       "Compressions: {count}"
+    breakdown_header:         "🧩 **Context breakdown** _(estimated)_"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt:        "System prompt"
+    breakdown_cat_tool_definitions:     "Tool definitions"
+    breakdown_cat_rules:                "Rules"
+    breakdown_cat_skills:               "Skills"
+    breakdown_cat_mcp:                  "MCP"
+    breakdown_cat_subagent_definitions: "Subagent definitions"
+    breakdown_cat_memory:               "Memory"
+    breakdown_cat_conversation:         "Conversation"
     header_session_info:      "📊 **Session Info**"
     label_messages:           "Messages: {count}"
     label_estimated_context:  "Estimated context: ~{count} tokens"
     detailed_after_first:     "_(Detailed usage available after the first agent response)_"
     no_data:                  "No usage data available for this session."
+
+  credits:
+    not_logged_in:            "Not logged into Nous Portal. Log in to see your credit balance and top up."
 
   verbose:
     not_enabled:           "The `/verbose` command is not enabled for messaging platforms.\n\nEnable it in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -337,6 +382,7 @@ gateway:
     mode_new:              "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40)."
     mode_all:              "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40)."
     mode_verbose:          "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments."
+    mode_log:              "⚙️ Tool progress: **LOG** — silent in chat; tool calls written to ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(saved for **{platform}** — takes effect on next message)_"
     save_failed:           "_(could not save to config: {error})_"
 
@@ -354,6 +400,8 @@ gateway:
     label_off:             "Off (text only)"
     label_voice_only:      "On (voice reply to voice messages)"
     label_all:             "TTS (voice reply to all messages)"
+    help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
+    help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
   yolo:
     disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."

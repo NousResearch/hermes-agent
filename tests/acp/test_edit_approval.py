@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 from acp_adapter.edit_approval import (
@@ -154,6 +155,68 @@ def test_patch_replace_rejection_does_not_mutate(tmp_path):
     assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
 
+def test_patch_v4a_rejection_does_not_mutate(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    set_edit_approval_requester(lambda _proposal: False)
+
+    result = json.loads(
+        handle_function_call(
+            "patch",
+            {
+                "mode": "patch",
+                "patch": (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {target}\n"
+                    "@@\n"
+                    " alpha\n"
+                    "-beta\n"
+                    "+gamma\n"
+                    "*** End Patch\n"
+                ),
+            },
+            task_id="acp-patch-v4a-reject",
+        )
+    )
+
+    assert "error" in result
+    assert "Edit approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
+def test_patch_v4a_approval_request_includes_patch_targets(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    proposals = []
+
+    set_edit_approval_requester(lambda proposal: proposals.append(proposal) or False)
+
+    json.loads(
+        handle_function_call(
+            "patch",
+            {
+                "mode": "patch",
+                "patch": (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {target}\n"
+                    "@@\n"
+                    " alpha\n"
+                    "-beta\n"
+                    "+gamma\n"
+                    "*** End Patch\n"
+                ),
+            },
+            task_id="acp-patch-v4a-proposal",
+        )
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].tool_name == "patch"
+    assert proposals[0].path == str(target)
+    assert str(target) in proposals[0].new_text
+
+
 def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -183,7 +246,10 @@ def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
 
 def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_path):
     workspace_file = tmp_path / "src.py"
-    tmp_file = Path("/tmp/hermes-acp-auto-approve-test.txt")
+    # Use tempfile.gettempdir() so this test exercises the same code path on
+    # Linux (`/tmp`), macOS (`/private/var/folders/...`) and Windows
+    # (`%LOCALAPPDATA%\Temp`). Before the fix this branch only worked on Linux.
+    tmp_file = Path(tempfile.gettempdir()) / "hermes-acp-auto-approve-test.txt"
     env_file = tmp_path / ".env"
 
     assert should_auto_approve_edit(

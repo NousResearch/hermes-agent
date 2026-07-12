@@ -671,8 +671,21 @@ class SimplexAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
-        return f"{event.source.platform.value}:{event.source.chat_id}"
+        """Session-scoped, per-sender key for text message batching.
+
+        Batching coalesces one participant's client-side message splits, so the
+        key must isolate senders. In a SimpleX *group* ``chat_id`` is the group
+        id while ``source.user_id`` is the member id (set from ``sender_id``
+        when the source is built) — without a sender component two members
+        posting inside the batch window would share a key and
+        ``_enqueue_text_event`` would concatenate their text into a single event
+        under the first sender's identity, dropping the second's authorship (and
+        letting their text ride the first sender through downstream
+        authorization). In a direct chat ``chat_id == sender_id``, so the extra
+        component is a no-op and a single sender's split chunks still batch.
+        """
+        sender = event.source.user_id or ""
+        return f"{event.source.platform.value}:{event.source.chat_id}:{sender}"
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer."""

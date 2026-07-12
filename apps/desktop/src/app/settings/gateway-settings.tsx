@@ -10,7 +10,6 @@ import { ExternalLink } from '@/lib/external-link'
 import { AlertCircle, Check, Cloud, FileText, Globe, HelpCircle, Loader2, LogIn, Monitor, RefreshCw } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { previewGatewaySwitch } from '@/store/gateway-switch'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
@@ -117,7 +116,6 @@ export function GatewaySettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [previewingSwitch, setPreviewingSwitch] = useState(false)
   const [signingIn, setSigningIn] = useState(false)
   const [state, setState] = useState<GatewaySettingsState>(EMPTY_STATE)
   const [remoteToken, setRemoteToken] = useState('')
@@ -1065,26 +1063,6 @@ export function GatewaySettings() {
           description={g.diagnosticsDesc}
           title={g.diagnostics}
         />
-        {import.meta.env.DEV ? (
-          <ListRow
-            action={
-              <Button
-                disabled={previewingSwitch}
-                onClick={() => {
-                  setPreviewingSwitch(true)
-                  void previewGatewaySwitch().finally(() => setPreviewingSwitch(false))
-                }}
-                size="sm"
-                variant="textStrong"
-              >
-                {previewingSwitch ? <Loader2 className="animate-spin" /> : null}
-                Preview soft switch
-              </Button>
-            }
-            description="Wipe session lists so sidebar skeletons retrigger — no real backend teardown."
-            title="Dev · soft switch"
-          />
-        ) : null}
       </div>
     </SettingsContent>
   )

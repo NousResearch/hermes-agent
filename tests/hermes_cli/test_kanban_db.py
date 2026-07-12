@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -4106,6 +4107,296 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+# Stale reclaim limit — trailing-consecutive stale streak → blocked
+# ---------------------------------------------------------------------------
+
+def _claim_and_wedge(conn, task_id, started_at):
+    """Claim ``task_id`` and rewind its active run so it looks wedged.
+
+    Rewinds both ``tasks.started_at`` and the active run's ``started_at``
+    to ``started_at`` and leaves ``last_heartbeat_at`` NULL, so the next
+    ``detect_stale_running`` pass reclaims it. Successive cycles must pass
+    strictly increasing ``started_at`` values (all older than the stale
+    timeout) so run ordering matches the logical order of the cycles.
+    """
+    assert kb.claim_task(conn, task_id) is not None
+    kb._set_worker_pid(conn, task_id, os.getpid())
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, last_heartbeat_at = NULL "
+            "WHERE id = ?",
+            (started_at, task_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? "
+            "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (started_at, task_id),
+        )
+
+
+def _run_stale_detection(conn):
+    return kb.detect_stale_running(
+        conn, stale_timeout_seconds=14400, signal_fn=lambda p, s: None,
+    )
+
+
+def _complete_and_requeue(conn, task_id, started_at):
+    """Give ``task_id`` a non-stale ``completed`` run, back to ``ready``.
+
+    Claims, rewinds the new run's ``started_at`` so ordering matches the
+    test's cycle sequence, and completes. ``complete_task`` parks the task
+    at ``done``; reset to ``ready`` so the next cycle can claim it again
+    (multiple completed runs on one task are normal for multi-step tasks).
+    """
+    assert kb.claim_task(conn, task_id) is not None
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? "
+            "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (started_at, task_id),
+        )
+    assert kb.complete_task(conn, task_id, result="progress")
+    with kb.write_txn(conn):
+        _set_task_status(conn, task_id, "ready")
+
+
+def _task_row(conn, task_id):
+    return conn.execute(
+        "SELECT status, claim_lock, claim_expires, worker_pid, "
+        "       last_heartbeat_at, consecutive_failures, last_failure_error "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+
+
+def _events_of_kind(conn, task_id, kind):
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY id",
+        (task_id, kind),
+    ).fetchall()
+    return [json.loads(r["payload"]) if r["payload"] else {} for r in rows]
+
+
+def test_stale_reclaim_limit_blocks_after_three_consecutive(
+    kanban_home, monkeypatch,
+):
+    """Three trailing-consecutive stale reclaims park the task at blocked.
+
+    Reclaims 1 and 2 requeue to ready as today; reclaim 3 flips to
+    blocked with a machine-greppable ``stale_reclaim_limit:`` reason and
+    a distinct ``stale_reclaim_limit`` event — WITHOUT ever ticking the
+    ``consecutive_failures`` circuit breaker.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="wedged-forever", assignee="worker")
+
+        for cycle in (1, 2):
+            _claim_and_wedge(conn, t, now - (40 - cycle * 5) * 3600)
+            stale = _run_stale_detection(conn)
+            assert t in stale
+            row = _task_row(conn, t)
+            assert row["status"] == "ready", f"cycle {cycle} must requeue"
+            assert row["last_failure_error"] is None
+            assert row["consecutive_failures"] in (0, None)
+            payloads = _events_of_kind(conn, t, "stale")
+            assert payloads[-1]["trailing_stale_runs"] == cycle
+            assert _events_of_kind(conn, t, "stale_reclaim_limit") == []
+
+        # Third consecutive reclaim trips the limit.
+        _claim_and_wedge(conn, t, now - 25 * 3600)
+        stale = _run_stale_detection(conn)
+        assert t in stale, "run is still reclaimed (closed as stale)"
+
+        row = _task_row(conn, t)
+        assert row["status"] == "blocked"
+        assert row["last_failure_error"].startswith("stale_reclaim_limit:")
+        assert row["consecutive_failures"] in (0, None), (
+            "breaker counter must stay untouched"
+        )
+        assert row["claim_lock"] is None
+        assert row["claim_expires"] is None
+        assert row["worker_pid"] is None
+
+        # The run itself is still closed as stale (audit surface kept).
+        run = conn.execute(
+            "SELECT outcome, ended_at FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (t,),
+        ).fetchone()
+        assert run["outcome"] == "stale"
+        assert run["ended_at"] is not None
+
+        stale_payloads = _events_of_kind(conn, t, "stale")
+        assert stale_payloads[-1]["trailing_stale_runs"] == 3
+
+        limit_events = _events_of_kind(conn, t, "stale_reclaim_limit")
+        assert len(limit_events) == 1
+        assert limit_events[0]["trailing_stale_runs"] == 3
+        assert limit_events[0]["limit"] == 3
+        assert limit_events[0]["reason"].startswith("stale_reclaim_limit:")
+
+        # Blocked tasks are never reclaim candidates: the churn stops here.
+        assert _run_stale_detection(conn) == []
+        assert _task_row(conn, t)["status"] == "blocked"
+
+
+def test_stale_reclaim_limit_resets_on_non_stale_outcome(
+    kanban_home, monkeypatch,
+):
+    """A non-stale completed run resets the streak.
+
+    Run history stale, completed, stale, stale: the third overall reclaim
+    is only the second TRAILING one, so the task still requeues to ready.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="recovers-once", assignee="worker")
+
+        _claim_and_wedge(conn, t, now - 40 * 3600)
+        assert t in _run_stale_detection(conn)
+
+        _complete_and_requeue(conn, t, now - 35 * 3600)
+
+        _claim_and_wedge(conn, t, now - 30 * 3600)
+        assert t in _run_stale_detection(conn)
+        _claim_and_wedge(conn, t, now - 25 * 3600)
+        assert t in _run_stale_detection(conn)
+
+        row = _task_row(conn, t)
+        assert row["status"] == "ready", (
+            "third overall reclaim is only the second trailing one"
+        )
+        assert row["last_failure_error"] is None
+        payloads = _events_of_kind(conn, t, "stale")
+        assert [p["trailing_stale_runs"] for p in payloads] == [1, 1, 2]
+        assert _events_of_kind(conn, t, "stale_reclaim_limit") == []
+
+
+def test_stale_reclaim_limit_episodic_long_runner_never_blocks(
+    kanban_home, monkeypatch,
+):
+    """Stales interleaved with successes never accumulate a streak.
+
+    A legitimately long-running lane that absorbs one reclaim per episode
+    (stale, completed, stale, completed, ...) must never be blocked — the
+    exact objection the consecutive_failures exclusion comment records.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="episodic-long-runner", assignee="worker")
+
+        base = now - 46 * 3600
+        for episode in range(4):
+            _claim_and_wedge(conn, t, base + episode * 8 * 3600)
+            assert t in _run_stale_detection(conn)
+            assert _task_row(conn, t)["status"] == "ready"
+            _complete_and_requeue(conn, t, base + (episode * 8 + 4) * 3600)
+
+        payloads = _events_of_kind(conn, t, "stale")
+        assert [p["trailing_stale_runs"] for p in payloads] == [1, 1, 1, 1]
+        assert _events_of_kind(conn, t, "stale_reclaim_limit") == []
+        assert _task_row(conn, t)["status"] == "ready"
+
+
+def test_stale_reclaim_streak_excludes_open_runs(kanban_home, monkeypatch):
+    """The streak query only counts ENDED stale runs.
+
+    Rows with ``ended_at IS NULL`` never count toward the streak — the run
+    being closed in the same transaction enters as the +1, never twice.
+    Plant two open rows that would (wrongly) read as stale; with the
+    ``ended_at IS NOT NULL`` guard the first real reclaim is trailing == 1
+    and requeues to ready instead of tripping the limit.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="open-runs-dont-count", assignee="worker")
+        with kb.write_txn(conn):
+            for k in (48, 44):
+                conn.execute(
+                    "INSERT INTO task_runs "
+                    "(task_id, status, outcome, started_at, ended_at) "
+                    "VALUES (?, 'stale', 'stale', ?, NULL)",
+                    (t, now - k * 3600),
+                )
+
+        _claim_and_wedge(conn, t, now - 40 * 3600)
+        assert t in _run_stale_detection(conn)
+
+        assert _task_row(conn, t)["status"] == "ready"
+        payloads = _events_of_kind(conn, t, "stale")
+        assert payloads[-1]["trailing_stale_runs"] == 1
+        assert _events_of_kind(conn, t, "stale_reclaim_limit") == []
+
+
+def test_stale_reclaim_below_limit_requeue_unchanged(kanban_home, monkeypatch):
+    """Below the limit the reclaim behaves exactly as before.
+
+    Status ready, claim/heartbeat state cleared, ``last_failure_error``
+    untouched, run closed as stale with the legacy payload fields, one
+    'stale' event per reclaim, task id in the return list — and no
+    ``stale_reclaim_limit`` event anywhere.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="below-limit", assignee="worker")
+
+        for cycle in (1, 2):
+            _claim_and_wedge(conn, t, now - (40 - cycle * 5) * 3600)
+            stale = _run_stale_detection(conn)
+            assert stale == [t]
+
+            row = _task_row(conn, t)
+            assert row["status"] == "ready"
+            assert row["claim_lock"] is None
+            assert row["claim_expires"] is None
+            assert row["worker_pid"] is None
+            assert row["last_heartbeat_at"] is None
+            assert row["last_failure_error"] is None
+            assert row["consecutive_failures"] in (0, None)
+
+        runs = conn.execute(
+            "SELECT outcome, ended_at, metadata FROM task_runs "
+            "WHERE task_id = ? ORDER BY id",
+            (t,),
+        ).fetchall()
+        assert [r["outcome"] for r in runs] == ["stale", "stale"]
+        assert all(r["ended_at"] is not None for r in runs)
+        # Legacy payload fields survive alongside the new counter.
+        md = json.loads(runs[-1]["metadata"])
+        for key in (
+            "elapsed_seconds", "last_heartbeat_at", "heartbeat_age_seconds",
+            "timeout_seconds", "pid",
+        ):
+            assert key in md, f"legacy metadata field {key!r} missing"
+        assert md["trailing_stale_runs"] == 2
+
+        payloads = _events_of_kind(conn, t, "stale")
+        assert len(payloads) == 2
+        assert _events_of_kind(conn, t, "stale_reclaim_limit") == []
 
 
 # ---------------------------------------------------------------------------

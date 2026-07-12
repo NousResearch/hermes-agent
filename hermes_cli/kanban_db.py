@@ -1224,7 +1224,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | stale | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -6202,6 +6202,13 @@ def enforce_max_runtime(
 # to match the original spec (">4h started + no commits in 1h").
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
 
+# Trailing-consecutive stale reclaims (since the last non-stale run
+# outcome) before the task is parked at ``blocked`` instead of requeued.
+# Any non-stale outcome resets the streak, so episodic long-runners that
+# absorb an occasional reclaim never accumulate one; only a worker that
+# wedges every single cycle trips it.
+_STALE_RECLAIM_LIMIT = 3
+
 
 def detect_stale_running(
     conn: sqlite3.Connection,
@@ -6222,7 +6229,9 @@ def detect_stale_running(
 
     On reclaim the task is reset to ``ready``, the run is closed with
     ``outcome='stale'``, and the host-local worker (if still running) is
-    terminated.
+    terminated.  After ``_STALE_RECLAIM_LIMIT`` trailing-consecutive stale
+    reclaims (no intervening non-stale run outcome) the task is parked at
+    ``blocked`` instead of requeued, ending the kill/requeue churn.
 
     Only considers ``status='running'`` tasks. Blocked tasks are never
     candidates.  Returns the list of reclaimed task IDs.
@@ -6280,14 +6289,55 @@ def detect_stale_running(
             continue
 
         with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (tid, row["claim_lock"]),
-            )
+            # Trailing-consecutive stale streak: ended stale runs newer
+            # than the task's last non-stale completed run. The run being
+            # closed below is still open (``ended_at IS NULL``) so it
+            # enters via the +1, never double-counted.
+            prior_streak = conn.execute(
+                "SELECT COUNT(*) FROM task_runs "
+                "WHERE task_id = ? "
+                "  AND ended_at IS NOT NULL "
+                "  AND outcome = 'stale' "
+                "  AND started_at > COALESCE("
+                "      (SELECT MAX(started_at) FROM task_runs "
+                "        WHERE task_id = ? "
+                "          AND ended_at IS NOT NULL "
+                "          AND outcome IS NOT NULL "
+                "          AND outcome != 'stale'), -1)",
+                (tid, tid),
+            ).fetchone()[0]
+            trailing = int(prior_streak) + 1
+            at_limit = trailing >= _STALE_RECLAIM_LIMIT
+
+            if at_limit:
+                # Terminal: this worker wedges every cycle, so another
+                # requeue is futile compute burn. Park it loudly at
+                # ``blocked`` (the breaker's blocked-write shape, minus
+                # the ``consecutive_failures`` column).
+                reason = (
+                    f"stale_reclaim_limit: {trailing} consecutive stale "
+                    f"reclaims (no heartbeat, no terminal outcome); worker "
+                    f"wedges every cycle. Needs a human: fix the "
+                    f"worker/heartbeat or archive the task."
+                )
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_heartbeat_at = NULL, last_failure_error = ? "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND claim_lock IS ?",
+                    (reason, tid, row["claim_lock"]),
+                )
+            else:
+                reason = None
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_heartbeat_at = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND claim_lock IS ?",
+                    (tid, row["claim_lock"]),
+                )
             if cur.rowcount != 1:
                 continue
 
@@ -6301,6 +6351,7 @@ def detect_stale_running(
                 ),
                 "timeout_seconds": stale_timeout_seconds,
                 "pid": int(pid) if pid else None,
+                "trailing_stale_runs": trailing,
             }
             payload.update(termination)
 
@@ -6317,6 +6368,16 @@ def detect_stale_running(
             _append_event(
                 conn, tid, "stale", payload, run_id=run_id,
             )
+            if at_limit:
+                _append_event(
+                    conn, tid, "stale_reclaim_limit",
+                    {
+                        "trailing_stale_runs": trailing,
+                        "limit": _STALE_RECLAIM_LIMIT,
+                        "reason": reason,
+                    },
+                    run_id=run_id,
+                )
             reclaimed.append(tid)
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
@@ -6327,7 +6388,11 @@ def detect_stale_running(
         # auto-block, even though no worker actually failed. The 'stale'
         # event already lives in task_events for auditability; that's the
         # right surface for "this happened" without conflating with the
-        # spawn_failed / timed_out / crashed counters.
+        # spawn_failed / timed_out / crashed counters. The separate
+        # _STALE_RECLAIM_LIMIT above keys on trailing-consecutive 'stale'
+        # outcomes only — any non-stale outcome resets the streak, so the
+        # legitimately-long-running case this exclusion protects still
+        # never blocks.
 
     return reclaimed
 

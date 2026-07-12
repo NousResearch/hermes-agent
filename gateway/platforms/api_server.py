@@ -1973,6 +1973,32 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        retry = _coerce_request_bool(body.get("retry"), default=False)
+        if retry:
+            db = self._ensure_session_db()
+            if db is None:
+                return web.json_response(
+                    _openai_error("Session database unavailable", code="session_db_unavailable"),
+                    status=503,
+                )
+            history = db.get_messages_as_conversation(session_id)
+            last_user_idx = next(
+                (index for index in range(len(history) - 1, -1, -1) if history[index].get("role") == "user"),
+                None,
+            )
+            if last_user_idx is None:
+                return web.json_response(
+                    _openai_error("No previous user message to retry", code="retry_not_available"),
+                    status=409,
+                )
+            if history[last_user_idx].get("content") != user_message:
+                return web.json_response(
+                    _openai_error("Retry message must match the last user message", code="retry_message_mismatch"),
+                    status=409,
+                )
+            # Match Hermes CLI/Gateway /retry semantics: remove the failed
+            # turn before re-running it, so persistence contains one user turn.
+            db.replace_messages(session_id, history[:last_user_idx], active_only=True)
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()

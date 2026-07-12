@@ -627,6 +627,28 @@ async def test_discord_bot_owned_thread_allows_first_unmentioned_followup(adapte
 
 
 @pytest.mark.asyncio
+async def test_discord_bot_owned_thread_respects_explicit_mention_requirement(adapter, monkeypatch):
+    """The explicit thread mention requirement remains a hard safety override."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+    thread = FakeThread(
+        channel_id=791,
+        name="shared bot thread",
+        owner_id=adapter._client.user.id,
+    )
+    assert "791" not in adapter._threads
+    message = make_message(channel=thread, content="unmentioned follow-up")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert "791" not in adapter._threads
+
+
+@pytest.mark.asyncio
 async def test_discord_auto_thread_tracks_participation(adapter, monkeypatch):
     """Auto-created threads should be tracked for future mention-free replies."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)

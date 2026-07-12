@@ -8,6 +8,7 @@ Covers:
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -114,6 +115,165 @@ class TestPluginSkillRegistry:
 
         # Removing non-existent key is a no-op
         pm.remove_plugin_skill("p:x")
+
+    @staticmethod
+    def _skill_plugin(tmp_path, directory, *, key, kind="standalone", source="user"):
+        from hermes_cli.plugins import PluginManifest
+
+        plugin_dir = tmp_path / directory
+        skill_md = plugin_dir / "skills" / "a2a-peer" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("---\nname: a2a-peer\n---\nPeer skill.\n")
+        (plugin_dir / "__init__.py").write_text(
+            "from pathlib import Path\n"
+            "def register(ctx):\n"
+            "    ctx.register_skill(\n"
+            "        'a2a-peer',\n"
+            "        Path(__file__).parent / 'skills' / 'a2a-peer' / 'SKILL.md',\n"
+            "    )\n",
+            encoding="utf-8",
+        )
+        return PluginManifest(
+            name="a2a-platform",
+            key=key,
+            kind=kind,
+            source=source,
+            path=str(plugin_dir),
+        ), skill_md
+
+    def test_loaded_then_deferred_namespace_collision_fails_closed(
+        self, pm, tmp_path, monkeypatch, caplog
+    ):
+        from gateway.platform_registry import platform_registry
+
+        monkeypatch.setattr(platform_registry, "register_deferred", lambda *_: None)
+        loaded, loaded_skill = self._skill_plugin(
+            tmp_path, "loaded", key="external/a2a"
+        )
+        deferred, _ = self._skill_plugin(
+            tmp_path,
+            "deferred",
+            key="platforms/a2a",
+            kind="platform",
+            source="bundled",
+        )
+
+        pm._load_plugin(loaded)
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") == loaded_skill
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            pm._register_deferred_platform(deferred)
+
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") is None
+        assert pm.list_plugin_skills("a2a-platform") == []
+        assert pm._plugins["platforms/a2a"].deferred is True
+        assert "a2a-platform:a2a-peer" not in pm._plugin_skills
+        assert str(tmp_path) not in caplog.text
+
+    def test_deferred_then_loaded_namespace_collision_is_order_independent(
+        self, pm, tmp_path, monkeypatch
+    ):
+        from gateway.platform_registry import platform_registry
+
+        monkeypatch.setattr(platform_registry, "register_deferred", lambda *_: None)
+        deferred, _ = self._skill_plugin(
+            tmp_path,
+            "deferred-first",
+            key="platforms/a2a",
+            kind="platform",
+            source="bundled",
+        )
+        loaded, _ = self._skill_plugin(
+            tmp_path, "loaded-second", key="external/a2a"
+        )
+
+        pm._register_deferred_platform(deferred)
+        pm._load_plugin(loaded)
+
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") is None
+        assert pm.list_plugin_skills("a2a-platform") == []
+        assert pm._plugins["platforms/a2a"].deferred is True
+        assert "a2a-platform:a2a-peer" not in pm._plugin_skills
+
+    def test_two_loaded_plugins_cannot_overwrite_same_qualified_skill(
+        self, pm, tmp_path
+    ):
+        first, _ = self._skill_plugin(tmp_path, "first", key="vendor-one/a2a")
+        second, _ = self._skill_plugin(tmp_path, "second", key="vendor-two/a2a")
+
+        pm._load_plugin(first)
+        pm._load_plugin(second)
+
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") is None
+        assert pm.list_plugin_skills("a2a-platform") == []
+        assert "a2a-platform:a2a-peer" not in pm._plugin_skills
+
+    def test_failed_colliding_plugin_restores_valid_namespace_owner(
+        self, pm, tmp_path
+    ):
+        valid, valid_skill = self._skill_plugin(
+            tmp_path, "valid", key="vendor-valid/a2a"
+        )
+        bad, _ = self._skill_plugin(tmp_path, "bad", key="vendor-bad/a2a")
+        (Path(bad.path) / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    raise RuntimeError('registration failed')\n",
+            encoding="utf-8",
+        )
+
+        pm._load_plugin(valid)
+        pm._load_plugin(bad)
+
+        assert pm._plugins["vendor-bad/a2a"].enabled is False
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") == valid_skill
+        assert "a2a-platform" not in pm._ambiguous_plugin_skill_namespaces
+        assert pm._plugin_skill_namespace_owners["a2a-platform"] == {
+            "vendor-valid/a2a"
+        }
+
+    def test_failed_first_owner_does_not_block_later_valid_owner(
+        self, pm, tmp_path
+    ):
+        bad, _ = self._skill_plugin(tmp_path, "bad-first", key="vendor-bad/a2a")
+        (Path(bad.path) / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    raise RuntimeError('registration failed')\n",
+            encoding="utf-8",
+        )
+        valid, valid_skill = self._skill_plugin(
+            tmp_path, "valid-second", key="vendor-valid/a2a"
+        )
+
+        pm._load_plugin(bad)
+        pm._load_plugin(valid)
+
+        assert pm._plugins["vendor-bad/a2a"].enabled is False
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") == valid_skill
+        assert pm._plugin_skill_namespace_owners["a2a-platform"] == {
+            "vendor-valid/a2a"
+        }
+
+    def test_plugin_without_register_does_not_claim_skill_namespace(
+        self, pm, tmp_path
+    ):
+        valid, valid_skill = self._skill_plugin(
+            tmp_path, "valid-with-skill", key="vendor-valid/a2a"
+        )
+        no_register, _ = self._skill_plugin(
+            tmp_path, "no-register", key="vendor-empty/a2a"
+        )
+        (Path(no_register.path) / "__init__.py").write_text(
+            "VALUE = 'no register function'\n", encoding="utf-8"
+        )
+
+        pm._load_plugin(valid)
+        pm._load_plugin(no_register)
+
+        assert pm._plugins["vendor-empty/a2a"].enabled is False
+        assert pm.find_plugin_skill("a2a-platform:a2a-peer") == valid_skill
+        assert pm._plugin_skill_namespace_owners["a2a-platform"] == {
+            "vendor-valid/a2a"
+        }
 
 
 class TestPluginContextRegisterSkill:

@@ -13205,7 +13205,16 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
-            for cmd_info in get_plugin_manager()._cli_commands.values():
+            plugin_manager = get_plugin_manager()
+            requested_command = _first_positional_argv()
+            if requested_command:
+                # Bundled platform plugins are normally deferred to keep
+                # unrelated CLI/chat startup cheap. An unknown top-level token
+                # is an explicit plugin-CLI request, so materialize only the
+                # matching platform plugin. Registration does not connect its
+                # adapter or perform network I/O.
+                plugin_manager.load_deferred_plugin(requested_command)
+            for cmd_info in plugin_manager._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue
                 plugin_parser = subparsers.add_parser(
@@ -14706,10 +14715,15 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        # Console-script launchers pass main()'s return to sys.exit(). Keep
+        # legacy handlers returning None successful while preserving explicit
+        # Unix exit codes from plugin and built-in command handlers.
+        return result if type(result) is int else None
     else:
         parser.print_help()
+    return None
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

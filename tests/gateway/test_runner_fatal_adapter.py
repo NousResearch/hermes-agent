@@ -156,6 +156,45 @@ async def test_concurrent_fatal_notifications_disconnect_same_adapter_once(monke
 
 
 @pytest.mark.asyncio
+async def test_fatal_teardown_finishes_disconnect_before_reraising_cancel(
+    monkeypatch, tmp_path
+):
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("fatal", "fatal", retryable=False)
+    adapter.set_session_interrupt_handler(AsyncMock())
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_disconnect():
+        entered.set()
+        await release.wait()
+        adapter._mark_disconnected()
+
+    monkeypatch.setattr(adapter, "disconnect", blocking_disconnect)
+    task = asyncio.create_task(runner._handle_adapter_fatal_error(adapter))
+    await entered.wait()
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert adapter._session_interrupt_handler is None
+    assert Platform.WHATSAPP not in runner.adapters
+    runner.stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_stale_fatal_notification_from_superseded_adapter_is_ignored(monkeypatch, tmp_path):
     """
     A delayed fatal-error notification from an adapter instance that has

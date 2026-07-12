@@ -68,6 +68,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_DEFERRED_TEARDOWN_TASKS: set[asyncio.Future] = set()
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
@@ -1388,6 +1389,7 @@ from contextlib import contextmanager as _contextmanager
 # silently dropping the adapter (see _start_one_profile_adapters).
 # Stored as platform .value strings since the Platform enum is imported below.
 _PORT_BINDING_PLATFORM_VALUES = frozenset({
+    "a2a",
     "webhook",
     "api_server",
     "msgraph_webhook",
@@ -2718,6 +2720,104 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+@dataclasses.dataclass
+class _OwnedTeardownResult:
+    completed: bool
+    value: Any = None
+    error: BaseException | None = None
+    outer_cancel: asyncio.CancelledError | None = None
+    timed_out: bool = False
+
+
+def _retain_teardown_task(task: asyncio.Future) -> None:
+    """Own and reap teardown children, including cancellation-resistant ones."""
+    _DEFERRED_TEARDOWN_TASKS.add(task)
+
+    def _reap(done_task: asyncio.Future) -> None:
+        _DEFERRED_TEARDOWN_TASKS.discard(done_task)
+        try:
+            done_task.exception()
+        except BaseException:
+            pass
+
+    task.add_done_callback(_reap)
+
+
+async def _await_owned_teardown(
+    awaitable,
+    timeout: float,
+) -> _OwnedTeardownResult:
+    """Await one teardown child without letting outer cancellation orphan it.
+
+    The child is shielded by ownership rather than ``asyncio.shield`` so both
+    coroutine objects and pre-created Futures behave identically.  An outer
+    cancellation is recorded, the child gets the remainder of the original
+    hard deadline to finish, and the caller re-raises that same cancellation
+    only after the full teardown sequence has completed.
+    """
+    task = asyncio.ensure_future(awaitable)
+    _retain_teardown_task(task)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout if timeout > 0 else None
+    outer_cancel: asyncio.CancelledError | None = None
+
+    while not task.done():
+        remaining = None if deadline is None else max(0.0, deadline - loop.time())
+        if remaining == 0.0:
+            task.cancel()
+            return _OwnedTeardownResult(
+                completed=False,
+                outer_cancel=outer_cancel,
+                timed_out=True,
+            )
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=remaining)
+        except asyncio.CancelledError as exc:
+            if outer_cancel is None:
+                outer_cancel = exc
+            # A configured zero preserves the legacy unbounded normal path,
+            # but cancellation cleanup itself must still have a hard bound.
+            if deadline is None:
+                deadline = loop.time() + _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+            continue
+        if task not in done:
+            task.cancel()
+            return _OwnedTeardownResult(
+                completed=False,
+                outer_cancel=outer_cancel,
+                timed_out=True,
+            )
+
+    try:
+        value = task.result()
+    except asyncio.CancelledError as exc:
+        # Child cancellation is a failed phase, not cancellation of the host
+        # teardown task. Only ``outer_cancel`` is re-raised by callers.
+        return _OwnedTeardownResult(
+            completed=False,
+            error=exc,
+            outer_cancel=outer_cancel,
+        )
+    except BaseException as exc:
+        return _OwnedTeardownResult(
+            completed=False,
+            error=exc,
+            outer_cancel=outer_cancel,
+        )
+    return _OwnedTeardownResult(
+        completed=True,
+        value=value,
+        outer_cancel=outer_cancel,
+    )
+
+
+def _first_outer_cancel(
+    current: asyncio.CancelledError | None,
+    incoming: asyncio.CancelledError | None,
+) -> asyncio.CancelledError | None:
+    return current if current is not None else incoming
+
+
 async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
     """Best-effort dispose for an adapter that never made it onto ``self.adapters``.
 
@@ -2749,8 +2849,29 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
     """
     if adapter is None:
         return
+    timeout = _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+    prepared, pending_cancel = await _bounded_prepare_disconnect(
+        adapter,
+        timeout,
+        getattr(adapter, "name", type(adapter).__name__),
+    )
+    if not prepared:
+        fallback_cancel = await _bounded_interrupt_active_sources(adapter, timeout)
+        pending_cancel = _first_outer_cancel(pending_cancel, fallback_cancel)
+    if prepared:
+        _revoke_adapter_interrupt_handler(adapter)
     try:
-        await adapter.disconnect()
+        outcome = await _await_owned_teardown(adapter.disconnect(), timeout)
+        pending_cancel = _first_outer_cancel(pending_cancel, outcome.outer_cancel)
+        if outcome.error is not None or outcome.timed_out:
+            # A child-owned cancelled Future is an adapter dispose failure,
+            # not cancellation of this host teardown. Only ``outer_cancel``
+            # below may escape after authority has been revoked.
+            logger.debug(
+                "Adapter dispose did not complete for unowned adapter %r: %s",
+                getattr(adapter, "name", type(adapter).__name__),
+                outcome.error or "timeout",
+            )
     except Exception:
         # Half-constructed adapters (e.g. APIServerAdapter that
         # crashed during aiohttp app setup) can raise from
@@ -2770,6 +2891,85 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
             getattr(adapter, "name", type(adapter).__name__),
             exc_info=True,
         )
+    finally:
+        if not prepared:
+            _revoke_adapter_interrupt_handler(adapter)
+    if pending_cancel is not None:
+        raise pending_cancel
+
+
+async def _bounded_prepare_disconnect(
+    adapter,
+    timeout: float,
+    label: str,
+) -> tuple[bool, asyncio.CancelledError | None]:
+    """Best-effort, bounded pre-disconnect phase with interrupt authority live."""
+    prepare = getattr(adapter, "prepare_disconnect", None)
+    if not callable(prepare):
+        return True, None
+    bound = timeout if timeout > 0 else _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+    try:
+        result = prepare()
+        if not inspect.isawaitable(result):
+            return True, None
+        # prepare_disconnect must always be bounded. A configured zero only
+        # disables the legacy disconnect/cancel bounds, not this authority-
+        # sensitive phase. Do not use wait_for here: it waits for cancellation
+        # to finish, so a prepare coroutine that suppresses CancelledError can
+        # still wedge gateway shutdown forever.
+        outcome = await _await_owned_teardown(result, bound)
+        if outcome.timed_out:
+            logger.warning(
+                "Timed out after %.1fs while preparing %s adapter disconnect; continuing shutdown",
+                bound,
+                label,
+            )
+        elif outcome.error is not None:
+            logger.debug(
+                "Defensive %s prepare_disconnect raised: %s",
+                label,
+                outcome.error,
+            )
+        return outcome.completed, outcome.outer_cancel
+    except Exception as exc:
+        logger.debug("Defensive %s prepare_disconnect raised: %s", label, exc)
+    return False, None
+
+
+def _revoke_adapter_interrupt_handler(adapter) -> None:
+    try:
+        adapter.set_session_interrupt_handler(None)
+    except Exception:
+        pass
+
+
+async def _bounded_interrupt_active_sources(
+    adapter,
+    timeout: float,
+) -> asyncio.CancelledError | None:
+    """Canonical host fallback while adapter interrupt authority remains live."""
+    try:
+        sources = tuple(adapter.active_session_sources())
+    except Exception:
+        sources = ()
+    if not sources:
+        return None
+    pending_cancel: asyncio.CancelledError | None = None
+    deadline = asyncio.get_running_loop().time() + (
+        timeout if timeout > 0 else _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+    )
+    for source in sources:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return pending_cancel
+        outcome = await _await_owned_teardown(
+            adapter.request_session_interrupt(source),
+            remaining,
+        )
+        pending_cancel = _first_outer_cancel(pending_cancel, outcome.outer_cancel)
+        if not outcome.completed:
+            continue
+    return pending_cancel
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -3345,23 +3545,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         use it inside error-handling blocks.
         """
         timeout = self._adapter_disconnect_timeout_secs()
+        label = platform.value if platform is not None else "adapter"
+        prepared, pending_cancel = await _bounded_prepare_disconnect(
+            adapter, timeout, label
+        )
+        if not prepared:
+            fallback_cancel = await _bounded_interrupt_active_sources(adapter, timeout)
+            pending_cancel = _first_outer_cancel(pending_cancel, fallback_cancel)
+        if prepared:
+            _revoke_adapter_interrupt_handler(adapter)
         try:
-            if timeout <= 0:
-                await adapter.disconnect()
-            else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-        except asyncio.TimeoutError:
+            disconnect_cancel = await self._safe_adapter_disconnect_after_prepare(
+                adapter, platform
+            )
+            pending_cancel = _first_outer_cancel(pending_cancel, disconnect_cancel)
+        finally:
+            if not prepared:
+                _revoke_adapter_interrupt_handler(adapter)
+        if pending_cancel is not None:
+            raise pending_cancel
+
+    async def _safe_adapter_disconnect_after_prepare(
+        self, adapter, platform
+    ) -> asyncio.CancelledError | None:
+        """Bound disconnect after prepare/revocation have already completed."""
+        timeout = self._adapter_disconnect_timeout_secs()
+        outcome = await _await_owned_teardown(adapter.disconnect(), timeout)
+        if outcome.timed_out:
             logger.warning(
                 "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
-                timeout,
+                timeout if timeout > 0 else _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT,
                 platform.value if platform is not None else "adapter",
             )
-        except Exception as e:
+        elif outcome.error is not None:
             logger.debug(
                 "Defensive %s disconnect after failed connect raised: %s",
                 platform.value if platform is not None else "adapter",
-                e,
+                outcome.error,
             )
+        return outcome.outer_cancel
 
     async def _bounded_adapter_teardown(
         self, adapter, platform, *, profile: Optional[str] = None
@@ -3377,45 +3599,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Each await is wrapped in the existing per-adapter timeout budget
         (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``). On timeout we log
-        and force forward progress; the loop never hangs regardless of any
-        adapter's internal behavior. Never raises.
+        and force forward progress. Ordinary adapter errors never escape;
+        caller cancellation is re-raised only after revocation and disconnect.
         """
         timeout = self._adapter_disconnect_timeout_secs()
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
-        try:
-            if timeout <= 0:
-                await adapter.cancel_background_tasks()
-            else:
-                await asyncio.wait_for(
-                    adapter.cancel_background_tasks(), timeout=timeout
-                )
-        except asyncio.TimeoutError:
+        prepared, pending_cancel = await _bounded_prepare_disconnect(
+            adapter, timeout, platform.value
+        )
+        if not prepared:
+            fallback_cancel = await _bounded_interrupt_active_sources(adapter, timeout)
+            pending_cancel = _first_outer_cancel(pending_cancel, fallback_cancel)
+        if prepared:
+            _revoke_adapter_interrupt_handler(adapter)
+        cancel_outcome = await _await_owned_teardown(
+            adapter.cancel_background_tasks(), timeout
+        )
+        pending_cancel = _first_outer_cancel(
+            pending_cancel, cancel_outcome.outer_cancel
+        )
+        if cancel_outcome.timed_out:
             logger.warning(
                 "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
                 platform.value, timeout, suffix,
             )
-        except Exception as e:
-            logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
+        elif cancel_outcome.error is not None:
+            logger.debug(
+                "✗ %s background-task cancel error%s: %s",
+                platform.value,
+                suffix,
+                cancel_outcome.error,
+            )
+        disconnect_outcome = await _await_owned_teardown(adapter.disconnect(), timeout)
+        pending_cancel = _first_outer_cancel(
+            pending_cancel, disconnect_outcome.outer_cancel
+        )
         try:
-            if timeout <= 0:
-                await adapter.disconnect()
-            else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-            logger.info(
-                "✓ %s disconnected (%.2fs)%s",
-                platform.value, time.monotonic() - started_at, suffix,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "✗ %s disconnect timed out after %.1fs - forcing continue%s",
-                platform.value, timeout, suffix,
-            )
-        except Exception as e:
-            logger.error(
-                "✗ %s disconnect error after %.2fs%s: %s",
-                platform.value, time.monotonic() - started_at, suffix, e,
-            )
+            if disconnect_outcome.completed:
+                logger.info(
+                    "✓ %s disconnected (%.2fs)%s",
+                    platform.value, time.monotonic() - started_at, suffix,
+                )
+            elif disconnect_outcome.timed_out:
+                logger.warning(
+                    "✗ %s disconnect timed out after %.1fs - forcing continue%s",
+                    platform.value, timeout, suffix,
+                )
+            elif disconnect_outcome.error is not None:
+                logger.error(
+                    "✗ %s disconnect error after %.2fs%s: %s",
+                    platform.value,
+                    time.monotonic() - started_at,
+                    suffix,
+                    disconnect_outcome.error,
+                )
+        finally:
+            if not prepared:
+                _revoke_adapter_interrupt_handler(adapter)
+        if pending_cancel is not None:
+            raise pending_cancel
 
     def _adapter_disconnect_timeout_secs(self) -> float:
         """Return the per-adapter disconnect timeout used during shutdown."""
@@ -4035,7 +4278,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the same object twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
-            await adapter.disconnect()
+            await self._safe_adapter_disconnect(adapter, adapter.platform)
 
         # Queue retryable failures for background reconnection
         if adapter.fatal_error_retryable:
@@ -7061,6 +7304,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_session_interrupt_handler(
+                self._make_adapter_session_interrupt_handler(
+                    adapter,
+                    profile_name=self._active_profile_name(),
+                )
+            )
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -7897,6 +8146,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter.set_session_interrupt_handler(
+                        self._make_adapter_session_interrupt_handler(
+                            adapter,
+                            profile_name=self._active_profile_name(),
+                        )
+                    )
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8604,6 +8859,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(
                 self._make_profile_message_handler(profile_name)
             )
+            adapter.set_session_interrupt_handler(
+                self._make_adapter_session_interrupt_handler(
+                    adapter,
+                    profile_name=profile_name,
+                )
+            )
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8661,6 +8922,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         import hashlib
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _platform_agent_tool_policy(platform: Platform):
+        """Return the registered platform's agent tool-resolution policy."""
+        from gateway.platform_registry import AgentToolPolicy, platform_registry
+
+        entry = platform_registry.get(platform.value)
+        if entry is not None:
+            return entry.agent_tool_policy
+        return AgentToolPolicy.CONFIGURED
+
+    @classmethod
+    def _resolve_platform_agent_tool_scope(
+        cls,
+        platform: Platform,
+        user_config: dict,
+    ) -> tuple[Any, list[str]]:
+        """Resolve the host-enforced tool policy and exact platform scope.
+
+        Restricted platform policies must be resolved before any gateway proxy
+        dispatch.  The proxy protocol currently carries no authoritative tool
+        policy, so delegating an ``explicit`` or ``none`` request would let the
+        remote server construct its normal broad agent surface.
+        """
+        from gateway.platform_registry import AgentToolPolicy
+        from hermes_cli.tools_config import (
+            _get_explicit_platform_tools,
+            _get_platform_tools,
+        )
+
+        platform_key = _platform_config_key(platform)
+        policy = cls._platform_agent_tool_policy(platform)
+        if policy is AgentToolPolicy.NONE:
+            enabled_toolsets: list[str] = []
+        elif policy is AgentToolPolicy.EXPLICIT:
+            enabled_toolsets = sorted(
+                _get_explicit_platform_tools(user_config, platform_key)
+            )
+        else:
+            enabled_toolsets = sorted(
+                _get_platform_tools(user_config, platform_key)
+            )
+        return policy, enabled_toolsets
+
+    @staticmethod
+    def _platform_allows_context_references(platform: Platform) -> bool:
+        """Return whether the platform permits inbound local-context expansion."""
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform.value)
+        return bool(
+            entry is None or entry.inbound_context_references_enabled
+        )
 
     def _create_adapter(
         self, 
@@ -10605,7 +10919,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
-        if "@" in message_text:
+        if (
+            "@" in message_text
+            and self._platform_allows_context_references(source.platform)
+        ):
             try:
                 from agent.context_references import preprocess_context_references_async
                 from agent.model_metadata import get_model_context_length_async
@@ -13374,9 +13691,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             platform_key = _platform_config_key(source.platform)
+            agent_tool_policy = self._platform_agent_tool_policy(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            from gateway.platform_registry import AgentToolPolicy
+            from hermes_cli.tools_config import (
+                _get_explicit_platform_tools,
+                _get_platform_tools,
+            )
+            if agent_tool_policy is AgentToolPolicy.NONE:
+                enabled_toolsets = []
+            elif agent_tool_policy is AgentToolPolicy.EXPLICIT:
+                enabled_toolsets = sorted(
+                    _get_explicit_platform_tools(user_config, platform_key)
+                )
+            else:
+                enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -13413,6 +13742,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    agent_tool_policy=agent_tool_policy.value,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
@@ -15844,6 +16174,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cache_keys: dict | None = None,
         user_id: str | None = None,
         user_id_alt: str | None = None,
+        agent_tool_policy: str = "configured",
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -15871,6 +16202,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         broke #27371's per-user-peer contract in multi-user gateways.
         Per-user agent rebuilds in shared threads trade prompt-cache
         warmth for correct memory attribution.
+
+        ``agent_tool_policy`` is normalized into the signature so narrowing a
+        platform from configured tools to an explicit allowlist or no tools
+        can never reuse a cached agent carrying a wider schema snapshot.
         """
         import hashlib, json as _j
 
@@ -15891,6 +16226,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
+                str(agent_tool_policy or "configured").strip().lower(),
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
@@ -16146,6 +16482,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 setattr(interrupt_event, "_hermes_run_generation", int(generation))
         except Exception:
             pass
+
+    def _make_adapter_session_interrupt_handler(
+        self,
+        adapter: BasePlatformAdapter,
+        *,
+        profile_name: str,
+    ):
+        """Bind cancellation authority to one adapter platform and profile."""
+        bound_platform = adapter.platform
+        bound_profile = (
+            str(profile_name or "default")
+            if getattr(self.config, "multiplex_profiles", False)
+            else "default"
+        )
+
+        async def _interrupt(
+            source: SessionSource,
+            *,
+            interrupt_reason: str,
+            invalidation_reason: str,
+        ) -> None:
+            # Revocation is immediate on disconnect/replacement. Even a caller
+            # that retained this closure cannot exercise stale authority.
+            if getattr(adapter, "_session_interrupt_handler", None) is not _interrupt:
+                return
+            # Platform/profile are host authority, never caller input. The
+            # remaining source fields identify a session within this adapter's
+            # own namespace and are normalized by the canonical key builder.
+            bound_source = dataclasses.replace(
+                source,
+                platform=bound_platform,
+                profile=bound_profile,
+            )
+            session_key = self._session_key_for_source(bound_source)
+            await self._interrupt_and_clear_session(
+                session_key,
+                bound_source,
+                interrupt_reason=interrupt_reason,
+                invalidation_reason=invalidation_reason,
+            )
+
+        return _interrupt
 
     async def _interrupt_and_clear_session(
         self,
@@ -17017,8 +17395,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        user_config = _load_gateway_config()
+        platform_key = _platform_config_key(source.platform)
+        agent_tool_policy, enabled_toolsets = self._resolve_platform_agent_tool_scope(
+            source.platform,
+            user_config,
+        )
+
         # ---- Proxy mode: delegate to remote API server ----
-        if self._get_proxy_url():
+        # The remote API has no authoritative representation of a platform's
+        # restricted host policy. Keep explicit/none requests local until the
+        # proxy protocol can enforce the exact same scope.
+        from gateway.platform_registry import AgentToolPolicy
+
+        if (
+            agent_tool_policy is AgentToolPolicy.CONFIGURED
+            and self._get_proxy_url()
+        ):
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
@@ -17038,11 +17431,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
             return self._is_session_run_current(session_key, run_generation)
         
-        user_config = _load_gateway_config()
-        platform_key = _platform_config_key(source.platform)
-
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -18163,6 +18551,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cache_keys=self._extract_cache_busting_config(user_config),
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
+                agent_tool_policy=agent_tool_policy.value,
             )
             agent = None
             reused_cached_agent = False
@@ -18297,6 +18686,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
+                    agent_tool_policy=agent_tool_policy.value,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,

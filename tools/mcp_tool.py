@@ -5302,6 +5302,7 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            agent_tool_policy=getattr(agent, "agent_tool_policy", "configured"),
         )
         or []
     )
@@ -5365,6 +5366,9 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     caller publishes this into ``agent._context_engine_tool_names`` atomically
     with the snapshot.
     """
+    if getattr(agent, "agent_tool_policy", "configured") == "none":
+        return set()
+
     def _add(schema: dict) -> bool:
         name = schema.get("name", "")
         if not name or name in name_set:

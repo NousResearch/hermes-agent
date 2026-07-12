@@ -18,6 +18,7 @@ the hygiene-compression block already uses) and must actually reach
 """
 import logging
 import threading
+import builtins
 from contextlib import contextmanager
 
 import pytest
@@ -139,6 +140,72 @@ async def test_at_reference_reaches_preprocessor_with_real_context_length(
     # The expanded result from the (stubbed) preprocessor must have been
     # adopted as the final message text.
     assert result == "[expanded body]"
+
+
+@pytest.mark.asyncio
+async def test_registered_platform_can_disable_all_context_reference_preprocessing(
+    monkeypatch,
+):
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform_name = "no-context-refs-test"
+    entry = PlatformEntry(
+        name=platform_name,
+        label="No Context Refs Test",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        inbound_context_references_enabled=False,
+    )
+    monkeypatch.setitem(platform_registry._entries, platform_name, entry)
+    platform = Platform(platform_name)
+    runner = _make_runner()
+    source = SessionSource(
+        platform=platform,
+        chat_id="peer",
+        chat_type="dm",
+    )
+    raw = "keep @file:secret.txt literal"
+    original_import = builtins.__import__
+
+    def _guarded_import(name, *args, **kwargs):
+        if name in {"agent.context_references", "agent.model_metadata"}:
+            raise AssertionError(f"disabled context preprocessing imported {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _guarded_import)
+
+    result = await runner._prepare_inbound_message_text(
+        event=MessageEvent(text=raw, source=source),
+        source=source,
+        history=[],
+    )
+
+    assert result == raw
+
+
+def test_context_reference_capability_defaults_true_for_unregistered_platform():
+    assert GatewayRunner._platform_allows_context_references(Platform.TELEGRAM) is True
+
+
+def test_context_reference_capability_honors_registered_true(monkeypatch):
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform_name = "context-refs-enabled-test"
+    monkeypatch.setitem(
+        platform_registry._entries,
+        platform_name,
+        PlatformEntry(
+            name=platform_name,
+            label="Context Refs Enabled Test",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            inbound_context_references_enabled=True,
+        ),
+    )
+
+    assert GatewayRunner._platform_allows_context_references(
+        Platform(platform_name)
+    ) is True
 
 
 @pytest.mark.asyncio

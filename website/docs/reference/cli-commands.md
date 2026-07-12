@@ -51,6 +51,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes auth` | Manage credentials — add, list, remove, reset, status, logout. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
+| `hermes a2a` | Configure authenticated named A2A peers and exchange task-oriented requests without adding a model tool. |
 | `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -406,6 +407,40 @@ hermes send --to slack:#eng --subject "[CI]" --file build.log
 hermes send --list                  # all platforms
 hermes send --list telegram         # filter by platform
 ```
+
+
+## `hermes a2a`
+
+```bash
+hermes a2a setup --public-url https://hermes.example.com/a2a
+hermes a2a status
+hermes a2a peer add <name> <https-url> [--token-stdin]
+hermes a2a peer list
+hermes a2a peer remove <name>
+hermes a2a principal add <name> --profile <profile>
+hermes a2a principal list
+hermes a2a principal remove <name>
+hermes a2a credential rotate <principal>
+
+hermes a2a card <peer> [--json]
+hermes a2a ask <peer> [MESSAGE] [--stdin] [--new-context | --context-id ID] [--json]
+hermes a2a get <peer> <task-id> [--json]
+hermes a2a list <peer> [--json]
+hermes a2a cancel <peer> <task-id> [--json]
+```
+
+Outbound operations accept a configured peer **name**, not a URL. `ask` requires either a
+positional message or explicit `--stdin`; stdin is never consumed implicitly, and the two input
+forms cannot be combined. It continues the peer's saved context unless `--new-context` or an exact
+`--context-id` is provided.
+
+`--json` prints official camelCase protobuf JSON. Human task output includes task ID, context ID,
+state, and text artifacts. Exit codes are `0` for success, `1` for peer/backend failure, and `2` for
+invalid usage.
+
+A2A uses dedicated profile-local credentials. Never reuse `API_SERVER_KEY`. The Hermes listener is
+loopback-only; expose it to other machines through an HTTPS reverse proxy or private overlay
+ingress. See [Agent2Agent (A2A)](../user-guide/features/a2a.md) for setup and security guidance.
 
 
 ## `hermes secrets`

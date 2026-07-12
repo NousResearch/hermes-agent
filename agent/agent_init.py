@@ -330,6 +330,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    agent_tool_policy: str = "configured",
 ):
     """
     Initialize the AI Agent.
@@ -590,6 +591,11 @@ def init_agent(
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
+    agent.agent_tool_policy = str(agent_tool_policy or "configured").strip().lower()
+    if agent.agent_tool_policy not in {"configured", "explicit", "none"}:
+        raise ValueError(
+            "agent_tool_policy must be one of: configured, explicit, none"
+        )
     
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
@@ -643,7 +649,7 @@ def init_agent(
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
     # Set on internal forks (e.g. background_review) that must keep ``tools[]``
     # byte-identical to a parent for provider cache parity.
-    agent._skip_mcp_refresh = False
+    agent._skip_mcp_refresh = agent.agent_tool_policy == "none"
     # Registry generation the current tool snapshot was derived from. Lets a
     # late/concurrent refresh reject a stale (older-generation) rebuild instead
     # of clobbering a newer one. Set adjacent to the tool snapshot below.
@@ -1162,6 +1168,7 @@ def init_agent(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+        agent_tool_policy=agent.agent_tool_policy,
     )
     
     # Show tool configuration and store valid tool names for validation
@@ -1419,7 +1426,8 @@ def init_agent(
             agent._memory_manager = None
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
-    _inject_memory_provider_tools(agent)
+    if agent.agent_tool_policy != "none":
+        _inject_memory_provider_tools(agent)
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1895,7 +1903,8 @@ def init_agent(
     # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
     if (
-        hasattr(agent, "context_compressor")
+        agent.agent_tool_policy != "none"
+        and hasattr(agent, "context_compressor")
         and agent.context_compressor
         and agent.tools is not None
         and (

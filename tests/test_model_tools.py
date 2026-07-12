@@ -3,8 +3,11 @@
 import json
 from unittest.mock import ANY, call, patch
 
+import pytest
+
 
 from model_tools import (
+    get_tool_definitions,
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
@@ -12,6 +15,202 @@ from model_tools import (
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
+
+
+@pytest.fixture
+def registered_extension_tools():
+    from tools.registry import registry
+
+    entries = (
+        ("fake_default_plugin_tool", "fake-default-plugin"),
+        ("fake_mcp_tool", "mcp-fake-server"),
+    )
+    for name, toolset in entries:
+        registry.register(
+            name=name,
+            toolset=toolset,
+            schema={"name": name, "description": "", "parameters": {}},
+            handler=lambda **kwargs: {"ok": True},
+            check_fn=lambda: True,
+        )
+    import model_tools
+
+    model_tools._tool_defs_cache.clear()
+    try:
+        yield entries
+    finally:
+        for name, _ in entries:
+            registry.deregister(name)
+        model_tools._tool_defs_cache.clear()
+
+
+@pytest.fixture
+def kanban_worker_environment(monkeypatch):
+    """Isolate caches whose availability probes depend on worker env state."""
+    import model_tools
+    from tools.registry import invalidate_check_fn_cache
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    invalidate_check_fn_cache()
+    model_tools._tool_defs_cache.clear()
+    try:
+        yield
+    finally:
+        invalidate_check_fn_cache()
+        model_tools._tool_defs_cache.clear()
+
+
+def test_none_policy_wins_over_kanban_and_registered_tools(monkeypatch):
+    """A host policy of no tools is absolute, including worker augmentation."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+
+    assert get_tool_definitions(
+        enabled_toolsets=None,
+        quiet_mode=True,
+        agent_tool_policy="none",
+    ) == []
+
+    import model_tools
+
+    assert model_tools._last_resolved_tool_names == []
+
+
+def test_explicit_empty_policy_wins_over_kanban(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+
+    assert get_tool_definitions(
+        enabled_toolsets=[],
+        quiet_mode=True,
+        agent_tool_policy="explicit",
+    ) == []
+
+
+def test_explicit_allowlist_does_not_gain_kanban(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    import model_tools
+
+    model_tools._tool_defs_cache.clear()
+    captured = set()
+
+    def _definitions(tool_names, quiet=False):
+        captured.update(tool_names)
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": "",
+                    "parameters": {},
+                },
+            }
+            for name in sorted(tool_names)
+        ]
+
+    monkeypatch.setattr("model_tools.registry.get_definitions", _definitions)
+
+    definitions = get_tool_definitions(
+        enabled_toolsets=["web"],
+        quiet_mode=True,
+        agent_tool_policy="explicit",
+    )
+    names = {tool["function"]["name"] for tool in definitions}
+
+    assert names
+    assert names == captured
+    assert not any(name.startswith("kanban_") for name in names)
+
+
+def test_configured_policy_preserves_kanban_worker_augmentation(
+    kanban_worker_environment,
+):
+    definitions = get_tool_definitions(
+        enabled_toolsets=[],
+        quiet_mode=True,
+        agent_tool_policy="configured",
+    )
+    names = {tool["function"]["name"] for tool in definitions}
+
+    assert "kanban_show" in names
+
+
+def test_tool_search_bridge_preserves_explicit_policy(monkeypatch):
+    import model_tools
+
+    seen = {}
+
+    def _definitions(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(model_tools, "get_tool_definitions", _definitions)
+
+    handle_function_call(
+        "tool_search",
+        {"query": "web"},
+        enabled_toolsets=["web"],
+        agent_tool_policy="explicit",
+    )
+
+    assert seen["enabled_toolsets"] == ["web"]
+    assert seen["agent_tool_policy"] == "explicit"
+    assert seen["skip_tool_search_assembly"] is True
+
+
+def test_explicit_policy_does_not_infer_registered_extensions(
+    registered_extension_tools,
+):
+    names = {
+        tool["function"]["name"]
+        for tool in get_tool_definitions(
+            enabled_toolsets=["web"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+            agent_tool_policy="explicit",
+        )
+    }
+
+    assert "fake_default_plugin_tool" not in names
+    assert "fake_mcp_tool" not in names
+
+
+@pytest.mark.parametrize(
+    ("toolset", "expected"),
+    [
+        ("fake-default-plugin", "fake_default_plugin_tool"),
+        ("mcp-fake-server", "fake_mcp_tool"),
+    ],
+)
+def test_explicit_policy_allows_named_extension_toolset(
+    registered_extension_tools,
+    toolset,
+    expected,
+):
+    names = {
+        tool["function"]["name"]
+        for tool in get_tool_definitions(
+            enabled_toolsets=[toolset],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+            agent_tool_policy="explicit",
+        )
+    }
+
+    assert names == {expected}
+
+
+def test_tool_call_bridge_rejects_non_allowlisted_extension(
+    registered_extension_tools,
+):
+    result = json.loads(
+        handle_function_call(
+            "tool_call",
+            {"name": "fake_mcp_tool", "arguments": {}},
+            enabled_toolsets=["web"],
+            agent_tool_policy="explicit",
+        )
+    )
+
+    assert "not available in this session" in result["error"]
 
 
 # =========================================================================

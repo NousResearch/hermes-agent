@@ -1227,16 +1227,22 @@ class PluginContext:
             raise FileNotFoundError(f"SKILL.md not found at {path}")
 
         qualified = f"{self.manifest.name}:{name}"
-        self._manager._plugin_skills[qualified] = {
-            "path": path,
-            "plugin": self.manifest.name,
-            "bare_name": name,
-            "description": description,
-        }
-        logger.debug(
-            "Plugin %s registered skill: %s",
-            self.manifest.name, qualified,
+        registered = self._manager._register_plugin_skill(
+            qualified,
+            {
+                "path": path,
+                "plugin": self.manifest.name,
+                "bare_name": name,
+                "description": description,
+            },
+            self.manifest,
         )
+        if registered:
+            logger.debug(
+                "Plugin %s registered skill: %s",
+                self.manifest.name,
+                qualified,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1259,6 +1265,12 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # A qualified skill namespace is derived from manifest.name, while a
+        # plugin's actual identity is its registry key.  Keep those concepts
+        # separate so two enabled plugins cannot silently share a namespace.
+        # Deferred platform plugins claim ownership without being imported.
+        self._plugin_skill_namespace_owners: Dict[str, Set[str]] = {}
+        self._ambiguous_plugin_skill_namespaces: Set[str] = set()
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1296,6 +1308,8 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._plugin_skill_namespace_owners.clear()
+            self._ambiguous_plugin_skill_namespaces.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
@@ -1720,6 +1734,7 @@ class PluginManager:
         loaded = LoadedPlugin(manifest=manifest, enabled=True)
         loaded.deferred = True
         self._plugins[lookup_key] = loaded
+        self._claim_plugin_skill_namespace(manifest)
 
         def _loader(_manifest: PluginManifest = manifest) -> None:
             self._load_plugin(_manifest)
@@ -1746,6 +1761,10 @@ class PluginManager:
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
+        skill_namespace_snapshot: Optional[
+            tuple[Optional[Set[str]], bool, Dict[str, Dict[str, Any]]]
+        ] = None
+        skill_namespace_collision_started = False
         logger.debug(
             "Loading plugin '%s' (source=%s, kind=%s, path=%s)",
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
@@ -1772,6 +1791,14 @@ class PluginManager:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
+                skill_namespace_snapshot = self._snapshot_plugin_skill_namespace(
+                    manifest.name
+                )
+                skill_namespace_collision_started = (
+                    self._claim_plugin_skill_namespace(
+                        manifest, emit_warning=False
+                    )
+                )
                 ctx = PluginContext(manifest, self)
                 # Snapshot registry state BEFORE register() so each registry's
                 # attribution counts only what THIS plugin actually added.
@@ -1807,6 +1834,8 @@ class PluginManager:
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
+                if skill_namespace_collision_started:
+                    self._log_plugin_skill_namespace_collision(manifest.name)
                 logger.debug(
                     "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
                     len(loaded.tools_registered),
@@ -1820,6 +1849,10 @@ class PluginManager:
                 )
 
         except Exception as exc:
+            if skill_namespace_snapshot is not None:
+                self._restore_plugin_skill_namespace(
+                    manifest.name, skill_namespace_snapshot
+                )
             loaded.error = str(exc)
             logger.warning(
                 "Failed to load plugin '%s': %s",
@@ -2001,13 +2034,181 @@ class PluginManager:
     # Plugin skill lookups
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _safe_plugin_skill_namespace(value: str) -> str:
+        """Return a bounded identifier safe to include in collision logs."""
+        cleaned = "".join(
+            char if char.isalnum() or char in "_-" else "_"
+            for char in str(value)
+        )[:64]
+        return cleaned or "invalid"
+
+    def _snapshot_plugin_skill_namespace(
+        self, namespace: str
+    ) -> tuple[Optional[Set[str]], bool, Dict[str, Dict[str, Any]]]:
+        """Capture the namespace state changed during one plugin register()."""
+        owners = self._plugin_skill_namespace_owners.get(namespace)
+        prefix = f"{namespace}:"
+        entries = {
+            qualified_name: entry
+            for qualified_name, entry in self._plugin_skills.items()
+            if qualified_name.startswith(prefix)
+        }
+        return (
+            set(owners) if owners is not None else None,
+            namespace in self._ambiguous_plugin_skill_namespaces,
+            entries,
+        )
+
+    def _restore_plugin_skill_namespace(
+        self,
+        namespace: str,
+        snapshot: tuple[Optional[Set[str]], bool, Dict[str, Dict[str, Any]]],
+    ) -> None:
+        """Roll back skill ownership/entries after a failed plugin load."""
+        owners, was_ambiguous, entries = snapshot
+        if owners is None:
+            self._plugin_skill_namespace_owners.pop(namespace, None)
+        else:
+            self._plugin_skill_namespace_owners[namespace] = owners
+        if was_ambiguous:
+            self._ambiguous_plugin_skill_namespaces.add(namespace)
+        else:
+            self._ambiguous_plugin_skill_namespaces.discard(namespace)
+
+        prefix = f"{namespace}:"
+        for qualified_name in list(self._plugin_skills):
+            if qualified_name.startswith(prefix):
+                self._plugin_skills.pop(qualified_name, None)
+        self._plugin_skills.update(entries)
+
+    def _log_plugin_skill_namespace_collision(self, namespace: str) -> None:
+        owners = self._plugin_skill_namespace_owners.get(namespace, set())
+        logger.warning(
+            "Ambiguous plugin skill namespace '%s' claimed by %d plugins; "
+            "qualified skill lookup disabled",
+            self._safe_plugin_skill_namespace(namespace),
+            len(owners),
+        )
+
+    def _claim_plugin_skill_namespace(
+        self, manifest: PluginManifest, *, emit_warning: bool = True
+    ) -> bool:
+        """Record one enabled/deferred plugin's qualified-skill namespace.
+
+        ``manifest.name`` is the public namespace, but ``manifest.key`` is the
+        discovery identity.  Multiple keys claiming one namespace make every
+        lookup in that namespace ambiguous.  Purging any earlier registration
+        makes the result independent of discovery/load order and prevents a
+        loaded plugin from winning merely because it registered first.
+        """
+        namespace = manifest.name
+        owner = manifest.key or manifest.name
+        owners = self._plugin_skill_namespace_owners.setdefault(namespace, set())
+        owners.add(owner)
+        if len(owners) <= 1:
+            return False
+
+        first_collision = namespace not in self._ambiguous_plugin_skill_namespaces
+        self._ambiguous_plugin_skill_namespaces.add(namespace)
+        prefix = f"{namespace}:"
+        for qualified_name in list(self._plugin_skills):
+            if qualified_name.startswith(prefix):
+                self._plugin_skills.pop(qualified_name, None)
+        if first_collision and emit_warning:
+            self._log_plugin_skill_namespace_collision(namespace)
+        return first_collision
+
+    def _register_plugin_skill(
+        self,
+        qualified_name: str,
+        entry: Dict[str, Any],
+        manifest: PluginManifest,
+    ) -> bool:
+        """Register a skill only while its plugin owns a unique namespace."""
+        self._claim_plugin_skill_namespace(manifest)
+        if manifest.name in self._ambiguous_plugin_skill_namespaces:
+            return False
+        self._plugin_skills[qualified_name] = entry
+        return True
+
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
-        """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``."""
+        """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``.
+
+        Bundled platform plugins are normally deferred to avoid importing all
+        gateway SDKs during agent startup.  A qualified skill lookup is an
+        explicit request for one plugin, so materialize only the matching
+        deferred plugin before consulting its private skill registry.  The
+        skill remains qualified-only and never enters the system-prompt index.
+        """
+        namespace, separator, _bare = qualified_name.partition(":")
+        if separator and namespace in self._ambiguous_plugin_skill_namespaces:
+            return None
+        if qualified_name not in self._plugin_skills and separator:
+            self.load_deferred_plugin(namespace)
+            if namespace in self._ambiguous_plugin_skill_namespaces:
+                return None
         entry = self._plugin_skills.get(qualified_name)
         return entry["path"] if entry else None
 
+    def load_deferred_plugin(self, identifier: str) -> bool:
+        """Materialize one explicitly requested bundled platform plugin.
+
+        ``identifier`` may be its manifest name/key (used by qualified plugin
+        skills) or its derived platform name (used by plugin CLI commands).
+        Discovery still defers every unrelated platform, and loading performs
+        registration only: it does not create/connect an adapter or touch the
+        network.
+        """
+        matches: List[PluginManifest] = []
+        seen_manifests: Set[int] = set()
+        for loaded in list(self._plugins.values()):
+            if not loaded.deferred:
+                continue
+            manifest = loaded.manifest
+            candidates = {
+                manifest.name,
+                manifest.key or manifest.name,
+                self._platform_name_from_manifest(manifest),
+            }
+            if identifier not in candidates:
+                continue
+            identity = id(manifest)
+            if identity not in seen_manifests:
+                seen_manifests.add(identity)
+                matches.append(manifest)
+
+        if len(matches) != 1:
+            if len(matches) > 1:
+                def _safe_name(value: str) -> str:
+                    cleaned = "".join(
+                        char if char.isalnum() or char in "_-" else "_"
+                        for char in str(value)
+                    )[:64]
+                    return cleaned or "invalid"
+
+                # Log trusted manifest identifiers only. Never include the
+                # caller-supplied token, plugin paths, config, or credentials.
+                names = sorted(_safe_name(match.name) for match in matches)
+                rendered_names = ", ".join(names[:2])
+                omitted = len(matches) - 2
+                if omitted > 0:
+                    rendered_names += f" (+{omitted} omitted)"
+                logger.warning(
+                    "Ambiguous deferred plugin match between identifiers: %s",
+                    rendered_names,
+                )
+            return False
+
+        manifest = matches[0]
+        self._load_plugin(manifest)
+        materialized = self._plugins.get(manifest.key or manifest.name)
+        return bool(materialized and materialized.enabled and not materialized.deferred)
+
     def list_plugin_skills(self, plugin_name: str) -> List[str]:
         """Return sorted bare names of all skills registered by *plugin_name*."""
+        if plugin_name in self._ambiguous_plugin_skill_namespaces:
+            return []
         prefix = f"{plugin_name}:"
         return sorted(
             e["bare_name"]

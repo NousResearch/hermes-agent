@@ -59,6 +59,124 @@ class TestRegisterCliCommand:
         assert mgr._cli_commands["nocb"]["handler_fn"] is None
 
 
+def test_explicit_identifier_materializes_only_matching_deferred_plugin(tmp_path):
+    manager = PluginManager()
+    plugin_dir = tmp_path / "sample"
+    plugin_dir.mkdir()
+    (plugin_dir / "__init__.py").write_text(
+        "def register(ctx):\n"
+        "    ctx.register_cli_command('sample', 'sample', lambda parser: None)\n",
+        encoding="utf-8",
+    )
+    manifest = PluginManifest(
+        name="sample-platform",
+        key="platforms/sample",
+        source="bundled",
+        kind="platform",
+        path=str(plugin_dir),
+    )
+    manager._register_deferred_platform(manifest)
+
+    assert manager.load_deferred_plugin("unrelated") is False
+    assert manager._plugins["platforms/sample"].deferred is True
+    assert manager.load_deferred_plugin("sample") is True
+    assert "sample" in manager._cli_commands
+    assert manager._plugins["platforms/sample"].deferred is False
+
+
+def test_ambiguous_deferred_identifier_loads_neither_plugin(tmp_path, caplog):
+    manager = PluginManager()
+
+    alpha_dir = tmp_path / "alpha"
+    alpha_skill = alpha_dir / "skill" / "SKILL.md"
+    alpha_skill.parent.mkdir(parents=True)
+    alpha_skill.write_text("alpha", encoding="utf-8")
+    (alpha_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "def register(ctx):\n"
+        "    ctx.register_cli_command('alpha-cli', 'alpha', lambda parser: None)\n"
+        "    ctx.register_skill('alpha-skill', Path(__file__).parent / 'skill' / 'SKILL.md')\n",
+        encoding="utf-8",
+    )
+    alpha = PluginManifest(
+        name="sample-platform",
+        key="platforms/alpha",
+        source="bundled",
+        kind="platform",
+        path=str(alpha_dir),
+    )
+
+    beta_dir = tmp_path / "beta"
+    beta_skill = beta_dir / "skill" / "SKILL.md"
+    beta_skill.parent.mkdir(parents=True)
+    beta_skill.write_text("beta", encoding="utf-8")
+    (beta_dir / "__init__.py").write_text(
+        "from pathlib import Path\n"
+        "def register(ctx):\n"
+        "    ctx.register_cli_command('beta-cli', 'beta', lambda parser: None)\n"
+        "    ctx.register_skill('beta-skill', Path(__file__).parent / 'skill' / 'SKILL.md')\n",
+        encoding="utf-8",
+    )
+    beta = PluginManifest(
+        name="sample",
+        key="sample",
+        source="bundled",
+        kind="platform",
+        path=str(beta_dir),
+    )
+
+    manager._register_deferred_platform(alpha)
+    manager._register_deferred_platform(beta)
+
+    with caplog.at_level("WARNING"):
+        assert manager.load_deferred_plugin("sample") is False
+
+    assert manager._plugins["platforms/alpha"].deferred is True
+    assert manager._plugins["sample"].deferred is True
+    assert manager._cli_commands == {}
+    assert manager._plugin_skills == {}
+    assert str(tmp_path) not in caplog.text
+    assert "sample-platform" in caplog.text
+    assert "sample" in caplog.text
+
+
+def test_many_ambiguous_deferred_matches_have_bounded_sanitized_log(
+    tmp_path, monkeypatch, caplog
+):
+    from gateway.platform_registry import platform_registry
+
+    monkeypatch.setattr(platform_registry, "register_deferred", lambda *_: None)
+    manager = PluginManager()
+    for index in range(25):
+        plugin_dir = tmp_path / f"owner-{index}" / "shared"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    pass\n", encoding="utf-8"
+        )
+        manager._register_deferred_platform(
+            PluginManifest(
+                name=f"owner-{index}-" + ("x" * 100),
+                key=f"platforms/owner-{index}",
+                source="bundled",
+                kind="platform",
+                path=str(plugin_dir),
+            )
+        )
+
+    with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
+        assert manager.load_deferred_plugin("shared") is False
+
+    records = [
+        record.getMessage()
+        for record in caplog.records
+        if "Ambiguous deferred plugin match" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert len(records[0]) <= 256
+    assert "+23 omitted" in records[0]
+    assert str(tmp_path) not in records[0]
+
+
 # ── Memory plugin CLI discovery ───────────────────────────────────────────
 
 

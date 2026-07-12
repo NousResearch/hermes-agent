@@ -2029,9 +2029,7 @@ def test_cli_bulk_complete_with_summary_rejects(kanban_home):
     finally:
         conn.close()
     # Bulk + summary is refused (stderr message, no mutation).
-    # Note: hermes_cli.main doesn't propagate sub-command exit codes
-    # (args.func(args) discards the return value), so we check the side
-    # effects instead.
+    # Check the durable side effects as well as the command's diagnostic.
     from subprocess import run as _run
     import os, sys
     env = os.environ.copy()

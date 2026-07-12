@@ -1,10 +1,14 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import sys
+import types
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import Platform, StreamingConfig
+from gateway.platform_registry import AgentToolPolicy, PlatformEntry, platform_registry
 from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -15,12 +19,26 @@ def _make_runner(proxy_url=None):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner.config = MagicMock()
+    runner.config.multiplex_profiles = False
+    runner.config.platforms = {}
     runner.config.streaming = StreamingConfig()
     runner._running_agents = {}
     runner._session_run_generation = {}
     runner._session_model_overrides = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = None
+    runner._ephemeral_system_prompt = ""
+    runner._prefill_messages = []
+    runner._reasoning_config = None
+    runner._session_reasoning_overrides = {}
+    runner._show_reasoning = False
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._session_db = None
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.hooks.loaded_hooks = []
+    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
     return runner
 
 
@@ -81,6 +99,17 @@ class _FakeSession:
 
     async def __aexit__(self, *args):
         pass
+
+
+class _CapturingAgent:
+    last_init = None
+
+    def __init__(self, *args, **kwargs):
+        type(self).last_init = dict(kwargs)
+        self.tools = []
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None):
+        return {"final_response": "ok", "messages": [], "api_calls": 1}
 
 
 def _patch_aiohttp(session):
@@ -222,6 +251,64 @@ class TestRunAgentProxyDispatch:
                 pass  # Expected — bare runner can't create a real agent
 
         runner._run_agent_via_proxy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a2a_explicit_empty_scope_never_dispatches_to_unrestricted_proxy(
+        self, monkeypatch
+    ):
+        """A restricted inbound platform must remain host-enforced locally."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.setitem(
+            platform_registry._entries,
+            "a2a",
+            PlatformEntry(
+                name="a2a",
+                label="A2A",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                agent_tool_policy="explicit",
+            ),
+        )
+        source = _make_source(Platform("a2a"))
+        runner = _make_runner()
+        runner._run_agent_via_proxy = AsyncMock()
+        config = {"platform_toolsets": {"a2a": []}}
+
+        policy, enabled = runner._resolve_platform_agent_tool_scope(
+            source.platform,
+            config,
+        )
+        assert policy is AgentToolPolicy.EXPLICIT
+        assert enabled == []
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _CapturingAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "test-key",
+            },
+        )
+        _CapturingAgent.last_init = None
+
+        with patch("gateway.run._load_gateway_config", return_value=config):
+            result = await runner._run_agent(
+                message="hi",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="a2a-session",
+                session_key="agent:main:a2a:dm",
+            )
+
+        assert result["final_response"] == "ok"
+        runner._run_agent_via_proxy.assert_not_called()
+        assert _CapturingAgent.last_init["enabled_toolsets"] == []
+        assert _CapturingAgent.last_init["agent_tool_policy"] == "explicit"
 
 
 class TestRunAgentViaProxy:

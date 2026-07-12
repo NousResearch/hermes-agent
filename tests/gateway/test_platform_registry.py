@@ -4,7 +4,7 @@ import os
 import pytest
 from unittest.mock import MagicMock
 
-from gateway.platform_registry import PlatformRegistry, PlatformEntry
+from gateway.platform_registry import AgentToolPolicy, PlatformRegistry, PlatformEntry
 from gateway.config import Platform, GatewayConfig
 
 
@@ -304,6 +304,57 @@ class TestPlatformEntryExtendedFields:
         assert entry.pii_safe is False
         assert entry.emoji == "🔌"
         assert entry.allow_update_command is True
+        assert entry.agent_tool_policy is AgentToolPolicy.CONFIGURED
+        assert entry.inbound_context_references_enabled is True
+
+    def test_agent_tool_policy_accepts_valid_string(self):
+        entry = PlatformEntry(
+            name="request_response",
+            label="Request Response",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            agent_tool_policy="none",
+        )
+
+        assert entry.agent_tool_policy is AgentToolPolicy.NONE
+
+        explicit_entry = PlatformEntry(
+            name="allowlisted",
+            label="Allowlisted",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            agent_tool_policy="explicit",
+        )
+        assert explicit_entry.agent_tool_policy is AgentToolPolicy.EXPLICIT
+
+    def test_agent_tool_policy_rejects_unknown_value(self):
+        with pytest.raises(ValueError, match="agent_tool_policy"):
+            PlatformEntry(
+                name="unsafe",
+                label="Unsafe",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                agent_tool_policy="surprise",
+            )
+
+    def test_inbound_context_reference_capability_is_validated(self):
+        disabled = PlatformEntry(
+            name="no-context-refs",
+            label="No Context Refs",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            inbound_context_references_enabled=False,
+        )
+        assert disabled.inbound_context_references_enabled is False
+
+        with pytest.raises(ValueError, match="inbound_context_references_enabled"):
+            PlatformEntry(
+                name="invalid-context-refs",
+                label="Invalid Context Refs",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                inbound_context_references_enabled="false",
+            )
 
     def test_custom_auth_fields(self):
         entry = PlatformEntry(

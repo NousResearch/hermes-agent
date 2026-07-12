@@ -710,6 +710,7 @@ def _run_review_in_thread(
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                agent_tool_policy=getattr(agent, "agent_tool_policy", "configured"),
                 skip_memory=True,
                 **_fork_kwargs,
             )

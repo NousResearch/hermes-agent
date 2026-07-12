@@ -464,6 +464,8 @@ class TestPluginDiscovery:
         mgr._cli_commands["c"] = {"plugin": "p"}
         mgr._plugin_commands["cmd"] = {"plugin": "p"}
         mgr._plugin_skills["p:skill"] = {}
+        mgr._plugin_skill_namespace_owners["p"] = {"owner"}
+        mgr._ambiguous_plugin_skill_namespaces.add("p")
         mgr._aux_tasks["task"] = {"plugin": "p"}
         mgr._slack_action_handlers.append(("aid", lambda **_: None, "p"))
         mgr._discovered = True
@@ -481,6 +483,8 @@ class TestPluginDiscovery:
         assert mgr._cli_commands == {}
         assert mgr._plugin_commands == {}
         assert mgr._plugin_skills == {}
+        assert mgr._plugin_skill_namespace_owners == {}
+        assert mgr._ambiguous_plugin_skill_namespaces == set()
         assert mgr._aux_tasks == {}
         assert mgr._slack_action_handlers == []
 

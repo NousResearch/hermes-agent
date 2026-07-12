@@ -1,0 +1,10 @@
+name: a2a-platform
+label: Agent2Agent (A2A)
+kind: platform
+version: 1.0.0
+description: >
+  Official A2A Protocol 1.0 integration for authenticated communication
+  between Hermes agents. The optional a2a-sdk dependency is loaded only when
+  this platform is enabled. Credentials are managed by `hermes a2a` and are
+  never read from API_SERVER_KEY or a generic .env file.
+author: NousResearch

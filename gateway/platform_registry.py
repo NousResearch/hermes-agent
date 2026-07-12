@@ -30,9 +30,18 @@ Usage (gateway side):
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class AgentToolPolicy(str, Enum):
+    """Host-enforced agent tool policy for a platform adapter."""
+
+    CONFIGURED = "configured"
+    EXPLICIT = "explicit"
+    NONE = "none"
 
 
 @dataclass
@@ -110,6 +119,16 @@ class PlatformEntry:
     # Do not use markdown.").  Empty string = no hint.
     platform_hint: str = ""
 
+    # Host-enforced tool policy for agents serving this platform. ``explicit``
+    # uses only the platform's saved allowlist; ``none`` is an absolute deny.
+    # Neither policy permits worker context, plugins, MCP refresh, or post-build
+    # injectors to widen the selected surface.
+    agent_tool_policy: AgentToolPolicy | str = AgentToolPolicy.CONFIGURED
+
+    # Whether inbound @file/@folder/@diff-style references may read and expand
+    # local context before the message reaches the agent.
+    inbound_context_references_enabled: bool = True
+
     # ── Env-driven auto-configuration ──
     # Optional: read env vars, return a dict of ``PlatformConfig.extra`` fields
     # to seed when the platform is auto-enabled.  Called during
@@ -157,6 +176,19 @@ class PlatformEntry:
     # Without this hook, plugin platforms cannot serve as cron ``deliver=``
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+
+    def __post_init__(self) -> None:
+        try:
+            self.agent_tool_policy = AgentToolPolicy(self.agent_tool_policy)
+        except (TypeError, ValueError) as exc:
+            valid = ", ".join(policy.value for policy in AgentToolPolicy)
+            raise ValueError(
+                f"agent_tool_policy must be one of: {valid}"
+            ) from exc
+        if not isinstance(self.inbound_context_references_enabled, bool):
+            raise ValueError(
+                "inbound_context_references_enabled must be a boolean"
+            )
 
 
 class PlatformRegistry:

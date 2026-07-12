@@ -2147,6 +2147,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+SessionInterruptHandler = Callable[..., Awaitable[None]]
 
 
 def resolve_channel_prompt(
@@ -2287,6 +2288,11 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Stateless request/response adapters may disable the gateway command
+    # surface entirely. When False, dispatch_request leaves plaintext phrases
+    # untouched and rejects slash commands before the gateway handler.
+    request_dispatch_allows_gateway_commands: bool = True
+
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the
@@ -2326,6 +2332,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._session_interrupt_handler: Optional[SessionInterruptHandler] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2774,6 +2781,57 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
 
+    async def dispatch_request(
+        self,
+        event: MessageEvent,
+    ) -> Optional[Union[str, "EphemeralReply"]]:
+        """Synchronously dispatch one request and return its final response.
+
+        Stateless request/response transports own task lifecycle, concurrency,
+        delivery, and cancellation. This hook preserves the common inbound
+        preprocessing performed by :meth:`handle_message` while avoiding its
+        background delivery task.
+        """
+        if self._message_handler is None:
+            raise RuntimeError(f"{self.name} message handler is not installed")
+
+        if self.request_dispatch_allows_gateway_commands:
+            coerce_plaintext_gateway_command(event)
+        elif str(getattr(event, "text", "") or "").lstrip().startswith("/"):
+            raise ValueError(f"{self.name} request dispatch does not allow gateway commands")
+        await asyncio.to_thread(self._apply_topic_recovery, event)
+        return await self._message_handler(event)
+
+    def set_session_interrupt_handler(
+        self,
+        handler: Optional[SessionInterruptHandler],
+    ) -> None:
+        """Install the host callback for canceling a running session."""
+        self._session_interrupt_handler = handler
+
+    async def request_session_interrupt(
+        self,
+        source: SessionSource,
+        *,
+        interrupt_reason: str = "Platform requested cancellation",
+        invalidation_reason: str = "platform_cancel",
+    ) -> bool:
+        """Ask the host to interrupt and invalidate a running session.
+
+        Returns ``False`` when the adapter has not been attached to a host.
+        The host callback owns session-key derivation, canonical interruption,
+        and cleanup; callers cannot provide a key or profile namespace.
+        """
+        handler = self._session_interrupt_handler
+        if handler is None:
+            return False
+        await handler(
+            source,
+            interrupt_reason=interrupt_reason,
+            invalidation_reason=invalidation_reason,
+        )
+        return True
+
     def set_topic_recovery_fn(
         self,
         fn: Optional[Callable[[Any], Optional[str]]],
@@ -2879,7 +2937,20 @@ class BasePlatformAdapter(ABC):
         Returns True if connection was successful.
         """
         pass
-    
+
+    async def prepare_disconnect(self) -> None:
+        """Quiesce ingress and active work before disconnect authority is revoked.
+
+        Most adapters have no distinct prepare phase. Request/response adapters
+        that must interrupt in-flight sessions during shutdown can override this
+        hook; the gateway calls it while the session interrupt handler is still
+        installed.
+        """
+
+    def active_session_sources(self) -> tuple[SessionSource, ...]:
+        """Snapshot adapter-owned sources that may need canonical interruption."""
+        return ()
+
     @abstractmethod
     async def disconnect(self) -> None:
         """Disconnect from the platform."""

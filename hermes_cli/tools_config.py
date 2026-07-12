@@ -1930,6 +1930,28 @@ def _get_platform_tools(
     return enabled_toolsets
 
 
+def _get_explicit_platform_tools(config: dict, platform: str) -> Set[str]:
+    """Return only toolsets explicitly listed for ``platform``.
+
+    Unlike :func:`_get_platform_tools`, this does not infer a platform
+    composite or add default-on plugins, MCP servers, context-engine tools, or
+    credential-driven capabilities. Global disabled toolsets still subtract
+    from the allowlist.
+    """
+    platform_toolsets = config.get("platform_toolsets") or {}
+    if not isinstance(platform_toolsets, dict):
+        return set()
+    configured = platform_toolsets.get(platform)
+    if not isinstance(configured, list):
+        return set()
+
+    enabled = {str(name) for name in configured if str(name) != "no_mcp"}
+    agent_cfg = config.get("agent") or {}
+    disabled = agent_cfg.get("disabled_toolsets") or []
+    enabled -= {str(name) for name in disabled}
+    return enabled
+
+
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 

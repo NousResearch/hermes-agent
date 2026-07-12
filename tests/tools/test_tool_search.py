@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 from typing import List, Dict, Any
 
 import pytest
@@ -536,3 +537,82 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+    @pytest.mark.parametrize("policy", ["explicit", "none"])
+    def test_executor_scope_policy_blocks_kanban_worker_augmentation(
+        self, monkeypatch, policy
+    ):
+        from agent.tool_executor import _tool_search_scoped_names
+        import model_tools
+        from tools import tool_search
+        from tools.registry import discover_builtin_tools, invalidate_check_fn_cache
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+        discover_builtin_tools()
+        invalidate_check_fn_cache()
+        model_tools._tool_defs_cache.clear()
+        monkeypatch.setattr(
+            tool_search,
+            "scoped_deferrable_names",
+            lambda defs: frozenset(
+                (item.get("function") or {}).get("name") for item in defs
+            ),
+        )
+        agent = SimpleNamespace(
+            enabled_toolsets=[],
+            disabled_toolsets=None,
+            agent_tool_policy=policy,
+        )
+
+        names = _tool_search_scoped_names(agent)
+
+        assert not any(name.startswith("kanban_") for name in names)
+
+    def test_executor_scope_configured_policy_keeps_kanban_augmentation(
+        self, monkeypatch
+    ):
+        from agent.tool_executor import _tool_search_scoped_names
+        import model_tools
+        from tools import tool_search
+        from tools.registry import discover_builtin_tools, invalidate_check_fn_cache
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+        discover_builtin_tools()
+        invalidate_check_fn_cache()
+        model_tools._tool_defs_cache.clear()
+        monkeypatch.setattr(
+            tool_search,
+            "scoped_deferrable_names",
+            lambda defs: frozenset(
+                (item.get("function") or {}).get("name") for item in defs
+            ),
+        )
+        agent = SimpleNamespace(
+            enabled_toolsets=[],
+            disabled_toolsets=None,
+            agent_tool_policy="configured",
+        )
+
+        assert "kanban_show" in _tool_search_scoped_names(agent)
+
+    def test_executor_scope_cache_busts_when_policy_changes(self, monkeypatch):
+        from agent.tool_executor import _tool_search_scoped_names
+        import model_tools
+
+        seen = []
+
+        def fake_definitions(**kwargs):
+            seen.append(kwargs["agent_tool_policy"])
+            return []
+
+        monkeypatch.setattr(model_tools, "get_tool_definitions", fake_definitions)
+        agent = SimpleNamespace(
+            enabled_toolsets=[],
+            disabled_toolsets=None,
+            agent_tool_policy="configured",
+        )
+
+        _tool_search_scoped_names(agent)
+        agent.agent_tool_policy = "explicit"
+        _tool_search_scoped_names(agent)
+
+        assert seen == ["configured", "explicit"]

@@ -28,6 +28,17 @@ describe("normalizeEffort", () => {
     expect(normalizeEffort("turbo")).toBe("medium");
     expect(normalizeEffort(42)).toBe("medium");
   });
+
+  it("maps thinking-off (false/disabled) to none, not medium", () => {
+    // #57330 fixed this everywhere but web/; a config `reasoning_effort: false`
+    // arrives as the boolean false / "false" and must resolve to Off, never
+    // fall through to the medium default (which would re-enable thinking for a
+    // user who explicitly turned it off).
+    expect(normalizeEffort(false)).toBe("none");
+    expect(normalizeEffort("false")).toBe("none");
+    expect(normalizeEffort("FALSE")).toBe("none");
+    expect(normalizeEffort("  disabled  ")).toBe("none");
+  });
 });
 
 describe("EFFORT_OPTIONS", () => {

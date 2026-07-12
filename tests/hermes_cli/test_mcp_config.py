@@ -48,6 +48,7 @@ def _make_args(**kwargs):
         "url": None,
         "mcp_command": None,
         "args": None,
+        "scope": "global",
         "auth": None,
         "preset": None,
         "env": None,
@@ -63,7 +64,7 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 
@@ -751,6 +752,19 @@ class TestConfigHelpers:
         servers = _get_mcp_servers()
         assert "mysvr" in servers
         assert servers["mysvr"]["url"] == "https://example.com/mcp"
+
+    def test_save_mcp_server_to_target_path(self, tmp_path):
+        from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+
+        project_config = tmp_path / "repo" / ".hermes" / "config.yaml"
+        assert _save_mcp_server(
+            "project",
+            {"command": "node"},
+            config_path=project_config,
+        )
+
+        assert _get_mcp_servers(config_path=project_config)["project"]["command"] == "node"
+        assert "project" not in _get_mcp_servers()
 
     def test_remove_mcp_server(self, tmp_path):
         from hermes_cli.mcp_config import (

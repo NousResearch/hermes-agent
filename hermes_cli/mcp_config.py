@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -27,6 +28,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
+from utils import atomic_yaml_write
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +77,43 @@ def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
-def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
+def _load_config_from_path(path: Path) -> Dict[str, Any]:
+    try:
+        import yaml
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning("Could not read MCP config from %s: %s", path, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_config_to_path(path: Path, config: Dict[str, Any]) -> None:
+    atomic_yaml_write(path, config)
+
+
+def _get_mcp_servers(
+    config: Optional[dict] = None,
+    *,
+    config_path: Optional[Path] = None,
+) -> Dict[str, dict]:
     """Return the ``mcp_servers`` dict from config, or empty dict."""
     if config is None:
-        config = load_config()
+        config = _load_config_from_path(config_path) if config_path else load_config()
     servers = config.get("mcp_servers")
     if not servers or not isinstance(servers, dict):
         return {}
     return servers
 
 
-def _save_mcp_server(name: str, server_config: dict) -> bool:
+def _save_mcp_server(
+    name: str,
+    server_config: dict,
+    *,
+    config_path: Optional[Path] = None,
+) -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is
@@ -98,22 +126,28 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
             _warning(issue)
         _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
         return False
-    config = load_config()
+    config = _load_config_from_path(config_path) if config_path else load_config()
     config.setdefault("mcp_servers", {})[name] = server_config
-    save_config(config)
+    if config_path:
+        _save_config_to_path(config_path, config)
+    else:
+        save_config(config)
     return True
 
 
-def _remove_mcp_server(name: str) -> bool:
+def _remove_mcp_server(name: str, *, config_path: Optional[Path] = None) -> bool:
     """Remove a server from config.yaml.  Returns True if it existed."""
-    config = load_config()
+    config = _load_config_from_path(config_path) if config_path else load_config()
     servers = config.get("mcp_servers", {})
     if name not in servers:
         return False
     del servers[name]
     if not servers:
         config.pop("mcp_servers", None)
-    save_config(config)
+    if config_path:
+        _save_config_to_path(config_path, config)
+    else:
+        save_config(config)
     return True
 
 
@@ -148,8 +182,27 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
         config.pop("mcp_servers", None)
     save_config(config)
     return True, []
+def _resolve_mcp_scope(args) -> tuple[str, Optional[Path]]:
+    requested = str(getattr(args, "scope", "") or "").strip().lower()
+    if requested and requested not in {"project", "local", "global"}:
+        raise ValueError("--scope must be one of: project, local, global")
+    if requested == "global":
+        return "global", None
 
+    try:
+        from agent.project_local import project_identity
 
+        identity = project_identity(os.getcwd())
+    except Exception:
+        identity = None
+
+    if requested in {"project", "local"} and identity is None:
+        raise ValueError("--scope project/local requires running inside a git worktree")
+    if identity is None:
+        return "global", None
+
+    _canonical_id, root = identity
+    return requested or "project", root / ".hermes" / "config.yaml"
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
     suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")
@@ -399,6 +452,11 @@ def cmd_mcp_add(args):
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)
     raw_connect_timeout = getattr(args, "connect_timeout", None)
+    try:
+        scope, target_config_path = _resolve_mcp_scope(args)
+    except ValueError as exc:
+        _error(str(exc))
+        return
 
     server_config: Dict[str, Any] = {}
     try:
@@ -429,7 +487,7 @@ def cmd_mcp_add(args):
         return
 
     # Check if server already exists
-    existing = _get_mcp_servers()
+    existing = _get_mcp_servers(config_path=target_config_path)
     if name in existing:
         if not _confirm(f"Server '{name}' already exists. Overwrite?", default=False):
             _info("Cancelled.")
@@ -583,9 +641,26 @@ def cmd_mcp_add(args):
     # ── Save ──────────────────────────────────────────────────────────
 
     server_config["enabled"] = True
-    if _save_mcp_server(name, server_config):
+    if _save_mcp_server(name, server_config, config_path=target_config_path):
+        if target_config_path:
+            try:
+                from agent.project_local import clear_project_local_cache, trust_project_mcp
+
+                clear_project_local_cache()
+                trust_project_mcp(target_config_path.parent.parent)
+            except Exception as exc:
+                logger.warning("Could not record project MCP trust: %s", exc)
         print()
-        _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
+        if target_config_path:
+            _success(
+                f"Saved '{name}' to {target_config_path} "
+                f"({scope} scope, {tool_count}/{total} tools enabled)"
+            )
+        else:
+            _success(
+                f"Saved '{name}' to {display_hermes_home()}/config.yaml "
+                f"({tool_count}/{total} tools enabled)"
+            )
         _info("Start a new session to use these tools.")
 
 

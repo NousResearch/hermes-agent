@@ -492,6 +492,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nModel: {agent.model}"
     if agent.provider:
         timestamp_line += f"\nProvider: {agent.provider}"
+    try:
+        from agent.project_local import resolve_project_local_state
+
+        _project_local = getattr(agent, "project_local_state", None)
+        if _project_local is None:
+            _project_local = resolve_project_local_state(resolve_context_cwd())
+        if _project_local is not None:
+            timestamp_line += f"\nProject-Local-ID: {_project_local.canonical_id}"
+            timestamp_line += f"\nProject-Local-Manifest: {_project_local.manifest_hash}"
+    except Exception:
+        pass
     volatile_parts.append(timestamp_line)
 
     return {

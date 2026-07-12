@@ -424,6 +424,28 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     if stored_provider and current_provider and stored_provider != current_provider:
         return False
 
+    stored_project_id = line_value("Project-Local-ID")
+    stored_project_manifest = line_value("Project-Local-Manifest")
+    if not stored_project_id and not stored_project_manifest:
+        return True
+
+    try:
+        from agent.project_local import resolve_project_local_state
+        from agent.system_prompt import resolve_context_cwd
+
+        project_state = getattr(agent, "project_local_state", None)
+        if project_state is None:
+            project_state = resolve_project_local_state(resolve_context_cwd())
+    except Exception:
+        project_state = None
+
+    current_project_id = project_state.canonical_id if project_state is not None else ""
+    current_project_manifest = project_state.manifest_hash if project_state is not None else ""
+    if stored_project_id != current_project_id:
+        return False
+    if stored_project_manifest != current_project_manifest:
+        return False
+
     return True
 
 

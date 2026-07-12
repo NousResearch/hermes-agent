@@ -3742,7 +3742,7 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
-def _load_mcp_config() -> Dict[str, dict]:
+def _load_mcp_config(cwd: str | None = None) -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
@@ -3762,13 +3762,24 @@ def _load_mcp_config() -> Dict[str, dict]:
         config = load_config()
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
-            return {}
+            servers = {}
         # Ensure .env vars are available for interpolation
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
             pass
+        try:
+            from agent.project_local import trusted_project_mcp_servers
+
+            project_cwd = cwd or os.environ.get("TERMINAL_CWD") or os.getcwd()
+            project_servers = trusted_project_mcp_servers(project_cwd)
+            if project_servers:
+                servers = {**servers, **project_servers}
+        except Exception as exc:
+            logger.debug("Failed to load trusted project MCP config: %s", exc)
+        if not servers or not isinstance(servers, dict):
+            return {}
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
             interpolated = _interpolate_env_vars(cfg)

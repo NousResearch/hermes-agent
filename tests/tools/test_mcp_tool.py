@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -120,6 +121,32 @@ class TestLoadMCPConfig:
             from tools.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
+
+    def test_trusted_project_mcp_servers_merge_after_global(self, tmp_path, monkeypatch):
+        """Project MCP servers load only after sidecar trust approves the fingerprint."""
+        from agent.project_local import trust_project_mcp
+        from tools.mcp_tool import _load_mcp_config
+
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        repo = tmp_path / "repo"
+        (repo / ".hermes").mkdir(parents=True)
+        repo.joinpath(".hermes", "config.yaml").write_text(
+            "mcp_servers:\n  project:\n    command: node\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": {"global": {"command": "python"}}},
+        ):
+            assert sorted(_load_mcp_config(cwd=str(repo))) == ["global"]
+            trust_project_mcp(repo)
+            loaded = _load_mcp_config(cwd=str(repo))
+
+        assert loaded["global"]["command"] == "python"
+        assert loaded["project"]["command"] == "node"
 
 
 class TestMCPStatus:

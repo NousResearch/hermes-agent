@@ -18155,12 +18155,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            _cache_keys = self._extract_cache_busting_config(user_config)
+            _project_state = None
+            try:
+                from agent.project_local import resolve_project_local_state
+
+                _project_state = resolve_project_local_state(
+                    os.environ.get("TERMINAL_CWD") or os.getcwd()
+                )
+                if _project_state is not None:
+                    _cache_keys["project_local.canonical_id"] = _project_state.canonical_id
+                    _cache_keys["project_local.manifest_hash"] = _project_state.manifest_hash
+            except Exception:
+                pass
+
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=_cache_keys,
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
@@ -18309,6 +18323,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
                     session_id=session_id,
+                    project_local_state=_project_state,
                     platform=platform_key,
                     user_id=source.user_id,
                     user_id_alt=source.user_id_alt,

@@ -106,13 +106,21 @@ def test_compression_threshold_codex_gpt55_other_routes_unaffected() -> None:
 
 
 def test_compression_threshold_codex_gpt55_custom_codex_responses() -> None:
-    # Any custom provider speaking codex_responses with a matching gpt-5.6
-    # model family should get the same 0.85 auto-raise as openai-codex.
-    assert _compression_threshold_for_model("gpt-5.6-sol", "custom", api_mode="codex_responses") == 0.85
-    assert _compression_threshold_for_model("gpt-5.6-sol-pro", "custom", api_mode="codex_responses") == 0.85
-    assert _compression_threshold_for_model("gpt-5.6-luna", "sudo", api_mode="codex_responses") == 0.85
-    # openai-codex still matches without explicit api_mode
-    assert _compression_threshold_for_model("gpt-5.6-sol", "openai-codex") == 0.85
+    # Custom Responses routes inherit the Codex autoraise independently of
+    # their provider-specific context window.
+    assert _compression_threshold_for_model(
+        "gpt-5.6-sol", "custom", api_mode="codex_responses",
+    ) == 0.85
+    assert _compression_threshold_for_model(
+        "gpt-5.6-sol-pro", "custom", api_mode="codex_responses",
+    ) == 0.85
+    assert _compression_threshold_for_model(
+        "gpt-5.6-luna", "sudo", api_mode="codex_responses",
+    ) == 0.85
+    # The built-in route still matches without an explicit api_mode.
+    assert _compression_threshold_for_model(
+        "gpt-5.6-sol", "openai-codex",
+    ) == 0.85
 
 
 

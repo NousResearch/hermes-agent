@@ -494,6 +494,7 @@ def _compression_threshold_for_model(
     *,
     allow_codex_gpt55_autoraise: bool = True,
     api_mode: Optional[str] = None,
+    context_length: Optional[int] = None,
 ) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 

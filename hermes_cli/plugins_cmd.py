@@ -1028,7 +1028,7 @@ def _discover_all_plugins() -> list:
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
-        (repo_plugins, "bundled", {"memory", "context_engine"}),
+        (repo_plugins, "bundled", {"memory", "context_engine", "cron_providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

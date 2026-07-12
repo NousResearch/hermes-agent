@@ -1324,17 +1324,18 @@ class PluginManager:
         #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
         #
-        # ``memory/``, ``context_engine/``, and ``model-providers/`` are
-        # skipped at the top level — they have their own discovery systems
-        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
-        # is a category holding platform adapters (scanned one level deeper
-        # below).
+        # ``memory/``, ``context_engine/``, ``model-providers/``, and
+        # ``cron_providers/`` are skipped at the top level — they have their
+        # own discovery systems (plugins/memory/__init__.py,
+        # providers/__init__.py, plugins/cron_providers/__init__.py).
+        # ``platforms/`` is a category holding platform adapters (scanned one
+        # level deeper below).
         repo_plugins = get_bundled_plugins_dir()
         logger.debug("Scanning bundled plugins: %s", repo_plugins)
         bundled = self._scan_directory(
             repo_plugins,
             source="bundled",
-            skip_names={"memory", "context_engine", "platforms", "model-providers"},
+            skip_names={"memory", "context_engine", "platforms", "model-providers", "cron_providers"},
         )
         logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
         manifests.extend(bundled)
@@ -1392,8 +1393,8 @@ class PluginManager:
                 logger.debug("Skipping disabled plugin '%s'", lookup_key)
                 continue
 
-            # Exclusive plugins (memory providers) have their own
-            # discovery/activation path. The general loader records the
+            # Exclusive plugins (memory / cron scheduler providers) have their
+            # own discovery/activation path. The general loader records the
             # manifest for introspection but does not load the module.
             if manifest.kind == "exclusive":
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
@@ -1607,6 +1608,20 @@ class PluginManager:
                             kind = "exclusive"
                             logger.debug(
                                 "Plugin %s: detected memory provider, "
+                                "treating as kind='exclusive'",
+                                key,
+                            )
+                        elif (
+                            "register_cron_scheduler" in source_text
+                            or "CronScheduler" in source_text
+                        ):
+                            # Cron scheduler provider (e.g. bundled Chronos).
+                            # Route to plugins/cron_providers discovery via
+                            # cron.provider — PluginContext has no
+                            # register_cron_scheduler (#62951).
+                            kind = "exclusive"
+                            logger.debug(
+                                "Plugin %s: detected cron scheduler provider, "
                                 "treating as kind='exclusive'",
                                 key,
                             )

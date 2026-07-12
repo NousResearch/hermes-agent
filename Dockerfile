@@ -308,6 +308,23 @@ ENV HERMES_DISABLE_LAZY_INSTALLS=1
 # updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
 ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 
+# ---------- Safety redline (peer safety state machine) ----------
+# safety_redline/ ships inside the source tree and gets baked into the
+# image via `COPY . .` above. The module exposes a deterministic peer-
+# safety state machine (HEALTHY / WARN / PAUSED / HARD_PAUSE) that any
+# external consumer driver can use to gate incoming requests after
+# repeated API failures. Defaults follow the 3->paused / 4->hard_pause /
+# 5-minute cooldown convention and are tunable via the env vars below.
+# Set `SAFETY_REDLINE_ENABLED=false` to disable at build time; the
+# module remains importable but no daemon is started.
+ENV SAFETY_REDLINE_ENABLED=true
+ENV SAFETY_REDLINE_PAUSE_THRESHOLD=3
+ENV SAFETY_REDLINE_HARD_PAUSE_THRESHOLD=4
+ENV SAFETY_REDLINE_COOLDOWN_SECONDS=300
+ENV SAFETY_REDLINE_WARN_THRESHOLD=2
+ENV SAFETY_REDLINE_PEER_PORT=9880
+
+
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the
 # command writes under $HERMES_HOME (auth.json, .env, config.yaml) ends

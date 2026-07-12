@@ -12,7 +12,7 @@ claude_oauth = ProviderProfile(
     api_mode="claude_agent_sdk",
     env_vars=(),
     base_url="",
-    auth_type="oauth_external",
+    auth_type="external_process",
     supports_health_check=False,
     fallback_models=("claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"),
 )

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class HermesOverlay:
     """Hermes-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
+    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses | claude_agent_sdk
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
@@ -63,6 +63,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="codex_responses",
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
+    ),
+    "claude-oauth": HermesOverlay(
+        transport="claude_agent_sdk",
+        auth_type="external_process",
+        base_url_override="claude-oauth://local",
     ),
     "openai-api": HermesOverlay(
         transport="codex_responses",

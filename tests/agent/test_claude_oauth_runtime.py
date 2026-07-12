@@ -39,6 +39,11 @@ def test_claude_oauth_provider_is_not_anthropic_alias():
     assert "claude-oauth" not in anthropic.aliases
     assert "claude-code" not in anthropic.aliases
 
+    from hermes_cli.providers import HERMES_OVERLAYS
+    overlay = HERMES_OVERLAYS["claude-oauth"]
+    assert overlay.transport == "claude_agent_sdk"
+    assert overlay.auth_type == "external_process"
+
 
 def test_runtime_provider_resolves_without_api_credentials(monkeypatch):
     from hermes_cli import runtime_provider as rp
@@ -60,9 +65,26 @@ def test_child_environment_scrubs_payg_credentials(monkeypatch):
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "payg")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "payg-token")
+    forbidden = {
+        "ANTHROPIC_TOKEN": "raw-oauth-token",
+        "CLAUDE_CODE_OAUTH_TOKEN": "raw-oauth-token",
+        "ANTHROPIC_BASE_URL": "https://payg.invalid",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "CLAUDE_CODE_USE_FOUNDRY": "1",
+        "CLAUDE_CODE_USE_ANTHROPIC_AWS": "1",
+        "AWS_ACCESS_KEY_ID": "alternate-billing",
+        "AWS_SECRET_ACCESS_KEY": "alternate-billing",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/alternate-billing.json",
+    }
+    for key, value in forbidden.items():
+        monkeypatch.setenv(key, value)
     env = subscription_environment()
     assert "ANTHROPIC_API_KEY" not in env
     assert "ANTHROPIC_AUTH_TOKEN" not in env
+    assert not (forbidden.keys() & env.keys())
+    assert env.get("PATH") == os.environ.get("PATH")
+    assert env.get("HOME") == os.environ.get("HOME")
 
 
 def test_auth_preflight_rejects_non_subscription(tmp_path):

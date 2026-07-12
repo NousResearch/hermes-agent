@@ -51,8 +51,11 @@ from utils import is_truthy_value
 PARENT_MODE_ROUTING_GUIDANCE = (
     "Routing policy: choose thinking-expansion for exploration with no side effects; "
     "choose research-analysis for evidence work; choose execution-development only "
-    "for explicitly requested or approved changes. Do not transition from "
-    "research-analysis to execution-development implicitly; verification is required."
+    "for explicitly requested or approved changes. Use route_research_mode for a "
+    "substantial evidence-gathering or comparative-analysis task that benefits from "
+    "an isolated read-only researcher. No execution mode is exposed by this tool. "
+    "Do not transition from research-analysis to execution-development implicitly; "
+    "verification is required."
 )
 
 

@@ -1067,6 +1067,37 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._apply_pending_steer_to_tool_results(messages, 1)
             continue
 
+        # This name exists only in an enabled agent's immutable tool snapshot.
+        # Handle it here so generic registry dispatch always rejects it.
+        if function_name == "route_research_mode":
+            from agent.research_mode_tool import validate_arguments
+            route_error = validate_arguments(function_args)
+            if not getattr(agent, "_mode_router_enabled", False):
+                route_error = json.dumps({
+                    "error": "Tool not available",
+                    "message": "route_research_mode is not enabled for this agent.",
+                })
+            if route_error is None:
+                from tools.delegate_tool import route_trusted_mode
+                decision = route_trusted_mode(
+                    mode="research-analysis",
+                    goal=function_args["goal"],
+                    context=function_args.get("context"),
+                    parent_agent=agent,
+                )
+                route_result = decision.result
+            else:
+                route_result = route_error
+            messages.append(make_tool_result_message(
+                function_name, route_result, tool_call.id,
+                effect_disposition="none",
+            ))
+            _flush_session_db_after_tool_progress(
+                agent, messages, stage=f"tool result {function_name}",
+            )
+            agent._apply_pending_steer_to_tool_results(messages, 1)
+            continue
+
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
         # underlying tool directly, so session toolset scope is enforced here).

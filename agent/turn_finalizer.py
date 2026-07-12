@@ -51,6 +51,10 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    kanban_approval_pending = (
+        getattr(agent, "_kanban_approval_pending", None) is not None
+    )
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -150,6 +154,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and not failed
+        and not kanban_approval_pending
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -301,7 +306,7 @@ def finalize_turn(
     # Gate: only applied when a real text response exists for this
     # turn and the user didn't interrupt.  Empty/interrupted turns
     # already have other surface text that shouldn't be augmented.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not kanban_approval_pending:
         try:
             _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
             if _failed and agent._file_mutation_verifier_enabled():
@@ -374,7 +379,7 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
     # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    if final_response and not interrupted and not kanban_approval_pending:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
@@ -396,7 +401,7 @@ def finalize_turn(
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
     # to an external memory system).
-    if final_response and not interrupted:
+    if final_response and not interrupted and not kanban_approval_pending:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
@@ -467,6 +472,9 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if kanban_approval_pending:
+        result["kanban_approval_pending"] = True
+        result["approval_request"] = dict(agent._kanban_approval_pending)
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).
@@ -499,16 +507,22 @@ def finalize_turn(
         agent._iters_since_skill = 0
 
     # External memory provider: sync the completed turn + queue next prefetch.
-    agent._sync_external_memory_for_turn(
-        original_user_message=original_user_message,
-        final_response=final_response,
-        interrupted=interrupted,
-        messages=messages,
-    )
+    if not kanban_approval_pending:
+        agent._sync_external_memory_for_turn(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+            messages=messages,
+        )
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        final_response
+        and not interrupted
+        and not kanban_approval_pending
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

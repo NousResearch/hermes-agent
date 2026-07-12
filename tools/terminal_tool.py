@@ -2385,6 +2385,27 @@ def terminal_tool(
                 has_host_access=_docker_has_host_access(config),
             )
             if not approval["approved"]:
+                # Detached Kanban card owners cannot wait on the gateway's
+                # process-local approval callback.  The approval layer parks
+                # the card in its durable broker and returns this marker; keep
+                # it at the top level so the agent loop can persist the tool
+                # result and stop cleanly without another model call.
+                if (
+                    approval.get("status") == "kanban_approval_pending"
+                    and approval.get("kanban_approval_pending") is True
+                ):
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": "",
+                        "status": "kanban_approval_pending",
+                        "kanban_approval_pending": True,
+                        "request_id": approval.get("request_id"),
+                        "display_target": approval.get("display_target", ""),
+                        "description": approval.get(
+                            "description", "command requires approval"
+                        ),
+                    }, ensure_ascii=False)
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "pending_approval":
                     return json.dumps({

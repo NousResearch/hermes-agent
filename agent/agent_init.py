@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.execution_context import execution_role_from_environment
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
@@ -611,6 +612,13 @@ def init_agent(
     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
+
+    # Capture execution authority once, at agent construction.  The value is
+    # rebound through a ContextVar for each run_conversation() call so tools
+    # never infer authority from ambient process state. Delegated children are
+    # downgraded at bind time after _delegate_depth has been assigned.
+    agent._execution_role = execution_role_from_environment()
+    agent._kanban_approval_pending: Optional[dict[str, Any]] = None
     
     # Store OpenRouter provider preferences
     agent.providers_allowed = providers_allowed

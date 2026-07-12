@@ -1212,6 +1212,22 @@ def execute_code(
         has_host_access=_docker_has_host_access(_env_config),
     )
     if not _guard.get("approved", False):
+        if (
+            _guard.get("status") == "kanban_approval_pending"
+            and _guard.get("kanban_approval_pending") is True
+        ):
+            return json.dumps({
+                "status": "kanban_approval_pending",
+                "kanban_approval_pending": True,
+                "request_id": _guard.get("request_id"),
+                "display_target": _guard.get("display_target", ""),
+                "description": _guard.get(
+                    "description", "execute_code requires approval"
+                ),
+                "error": "",
+                "tool_calls_made": 0,
+                "duration_seconds": 0,
+            }, ensure_ascii=False)
         return json.dumps({
             "status": "error",
             "error": _guard.get("message") or "execute_code blocked by approval guard.",

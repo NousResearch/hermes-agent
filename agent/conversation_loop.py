@@ -4874,6 +4874,31 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                if getattr(agent, "_kanban_approval_pending", None) is not None:
+                    _approval = agent._kanban_approval_pending
+                    _turn_exit_reason = "kanban_approval_pending"
+                    _description = str(
+                        _approval.get("description")
+                        or "this action requires approval"
+                    )
+                    final_response = (
+                        f"Kanban task paused pending approval: {_description}. "
+                        "The task will resume automatically if the request is approved."
+                    )
+                    # Every assistant tool_call already has a matching tool
+                    # result at this point. Close the turn with an assistant
+                    # row so the persisted transcript remains role-valid, but
+                    # do not ask the model to interpret/retry the denial.
+                    messages.append({"role": "assistant", "content": final_response})
+                    agent._emit_status("⏸️ Kanban task paused pending approval")
+                    if final_response and agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
+                    break
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

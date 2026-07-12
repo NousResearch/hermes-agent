@@ -1,0 +1,221 @@
+# Publish Hermes Lanyard runtime tarball to the product artifact S3 prefix.
+#
+# LanyardBrain-specific — does not replace docker.yml (GHCR images) or
+# upload_to_pypi.yml. Consumer: company-brain-deploy bootstrap → /opt/hermes-lanyard.
+#
+# Triggers: immutable release tags only (v*). Never treats branch names as versions.
+name: Release Lanyard artifact
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Immutable version label (e.g. v0.1.0). Must not be main/master/HEAD/latest."
+        required: true
+        type: string
+      skip_upload:
+        description: "Pack only; skip S3 upload (local/CI dry test)"
+        required: false
+        type: boolean
+        default: false
+      skip_frontend:
+        description: "Skip web/TUI npm builds (faster pack smoke)"
+        required: false
+        type: boolean
+        default: false
+
+# Default read-only; OIDC job escalates id-token.
+permissions:
+  contents: read
+
+concurrency:
+  group: lanyard-artifact-${{ github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pack-and-publish:
+    name: Pack runtime + publish to S3
+    # Fork-only path; never run on NousResearch/hermes-agent upstream.
+    if: github.repository == 'LanyardBrain/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write # AWS OIDC
+
+    env:
+      # Repository variables / secrets — never hardcode account IDs or bucket names.
+      # ARTIFACT_BUCKET: platform artifact bucket name (var)
+      # AWS_ROLE_ARN: OIDC role ARN matching ${name_prefix}-gha-hermes (var or secret)
+      # AWS_REGION: e.g. us-east-1 (var; default below is a fallback only for the action)
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+    steps:
+      - name: Resolve version
+        id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              VERSION="${INPUT_VERSION}"
+              ;;
+            release)
+              VERSION="${RELEASE_TAG}"
+              ;;
+            *)
+              # push tags / default
+              VERSION="${REF_NAME}"
+              ;;
+          esac
+          VERSION="${VERSION#refs/tags/}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not resolve version from event ${EVENT_NAME}"
+            exit 1
+          fi
+          # Fail closed on mutable / branch-like labels
+          v_lc="$(echo "$VERSION" | tr '[:upper:]' '[:lower:]')"
+          case "$v_lc" in
+            main|master|head|develop|development|trunk|latest|origin/*|refs/*)
+              echo "::error::Refusing mutable version label '${VERSION}'. Use an immutable tag (e.g. v0.1.0)."
+              exit 1
+              ;;
+          esac
+          if ! echo "$VERSION" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]*$'; then
+            echo "::error::Version contains unsafe characters: '${VERSION}'"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          # workflow_dispatch may pack a version that is only a label; checkout current ref.
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+
+      - name: Set up Node.js
+        if: github.event.inputs.skip_frontend != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Pack Lanyard runtime
+        id: pack
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SKIP_FRONTEND: ${{ github.event.inputs.skip_frontend || 'false' }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/pack-lanyard-runtime.sh
+          EXTRA=()
+          if [ "$SKIP_FRONTEND" = "true" ]; then
+            EXTRA+=(--skip-frontend)
+          fi
+          # Capture machine-readable summary lines
+          set -o pipefail
+          scripts/pack-lanyard-runtime.sh --version "$VERSION" --output-dir dist/lanyard "${EXTRA[@]}" | tee /tmp/pack-summary.txt
+          # Export for later steps
+          while IFS= read -r line; do
+            case "$line" in
+              PACK_*=*)
+                echo "$line" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+          done < /tmp/pack-summary.txt
+          test -f "dist/lanyard/hermes-${VERSION}.tar.gz"
+          test -f "dist/lanyard/hermes-${VERSION}.sha256"
+          echo "Recorded SHA-256:"
+          cat "dist/lanyard/hermes-${VERSION}.sha256"
+
+      - name: Upload GitHub Actions artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hermes-lanyard-${{ steps.ver.outputs.version }}
+          path: |
+            dist/lanyard/hermes-${{ steps.ver.outputs.version }}.tar.gz
+            dist/lanyard/hermes-${{ steps.ver.outputs.version }}.sha256
+            dist/lanyard/hermes-${{ steps.ver.outputs.version }}.sha256.hex
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Decide whether to upload to S3
+        id: should_upload
+        env:
+          SKIP_UPLOAD: ${{ github.event.inputs.skip_upload || 'false' }}
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN || '' }}
+          BUCKET: ${{ vars.ARTIFACT_BUCKET || secrets.ARTIFACT_BUCKET || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$SKIP_UPLOAD" = "true" ]; then
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping S3 upload (skip_upload=true)"
+            exit 0
+          fi
+          if [ -z "$ROLE_ARN" ] || [ -z "$BUCKET" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "upload=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::ARTIFACT_BUCKET / AWS_ROLE_ARN not configured — packed only (dispatch dry path)."
+              exit 0
+            fi
+            echo "::error::ARTIFACT_BUCKET and AWS_ROLE_ARN must be set (repo variables or secrets) to publish."
+            exit 1
+          fi
+          echo "upload=true" >> "$GITHUB_OUTPUT"
+          echo "bucket=${BUCKET}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.should_upload.outputs.upload == 'true'
+        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Role name pattern from product-artifact-infra: ${name_prefix}-gha-hermes
+          # Trust: repo:LanyardBrain/hermes-agent:ref:refs/tags/*
+
+      - name: Upload to S3 hermes/ prefix
+        if: steps.should_upload.outputs.upload == 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          BUCKET: ${{ steps.should_upload.outputs.bucket }}
+        run: |
+          set -euo pipefail
+          # Fail closed again at upload time
+          v_lc="$(echo "$VERSION" | tr '[:upper:]' '[:lower:]')"
+          case "$v_lc" in
+            main|master|head|develop|development|trunk|latest)
+              echo "::error::Refusing to upload under mutable version '${VERSION}'"
+              exit 1
+              ;;
+          esac
+          TARBALL="dist/lanyard/hermes-${VERSION}.tar.gz"
+          SHA_FILE="dist/lanyard/hermes-${VERSION}.sha256"
+          PREFIX="s3://${BUCKET}/hermes/${VERSION}"
+          echo "Uploading to ${PREFIX}/"
+          aws s3 cp "$TARBALL" "${PREFIX}/hermes-${VERSION}.tar.gz"
+          aws s3 cp "$SHA_FILE" "${PREFIX}/hermes-${VERSION}.sha256"
+          echo "Published:"
+          echo "  ${PREFIX}/hermes-${VERSION}.tar.gz"
+          echo "  ${PREFIX}/hermes-${VERSION}.sha256"
+          echo "Pin fields for company-brain-deploy (operator fills after verify):"
+          echo "  hermes.version=${VERSION}"
+          echo "  hermes.url=s3://${BUCKET}/hermes/${VERSION}/hermes-${VERSION}.tar.gz"
+          echo "  hermes.sha256=$(cut -d' ' -f1 "$SHA_FILE")"

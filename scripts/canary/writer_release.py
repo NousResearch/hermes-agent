@@ -83,7 +83,7 @@ _PINNED_BUILD_CONSTRAINTS = (
 ).encode("ascii")
 _SAFE_WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+\.whl$")
 _VIRTUALENV_SITE_HOOK_NAME = "_virtualenv.pth"
-_VIRTUALENV_SITE_HOOK_BYTES = b"import _virtualenv\n"
+_VIRTUALENV_SITE_HOOK_BYTES = b"import _virtualenv"
 
 def _effective_uid() -> int:
     getter = getattr(os, "geteuid", None)

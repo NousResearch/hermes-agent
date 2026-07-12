@@ -850,6 +850,10 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
 
 def test_removes_only_exact_uv_virtualenv_site_hook(tmp_path, monkeypatch):
     _allow_local_materialization_owner(monkeypatch)
+    assert len(writer_release._VIRTUALENV_SITE_HOOK_BYTES) == 18
+    assert hashlib.sha256(
+        writer_release._VIRTUALENV_SITE_HOOK_BYTES
+    ).hexdigest() == "69ac3d8f27e679c81b94ab30b3b56e9cd138219b1ba94a1fa3606d5a76a1433d"
     spec = _spec(tmp_path)
     spec.site_packages.mkdir(parents=True)
     hook = spec.site_packages / writer_release._VIRTUALENV_SITE_HOOK_NAME

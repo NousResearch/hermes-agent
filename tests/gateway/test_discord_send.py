@@ -445,3 +445,114 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+class TestCreateHandoffThread:
+    @pytest.mark.asyncio
+    async def test_creates_thread_from_visible_parent_seed(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        events = []
+        thread = SimpleNamespace(id=9001)
+
+        async def create_from_seed(**_kwargs):
+            events.append("create-from-seed")
+            return thread
+
+        seed = SimpleNamespace(create_thread=AsyncMock(side_effect=create_from_seed))
+
+        async def send_seed(_content):
+            events.append("send-seed")
+            return seed
+
+        parent = SimpleNamespace(
+            send=AsyncMock(side_effect=send_seed),
+            create_thread=AsyncMock(),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id == "9001"
+        assert events == ["send-seed", "create-from-seed"]
+        parent.create_thread.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cron_brief_is_distinct_child_in_created_thread(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        thread = SimpleNamespace(
+            id=9001,
+            send=AsyncMock(return_value=SimpleNamespace(id=9002)),
+        )
+        seed = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
+        parent = SimpleNamespace(
+            send=AsyncMock(return_value=seed),
+            create_thread=AsyncMock(),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda channel_id: parent if channel_id == 123 else thread,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+        result = await adapter.send(
+            "123",
+            "Here is today's cron brief.",
+            metadata={"thread_id": thread_id},
+        )
+
+        assert result.success is True
+        parent.send.assert_awaited_once()
+        anchor_text = parent.send.await_args.args[0]
+        thread.send.assert_awaited_once_with(
+            content="Here is today's cron brief.",
+            reference=None,
+        )
+        assert anchor_text != thread.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_dm_parent_remains_unsupported(self, monkeypatch):
+        class FakeDMChannel:
+            send = AsyncMock()
+            create_thread = AsyncMock()
+
+        monkeypatch.setattr(_discord_mod, "DMChannel", FakeDMChannel)
+        parent = FakeDMChannel()
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id is None
+        parent.send.assert_not_awaited()
+        parent.create_thread.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_direct_channel_create_remains_fallback_when_seed_fails(self):
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        thread = SimpleNamespace(id=9001)
+        seed = SimpleNamespace(
+            create_thread=AsyncMock(
+                side_effect=RuntimeError("Missing Permissions")
+            )
+        )
+        parent = SimpleNamespace(
+            send=AsyncMock(return_value=seed),
+            create_thread=AsyncMock(return_value=thread),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id == "9001"
+        parent.send.assert_awaited_once()
+        seed.create_thread.assert_awaited_once()
+        parent.create_thread.assert_awaited_once()

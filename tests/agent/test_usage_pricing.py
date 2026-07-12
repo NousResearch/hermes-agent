@@ -407,16 +407,15 @@ def test_xai_has_known_pricing():
 
 
 # --- gemini-bridge (Google AI Ultra sub via agy) notional pricing ---------------
-# The bridge is POLY-VENDOR: one endpoint fronts Gemini 3.x + Claude 4.6 + GPT-OSS.
-# Each alias must normalize to a canonical priced model and route to the inferred
-# vendor at official-docs rates (status "estimated", never "unknown"/$0).
+# The bridge is Gemini-ONLY: it fronts the Gemini surface of the Ultra sub. (agy
+# also advertises Claude/GPT-OSS tiers, but the bridge deliberately excludes them —
+# the claude-*/gpt-oss aliases were removed 2026-07-12; zero non-Gemini spend.)
+# Each alias must normalize to a canonical priced Gemini model and route to google
+# at official-docs rates (status "estimated", never "unknown"/$0).
 _GEMINI_BRIDGE_CASES = [
     # (model_arg, expected_vendor, expected_canonical, in$/Mtok, out$/Mtok)
     ("gemini-flash", "google", "gemini-3.5-flash", 1.50, 9.00),
     ("gemini-pro", "google", "gemini-3.1-pro", 2.00, 12.00),
-    ("claude-opus", "anthropic", "claude-opus-4-6", None, None),
-    ("claude-sonnet", "anthropic", "claude-sonnet-4-6", None, None),
-    ("gpt-oss", "openai", "gpt-oss-120b", 0.03, 0.15),
     # the store records the provider-prefixed form too
     ("gemini-bridge/gemini-flash", "google", "gemini-3.5-flash", 1.50, 9.00),
 ]
@@ -470,6 +469,9 @@ def test_gemini_bridge_unknown_alias_routes_unknown_not_google():
     bogus = (
         "mistral-large", "totally-made-up", "flash", "opus",  # no vendor prefix
         "gemini-2.0-flash", "gemini-2.5-flash", "claude-opus-4-8", "gpt-5.5",  # prefix-valid, not fronted
+        # Gemini-only bridge: the former claude-*/gpt-oss short aliases are no
+        # longer fronted and must now route unknown (removed 2026-07-12).
+        "claude-opus", "claude-sonnet", "gpt-oss",
     )
     for model in bogus:
         route = resolve_billing_route(model, provider="gemini-bridge")

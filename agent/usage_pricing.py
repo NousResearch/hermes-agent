@@ -100,14 +100,15 @@ NOTIONAL_SUBSCRIPTION_BRIDGE_PROVIDERS = frozenset({
 # The gemini-bridge exposes short model ALIASES that are not pricing keys; map each
 # to the canonical (priced) model id of the real model the Ultra sub fronts. Mirrors
 # `_MODEL_ALIASES` in ~/.hermes/gemini-bridge/gemini_bridge.py (kept in sync there).
+# The bridge is Gemini-ONLY (agy also advertises Claude/GPT-OSS tiers, but the
+# bridge deliberately fronts only the Gemini surface — the claude-*/gpt-oss aliases
+# were removed 2026-07-12, never carried spend). If those are ever re-enabled on the
+# bridge, restore the corresponding alias→canonical rows here in lockstep.
 _GEMINI_BRIDGE_MODEL_ALIASES = {
     "gemini-flash": "gemini-3.5-flash",
     "gemini-3.5-flash": "gemini-3.5-flash",
     "gemini-pro": "gemini-3.1-pro",
     "gemini-3.1-pro": "gemini-3.1-pro",
-    "claude-opus": "claude-opus-4-6",
-    "claude-sonnet": "claude-sonnet-4-6",
-    "gpt-oss": "gpt-oss-120b",
 }
 
 # The exact set of canonical models the bridge actually fronts (the alias-map
@@ -131,7 +132,7 @@ def is_notional_subscription_bridge(provider_name: Optional[str]) -> bool:
 
 
 def _normalize_gemini_bridge_model(model: str) -> str:
-    """Map a gemini-bridge alias (gemini-flash, claude-opus, gpt-oss, …) to its
+    """Map a gemini-bridge alias (gemini-flash, gemini-pro, …) to its
     canonical priced model id. Strips a leading ``gemini-bridge/`` provider prefix
     first, and passes through an already-canonical id unchanged."""
     name = (model or "").split("/")[-1].lower().strip()

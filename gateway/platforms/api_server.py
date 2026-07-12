@@ -4767,7 +4767,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name or "",
-                    "preview": preview or tool_name or "",
+                    "preview": redact_sensitive_text(
+                        str(preview or tool_name or ""),
+                        force=True,
+                    ),
                 }
                 for field in (
                     "subagent_id",

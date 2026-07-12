@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from agent.display import build_tool_preview
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -325,7 +327,71 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_stream_serializes_subagent_progress(self, adapter):
+        """Clients should receive structured child tool progress over SSE."""
+        run_id = "run_subagent_progress"
+        secret = "sk-test-SSE-SECRET-0000000000000000"
+        args = {
+            "command": (
+                "curl -H 'Authorization: Bearer "
+                f"{secret}' https://example.test"
+            ),
+        }
+        preview = build_tool_preview("terminal", args, max_len=0)
+        assert preview is not None
+        adapter._run_streams[run_id] = asyncio.Queue()
+        callback = adapter._make_run_event_callback(
+            run_id,
+            asyncio.get_running_loop(),
+        )
 
+        callback(
+            "subagent.tool",
+            tool_name="terminal",
+            preview=preview,
+            args=args,
+            subagent_id="subagent-1",
+            parent_id="parent-1",
+            depth=1,
+            task_index=0,
+            task_count=2,
+            child_session_id="session-child",
+            tool_count=3,
+        )
+        await asyncio.sleep(0)
+        adapter._run_streams[run_id].put_nowait(None)
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get(f"/v1/runs/{run_id}/events")
+            assert response.status == 200
+            assert response.content_type == "text/event-stream"
+            body = await response.text()
+
+        payloads = [
+            json.loads(line.removeprefix("data: "))
+            for line in body.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert len(payloads) == 1
+        event = payloads[0]
+        assert event.pop("timestamp") > 0
+        event_preview = event.pop("preview")
+        assert event == {
+            "event": "subagent.progress",
+            "run_id": run_id,
+            "tool": "terminal",
+            "subagent_id": "subagent-1",
+            "parent_id": "parent-1",
+            "depth": 1,
+            "task_index": 0,
+            "task_count": 2,
+            "child_session_id": "session-child",
+            "tool_count": 3,
+        }
+        assert event_preview.startswith("curl -H")
+        assert secret not in body
 
     @pytest.mark.asyncio
     async def test_approval_response_without_pending_returns_409(self, adapter):

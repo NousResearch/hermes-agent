@@ -1799,6 +1799,48 @@ class TestFocusAppFilterNoMatch:
         assert backend._active_window_id == 2
 
 
+class TestCuaPixelClickWindowTarget:
+    """Pixel clicks must carry the window captured for the active PID."""
+
+    def test_pixel_click_includes_active_window_id(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session_id = "test-session"
+        backend._active_pid = 123
+        backend._active_window_id = 456
+        backend._session.call_tool.return_value = {
+            "data": "clicked",
+            "images": [],
+            "isError": False,
+        }
+
+        result = backend.click(x=76, y=183)
+
+        assert result.ok is True
+        tool_name, args = backend._session.call_tool.call_args.args
+        assert tool_name == "click"
+        assert args["pid"] == 123
+        assert args["window_id"] == 456
+        assert args["x"] == 76
+        assert args["y"] == 183
+
+    def test_pixel_click_without_active_window_id_fails_closed(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._active_pid = 123
+        backend._active_window_id = None
+
+        result = backend.click(x=76, y=183)
+
+        assert result.ok is False
+        assert "window_id" in result.message
+        backend._session.call_tool.assert_not_called()
+
+
 class TestCuaEnvironmentScrubbing:
     """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
 

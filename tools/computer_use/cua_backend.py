@@ -1606,6 +1606,10 @@ class CuaDriverBackend(ComputerUseBackend):
             args["element_index"] = element
             args["window_id"] = self._active_window_id
         elif x is not None and y is not None:
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action=tool,
+                                    message="No active window_id for pixel click.")
+            args["window_id"] = self._active_window_id
             args["x"] = x
             args["y"] = y
         else:

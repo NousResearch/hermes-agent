@@ -31,8 +31,13 @@ def _ensure_office_server() -> bool:
         kwargs["close_fds"] = True
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([sys.executable, str(script)], stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, **kwargs)
+    subprocess.Popen(
+        [sys.executable, str(script)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        **kwargs,
+    )
     for _ in range(10):
         time.sleep(0.1)
         with socket.socket() as sock:

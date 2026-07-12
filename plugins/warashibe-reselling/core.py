@@ -262,7 +262,10 @@ def reroll_ai_employees(dry_run: bool = True) -> dict:
             results["profiles"].append({"name": name, "cmd": " ".join(cmd), "dry_run": True})
         else:
             try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                r = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=30,
+                    stdin=subprocess.DEVNULL,
+                )
                 results["profiles"].append({"name": name, "ok": r.returncode == 0, "out": r.stdout[:200]})
             except Exception as e:
                 results["profiles"].append({"name": name, "error": str(e)})
@@ -273,7 +276,10 @@ def reroll_ai_employees(dry_run: bool = True) -> dict:
         results["kanban"] = {"cmd": " ".join(cmd), "dry_run": True}
     else:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+                stdin=subprocess.DEVNULL,
+            )
             results["kanban"] = {"ok": r.returncode == 0, "out": r.stdout[:200]}
         except Exception as e:
             results["kanban"] = {"error": str(e)}

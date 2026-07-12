@@ -75,6 +75,7 @@ def test_dry_run_writes_plan_without_spawning(tmp_path, monkeypatch):
     monkeypatch.setattr(module.core, "_load_entry", lambda: {"workspace_root": str(root)})
     monkeypatch.setattr(module.core, "get_hermes_home", lambda: home)
     monkeypatch.setattr(module.core, "_source_revision", lambda: "test-revision")
+    monkeypatch.setattr(module.core, "check_available", lambda: True)
     monkeypatch.setattr(module.core.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawned")))
     payload = module.core.run_task({"task": "inspect only", "dry_run": True})
     assert payload["ok"] is True
@@ -89,6 +90,7 @@ def test_live_run_requires_explicit_ack(tmp_path, monkeypatch):
     root = tmp_path / "allowed"
     root.mkdir()
     monkeypatch.setattr(module.core, "_load_entry", lambda: {"workspace_root": str(root)})
+    monkeypatch.setattr(module.core, "check_available", lambda: True)
     payload = module.core.run_task({"task": "write", "dry_run": False})
     assert payload["ok"] is False
     assert "acknowledge_side_effects" in payload["error"]

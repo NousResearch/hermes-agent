@@ -14,7 +14,7 @@ def test_load_env_sanitizes_concatenated_lines():
     """
     from hermes_cli.config import load_env
 
-    token = "8356550917:AAGGEkzg06Hrc3Hjb3Sa1jkGVDOdU_lYy2Q"
+    token = "0123456789:test"
     # Simulate concatenated line: TOKEN=xxx followed immediately by another key
     corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test123\n"
 
@@ -67,7 +67,7 @@ def test_env_loader_sanitizes_before_dotenv():
     """Verify env_loader._sanitize_env_file_if_needed fixes corrupted files."""
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
 
-    token = "8356550917:AAGGEkzg06Hrc3Hjb3Sa1jkGVDOdU_lYy2Q"
+    token = "0123456789:test"
     corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"
 
     with tempfile.NamedTemporaryFile(

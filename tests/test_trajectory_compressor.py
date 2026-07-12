@@ -1,7 +1,6 @@
 """Tests for trajectory_compressor.py — config, metrics, and compression logic."""
 
 import importlib
-import json
 import os
 import sys
 from types import SimpleNamespace
@@ -31,7 +30,8 @@ def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     assert os.getenv("OPENROUTER_API_KEY") == "from-hermes-home"
 
 
-def test_generate_summary_custom_client_forces_kimi_temperature():
+def test_generate_summary_kimi_omits_temperature():
+    """Kimi models should have temperature omitted — server manages it."""
     config = CompressionConfig(
         summarization_model="kimi-for-coding",
         temperature=0.3,
@@ -51,7 +51,57 @@ def test_generate_summary_custom_client_forces_kimi_temperature():
     result = compressor._generate_summary("tool output", metrics)
 
     assert result.startswith("[CONTEXT SUMMARY]:")
-    assert compressor.client.chat.completions.create.call_args.kwargs["temperature"] == 0.6
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
+
+
+def test_generate_summary_public_moonshot_kimi_k2_5_omits_temperature():
+    """kimi-k2.5 on the public Moonshot API should not get a forced temperature."""
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.ai/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
+
+
+def test_generate_summary_public_moonshot_cn_kimi_k2_5_omits_temperature():
+    """kimi-k2.5 on api.moonshot.cn should not get a forced temperature."""
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.cn/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +507,124 @@ class TestGenerateSummary:
         summary = await tc._generate_summary_async("Turn content", metrics)
 
         assert summary == "[CONTEXT SUMMARY]:"
+
+
+# ---------------------------------------------------------------------------
+# TrajectoryCompressor — compression boundary must not split tool pairs
+# ---------------------------------------------------------------------------
+
+
+def _gpt_with_tool_call(label, tokens):
+    """A 'gpt' turn carrying a <tool_call> marker, padded to ~`tokens` tokens."""
+    body = f"<tool_call>\n{{\"name\": \"{label}\"}}\n</tool_call>"
+    pad = max(0, tokens * 4 - len(body))
+    return {"from": "gpt", "value": body + "x" * pad}
+
+
+def _tool_response(label, tokens):
+    """A 'tool' turn carrying a <tool_response> marker, padded to ~`tokens` tokens."""
+    body = f"<tool_response>\n{{\"name\": \"{label}\"}}\n</tool_response>"
+    pad = max(0, tokens * 4 - len(body))
+    return {"from": "tool", "value": body + "x" * pad}
+
+
+def _count_marker(trajectory, marker):
+    return sum(turn["value"].count(marker) for turn in trajectory)
+
+
+def _paired_trajectory():
+    """A 10-turn trajectory of gpt/tool pairs with one oversized middle gpt turn.
+
+    Layout (index): system, human, gpt#0, tool#0, gpt#1(big), tool#1, gpt#2,
+    tool#2, gpt(final), human. With ``protect_last_n_turns=2`` the compressible
+    region is [4, 8) and the oversized gpt#1 at index 4 is large enough that the
+    token-accumulation boundary stops at index 5 — i.e. between gpt#1's
+    <tool_call> and tool#1's <tool_response>.
+    """
+    return [
+        {"from": "system", "value": "You are an agent. " * 4},
+        {"from": "human", "value": "Please do the task. " * 4},
+        _gpt_with_tool_call("a", 12),
+        _tool_response("a", 12),
+        _gpt_with_tool_call("b", 400),  # oversized — forces a mid-pair boundary
+        _tool_response("b", 12),
+        _gpt_with_tool_call("c", 12),
+        _tool_response("c", 12),
+        {"from": "gpt", "value": "<think>\n</think>\nAll done."},
+        {"from": "human", "value": "Thanks!"},
+    ]
+
+
+def _target_that_splits_after_index_4(tc, trajectory):
+    """Pick a target so token accumulation breaks right after index 4 (a gpt)."""
+    turn_tokens = tc.count_turn_tokens(trajectory)
+    total = sum(turn_tokens)
+    # threshold == turn_tokens[4] makes the loop break at compress_until = 5,
+    # which lands on the tool turn paired with gpt#1.
+    return total - turn_tokens[4] + tc.config.summary_target_tokens
+
+
+class TestCompressionToolPairIntegrity:
+    def _config(self):
+        config = CompressionConfig()
+        config.protect_last_n_turns = 2
+        config.summary_target_tokens = 4
+        return config
+
+    def test_sync_compression_does_not_orphan_tool_markers(self):
+        tc = _make_compressor(self._config())
+        tc._generate_summary = MagicMock(
+            return_value="[CONTEXT SUMMARY]: middle turns summarized."
+        )
+        trajectory = _paired_trajectory()
+        tc.config.target_max_tokens = _target_that_splits_after_index_4(tc, trajectory)
+
+        compressed, metrics = tc.compress_trajectory(trajectory)
+
+        assert metrics.was_compressed
+        # Every <tool_call> must keep its matching <tool_response>.
+        assert _count_marker(compressed, "<tool_call>") == _count_marker(
+            compressed, "<tool_response>"
+        )
+        # A kept 'tool' turn must always immediately follow its 'gpt' turn —
+        # never the inserted summary (a 'human' turn) or another 'tool' turn.
+        for i, turn in enumerate(compressed):
+            if turn.get("from") == "tool":
+                assert i > 0 and compressed[i - 1].get("from") == "gpt"
+
+    @pytest.mark.asyncio
+    async def test_async_compression_does_not_orphan_tool_markers(self):
+        tc = _make_compressor(self._config())
+        tc._generate_summary_async = AsyncMock(
+            return_value="[CONTEXT SUMMARY]: middle turns summarized."
+        )
+        trajectory = _paired_trajectory()
+        tc.config.target_max_tokens = _target_that_splits_after_index_4(tc, trajectory)
+
+        compressed, metrics = await tc.compress_trajectory_async(trajectory)
+
+        assert metrics.was_compressed
+        assert _count_marker(compressed, "<tool_call>") == _count_marker(
+            compressed, "<tool_response>"
+        )
+        for i, turn in enumerate(compressed):
+            if turn.get("from") == "tool":
+                assert i > 0 and compressed[i - 1].get("from") == "gpt"
+
+    def test_snap_boundary_skips_tool_turn_forward(self):
+        tc = _make_compressor()
+        trajectory = _paired_trajectory()
+        # Index 5 is a 'tool' turn; the boundary should move forward to 6.
+        assert tc._snap_boundary(trajectory, 5, 4, 8) == 6
+        # Index 4 is a 'gpt' turn and already clean.
+        assert tc._snap_boundary(trajectory, 4, 4, 8) == 4
+
+    def test_snap_boundary_falls_back_to_backward(self):
+        tc = _make_compressor()
+        # Protected tail begins on a 'tool' turn at max_idx: no clean boundary
+        # ahead, so the boundary must retreat onto the preceding 'gpt' turn.
+        trajectory = [
+            {"from": "gpt", "value": "<tool_call>a</tool_call>"},
+            {"from": "tool", "value": "<tool_response>a</tool_response>"},
+        ]
+        assert tc._snap_boundary(trajectory, 1, 0, 1) == 0

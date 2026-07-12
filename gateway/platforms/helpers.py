@@ -11,10 +11,12 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict
+
+from utils import atomic_json_write
 
 if TYPE_CHECKING:
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+    from gateway.platforms.base import MessageEvent
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,15 @@ class MessageDeduplicator:
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl
             self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
+            if len(self._seen) > self._max_size:
+                # TTL pruning alone does not cap the cache when every entry is
+                # still fresh. Keep the newest entries so the helper's
+                # max_size bound is enforced under sustained traffic.
+                newest = sorted(
+                    self._seen.items(),
+                    key=lambda item: item[1],
+                )[-self._max_size:]
+                self._seen = dict(newest)
         return False
 
     def clear(self):
@@ -157,8 +168,8 @@ class TextBatchAggregator:
 # Pre-compiled regexes for performance
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
-_RE_BOLD_UNDER = re.compile(r"__(.+?)__", re.DOTALL)
-_RE_ITALIC_UNDER = re.compile(r"_(.+?)_", re.DOTALL)
+_RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
+_RE_ITALIC_UNDER = re.compile(r"\b_(?![\s_])(.+?)(?<![\s_])_\b", re.DOTALL)
 _RE_CODE_BLOCK = re.compile(r"```[a-zA-Z0-9_+-]*\n?")
 _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
@@ -211,34 +222,37 @@ class ThreadParticipationTracker:
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
-        self._threads: set = self._load()
+        self._threads: dict[str, None] = {
+            str(thread_id): None for thread_id in self._load()
+        }
 
     def _state_path(self) -> Path:
         from hermes_constants import get_hermes_home
         return get_hermes_home() / f"{self._platform}_threads.json"
 
-    def _load(self) -> set:
+    def _load(self) -> list[str]:
         path = self._state_path()
         if path.exists():
             try:
-                return set(json.loads(path.read_text(encoding="utf-8")))
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return [str(thread_id) for thread_id in data]
             except Exception:
                 pass
-        return set()
+        return []
 
     def _save(self) -> None:
         path = self._state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         thread_list = list(self._threads)
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
-            self._threads = set(thread_list)
-        path.write_text(json.dumps(thread_list), encoding="utf-8")
+            self._threads = dict.fromkeys(thread_list)
+        atomic_json_write(path, thread_list, indent=None)
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""
         if thread_id not in self._threads:
-            self._threads.add(thread_id)
+            self._threads[thread_id] = None
             self._save()
 
     def __contains__(self, thread_id: str) -> bool:
@@ -262,3 +276,128 @@ def redact_phone(phone: str) -> str:
     if len(phone) <= 8:
         return phone[:2] + "****" + phone[-2:] if len(phone) > 4 else "****"
     return phone[:4] + "****" + phone[-4:]
+
+
+# ─── GFM Markdown Table → Bullet Conversion ─────────────────────────────────
+# Shared by Discord and Telegram adapters.  Discord calls
+# convert_table_to_bullets() directly; Telegram imports the primitives
+# but keeps its own MarkdownV2-aware renderer.
+
+
+# Matches a GFM table delimiter row: optional outer pipes, cells of dashes
+# (with optional alignment colons) separated by '|'.
+# Requires at least one internal '|' so lone '---' rules are NOT matched.
+TABLE_SEPARATOR_RE = re.compile(
+    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
+)
+
+
+def is_table_row(line: str) -> bool:
+    """Return True if *line* could plausibly be a table data row."""
+    stripped = line.strip()
+    return bool(stripped) and '|' in stripped
+
+
+def split_markdown_table_row(line: str) -> list[str]:
+    """Split a GFM table row into stripped cell values."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _render_table_block(table_block: list[str]) -> str:
+    """Render a detected GFM table as bold-heading + bullet groups.
+
+    Uses the same alignment logic as Telegram's renderer: for non-row-label
+    tables, ``data_cells = cells`` (the full row) and the bullet whose value
+    duplicates the heading is skipped.  This keeps header→value alignment
+    correct.
+    """
+    if len(table_block) < 3:
+        return "\n".join(table_block)
+
+    headers = split_markdown_table_row(table_block[0])
+    if len(headers) < 2:
+        return "\n".join(table_block)
+
+    first_data_row = (
+        split_markdown_table_row(table_block[2])
+        if len(table_block) > 2
+        else []
+    )
+    has_row_label_col = len(first_data_row) == len(headers) + 1
+
+    rendered_groups: list[str] = []
+    for index, row in enumerate(table_block[2:], start=1):
+        cells = split_markdown_table_row(row)
+        if has_row_label_col:
+            heading = cells[0] if cells and cells[0] else f"Row {index}"
+            data_cells = cells[1:]
+        else:
+            heading = next((cell for cell in cells if cell), f"Row {index}")
+            data_cells = cells
+
+        if len(data_cells) < len(headers):
+            data_cells.extend([""] * (len(headers) - len(data_cells)))
+        elif len(data_cells) > len(headers):
+            data_cells = data_cells[: len(headers)]
+
+        bullets: list[str] = []
+        for header, value in zip(headers, data_cells):
+            if not has_row_label_col and value == heading:
+                continue
+            bullets.append(f"• {header}: {value}")
+
+        group_lines = [f"**{heading}**", *bullets]
+        rendered_groups.append("\n".join(group_lines))
+
+    return "\n\n".join(rendered_groups)
+
+
+def convert_table_to_bullets(text: str) -> str:
+    """Rewrite GFM pipe tables into bold-heading + bullet groups.
+
+    Tables inside fenced code blocks are left alone.
+    """
+    if '|' not in text or '-' not in text:
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        if (
+            '|' in line
+            and i + 1 < len(lines)
+            and TABLE_SEPARATOR_RE.match(lines[i + 1])
+        ):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and is_table_row(lines[j]):
+                table_block.append(lines[j])
+                j += 1
+            out.append(_render_table_block(table_block))
+            i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return '\n'.join(out)

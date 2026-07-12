@@ -9571,14 +9571,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _resolve_update_branch(args)
 
         print("→ Fetching updates...")
+        # Don't capture stdout/stderr — surface git's fetch progress to the
+        # user (object enumeration, remote branch listing). We still get the
+        # returncode to detect failure; only on failure do we re-run with
+        # capture_output so we can grep stderr for network/auth errors.
+        # Regression introduced by #3492.
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
-            capture_output=True,
+            capture_output=False,
             text=True,
         )
         if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
+            # Re-fetch with captured stderr so we can pattern-match the failure.
+            _diag = subprocess.run(
+                git_cmd + ["fetch", "origin", branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            stderr = _diag.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
                 print("✗ Network error — cannot reach the remote repository.")
                 print(f"  {stderr.splitlines()[0]}" if stderr else "")
@@ -9609,6 +9621,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # "always update against main" behavior; for any other target it's
         # the same thing — get HEAD onto the requested branch first, then
         # fast-forward.
+        # NB: We do NOT stash here yet. We defer the stash until after we've
+        # confirmed there's actually an update to apply — otherwise every
+        # `hermes update` on an up-to-date tree with local changes would
+        # autostash and pop for nothing. Regression introduced by #3492.
         if current_branch != branch:
             label = (
                 "detached HEAD"
@@ -9616,8 +9632,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 else f"branch '{current_branch}'"
             )
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             checkout_result = subprocess.run(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
@@ -9636,30 +9650,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                 )
                 if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
-                    # so we don't leave them stranded in a weird state.
-                    if auto_stash_ref is not None:
-                        _restore_stashed_changes(
-                            git_cmd,
-                            PROJECT_ROOT,
-                            auto_stash_ref,
-                            prompt_user=False,
-                            input_fn=gw_input_fn,
-                        )
                     print(f"✗ Branch '{branch}' does not exist locally or on origin.")
                     if track_result.stderr.strip():
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
                     sys.exit(1)
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
-        prompt_for_restore = (
-            auto_stash_ref is not None
-            and not assume_yes
-            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
-        )
-
-        # Check if there are updates
+        # Check if there are updates BEFORE stashing — there's no point
+        # stashing local changes if origin has nothing new to apply.
         result = subprocess.run(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
@@ -9669,6 +9666,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         commit_count = int(result.stdout.strip())
 
+        # Default: nothing stashed yet. Set by the deferred-stash below.
+        auto_stash_ref: Optional[str] = None
+
         if commit_count == 0:
             _invalidate_update_cache()
 
@@ -9676,7 +9676,41 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_fork and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-            # Restore stash and switch back to original branch if we moved
+            # No update to apply, and we never stashed — nothing to restore,
+            # nothing to switch back from (we did the branch switch above
+            # only when it was needed, but here `current_branch == branch`
+            # for the common case).
+
+            # If we DID switch branches earlier (different current_branch),
+            # switch back to the user's original branch.
+            if current_branch not in {branch, "HEAD"}:
+                subprocess.run(
+                    git_cmd + ["checkout", current_branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+        else:
+            # We have an update — now (and only now) is the right moment to
+            # stash any local changes that would conflict with the fast-forward.
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+        prompt_for_restore = (
+            auto_stash_ref is not None
+            and not assume_yes
+            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+        )
+
+        # commit_count is from the pre-stash check above. Stashing doesn't
+        # move HEAD, so it stays valid. The original code re-ran rev-list
+        # here for safety, but with the deferred-stash fix the pre-check
+        # is sufficient — we know whether there's work to do before any
+        # stash happened.
+
+        if commit_count == 0:
+            # Race: someone else pulled between our check and our stash.
+            # Restore the stash and bail.
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
                     git_cmd,

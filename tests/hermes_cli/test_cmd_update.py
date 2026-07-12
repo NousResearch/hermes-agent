@@ -872,3 +872,147 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for issue #3523:
+# `hermes update` regressed to silent git fetch output and autostash on
+# every run, even when already up to date.
+# ---------------------------------------------------------------------------
+
+
+def _make_3523_side_effect(branch="main", commit_count="0", git_status_dirty=False):
+    """Side effect: simulate `git fetch` silent, `rev-list` returns commit_count,
+    `git status --porcelain` returns dirty/clean, `git stash` records calls."""
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        # git rev-parse --abbrev-ref HEAD
+        if "rev-parse" in joined and "--abbrev-ref" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
+        # git rev-parse --verify origin/{branch}
+        if "rev-parse" in joined and "--verify" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # git rev-list HEAD..origin/{branch} --count
+        if "rev-list" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+        # git status --porcelain — used by _stash_local_changes_if_needed
+        if "status" in joined and "--porcelain" in joined:
+            dirty = "M hermes_cli/main.py\n" if git_status_dirty else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=dirty, stderr="")
+        # git ls-files --unmerged — used by _stash_local_changes_if_needed
+        if "ls-files" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # git stash push / drop — track if called
+        if "stash" in joined and "push" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # git stash apply / drop
+        if "stash" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # git checkout
+        if "checkout" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # git fetch — track whether stderr was captured
+        if "fetch" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        # Fallback
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    return side_effect
+
+
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_3523_no_stash_when_up_to_date_with_local_changes(
+    mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch
+):
+    """Regression #3523: `hermes update` on an up-to-date tree with local
+    changes must NOT autostash-and-pop. The deferred-stash logic should
+    skip the stash entirely because commit_count==0."""
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    # Make the .git directory "exist" so we don't bail out as Docker/pip
+    (tmp_path / ".git").mkdir()
+
+    mock_run.side_effect = _make_3523_side_effect(
+        branch="main", commit_count="0", git_status_dirty=True
+    )
+
+    cmd_update(mock_args)
+
+    commands = [c.args[0] for c in mock_run.call_args_list]
+    stash_pushes = [c for c in commands if "stash" in c and "push" in " ".join(str(x) for x in c)]
+    assert stash_pushes == [], (
+        f"Expected no `git stash push` when up to date, but got: {stash_pushes}"
+    )
+
+    captured = capsys.readouterr()
+    assert "Already up to date" in captured.out
+
+
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_3523_fetch_stderr_visible_on_success(
+    mock_run, _mock_which, mock_args, tmp_path, monkeypatch
+):
+    """Regression #3523: `git fetch` stdout/stderr should reach the terminal
+    so users see object enumeration. We verify the fetch subprocess is run
+    with capture_output=False (vs the regression's capture_output=True)."""
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    mock_run.side_effect = _make_3523_side_effect(branch="main", commit_count="0")
+
+    cmd_update(mock_args)
+
+    commands = list(mock_run.call_args_list)
+    # Find the fetch call. With the regression fix, fetch runs first (capture_output=False).
+    # The diagnostic re-fetch (capture_output=True) only fires on failure.
+    fetch_calls = [c for c in commands if "fetch" in " ".join(str(x) for x in c.args[0])]
+    assert len(fetch_calls) >= 1, "Expected at least one fetch call"
+
+    # The first fetch (the user-facing one) should NOT capture output.
+    first_fetch_kwargs = fetch_calls[0].kwargs
+    assert first_fetch_kwargs.get("capture_output", None) is False or first_fetch_kwargs.get("capture_output") is False, (
+        f"Expected first fetch to have capture_output=False, got: {first_fetch_kwargs}"
+    )
+
+
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_3523_stash_still_happens_when_update_available(
+    mock_run, _mock_which, mock_args, tmp_path, monkeypatch, capsys
+):
+    """Regression #3523: ensure the deferred-stash fix didn't break the
+    normal update-with-local-changes path — we MUST still stash."""
+    from hermes_cli import main as hm
+
+    monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    base_side_effect = _make_3523_side_effect(
+        branch="main", commit_count="3", git_status_dirty=True
+    )
+
+    def _side_effect_with_pull_noop(*args, **kwargs):
+        joined = " ".join(str(c) for c in args[0])
+        if "pull" in joined:
+            return subprocess.CompletedProcess(
+                args[0], 0, stdout="Already up to date.", stderr=""
+            )
+        return base_side_effect(*args, **kwargs)
+
+    mock_run.side_effect = _side_effect_with_pull_noop
+
+    cmd_update(mock_args)
+
+    commands = [c.args[0] for c in mock_run.call_args_list]
+    stash_pushes = [
+        c for c in commands
+        if "stash" in c and any("push" in str(x) for x in c)
+    ]
+    assert len(stash_pushes) >= 1, (
+        f"Expected at least one `git stash push` when update is available, got: {commands}"
+    )

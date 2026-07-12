@@ -1536,6 +1536,38 @@ def claim_dispatch(job_id: str) -> bool:
         )
         return True
 
+def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Refresh a one-shot's ``run_claim`` timestamp while its run is alive.
+
+    Called periodically from the scheduler's run monitor (#62002) so a
+    legitimately long run keeps its claim fresh: an expired claim then really
+    does mean "the claiming process died", and neither another process's tick
+    nor this process's own next tick will re-dispatch or stale-remove the job
+    while the run is in flight. mark_job_run() clears the claim on completion.
+
+    ``expected_owner`` is the stable owner copied from the dispatched job. The
+    compare-and-refresh prevents a stale runner that resumes after a long sleep
+    from extending a claim another scheduler process has since taken over.
+
+    Returns True if this owner's one-shot claim was refreshed; False when the
+    job, claim, or ownership no longer matches.
+    """
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job.get("id") != job_id:
+                continue
+            if job.get("schedule", {}).get("kind") != "once":
+                return False
+            claim = job.get("run_claim")
+            if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+                return False
+            claim["at"] = _hermes_now().isoformat()
+            save_jobs(jobs)
+            return True
+    return False
+
+
 
 def advance_next_run(job_id: str) -> bool:
     """Preemptively advance next_run_at for a recurring job before execution.

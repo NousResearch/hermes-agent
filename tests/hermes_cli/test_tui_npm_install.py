@@ -27,12 +27,11 @@ def _configure_darwin_x64(main_mod, monkeypatch) -> None:
     monkeypatch.setattr(main_mod.platform, "machine", lambda: "x86_64")
 
 
-def _touch_esbuild(root: Path) -> None:
+def _touch_esbuild(root: Path, package_name: str = "@esbuild/darwin-x64") -> None:
     esbuild = root / "node_modules" / "esbuild" / "package.json"
     esbuild.parent.mkdir(parents=True, exist_ok=True)
-    esbuild.write_text(
-        '{"optionalDependencies":{"@esbuild/darwin-x64":"0.28.1"}}'
-    )
+    payload = f'{{"optionalDependencies":{{"{package_name}":"0.28.1"}}}}'
+    esbuild.write_text(payload)
 
 
 def _touch_esbuild_fallback(root: Path, main_mod) -> None:
@@ -169,6 +168,21 @@ def test_no_install_when_esbuild_downloaded_fallback_exists(
     _configure_darwin_x64(main_mod, monkeypatch)
 
     assert main_mod._tui_need_npm_install(tmp_path) is False
+
+
+def test_need_install_when_esbuild_windows_x86_alias_missing_binary(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_ink(tmp_path)
+    _touch_esbuild(tmp_path, "@esbuild/win32-ia32")
+    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path / "node_modules" / ".package-lock.json").write_text("{}")
+
+    monkeypatch.setitem(main_mod._ESBUILD_PLATFORM_TOKENS, "win32", "win32")
+    monkeypatch.setattr(main_mod.platform, "machine", lambda: "x86")
+    monkeypatch.setattr(main_mod.sys, "platform", "win32")
+
+    assert main_mod._tui_need_npm_install(tmp_path) is True
 
 
 def test_invalidate_stale_esbuild_install_removes_cached_state(

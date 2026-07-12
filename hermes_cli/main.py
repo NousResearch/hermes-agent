@@ -1655,6 +1655,7 @@ _ESBUILD_ARCH_ALIASES = {
     "arm64": ("arm64",),
     "armv6l": ("arm",),
     "armv7l": ("arm",),
+    "x86": ("ia32",),
     "i386": ("ia32",),
     "i686": ("ia32",),
     "loongarch64": ("loong64",),

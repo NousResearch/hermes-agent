@@ -15,8 +15,12 @@ Covers the pieces added when boards became a first-class concept:
 
 from __future__ import annotations
 
+import argparse
+import errno
 import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -257,6 +261,131 @@ class TestBoardCRUD:
         assert res["action"] == "deleted"
         assert not d.exists()
 
+    def test_remove_hard_delete_retries_transient_detached_cleanup_failure(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("nuke")
+        board_path = kb.board_dir("nuke")
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def _fail_once(path, *args, **kwargs):
+            attempts.append(Path(path))
+            if len(attempts) == 1:
+                raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", _fail_once)
+
+        result = kb.remove_board("nuke", archive=False)
+
+        assert result["action"] == "deleted"
+        assert len(attempts) == 2
+        assert attempts[0] == attempts[1]
+        assert attempts[0].name.startswith(".deleting-nuke-")
+        assert not board_path.exists()
+        assert not attempts[0].exists()
+
+    def test_remove_hard_delete_restores_board_after_persistent_cleanup_failure(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("nuke")
+        board_path = kb.board_dir("nuke")
+        with kb.connect(board="nuke") as conn:
+            task_id = kb.create_task(
+                conn,
+                title="preserve me",
+                assignee="dev",
+            )
+        kb.set_current_board("nuke")
+        cache_key = str((board_path / "kanban.db").resolve())
+        assert cache_key in kb._INITIALIZED_PATHS
+        attempts = []
+
+        def _always_fail(path, *args, **kwargs):
+            attempts.append(Path(path))
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+
+        monkeypatch.setattr(shutil, "rmtree", _always_fail)
+
+        with pytest.raises(OSError, match="Directory not empty"):
+            kb.remove_board("nuke", archive=False)
+
+        assert len(attempts) == 3
+        assert board_path.exists()
+        assert not list(board_path.parent.glob(".deleting-nuke-*"))
+        assert "nuke" in [board["slug"] for board in kb.list_boards()]
+        assert kb.get_current_board() == "nuke"
+        # Cleanup began before rollback, so the DB may have been partially
+        # removed. The next connect must revalidate it instead of trusting the
+        # stale pre-delete initialization cache entry.
+        assert cache_key not in kb._INITIALIZED_PATHS
+        with kb.connect(board="nuke", create_if_missing=False) as conn:
+            task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.title == "preserve me"
+        assert cache_key in kb._INITIALIZED_PATHS
+
+    def test_remove_hard_delete_surfaces_recovery_path_on_restore_collision(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("nuke")
+        board_path = kb.board_dir("nuke")
+
+        def _fail_after_public_path_is_recreated(path, *args, **kwargs):
+            board_path.mkdir()
+            (board_path / "concurrent-board").write_text("new", encoding="utf-8")
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+
+        monkeypatch.setattr(
+            shutil,
+            "rmtree",
+            _fail_after_public_path_is_recreated,
+        )
+
+        with pytest.raises(
+            kb.BoardDeleteRecoveryError,
+            match="inspect the detached board recovery path",
+        ) as exc_info:
+            kb.remove_board("nuke", archive=False)
+
+        recovery_paths = list(board_path.parent.glob(".deleting-nuke-*"))
+        assert len(recovery_paths) == 1
+        assert exc_info.value.recovery_path == recovery_paths[0]
+        assert str(recovery_paths[0]) in str(exc_info.value)
+        assert (board_path / "concurrent-board").read_text(encoding="utf-8") == "new"
+
+    def test_remove_hard_delete_rename_failure_leaves_board_state_untouched(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("nuke")
+        kb.set_current_board("nuke")
+        board_path = kb.board_dir("nuke")
+        db_path = board_path / "kanban.db"
+        with kb.connect(board="nuke") as conn:
+            task_id = kb.create_task(conn, title="still here", assignee="dev")
+        cache_key = str(db_path.resolve())
+        assert cache_key in kb._INITIALIZED_PATHS
+        real_rename = Path.rename
+
+        def _deny_board_detach(path, target):
+            if path == board_path:
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_rename(path, target)
+
+        monkeypatch.setattr(Path, "rename", _deny_board_detach)
+
+        with pytest.raises(PermissionError, match="Permission denied"):
+            kb.remove_board("nuke", archive=False)
+
+        assert board_path.exists()
+        assert kb.get_current_board() == "nuke"
+        assert cache_key in kb._INITIALIZED_PATHS
+        with kb.connect(board="nuke", create_if_missing=False) as conn:
+            task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.title == "still here"
+
     def test_remove_default_forbidden(self, fresh_home):
         with pytest.raises(ValueError, match="default"):
             kb.remove_board("default")
@@ -315,6 +444,93 @@ class TestBoardCRUD:
 # ---------------------------------------------------------------------------
 
 class TestConnectionIsolation:
+    def test_connect_existing_readonly_bypasses_schema_init_and_cache(
+        self, fresh_home,
+    ):
+        db_path = fresh_home / "readonly path # with percent%" / "kanban.db"
+        db_path.parent.mkdir(parents=True)
+        raw = sqlite3.connect(db_path)
+        try:
+            raw.execute("CREATE TABLE marker (value TEXT)")
+            raw.commit()
+        finally:
+            raw.close()
+
+        cache_key = str(db_path.resolve())
+        lock_path = db_path.with_name(db_path.name + ".init.lock")
+        assert cache_key not in kb._INITIALIZED_PATHS
+        assert not lock_path.exists()
+
+        conn = kb.connect_existing_readonly(db_path=db_path)
+        try:
+            assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            with pytest.raises(sqlite3.OperationalError):
+                conn.execute("CREATE TABLE must_not_exist (value TEXT)")
+        finally:
+            conn.close()
+
+        assert tables == {"marker"}
+        assert cache_key not in kb._INITIALIZED_PATHS
+        assert not lock_path.exists()
+
+    def test_connect_existing_readonly_does_not_create_missing_parent(
+        self, fresh_home,
+    ):
+        db_path = fresh_home / "missing readonly path" / "kanban.db"
+
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            kb.connect_existing_readonly(db_path=db_path)
+
+        assert not db_path.parent.exists()
+
+    @pytest.mark.parametrize(
+        "kanban_root_name",
+        ["plain-home", "kanban home # with percent%"],
+        ids=["plain-path", "uri-escaped-path"],
+    )
+    def test_stale_named_consumer_does_not_recreate_removed_board(
+        self, fresh_home, monkeypatch, kanban_root_name,
+    ):
+        kanban_root = fresh_home / kanban_root_name
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(kanban_root))
+        kb.create_board("ephemeral")
+        board_path = kb.board_dir("ephemeral")
+        db_path = kb.kanban_db_path(board="ephemeral")
+        assert db_path.is_file()
+
+        kb.remove_board("ephemeral", archive=False)
+
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            kb.connect(board="ephemeral", create_if_missing=False)
+
+        assert not board_path.exists()
+
+    def test_connect_no_create_handles_uri_escaped_existing_path(self, fresh_home):
+        db_path = fresh_home / "kanban path # with percent%" / "kanban.db"
+        with kb.connect(db_path=db_path) as conn:
+            task_id = kb.create_task(conn, title="escaped path", assignee="dev")
+
+        with kb.connect(db_path=db_path, create_if_missing=False) as conn:
+            task = kb.get_task(conn, task_id)
+            assert task is not None
+            assert task.title == "escaped path"
+
+    def test_connect_no_create_does_not_create_uri_escaped_missing_path(
+        self, fresh_home,
+    ):
+        db_path = fresh_home / "missing path # with percent%" / "kanban.db"
+
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            kb.connect(db_path=db_path, create_if_missing=False)
+
+        assert not db_path.parent.exists()
+
     def test_tasks_do_not_leak_across_boards(self, fresh_home):
         kb.create_board("alpha")
         kb.create_board("beta")
@@ -484,6 +700,29 @@ def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 class TestCLI:
+    def test_boards_rm_surfaces_recovery_path(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli import kanban as kanban_cli
+
+        recovery_path = tmp_path / ".deleting-nuke-recoverable"
+        error = kb.BoardDeleteRecoveryError(
+            "nuke",
+            recovery_path,
+            PermissionError(errno.EACCES, "Permission denied"),
+            FileExistsError(errno.EEXIST, "File exists"),
+        )
+
+        def _fail_remove_board(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(kanban_cli.kb, "remove_board", _fail_remove_board)
+
+        result = kanban_cli._cmd_boards_rm(
+            argparse.Namespace(slug="nuke", delete=True, boards_action="rm")
+        )
+
+        assert result == 1
+        assert str(recovery_path) in capsys.readouterr().err
+
     def test_boards_list_default_only(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         res = _cli(["boards", "list", "--json"], env_extra=env)

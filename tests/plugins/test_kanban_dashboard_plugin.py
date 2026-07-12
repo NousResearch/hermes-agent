@@ -7,10 +7,14 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -989,6 +993,159 @@ def test_ws_event_poll_does_not_recreate_removed_board(
         # tick, making the Dashboard's Archive button look like a no-op.
         time.sleep(0.75)
         assert not kb.board_dir("ephemeral").exists()
+
+
+def test_ws_event_poll_hard_delete_detaches_before_recursive_cleanup(
+    tmp_path, monkeypatch,
+):
+    """Hard delete succeeds while an event-stream SQLite read is open.
+
+    A synchronized rmtree shim reproduces macOS's ``ENOTEMPTY`` failure when
+    SQLite creates a WAL/SHM sidecar between rmtree's directory scan and final
+    rmdir. The board's public path must be atomically detached before recursive
+    cleanup, then the stale stream must notice the missing path and exit.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    kb.create_board("ephemeral")
+    board_path = kb.board_dir("ephemeral")
+
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    stream_query_open = threading.Event()
+    release_stream_query = threading.Event()
+    wrapped_once = threading.Event()
+    real_connect_existing_readonly = kb.connect_existing_readonly
+
+    class _SynchronizedConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, *args, **kwargs):
+            stream_query_open.set()
+            assert release_stream_query.wait(5), "timed out waiting for board delete"
+            return self._conn.execute(*args, **kwargs)
+
+        def close(self):
+            self._conn.close()
+
+    def _synchronized_connect_existing_readonly(*args, **kwargs):
+        conn = real_connect_existing_readonly(*args, **kwargs)
+        if (
+            kwargs.get("board") == "ephemeral"
+            and not wrapped_once.is_set()
+        ):
+            wrapped_once.set()
+            return _SynchronizedConnection(conn)
+        return conn
+
+    monkeypatch.setattr(
+        kb,
+        "connect_existing_readonly",
+        _synchronized_connect_existing_readonly,
+    )
+
+    real_rmtree = shutil.rmtree
+
+    def _fail_if_live_board_was_not_detached(path, *args, **kwargs):
+        if Path(path) == board_path and stream_query_open.is_set():
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", _fail_if_live_board_was_not_detached)
+
+    router = _load_plugin_router()
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    stream_endpoint = next(
+        route.endpoint for route in router.routes if route.path == "/events"
+    )
+
+    class _FakeWS:
+        query_params = {
+            "token": "secret-xyz",
+            "board": "ephemeral",
+            "since": "0",
+        }
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, _data):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    stream_exited = threading.Event()
+    stream_errors = []
+
+    def _run_stream():
+        try:
+            asyncio.run(stream_endpoint(_FakeWS()))
+        except BaseException as exc:
+            stream_errors.append(exc)
+        finally:
+            stream_exited.set()
+
+    stream_thread = threading.Thread(target=_run_stream, daemon=True)
+    stream_thread.start()
+
+    assert stream_query_open.wait(5), "event stream did not open its DB read"
+    try:
+        response = c.delete(
+            "/api/plugins/kanban/boards/ephemeral?delete=true"
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["action"] == "deleted"
+        assert not board_path.exists()
+    finally:
+        release_stream_query.set()
+
+    assert stream_exited.wait(5), "stale event stream did not exit"
+    stream_thread.join(timeout=1)
+    assert stream_errors == []
+
+
+def test_hard_delete_restore_collision_surfaces_recovery_path(
+    kanban_home, tmp_path, monkeypatch,
+):
+    recovery_path = tmp_path / ".deleting-ephemeral-recoverable"
+    recovery_path.mkdir()
+    error = kb.BoardDeleteRecoveryError(
+        "ephemeral",
+        recovery_path,
+        PermissionError(errno.EACCES, "Permission denied"),
+        FileExistsError(errno.EEXIST, "File exists"),
+    )
+
+    def _fail_remove_board(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(kb, "remove_board", _fail_remove_board)
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.delete(
+        "/api/plugins/kanban/boards/ephemeral?delete=true"
+    )
+
+    assert response.status_code == 409
+    assert str(recovery_path) in response.json()["detail"]
 
 
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):

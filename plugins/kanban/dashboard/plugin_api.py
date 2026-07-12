@@ -2079,6 +2079,8 @@ def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete
     """Archive (default) or hard-delete a board."""
     try:
         res = kanban_db.remove_board(slug, archive=not delete)
+    except kanban_db.BoardDeleteRecoveryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"result": res, "current": kanban_db.get_current_board()}
@@ -2417,15 +2419,10 @@ async def stream_events(ws: WebSocket):
             ws_board = None
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
-            # Named boards are explicitly created through create_board(). The
-            # event tail is a stale/read-only consumer and must never recreate
-            # one after Archive/Delete moved its DB away.
-            conn = kanban_db.connect(
-                board=ws_board,
-                create_if_missing=(
-                    ws_board is None or ws_board == kanban_db.DEFAULT_BOARD
-                ),
-            )
+            # The event tail is a stale/read-only consumer. It must not take
+            # the schema-init path or recreate a board after Archive/Delete
+            # atomically moved the public board directory away.
+            conn = kanban_db.connect_existing_readonly(board=ws_board)
             try:
                 rows = conn.execute(
                     "SELECT id, task_id, run_id, kind, payload, created_at "

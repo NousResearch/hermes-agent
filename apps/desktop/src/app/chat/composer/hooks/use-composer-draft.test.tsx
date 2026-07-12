@@ -1,5 +1,5 @@
 import { act } from '@testing-library/react'
-import { type RefObject, useRef } from 'react'
+import { type RefObject, useLayoutEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -42,7 +42,12 @@ vi.mock('@assistant-ui/react', () => ({
   useComposerRuntime: () => composer.runtime
 }))
 
-function Harness({ scope }: { scope: string | null }) {
+interface HarnessProps {
+  onLayoutRead?: (text: string | null) => void
+  scope: string | null
+}
+
+function Harness({ onLayoutRead, scope }: HarnessProps) {
   const queueEditRef = useRef<QueueEditState | null>(null)
   const draft = useComposerDraft({
     activeQueueSessionKey: scope,
@@ -50,6 +55,10 @@ function Harness({ scope }: { scope: string | null }) {
     inputDisabled: false,
     queueEditRef: queueEditRef as RefObject<QueueEditState | null>,
     sessionId: scope
+  })
+
+  useLayoutEffect(() => {
+    onLayoutRead?.(draft.editorRef.current?.textContent ?? null)
   })
 
   return <div data-testid="editor" ref={draft.editorRef} />
@@ -82,15 +91,18 @@ describe('useComposerDraft session swap', () => {
   })
 
   it('loads the new-session draft before paint when leaving an existing session', () => {
+    const layoutReads: Array<string | null> = []
     stashSessionDraft('session-a', 'previous draft', [])
 
-    act(() => root.render(<Harness scope="session-a" />))
+    act(() => root.render(<Harness onLayoutRead={text => layoutReads.push(text)} scope="session-a" />))
 
     const editor = container.querySelector('[data-testid="editor"]')
     expect(editor?.textContent).toBe('previous draft')
+    expect(layoutReads[layoutReads.length - 1]).toBe('previous draft')
 
-    flushSync(() => root.render(<Harness scope={null} />))
+    flushSync(() => root.render(<Harness onLayoutRead={text => layoutReads.push(text)} scope={null} />))
 
+    expect(layoutReads[layoutReads.length - 1]).toBe('')
     expect(editor?.textContent).toBe('')
     expect(takeSessionDraft('session-a').text.trim()).toBe('previous draft')
     expect(takeSessionDraft(null).text).toBe('')

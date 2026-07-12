@@ -109,7 +109,7 @@ class TestBuildJobPromptContextFrom:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         launch_home = tmp_path / "launch"
-        profile_home = tmp_path / "profiles" / "gnosiv"
+        profile_home = tmp_path / "profiles" / "worker"
         monkeypatch.setattr(cron_jobs, "HERMES_DIR", launch_home)
         monkeypatch.setattr(cron_jobs, "CRON_DIR", launch_home / "cron")
         monkeypatch.setattr(cron_jobs, "JOBS_FILE", launch_home / "cron" / "jobs.json")

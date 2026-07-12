@@ -115,12 +115,14 @@ def _validate_office_archive(path: str, zf: zipfile.ZipFile) -> None:
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
 
-    infos = [info for info in zf.infolist() if not info.is_dir()]
+    infos = zf.infolist()
     if len(infos) > MAX_OFFICE_MEMBER_COUNT:
         raise ExtractionError("Office document contains too many archive members")
 
     total_size = 0
     for info in infos:
+        if info.is_dir():
+            continue
         if info.file_size > MAX_OFFICE_MEMBER_BYTES:
             raise ExtractionError(f"Office document member is too large: {info.filename}")
         total_size += info.file_size

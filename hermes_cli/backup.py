@@ -11,6 +11,7 @@ HERMES_HOME root.
 import json
 import logging
 import os
+import posixpath
 import shutil
 import sqlite3
 import sys
@@ -502,17 +503,24 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     return True, ""
 
 
-def _validate_import_members(zf: zipfile.ZipFile) -> tuple[bool, str]:
-    infos = [info for info in zf.infolist() if not info.is_dir()]
+def _validate_import_members(zf: zipfile.ZipFile, prefix: str) -> tuple[bool, str]:
+    infos = zf.infolist()
     if len(infos) > _MAX_IMPORT_MEMBERS:
         return False, f"zip contains too many files (maximum {_MAX_IMPORT_MEMBERS:,})"
 
     total_bytes = 0
     seen_names: set[str] = set()
+    seen_normalized_names: set[str] = set()
     for info in infos:
+        if info.is_dir():
+            continue
         if info.filename in seen_names:
             return False, f"zip contains a duplicate file name: {info.filename}"
         seen_names.add(info.filename)
+        normalized_name = _normalized_import_member_name(info.filename, prefix)
+        if normalized_name in seen_normalized_names:
+            return False, f"zip contains colliding file names: {info.filename}"
+        seen_normalized_names.add(normalized_name)
         if info.file_size > _MAX_IMPORT_MEMBER_BYTES:
             return False, f"zip member is too large: {info.filename}"
         total_bytes += info.file_size
@@ -536,9 +544,10 @@ def _copy_zip_member(
 
 
 def _normalized_import_member_name(filename: str, prefix: str) -> str:
-    if prefix and filename.startswith(prefix):
-        return filename[len(prefix):]
-    return filename
+    normalized_filename = filename.replace("\\", "/")
+    if prefix and normalized_filename.startswith(prefix):
+        normalized_filename = normalized_filename[len(prefix):]
+    return posixpath.normpath(normalized_filename)
 
 
 def _is_allowed_external_target(target: Path, allowed_roots: List[Path]) -> bool:
@@ -604,12 +613,12 @@ def run_import(args) -> None:
             print(f"Error: {reason}")
             sys.exit(1)
 
-        ok, reason = _validate_import_members(zf)
+        prefix = _detect_prefix(zf)
+        ok, reason = _validate_import_members(zf, prefix)
         if not ok:
             print(f"Error: {reason}")
             sys.exit(1)
 
-        prefix = _detect_prefix(zf)
         members = sorted(
             (info for info in zf.infolist() if not info.is_dir()),
             key=lambda info: _normalized_import_member_name(

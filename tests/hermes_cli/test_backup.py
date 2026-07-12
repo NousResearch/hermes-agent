@@ -1236,6 +1236,23 @@ class TestImportEdgeCases:
         with pytest.raises(SystemExit):
             backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
 
+    def test_import_counts_directory_entries_toward_member_limit(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "too-many-directories.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: test\n")
+            zf.writestr("one/", "")
+            zf.writestr("two/", "")
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(backup_mod, "_MAX_IMPORT_MEMBERS", 2)
+
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
     def test_import_rejects_excessive_archive_size(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -1265,6 +1282,37 @@ class TestImportEdgeCases:
         with pytest.raises(SystemExit):
             backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
 
+    def test_import_rejects_member_larger_than_limit(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "large-member.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: test\n")
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(backup_mod, "_MAX_IMPORT_MEMBER_BYTES", 1)
+
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+    def test_import_rejects_total_expansion_larger_than_limit(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "large-expansion.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: test\n")
+            zf.writestr("sessions/one.json", "{}")
+
+        import hermes_cli.backup as backup_mod
+        monkeypatch.setattr(backup_mod, "_MAX_IMPORT_TOTAL_BYTES", 1)
+
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
     def test_import_rejects_duplicate_member_names(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -1279,6 +1327,23 @@ class TestImportEdgeCases:
         import hermes_cli.backup as backup_mod
         with pytest.raises(SystemExit):
             backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+    def test_import_rejects_normalized_member_name_collision(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("original: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        zip_path = tmp_path / "normalized-collision.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: first\n")
+            zf.writestr(".hermes/config.yaml", "model: second\n")
+
+        import hermes_cli.backup as backup_mod
+        with pytest.raises(SystemExit):
+            backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (hermes_home / "config.yaml").read_text() == "original: true\n"
 
 
 # ---------------------------------------------------------------------------

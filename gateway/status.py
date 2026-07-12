@@ -805,8 +805,19 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
     served_profiles: Any = _UNSET,
+    disabled_platforms: Any = _UNSET,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status.
+
+    ``disabled_platforms`` reconciles the persisted ``platforms`` map against
+    the platforms explicitly disabled in the *current* config: each named
+    platform is written as ``state="disabled"`` with its connection/error
+    metadata cleared.  Without this, a ``gateway_state.json`` left over from a
+    previous run keeps stale ``connected``/``paused``/``fatal`` entries for a
+    platform the operator has since turned off — the startup connect loop skips
+    disabled platforms, so nothing else ever overwrites those entries and
+    ``hermes status`` / readiness probes report a dead platform as live.
+    """
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
@@ -841,6 +852,23 @@ def write_runtime_status(
             platform_payload["error_message"] = error_message
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
+
+    if disabled_platforms is not _UNSET:
+        # Reconcile every explicitly-disabled platform to a clean "disabled"
+        # record for this run, clearing stale connection/error metadata a prior
+        # run may have left behind. Never touch a platform that was updated in
+        # THIS call (e.g. an enabled platform mid-connect) — the explicit
+        # `platform=` argument wins.
+        now = _utc_now_iso()
+        for name in disabled_platforms or []:
+            if name == platform:
+                continue
+            payload["platforms"][name] = {
+                "state": "disabled",
+                "error_code": None,
+                "error_message": None,
+                "updated_at": now,
+            }
 
     _write_json_file(path, payload)
 

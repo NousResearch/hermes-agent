@@ -669,6 +669,141 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_marks_disabled_platform_and_clears_stale_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: a platform disabled in the current config must not keep
+        stale connected/error metadata from a previous run (misleads status)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Previous run: telegram was connected, discord failed fatally.
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {
+                    "state": "connected",
+                    "error_code": None,
+                    "error_message": None,
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+                "discord": {
+                    "state": "fatal",
+                    "error_code": "discord_timeout",
+                    "error_message": "boom",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        # New run: both telegram and discord are explicitly disabled in config.
+        status.write_runtime_status(
+            gateway_state="starting",
+            disabled_platforms=["telegram", "discord"],
+        )
+
+        payload = status.read_runtime_status()
+        for name in ("telegram", "discord"):
+            assert payload["platforms"][name]["state"] == "disabled"
+            assert payload["platforms"][name]["error_code"] is None
+            assert payload["platforms"][name]["error_message"] is None
+        # PID/start_time are refreshed for the current run too.
+        assert payload["pid"] == os.getpid()
+
+    def test_write_runtime_status_disabled_preserves_enabled_platforms(
+        self, tmp_path, monkeypatch
+    ):
+        """Reconciling disabled platforms must not touch enabled ones."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {
+                    "state": "connected",
+                    "error_code": None,
+                    "error_message": None,
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+                "discord": {
+                    "state": "paused",
+                    "error_code": "x",
+                    "error_message": "y",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        # Only discord is disabled now; telegram stays enabled.
+        status.write_runtime_status(
+            gateway_state="starting",
+            disabled_platforms=["discord"],
+        )
+
+        payload = status.read_runtime_status()
+        # Enabled platform is untouched.
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        # Disabled platform is reconciled.
+        assert payload["platforms"]["discord"]["state"] == "disabled"
+        assert payload["platforms"]["discord"]["error_code"] is None
+        assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_disabled_adds_missing_platform_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """A disabled platform with no prior entry is written as disabled."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="starting",
+            disabled_platforms=["slack"],
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["slack"]["state"] == "disabled"
+        assert payload["platforms"]["slack"]["error_code"] is None
+        assert payload["platforms"]["slack"]["error_message"] is None
+
+    def test_write_runtime_status_disabled_combines_with_platform_update(
+        self, tmp_path, monkeypatch
+    ):
+        """A single call can both reconcile disabled platforms and record an
+        enabled platform's live state without them clobbering each other."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "kind": "hermes-gateway",
+            "platforms": {
+                "discord": {
+                    "state": "connected",
+                    "error_code": None,
+                    "error_message": None,
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        status.write_runtime_status(
+            gateway_state="starting",
+            platform="telegram",
+            platform_state="connecting",
+            disabled_platforms=["discord"],
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["telegram"]["state"] == "connecting"
+        assert payload["platforms"]["discord"]["state"] == "disabled"
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

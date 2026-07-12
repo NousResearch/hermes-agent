@@ -185,7 +185,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     platform_toolsets = (cfg or {}).get("platform_toolsets") or {}
     if not isinstance(platform_toolsets.get("cron"), list):
-        return ["web", "terminal", "file"]
+        return _merge_mcp_into_per_job_toolsets(
+            ["web", "terminal", "file"], cfg or {}
+        )
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))

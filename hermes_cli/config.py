@@ -2213,7 +2213,9 @@ DEFAULT_CONFIG = {
                            # explicitly for non-standard endpoints the heuristic can't detect.
         # Child toolsets are operator-controlled and always intersected with
         # the parent's capabilities. Keep the default surface lean; add browser,
-        # vision, skills, or delegation here only for recurring child workloads.
+        # vision, or skills here only for recurring child workloads. Orchestrator
+        # children are the deliberate exception: their role re-adds delegation
+        # after this intersection so they can spawn their bounded worker tier.
         "enabled_toolsets": ["terminal", "file", "web"],
         # Preserve parent MCP toolsets when narrowing the native set. Set false
         # when children should receive exactly enabled_toolsets.

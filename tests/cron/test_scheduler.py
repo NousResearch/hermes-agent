@@ -63,11 +63,12 @@ class TestPerJobToolsetMcpMerge:
         result = _resolve_cron_enabled_toolsets(job, self.CFG)
         assert set(result) == {"web", "terminal"} | self._enabled_names()
 
-    def test_resolver_unconfigured_job_uses_lean_default(self):
+    def test_resolver_unconfigured_job_keeps_lean_native_default_and_global_mcp(self):
         job = {"enabled_toolsets": None}
-        assert _resolve_cron_enabled_toolsets(job, self.CFG) == [
-            "web", "terminal", "file"
-        ]
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert result is not None
+        assert result[:3] == ["web", "terminal", "file"]
+        assert set(result) == {"web", "terminal", "file"} | self._enabled_names()
 
     def test_resolver_respects_explicit_cron_platform_config(self):
         job = {"enabled_toolsets": None}

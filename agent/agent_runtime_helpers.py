@@ -642,7 +642,7 @@ def strip_think_blocks(agent, content: str) -> str:
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.
     for _tc_name in ("tool_call", "tool_calls", "tool_result",
-                      "function_call", "function_calls"):
+                      "function_call", "function_calls", "invoke"):
         content = re.sub(
             rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
             '',
@@ -684,7 +684,7 @@ def strip_think_blocks(agent, content: str) -> str:
     #     during streaming may still be valuable to the user; matches
     #     OpenClaw's intentional asymmetry.)
     content = re.sub(
-        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
+        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function|invoke)>\s*',
         '',
         content,
         flags=re.IGNORECASE,

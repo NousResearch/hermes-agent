@@ -285,6 +285,29 @@ class TestAgentBrowserMouseFallback:
 
 
 class TestBoxResolutionFailure:
+    def test_missing_size_falls_back(self, monkeypatch):
+        """If width/height is missing or zero, fall back to plain ref click."""
+        from tools import browser_tool, browser_cdp_tool
+
+        monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: "")
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda tid: tid)
+
+        commands = []
+
+        def mock_run_cmd(task_id, command, args=None, timeout=None):
+            commands.append((command, args))
+            if command == "get" and args and args[0] == "box":
+                return {"success": True, "data": {"x": 100.0, "y": 200.0, "width": 0, "height": 0}}
+            return {"success": True}
+
+        monkeypatch.setattr(browser_tool, "_run_browser_command", mock_run_cmd)
+
+        result = json.loads(browser_tool.browser_click(ref="@e5"))
+        assert result["success"] is True
+        assert result["method"] == "agent_browser_ref"
+        assert ("click", ["@e5"]) in commands
+
     def test_falls_back_to_plain_ref_click(self, monkeypatch):
         from tools import browser_tool, browser_cdp_tool
 
@@ -365,11 +388,11 @@ class TestSchemaUpdated:
         assert "x" not in props
         assert "y" not in props
 
-    def test_schema_no_required_fields(self):
+    def test_ref_is_required(self):
         from tools.browser_tool import _BROWSER_SCHEMA_MAP
 
         schema = _BROWSER_SCHEMA_MAP["browser_click"]
-        assert "required" not in schema["parameters"] or schema["parameters"]["required"] == []
+        assert schema["parameters"]["required"] == ["ref"]
 
 
 class TestRegistryIntegration:

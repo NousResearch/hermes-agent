@@ -1857,7 +1857,7 @@ BROWSER_TOOL_SCHEMAS = [
                     "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
                 }
             },
-            "required": []
+            "required": ["ref"]
         }
     },
     {
@@ -3231,6 +3231,12 @@ def _resolve_ref_box(ref: str, task_id: str) -> Optional[dict]:
     # agent-browser returns x/y/width/height (numeric) or a string blob.
     try:
         if isinstance(data, dict):
+            # Require at least x and y; reject missing/zero size so we don't
+            # click at the top-left corner from a malformed box result.
+            if not any(k in data for k in ("x", "left")):
+                return None
+            if not any(k in data for k in ("y", "top")):
+                return None
             x = float(data.get("x", data.get("left", 0)))
             y = float(data.get("y", data.get("top", 0)))
             w = float(data.get("width", 0))
@@ -3241,6 +3247,8 @@ def _resolve_ref_box(ref: str, task_id: str) -> Optional[dict]:
                 kv.split("=") for kv in data.replace(",", " ").split()
                 if "=" in kv
             )
+            if "x" not in parts or "y" not in parts:
+                return None
             x = float(parts.get("x", 0))
             y = float(parts.get("y", 0))
             w = float(parts.get("width", 0))
@@ -3248,6 +3256,8 @@ def _resolve_ref_box(ref: str, task_id: str) -> Optional[dict]:
         else:
             return None
     except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
         return None
     return {"x": x + w / 2.0, "y": y + h / 2.0}
 

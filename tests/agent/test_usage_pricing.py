@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -322,3 +323,133 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+# ── resolve_billing_route tests for PR #61170 ──────────────────────────
+
+
+def test_resolve_billing_route_strips_provider_prefix_when_model_matches_provider():
+    """``@copilot:gpt-5.5`` with provider=copilot strips the prefix cleanly
+    and routes via the copilot provider (fallthrough to unknown since copilot
+    is not a hardcoded route provider)."""
+    route = resolve_billing_route("@copilot:gpt-5.5", provider="copilot")
+    assert route.model == "gpt-5.5"
+    assert route.billing_mode == "unknown"
+
+
+def test_resolve_billing_route_extracts_hinted_provider_when_no_provider_given():
+    """``@copilot:gpt-5.5`` with no provider argument should extract the
+    hinted provider and model from the prefix."""
+    route = resolve_billing_route("@copilot:gpt-5.5")
+    assert route.model == "gpt-5.5"
+    assert route.billing_mode == "unknown"
+
+
+def test_resolve_billing_route_openai_prefix_routes_via_openai():
+    """``@openai:gpt-4o`` routes through the openai provider's official-docs
+    pricing snapshot, not unknown."""
+    route = resolve_billing_route("@openai:gpt-4o")
+    assert route.model == "gpt-4o"
+    assert route.provider == "openai"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_anthropic_prefix_routes_via_anthropic():
+    """``@anthropic:claude-sonnet-4`` routes through the anthropic provider."""
+    route = resolve_billing_route("@anthropic:claude-sonnet-4")
+    assert route.model == "claude-sonnet-4"
+    assert route.provider == "anthropic"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_custom_subprovider_routes_as_custom():
+    """``custom:wandb`` as provider_name is recognized by the ``custom:``
+    prefix guard and routes to billing_mode=unknown with the full provider
+    name preserved."""
+    route = resolve_billing_route("glm-5.2", provider="custom:wandb")
+    assert route.provider == "custom:wandb"
+    assert route.model == "glm-5.2"
+    assert route.billing_mode == "unknown"
+
+
+def test_resolve_billing_route_custom_subprovider_with_at_prefix():
+    """``@custom:wandb:glm-5.2`` with provider=custom:wandb correctly strips
+    the full multi-colon provider prefix and extracts the bare model name."""
+    route = resolve_billing_route("@custom:wandb:glm-5.2", provider="custom:wandb")
+    assert route.model == "glm-5.2"
+    assert route.provider == "custom:wandb"
+    assert route.billing_mode == "unknown"
+
+
+def test_resolve_billing_route_plain_model_name_unchanged():
+    """A model without ``@`` prefix passes through unaffected."""
+    route = resolve_billing_route("gpt-4o", provider="openai")
+    assert route.model == "gpt-4o"
+    assert route.provider == "openai"
+
+
+def test_resolve_billing_route_empty_model_returns_empty_model():
+    """Empty or None model should not crash; returns gracefully."""
+    route = resolve_billing_route("", provider="openai")
+    # The fallthrough route strips last segment after "/" on the empty string
+    assert route.provider == "openai"
+    assert route.model == ""
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_slash_inferred_provider_still_works():
+    """``anthropic/claude-sonnet-4`` (the conventional slash format) must
+    still be recognized — the @ normalization must not break existing
+    inference logic."""
+    route = resolve_billing_route("anthropic/claude-sonnet-4")
+    assert route.model == "claude-sonnet-4"
+    assert route.provider == "anthropic"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_vertex_routes_to_gemini():
+    """Vertex AI provider routes to gemini official-docs pricing regardless
+    of @ prefix status."""
+    route = resolve_billing_route("@vertex:gemini-2.5-pro")
+    assert route.provider == "gemini"
+    assert route.model == "gemini-2.5-pro"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_known_provider_with_at_prefix_no_provider_arg():
+    """``@openai:gpt-5.5-pro`` with no explicit provider should extract
+    provider=openai and route correctly."""
+    route = resolve_billing_route("@openai:gpt-5.5-pro")
+    assert route.model == "gpt-5.5-pro"
+    assert route.provider == "openai"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_at_prefix_unknown_provider_default_unknown_route():
+    """``@unknown-provider:model`` with no explicit provider should extract
+    the hinted provider but fall through to the generic unknown route."""
+    route = resolve_billing_route("@unknown-provider:model-x")
+    assert route.model == "model-x"
+    assert route.billing_mode == "unknown"
+
+
+def test_get_pricing_entry_via_at_prefixed_openai_model_returns_known_pricing():
+    """End-to-end: ``get_pricing_entry`` with ``@openai:gpt-4o`` must
+    resolve to a known pricing entry, not None — proving the @ normalization
+    unblocks pricing for models stored with the @provider: prefix."""
+    entry = get_pricing_entry("@openai:gpt-4o")
+    assert entry is not None
+    assert float(entry.input_cost_per_million) > 0
+    assert float(entry.output_cost_per_million) > 0
+
+
+def test_estimate_usage_cost_via_at_prefixed_openai_model_returns_estimated():
+    """End-to-end: ``estimate_usage_cost`` with ``@openai:gpt-4o`` must
+    return an estimated cost, not unknown — the primary user-facing
+    symptom this PR fixes."""
+    result = estimate_usage_cost(
+        "@openai:gpt-4o",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+    )
+    assert result.status == "estimated"
+    assert float(result.amount_usd) > 0

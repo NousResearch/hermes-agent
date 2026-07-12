@@ -299,6 +299,65 @@ export interface Translations {
     startSession: string;
   };
 
+  // ── Model configuration ──
+  modelSettings: {
+    addPreset: string;
+    addReferenceModel: string;
+    aggregator: string;
+    allAutoSummary: string;
+    allAuxiliaryTasks: string;
+    analyticsHiddenAfterConfig: string;
+    analyticsHiddenBeforeConfig: string;
+    analyticsHiddenInConfig: string;
+    appliesToNewSessions: string;
+    autoUseMain: string;
+    auxBadge: string;
+    auxiliaryDescription: string;
+    auxiliaryTask: string;
+    auxiliaryTasks: string;
+    capabilities: {
+      reasoning: string;
+      tools: string;
+      vision: string;
+    };
+    change: string;
+    configure: string;
+    configureMoaPresets: string;
+    contextShort: string;
+    defaultLabel: string;
+    mainBadge: string;
+    mainModel: string;
+    maxOutputShort: string;
+    missingProviderModel: string;
+    moaDescription: string;
+    moaRecursiveError: string;
+    moaReferencesSummary: string;
+    modelSettings: string;
+    newPresetPlaceholder: string;
+    notLoaded: string;
+    overrideSummary: string;
+    providerDefault: string;
+    referenceModels: string;
+    remove: string;
+    resetAll: string;
+    resetAuxDescription: string;
+    resetAuxModels: string;
+    selectMoaModel: string;
+    setAuxiliary: string;
+    setDefault: string;
+    setMainModel: string;
+    slotModel: string;
+    slotProvider: string;
+    tokenLegend: {
+      cacheRead: string;
+      input: string;
+      output: string;
+      reasoning: string;
+    };
+    useAs: string;
+    auxTasks: Record<string, { label: string; hint: string }>;
+  };
+
   // ── Logs page ──
   logs: {
     title: string;

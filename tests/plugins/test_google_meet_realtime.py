@@ -288,3 +288,36 @@ def test_speaker_drops_line_without_processed_path_when_none(tmp_path):
     speaker.run_until_stopped(_stop, poll_interval=0.01)
     assert stub.spoken == ["once"]
     assert queue.read_text().strip() == ""
+
+
+def test_speaker_speaks_idless_entry_once(tmp_path):
+    # An entry written without an "id" (the `say` producer writes
+    # {"text", "ts"}) must be spoken exactly once. A fresh uuid per read
+    # used to make the post-speak drop-by-id miss, so it was spoken twice.
+    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
+
+    queue = tmp_path / "q.jsonl"
+    queue.write_text(json.dumps({"text": "once", "ts": 1.0}) + "\n")  # no "id"
+
+    stub = _StubSession()
+    speaker = RealtimeSpeaker(stub, queue_path=queue, processed_path=None)
+
+    def _stop():
+        return queue.read_text().strip() == ""
+
+    speaker.run_until_stopped(_stop, poll_interval=0.01)
+    assert stub.spoken == ["once"]
+    assert queue.read_text().strip() == ""
+
+
+def test_read_queue_assigns_stable_id_across_reads(tmp_path):
+    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
+
+    queue = tmp_path / "q.jsonl"
+    queue.write_text(json.dumps({"text": "hi", "ts": 1.0}) + "\n")  # no "id"
+    speaker = RealtimeSpeaker(_StubSession(), queue_path=queue, processed_path=None)
+
+    first = speaker._read_queue()
+    second = speaker._read_queue()
+    assert first[0]["id"] == second[0]["id"]
+    assert first[0]["text"] == "hi"

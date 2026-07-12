@@ -669,6 +669,121 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_prunes_platform_fossils_on_restart(self, tmp_path, monkeypatch):
+        """A new gateway process must not carry forward per-platform records
+        left by a previous process: a platform the new process never touches
+        would otherwise survive as a fossil frozen at its pre-restart
+        timestamp (e.g. a retired ``slack`` stuck ``connected`` for months)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000,
+            "kind": "hermes-gateway",
+            "platforms": {
+                "telegram": {"state": "connected", "updated_at": "2025-01-01T00:00:00Z"},
+                "slack": {"state": "connected", "updated_at": "2025-01-01T00:00:00Z"},
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        status.write_runtime_status(
+            gateway_state="running", platform="telegram", platform_state="connected"
+        )
+
+        payload = status.read_runtime_status()
+        assert "slack" not in payload["platforms"], "fossil record must be pruned on restart"
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        assert payload["platforms"]["telegram"]["start_time"] == 2000
+
+    def test_write_runtime_status_restart_startup_write_prunes_platforms(self, tmp_path, monkeypatch):
+        """The first write of a new process (``gateway_state="starting"``, no
+        platform argument) already drops carried platform records."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000,
+            "kind": "hermes-gateway",
+            "platforms": {
+                "slack": {"state": "connected", "updated_at": "2025-01-01T00:00:00Z"},
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        status.write_runtime_status(gateway_state="starting")
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"] == {}
+
+    def test_write_runtime_status_stamps_platform_with_writer_start_time(self, tmp_path, monkeypatch):
+        """Every platform write carries the writer's ``start_time`` so a reader
+        can tell a record written by the live process from a fossil."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        status.write_runtime_status(
+            gateway_state="running", platform="discord", platform_state="connected"
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["discord"]["start_time"] == 2000
+        assert payload["platforms"]["discord"]["start_time"] == payload["start_time"]
+
+    def test_write_runtime_status_foreign_platform_stamp_is_identifiable(self, tmp_path, monkeypatch):
+        """A hand-planted platform record stamped by another process stays
+        distinguishable from the live writer's records: same-process writes
+        never rewrite other platforms' stamps."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": os.getpid(),
+            "start_time": 2000,
+            "kind": "hermes-gateway",
+            "platforms": {
+                "slack": {
+                    "state": "connected",
+                    "start_time": 1000,
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+            },
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+
+        status.write_runtime_status(platform="telegram", platform_state="connected")
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["telegram"]["start_time"] == payload["start_time"]
+        assert payload["platforms"]["slack"]["start_time"] != payload["start_time"]
+
+    def test_write_runtime_status_keeps_platforms_across_same_process_writes(self, tmp_path, monkeypatch):
+        """Regression guard for the prune: a single continuous process keeps
+        every managed platform's record across repeated writes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+
+        status.write_runtime_status(
+            gateway_state="running", platform="telegram", platform_state="connected"
+        )
+        status.write_runtime_status(platform="discord", platform_state="connected")
+        first_telegram_updated = (
+            status.read_runtime_status()["platforms"]["telegram"]["updated_at"]
+        )
+        status.write_runtime_status(platform="telegram", platform_state="disconnected")
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["telegram"]["state"] == "disconnected"
+        assert payload["platforms"]["discord"]["state"] == "connected"
+        assert payload["platforms"]["telegram"]["updated_at"] >= first_telegram_updated
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

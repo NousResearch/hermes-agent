@@ -810,6 +810,16 @@ def write_runtime_status(
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    if (payload.get("pid"), payload.get("start_time")) != (
+        current_record["pid"],
+        current_record["start_time"],
+    ):
+        # New writer process (restart, or PID reuse caught by start_time):
+        # drop carried per-platform records instead of merging them forward.
+        # A platform this process manages re-registers on its first write;
+        # one it never touches would otherwise survive indefinitely as a
+        # fossil frozen at its pre-restart ``updated_at``.
+        payload["platforms"] = {}
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
     payload["pid"] = current_record["pid"]
@@ -839,6 +849,10 @@ def write_runtime_status(
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
+        # Writer-identity stamp (same value as the top-level ``start_time``):
+        # a record whose stamp differs from the live process is provably a
+        # fossil, so readers don't have to infer staleness from timestamps.
+        platform_payload["start_time"] = current_record["start_time"]
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

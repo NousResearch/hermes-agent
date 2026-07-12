@@ -859,6 +859,16 @@ CREATE TABLE IF NOT EXISTS agent_messages (
     read_at     REAL DEFAULT NULL,        -- NULL until acknowledged
     ttl         INTEGER DEFAULT 0         -- auto-purge after N seconds (0 = permanent)
 );
+
+CREATE TABLE IF NOT EXISTS agent_blackboard (
+    task_group  TEXT NOT NULL,            -- groups related agents (e.g. 'pr-63364')
+    key         TEXT NOT NULL,            -- artifact key (e.g. 'analysis', 'decision')
+    value       TEXT NOT NULL DEFAULT '', -- JSON-encoded value
+    updated_by  TEXT NOT NULL,            -- agent_id that last wrote this key
+    updated_at  REAL NOT NULL,
+    ttl         INTEGER DEFAULT 0,        -- auto-purge after N seconds (0 = permanent)
+    PRIMARY KEY (task_group, key)
+);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -6894,11 +6904,14 @@ class SessionDB:
             rows = conn.execute(query, (agent_id,)).fetchall()
 
             if mark_read and rows:
-                ids = [row[0] for row in rows]
-                conn.executemany(
-                    "UPDATE agent_messages SET read_at = ? WHERE id = ?",
-                    [(now, mid) for mid in ids],
-                )
+                # Don't mark broadcast messages as read — they must remain
+                # visible for every agent.  Broadcasts are purged via TTL.
+                ids = [row[0] for row in rows if row[1] != '*']
+                if ids:
+                    conn.executemany(
+                        "UPDATE agent_messages SET read_at = ? WHERE id = ?",
+                        [(now, mid) for mid in ids],
+                    )
 
             messages = []
             for row in rows:
@@ -6916,6 +6929,100 @@ class SessionDB:
                     "at": created_at,
                 })
             return messages
+
+        return self._execute_write(_do)
+
+
+    # ── Agent blackboard (shared workspace) ───────────────────────────
+    # Key-value store shared across agents in a task group. Agents post
+    # intermediate artifacts; other agents read to avoid duplicate work.
+    # Part of the multi-agent collaboration protocol (Layer 2).
+
+    def blackboard_set(
+        self,
+        *,
+        task_group: str,
+        key: str,
+        value: Any,
+        updated_by: str,
+        ttl: int = 0,
+    ) -> None:
+        """Write a key to the shared blackboard. UPSERT."""
+        import json as _json
+        import time as _time
+
+        def _do(conn):
+            now = _time.time()
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_blackboard "
+                "(task_group, key, value, updated_by, updated_at, ttl) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    task_group,
+                    key,
+                    _json.dumps(value),
+                    updated_by,
+                    now,
+                    ttl,
+                ),
+            )
+        self._execute_write(_do)
+
+    def blackboard_get(
+        self,
+        *,
+        task_group: str,
+        key: str | None = None,
+    ) -> dict | None:
+        """Read a single key or all keys for a task group.
+
+        Expired entries are auto-purged before read.
+        Returns {key: {value, updated_by, updated_at}} dict or None.
+        """
+        import json as _json
+        import time as _time
+
+        def _do(conn):
+            now = _time.time()
+
+            # Purge expired
+            conn.execute(
+                "DELETE FROM agent_blackboard "
+                "WHERE ttl > 0 AND (updated_at + ttl) < ?",
+                (now,),
+            )
+
+            if key:
+                row = conn.execute(
+                    "SELECT value, updated_by, updated_at "
+                    "FROM agent_blackboard "
+                    "WHERE task_group = ? AND key = ?",
+                    (task_group, key),
+                ).fetchone()
+                if not row:
+                    return None
+                value_str, updated_by, updated_at = row
+                try:
+                    value = _json.loads(value_str)
+                except (_json.JSONDecodeError, TypeError):
+                    value = value_str
+                return {"value": value, "updated_by": updated_by, "at": updated_at}
+
+            # All keys
+            rows = conn.execute(
+                "SELECT key, value, updated_by, updated_at "
+                "FROM agent_blackboard "
+                "WHERE task_group = ?",
+                (task_group,),
+            ).fetchall()
+            result = {}
+            for k, value_str, updated_by, updated_at in rows:
+                try:
+                    value = _json.loads(value_str)
+                except (_json.JSONDecodeError, TypeError):
+                    value = value_str
+                result[k] = {"value": value, "updated_by": updated_by, "at": updated_at}
+            return result or None
 
         return self._execute_write(_do)
 

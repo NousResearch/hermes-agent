@@ -1446,9 +1446,8 @@ def _save_tool_progress(
         from agent.tool_result_classification import NO_EFFECT_TOOL_NAMES
 
         # ── Agent messaging persistence ──────────────────────────────
-        if function_name == "send_agent_message":
-            _persist_agent_message(function_args, result, task_id)
-            return
+        if function_name in ("send_agent_message", "blackboard_write", "agent_handoff"):
+            return  # Already persisted by the handler itself
 
         if function_name in NO_EFFECT_TOOL_NAMES:
             return  # Read-only tools don't need checkpointing

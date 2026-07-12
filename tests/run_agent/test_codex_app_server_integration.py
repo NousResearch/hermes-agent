@@ -69,6 +69,18 @@ class TestApiModeAccepted:
     def test_api_mode_is_codex_app_server(self):
         agent = _make_codex_agent()
         assert agent.api_mode == "codex_app_server"
+        assert agent.codex_app_server_kanban_network_access is False
+
+    def test_kanban_network_access_loads_from_model_config(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "model": {"codex_app_server_kanban_network_access": True}
+            },
+        ):
+            agent = _make_codex_agent()
+
+        assert agent.codex_app_server_kanban_network_access is True
 
 
 class TestRunConversationCodexPath:
@@ -376,6 +388,35 @@ class TestRunConversationCodexPath:
             agent.run_conversation("hi")
 
         assert captured["cwd"] == str(tmp_path)
+
+    def test_kanban_network_opt_in_reaches_codex_session(self, monkeypatch):
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession, TurnResult,
+        )
+
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+            self._thread_id = "thread-stub-1"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent()
+        agent.codex_app_server_kanban_network_access = True
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["kanban_network_access"] is True
 
     def _capture_routing_agent(self, monkeypatch):
         """Build a codex agent with a CodexAppServerSession stub that captures
@@ -769,4 +810,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

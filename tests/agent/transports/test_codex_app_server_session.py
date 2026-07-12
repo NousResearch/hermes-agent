@@ -161,6 +161,23 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_network_opt_in_is_forwarded_to_client_factory(self):
+        client = FakeClient()
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            kanban_network_access=True,
+            client_factory=factory,
+        )
+        session.ensure_started()
+
+        assert captured["kanban_network_access"] is True
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

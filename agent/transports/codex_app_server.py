@@ -17,15 +17,20 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local import hermes_subprocess_env
+
+logger = logging.getLogger(__name__)
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
@@ -51,6 +56,62 @@ class _Pending:
     sent_at: float = field(default_factory=time.time)
 
 
+def _kanban_git_common_dir(spawn_env: dict[str, str]) -> Optional[str]:
+    """Resolve a validated linked-worktree common dir for Codex writes."""
+    if spawn_env.get("HERMES_KANBAN_WORKSPACE_KIND") != "worktree":
+        return None
+    workspace = spawn_env.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if not workspace or not os.path.isabs(workspace) or not os.path.isdir(workspace):
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                workspace,
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+            env=spawn_env,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("codex app-server: failed to resolve Kanban Git metadata")
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if result.returncode != 0 or len(lines) != 2:
+        return None
+    workspace_real = os.path.realpath(workspace)
+    top_level = os.path.realpath(lines[0])
+    common_dir = os.path.realpath(lines[1])
+    if top_level != workspace_real or not os.path.isdir(common_dir):
+        logger.warning(
+            "codex app-server: refusing unvalidated Kanban Git root for %s",
+            workspace,
+        )
+        return None
+    return common_dir
+
+
+def _kanban_temp_root(kanban_root: str, task_id: str) -> Optional[str]:
+    safe_task_id = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id) or "task"
+    temp_root = os.path.join(kanban_root, ".codex-tmp", safe_task_id)
+    try:
+        os.makedirs(temp_root, mode=0o700, exist_ok=True)
+    except OSError:
+        logger.warning("codex app-server: failed to create task-local temp root")
+        return None
+    return temp_root
+
+
 class CodexAppServerClient:
     """Minimal JSON-RPC 2.0 client for `codex app-server` over stdio.
 
@@ -74,6 +135,7 @@ class CodexAppServerClient:
         codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        kanban_network_access: bool = False,
     ) -> None:
         self._codex_bin = codex_bin
         # codex app-server is a model-driving CLI executor: it runs a
@@ -112,14 +174,28 @@ class CodexAppServerClient:
                     ),
                 )
             )
+            kanban_root = os.path.abspath(kanban_root)
+            writable_roots = [kanban_root]
+            git_common_dir = _kanban_git_common_dir(spawn_env)
+            if git_common_dir and git_common_dir not in writable_roots:
+                writable_roots.append(git_common_dir)
+            temp_root = _kanban_temp_root(
+                kanban_root, spawn_env["HERMES_KANBAN_TASK"]
+            )
+            if temp_root:
+                spawn_env.update(
+                    {"TMPDIR": temp_root, "TMP": temp_root, "TEMP": temp_root}
+                )
             app_server_args.extend(
                 [
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    "sandbox_workspace_write.writable_roots="
+                    f"{json.dumps(writable_roots)}",
                     "-c",
-                    "sandbox_workspace_write.network_access=false",
+                    "sandbox_workspace_write.network_access="
+                    f"{str(bool(kanban_network_access)).lower()}",
                 ]
             )
 

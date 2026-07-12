@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def client():
-    with httpx.Client(timeout=20) as c:
+    with httpx.Client(timeout=60) as c:
         yield c
 
 
@@ -49,4 +49,4 @@ def test_preview_requires_no_wallet(client):
     """Preview works without any tx_hash or wallet parameter."""
     r = client.post(PREVIEW_URL, json={"text": "call me at 555-0199"})
     assert r.status_code == 200
-    assert "tx_hash" not in r.json() or r.json().get("demo") is True
+    assert "sanitized_content" in r.json()

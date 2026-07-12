@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -45,10 +46,15 @@ def test_edge_cli_preserves_native_mp3(tmp_path, monkeypatch):
 
 
 def _python_copy_command() -> str:
-    """A command provider that copies the input text file to the output path."""
+    """A command provider that copies the input text file to the output path.
+
+    Uses ``sys.executable`` rather than a hard-coded ``python3`` so the test is
+    portable to native Windows, matching ``tests/tools/test_tts_command_providers.py``.
+    """
+    interpreter = sys.executable
     return (
-        "python3 -c \""
-        "import sys,shutil;"
+        f'"{interpreter}" -c "'
+        "import sys;"
         "open(sys.argv[2],'wb').write(b'mp3')\" {input_path} {output_path}"
     )
 

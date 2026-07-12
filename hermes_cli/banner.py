@@ -688,6 +688,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
     left_lines.append(f"[dim {dim}]{cwd}[/]")
+    
+    # Render active profile name
+    hermes_home = os.environ.get("HERMES_HOME")
+    profile_name = "default"
+    if hermes_home:
+        path = Path(hermes_home)
+        if path.parent.name == "profiles":
+            profile_name = path.name
+    left_lines.append(f"[dim {dim}]Profile: {profile_name}[/]")
+
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
     left_content = "\n".join(left_lines)

@@ -497,6 +497,33 @@ def _apply_profile_override() -> None:
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
+    # 2.5 Auto-resolve profile based on current directory if no profile is explicitly chosen
+    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        try:
+            from pathlib import Path as _Path
+            cwd = _Path.cwd()
+            home = _Path.home()
+            if cwd == home:
+                profile_name = "default"
+            else:
+                try:
+                    rel_path = cwd.relative_to(home)
+                except ValueError:
+                    rel_path = cwd
+                slug = "-".join(rel_path.parts)
+                import re as _re
+                profile_name = _re.sub(r'[^a-zA-Z0-9\-_]', '', slug)
+                if not profile_name:
+                    profile_name = "default"
+
+            # Auto-create the profile (with default clone) if it doesn't exist
+            if profile_name != "default":
+                from hermes_cli.profiles import profile_exists, create_profile
+                if not profile_exists(profile_name):
+                    create_profile(profile_name, clone_from="default")
+        except Exception:
+            profile_name = "default"
+
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
         try:

@@ -66,6 +66,31 @@ def _windows_to_msys_path(cwd: str) -> str:
     return f"/{drive}/{tail}" if tail else f"/{drive}/"
 
 
+def _bash_safe_path(path: str) -> str:
+    """Return *path* in a form Git Bash can parse inside shell scripts.
+
+    Native ``C:\\Users\\x`` paths are rewritten to ``/c/Users/x`` via
+    :func:`_windows_to_msys_path`.  MSYS paths that still carry Windows
+    backslashes (``/c/Users\\Alexander\\Documents``) have those separators
+    normalized to forward slashes so bash does not eat ``\\U`` in ``\\Users``
+    and trip the "Directory \\drivers\\etc does not exist" failure class.
+    No-op off Windows and for empty input.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
+
+
+def _quote_bash_path(path: str) -> str:
+    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
+    import shlex
+
+    return shlex.quote(_bash_safe_path(path))
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the

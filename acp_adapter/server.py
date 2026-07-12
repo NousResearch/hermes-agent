@@ -841,10 +841,19 @@ class HermesACPAgent(acp.Agent):
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=True,
             )
+            inject_memory_provider_tools(state.agent)
+
+            # Keep the private operational router canonical and last, after all
+            # registry/plugin and post-build injections. Disabled mode is an
+            # identity-preserving no-op on the registry-derived list.
+            from agent.research_mode_tool import inject_research_mode_tool
+            state.agent.tools = inject_research_mode_tool(
+                state.agent.tools,
+                enabled=bool(getattr(state.agent, "_mode_router_enabled", False)),
+            )
             state.agent.valid_tool_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
-            inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()

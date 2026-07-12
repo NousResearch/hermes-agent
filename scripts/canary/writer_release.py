@@ -1149,6 +1149,8 @@ def _materialize_copied_interpreter(
     )
     if not _is_within(managed_python, spec.managed_python_root):
         raise RuntimeError("interpreter copy source is outside managed Python")
+    if managed_python.resolve(strict=True) != managed_python:
+        raise RuntimeError("managed interpreter copy source is not fully resolved")
     parent_stat = os.lstat(spec.interpreter.parent)
     if (
         not stat.S_ISDIR(parent_stat.st_mode)
@@ -1184,7 +1186,15 @@ def _materialize_copied_interpreter(
             return source_digest
         if not stat.S_ISLNK(destination_stat.st_mode):
             raise RuntimeError("release interpreter path contains an unexpected collision")
-        if os.readlink(spec.interpreter) != str(managed_python):
+        destination_target_raw = os.readlink(spec.interpreter)
+        destination_target = _absolute_normalized_path(
+            destination_target_raw,
+            "release interpreter symlink target",
+        )
+        if (
+            not _is_within(destination_target, spec.managed_python_root)
+            or destination_target.resolve(strict=True) != managed_python
+        ):
             raise RuntimeError("release interpreter symlink target is not managed Python")
 
         create_flags = (
@@ -1239,7 +1249,8 @@ def _materialize_copied_interpreter(
             not stat.S_ISLNK(current_destination.st_mode)
             or (current_destination.st_dev, current_destination.st_ino)
             != (destination_stat.st_dev, destination_stat.st_ino)
-            or os.readlink(spec.interpreter) != str(managed_python)
+            or os.readlink(spec.interpreter) != destination_target_raw
+            or destination_target.resolve(strict=True) != managed_python
         ):
             raise RuntimeError("release interpreter symlink changed during materialization")
         os.close(temp_fd)

@@ -179,6 +179,28 @@ def test_materializes_exact_managed_python_symlink_as_independent_copy(
     assert writer_release._materialize_copied_interpreter(spec, managed) == digest
 
 
+def test_materializes_managed_python_alias_that_resolves_to_exact_source(
+    tmp_path,
+    monkeypatch,
+):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"exact-managed-python\n")
+    managed.chmod(0o555)
+    managed_alias = managed.with_name("python")
+    managed_alias.symlink_to(managed.name)
+    spec.interpreter.parent.mkdir(parents=True)
+    spec.interpreter.symlink_to(managed_alias)
+
+    digest = writer_release._materialize_copied_interpreter(spec, managed)
+
+    assert not spec.interpreter.is_symlink()
+    assert spec.interpreter.read_bytes() == managed.read_bytes()
+    assert digest == hashlib.sha256(managed.read_bytes()).hexdigest()
+
+
 def test_interpreter_materialization_rejects_wrong_target_and_collision(
     tmp_path,
     monkeypatch,

@@ -19,6 +19,13 @@ from tools.credential_files import (
 )
 
 
+def test_skip_docker_profile_mounts_env(monkeypatch):
+    """Do not expose profile credentials or skills to Docker sandboxes on request."""
+    monkeypatch.setenv("HERMES_DOCKER_BACKEND_SKIP_PROFILE_MOUNTS", "true")
+    assert get_credential_file_mounts() == []
+    assert get_skills_directory_mount() == []
+
+
 @pytest.fixture(autouse=True)
 def _clean_state():
     """Reset module state between tests."""

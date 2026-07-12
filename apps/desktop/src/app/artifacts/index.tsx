@@ -361,7 +361,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     <PageSearchShell
       {...props}
       activeTab={kindFilter}
-      className={cn(props.className, 'max-md:[&_[data-slot=dropdown-menu-trigger]]:min-h-11 max-md:[&_input]:min-h-11')}
+      className={cn(
+        props.className,
+        'max-md:[&_[data-slot=dropdown-menu-trigger]]:min-h-11 max-md:[&_input]:min-h-11 pointer-coarse:[&_button]:min-h-11 pointer-coarse:[&_button]:min-w-11 pointer-coarse:[&_input]:min-h-11'
+      )}
       onSearchChange={setQuery}
       onTabChange={id => setKindFilter(id as typeof kindFilter)}
       searchHidden={counts.all === 0}
@@ -440,9 +443,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               <span>{a.scopeSummary(sessionScope.loaded, sessionScope.total)}</span>
               {sessionScope.scanned < sessionScope.total && (
                 <Button
-                  aria-label={a.loadMoreChats(
-                    Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.scanned)
-                  )}
+                  aria-label={a.loadMoreChats(Math.min(SESSION_BATCH_SIZE, sessionScope.total - sessionScope.scanned))}
                   className="max-md:min-h-11"
                   disabled={refreshing}
                   onClick={() =>
@@ -474,7 +475,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
               <div className="flex flex-col gap-3 px-3 pb-2">
                 {visibleImageArtifacts.length > 0 && (
                   <section className="flex flex-col">
-                    <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                    <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3 max-md:h-11 pointer-coarse:h-11">
                       <ArtifactsPagination
                         className="ml-auto justify-end px-0"
                         itemLabel={a.itemsImage}
@@ -501,7 +502,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
                 {visibleFileArtifacts.length > 0 && (
                   <section className="flex flex-col">
-                    <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3">
+                    <div className="sticky top-0 z-10 -mx-3 flex h-7 items-center gap-3 overflow-x-auto bg-background px-3 max-md:h-11 pointer-coarse:h-11">
                       <ArtifactsPagination
                         className="ml-auto justify-end px-0"
                         itemLabel={itemsLabel(kindFilter, a)}
@@ -544,13 +545,13 @@ function ArtifactsPagination({ className, itemLabel, onPageChange, page, pageSiz
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
   return (
-    <div className={cn('flex h-6 items-center justify-between gap-2 px-1 max-md:h-11', className)}>
+    <div className={cn('flex h-6 items-center justify-between gap-2 px-1 max-md:h-11 pointer-coarse:h-11', className)}>
       <div className="shrink-0 text-[0.62rem] text-muted-foreground">
         {pageRangeLabel(total, page, pageSize, a)} {itemLabel}
       </div>
       {pageCount > 1 && (
         <Pagination className="mx-0 w-auto min-w-0 justify-end">
-          <PaginationContent className="gap-0.5 max-md:h-11">
+          <PaginationContent className="gap-0.5 max-md:h-11 pointer-coarse:h-11">
             <PaginationItem>
               <PaginationPrevious
                 className="max-md:min-h-11 max-md:min-w-11"
@@ -681,7 +682,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpen, onOpen
         )}
         {!failedImage && src && (
           <ZoomableImage
-            actionButtonClassName="max-md:size-11"
+            actionButtonClassName="max-md:size-11 pointer-coarse:size-11 pointer-coarse:opacity-100"
             alt={displayLabel}
             className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
             containerClassName="max-h-full"
@@ -929,7 +930,7 @@ function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) 
       <CopyButton
         appearance="icon"
         buttonSize="icon-xs"
-        className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/location:opacity-100"
+        className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/location:opacity-100 pointer-coarse:opacity-100"
         iconClassName="size-3.5"
         label={copyLabel}
         text={artifact.value}

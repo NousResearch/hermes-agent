@@ -48,6 +48,35 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('keeps extensionless Markdown images in the click-to-load image path', () => {
+    const [artifact] = collectArtifactsForSession(makeSession(), [
+      {
+        content: '![Tracking image](https://tracker.example/render?id=42)',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifact).toMatchObject({
+      href: 'https://tracker.example/render?id=42',
+      imageCandidate: true,
+      kind: 'image',
+      previewable: false
+    })
+  })
+
+  it('promotes a previously seen extensionless link when a later message marks it as an image', () => {
+    const url = 'https://tracker.example/render?id=42'
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content: `See ${url}`, role: 'assistant', timestamp: 1000 },
+      { content: `![Tracking image](${url})`, role: 'assistant', timestamp: 2000 }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({ imageCandidate: true, kind: 'image', value: url })
+  })
+
   it('indexes http links present in tool JSON payloads', () => {
     const messages: SessionMessage[] = [
       {

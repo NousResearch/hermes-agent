@@ -95,6 +95,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { mergeProfileSessionPages } from './session-aggregation'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -7850,53 +7851,22 @@ async function remoteSessionList(profile, searchParams) {
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
 // rows/totals swapped for the remote's real ones, re-sorted by recency and
-// re-windowed to the requested page. A dead remote contributes nothing rather
-// than breaking the sidebar.
+// re-windowed to the requested page. Failures remain usable partial results, but
+// are surfaced in `errors` so consumers never confuse an outage with empty data.
 async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
-  const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
-  const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
-  const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
+  return mergeProfileSessionPages({
+    fetchPrimary: async params => {
+      const primary = await ensureBackend(null)
 
-  const primary = await ensureBackend(null)
-
-  const base = (await fetchJson(`${primary.baseUrl}/api/profiles/sessions?${searchParams}`, primary.token, {
-    method: 'GET',
-    timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
-  }).catch(() => ({ sessions: [], total: 0, profile_totals: {} }))) as any
-
-  // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
-  // is correct for this page — mirrors the primary's per-profile over-fetch.
-  const remoteParams = new URLSearchParams(searchParams)
-  remoteParams.set('limit', String(limit + offset))
-  remoteParams.set('offset', '0')
-
-  const remoteSet = new Set(remoteProfiles)
-  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
-  const profileTotals = { ...(base.profile_totals || {}) }
-  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
-
-  // Swap each remote profile's stale local rows/total for the remote's real ones.
-  await Promise.all(
-    remoteProfiles.map(async name => {
-      const list = await remoteSessionList(name, remoteParams).catch(() => null)
-
-      if (!list) {
-        delete profileTotals[name] // dead remote → drop its stale local total too
-
-        return
-      }
-
-      const rows = rowsOf(list)
-      merged.push(...rows)
-      profileTotals[name] = Number(list.total) || rows.length
-      total += profileTotals[name]
-    })
-  )
-
-  const recency = s => s?.[order] ?? s?.started_at ?? 0
-  merged.sort((a, b) => recency(b) - recency(a))
-
-  return { ...(base as any), sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
+      return fetchJson(`${primary.baseUrl}/api/profiles/sessions?${params}`, primary.token, {
+        method: 'GET',
+        timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+      })
+    },
+    fetchRemote: remoteSessionList,
+    remoteProfiles,
+    searchParams
+  })
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {

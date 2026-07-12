@@ -8,6 +8,7 @@ function makeArtifact(value: string, kind: ArtifactRecord['kind'] = 'file'): Art
   return {
     href: value,
     id: value,
+    imageCandidate: kind === 'image',
     kind,
     label: value.split('/').pop() || value,
     previewable: false,

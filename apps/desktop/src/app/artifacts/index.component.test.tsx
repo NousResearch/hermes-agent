@@ -26,6 +26,7 @@ vi.mock('@/store/profile', () => ({
 const getMessagesMock = vi.mocked(getSessionMessages)
 const listSessionsMock = vi.mocked(listAllProfileSessions)
 const openExternal = vi.fn(async (_href: string) => undefined)
+const fetchLinkTitle = vi.fn(async (_href: string) => 'Fetched title')
 const downloadGatewayMediaFileMock = vi.mocked(downloadGatewayMediaFile)
 const isRemoteGatewayMock = vi.mocked(isRemoteGateway)
 const ensureGatewayProfileMock = vi.mocked(ensureGatewayProfile)
@@ -58,6 +59,7 @@ function renderArtifacts() {
 describe('ArtifactsView open affordances', () => {
   beforeEach(() => {
     openExternal.mockClear()
+    fetchLinkTitle.mockClear()
     downloadGatewayMediaFileMock.mockClear()
     isRemoteGatewayMock.mockReturnValue(false)
     ensureGatewayProfileMock.mockClear()
@@ -65,6 +67,7 @@ describe('ArtifactsView open affordances', () => {
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: {
+        fetchLinkTitle,
         openExternal
       }
     })
@@ -112,10 +115,34 @@ describe('ArtifactsView open affordances', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Load preview for portrait.png' }))
     expect(await screen.findByRole('img', { name: 'portrait.png' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Download image' }).className).toContain('pointer-coarse:opacity-100')
 
     fireEvent.click(open)
 
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://example.com/output/portrait.png'))
+  })
+
+  it('keeps extensionless Markdown images click-to-load without fetching link titles', async () => {
+    getMessagesMock.mockResolvedValue({
+      messages: [
+        {
+          content: 'See https://tracker.example/render?id=42',
+          role: 'assistant',
+          timestamp: 1000
+        },
+        {
+          content: '![Tracking image](https://tracker.example/render?id=42)',
+          role: 'assistant',
+          timestamp: 2000
+        }
+      ]
+    } as never)
+
+    renderArtifacts()
+
+    expect(await screen.findByRole('button', { name: 'Load preview for render' })).toBeTruthy()
+    expect(fetchLinkTitle).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Links\s*0/ })).toBeTruthy()
   })
 
   it('downloads a remote gateway file through the authenticated bridge without externalizing a token URL', async () => {
@@ -311,6 +338,9 @@ describe('ArtifactsView open affordances', () => {
 
     expect(await screen.findByTestId('artifact-mobile-list')).toBeTruthy()
     expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Search artifacts...' }).closest('section')?.className).toContain(
+      'pointer-coarse:[&_button]:min-h-11'
+    )
     expect(screen.getByRole('button', { name: 'Open mobile-report.pdf' }).className).toContain('min-h-11')
     expect(screen.getByRole('button', { name: 'Open source chat for mobile-report.pdf' }).className).toContain(
       'min-h-11'
@@ -341,6 +371,7 @@ describe('ArtifactsView open affordances', () => {
 
     const next = await screen.findByRole('button', { name: 'Go to next page' })
     expect(next.className).toContain('max-md:min-h-11')
+    expect(next.closest('.sticky')?.className).toContain('pointer-coarse:h-11')
     expect(screen.getByRole('button', { name: 'Go to items page 2' }).className).toContain('max-md:size-11')
   })
 })

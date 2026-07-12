@@ -8,6 +8,7 @@ export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'fil
 
 export interface ArtifactRecord {
   id: string
+  imageCandidate: boolean
   kind: ArtifactKind
   value: string
   href: string
@@ -89,7 +90,11 @@ function looksLikeArtifact(value: string): boolean {
   return false
 }
 
-function artifactKind(value: string): ArtifactKind {
+function artifactKind(value: string, imageCandidate = false): ArtifactKind {
+  if (imageCandidate) {
+    return 'image'
+  }
+
   if (value.startsWith('data:image/') || IMAGE_EXT_RE.test(value)) {
     return 'image'
   }
@@ -236,10 +241,10 @@ function collectStringValues(
 
 function collectArtifactsFromText(
   text: string,
-  pushValue: (value: string, labelHint?: string, previewable?: boolean) => void
+  pushValue: (value: string, labelHint?: string, previewable?: boolean, imageCandidate?: boolean) => void
 ): void {
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
-    pushValue(match[2] || '', match[1] || '')
+    pushValue(match[2] || '', match[1] || '', false, true)
   }
 
   for (const match of text.matchAll(MARKDOWN_LINK_RE)) {
@@ -271,7 +276,7 @@ function collectArtifactsFromText(
 
 function collectArtifactsFromMessage(
   message: SessionMessage,
-  pushValue: (value: string, labelHint?: string, previewable?: boolean) => void
+  pushValue: (value: string, labelHint?: string, previewable?: boolean, imageCandidate?: boolean) => void
 ): void {
   const text = messageText(message)
 
@@ -319,7 +324,9 @@ function collectArtifactsFromMessage(
       }
 
       if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && looksLikeArtifact(normalized)) {
-        pushValue(normalized, undefined, trustedToolResult && TRUSTED_IMAGE_RESULT_KEY_RE.test(keyPath))
+        const trustedImage = trustedToolResult && TRUSTED_IMAGE_RESULT_KEY_RE.test(keyPath)
+
+        pushValue(normalized, undefined, trustedImage, trustedImage)
       }
     })
   }
@@ -350,7 +357,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
-    collectArtifactsFromMessage(message, (candidate, labelHint, previewable = false) => {
+    collectArtifactsFromMessage(message, (candidate, labelHint, previewable = false, imageCandidate = false) => {
       const value = normalizeValue(candidate)
 
       if (!value || !looksLikeArtifact(value)) {
@@ -367,14 +374,20 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         const nextTimestamp = Math.max(existing.timestamp, timestamp)
         const nextLabel = existing.label === 'data:image' && label !== 'data:image' ? label : existing.label
         const nextPreviewable = existing.previewable || previewable
+        const nextImageCandidate = existing.imageCandidate || imageCandidate
+        const nextKind = nextImageCandidate ? 'image' : existing.kind
 
         if (
           nextTimestamp !== existing.timestamp ||
           nextLabel !== existing.label ||
-          nextPreviewable !== existing.previewable
+          nextPreviewable !== existing.previewable ||
+          nextImageCandidate !== existing.imageCandidate ||
+          nextKind !== existing.kind
         ) {
           found.set(key, {
             ...existing,
+            imageCandidate: nextImageCandidate,
+            kind: nextKind,
             label: nextLabel,
             previewable: nextPreviewable,
             timestamp: nextTimestamp
@@ -386,7 +399,8 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 
       found.set(key, {
         id: key,
-        kind: artifactKind(value),
+        imageCandidate,
+        kind: artifactKind(value, imageCandidate),
         value,
         href: artifactHref(value),
         label,

@@ -4,4 +4,3 @@ last_run_prepared/
 # Per-pyc clutter from running scripts in-place
 __pycache__/
 *.pyc
-optional-skills/mlops/finetune/last_run_prepared/

@@ -29,6 +29,29 @@ from common import (
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
+def _resolve_adapter_artifact(adapter_dir: Path) -> Optional[str]:
+    """
+    Resolve the servable artifact for an adapter version directory.
+
+    llama-server can only load the GGUF LoRA that `manage.py redeploy`
+    produces (<version_dir>/adapter.gguf via convert_lora_to_gguf.py).
+    If only the PEFT safetensors dir exists, return None — handing
+    llama-server a safetensors path would just fail at load time.
+    """
+    gguf_path = adapter_dir / "adapter.gguf"
+    if gguf_path.exists():
+        return str(gguf_path)
+
+    if (adapter_dir / "adapter_model").exists():
+        logger.warning(
+            "Adapter %s has only PEFT safetensors (no adapter.gguf) — "
+            "llama-server can't load that. Run '/finetune redeploy' to "
+            "convert it.",
+            adapter_dir,
+        )
+    return None
+
+
 class AdapterRouter:
     """Route prompts to the best fine-tuned adapter."""
 
@@ -146,17 +169,7 @@ class AdapterRouter:
             adapter_entry = active_adapters[best_cluster]
             version = adapter_entry["version"]
             adapter_dir = ADAPTERS_DIR / best_cluster / version
-
-            # Prefer merged GGUF, fall back to LoRA adapter
-            gguf_path = adapter_dir / "merged.gguf"
-            lora_path = adapter_dir / "adapter_model"
-
-            if gguf_path.exists():
-                adapter_path = str(gguf_path)
-            elif lora_path.exists():
-                adapter_path = str(lora_path)
-            else:
-                adapter_path = None
+            adapter_path = _resolve_adapter_artifact(adapter_dir)
 
             cluster_info = self._cluster_state.get("clusters", {}).get(best_cluster, {})
             return {
@@ -172,12 +185,7 @@ class AdapterRouter:
             entry = active_adapters["_general"]
             version = entry["version"]
             adapter_dir = ADAPTERS_DIR / "_general" / version
-            gguf_path = adapter_dir / "merged.gguf"
-            lora_path = adapter_dir / "adapter_model"
-
-            adapter_path = str(gguf_path) if gguf_path.exists() else (
-                str(lora_path) if lora_path.exists() else None
-            )
+            adapter_path = _resolve_adapter_artifact(adapter_dir)
 
             return {
                 "cluster_id": "_general",

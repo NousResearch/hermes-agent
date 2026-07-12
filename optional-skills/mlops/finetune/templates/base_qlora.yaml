@@ -92,6 +92,11 @@ micro_batch_size: 1
 weight_decay: 0.01
 max_grad_norm: 1.0
 
+# NOTE: train.py's generate_config sets val_set_size per dataset: 0.1
+# normally, but 0 for tiny datasets (< ~50 records), in which case it also
+# drops eval_steps / early_stopping_patience / metric_for_best_model /
+# greater_is_better from the generated config — axolotl rejects an eval
+# schedule with an empty eval split.
 eval_steps: 50
 save_steps: 50
 save_strategy: steps

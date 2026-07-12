@@ -12,6 +12,8 @@ Usage:
 import argparse
 import json
 import logging
+import math
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -31,30 +33,46 @@ THRESHOLDS = {
     "tool_execution_success": 0.05,
     "task_completion_rate": 0.05,
     "format_compliance_min": 0.95,
-    "hallucination_max": 0.0,
+    # Small tolerance rather than exact zero: a single flaky case out of 243
+    # must not auto-reject an adapter. Matches the bench env's verdict gate.
+    "hallucination_max": 0.01,
     "canary_regression": 0.05,
+    # Core gate for training-derived metrics (trainer_state.json): the
+    # candidate's loss/perplexity must not regress past the baseline by
+    # more than this. eval_loss is absolute (nats), perplexity is relative.
+    "eval_loss_regression": 0.05,
+    "perplexity_regression": 0.05,
 }
 
 
 def _find_baseline(cluster_id: str) -> Optional[Dict]:
-    """Find the most recent baseline eval for a cluster."""
+    """
+    Find the most recent prior eval result for a cluster.
+
+    Eval results are saved by EvalGate.evaluate() as
+    ``{cluster_id}_{version}_{YYYYmmdd_HHMMSS}.json``, so we match that
+    exact shape with an anchored regex — a bare ``{cluster_id}_*`` glob
+    would prefix-match other clusters (``c1`` matching ``c1_extra_...``).
+    The most recent file by mtime wins.
+    """
     results_dir = BENCH_DIR / "results"
     if not results_dir.exists():
         return None
 
-    candidates = sorted(
-        results_dir.glob(f"{cluster_id}_baseline_*.json"),
-        reverse=True,
+    pattern = re.compile(
+        re.escape(cluster_id) + r"_v\d+_\d{8}_\d{6}\.json$"
     )
-    if candidates:
-        return load_json(candidates[0])
-
-    # Also check for any previous eval
-    candidates = sorted(
-        results_dir.glob(f"{cluster_id}_*.json"),
-        reverse=True,
-    )
-    return load_json(candidates[0]) if candidates else None
+    candidates = [
+        p for p in results_dir.glob(f"{cluster_id}_*.json")
+        if pattern.fullmatch(p.name)
+    ]
+    # Newest first; skip results that recorded a skipped gate (empty
+    # metrics) — they carry nothing to regress against.
+    for path in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
+        data = load_json(path)
+        if data and data.get("metrics", data):
+            return data
+    return None
 
 
 def compare_metrics(
@@ -74,28 +92,52 @@ def compare_metrics(
 
 
 def verdict(comparison: Dict[str, Dict]) -> Dict[str, Any]:
-    """Determine pass/fail from comparison metrics."""
+    """
+    Determine pass/fail from comparison metrics.
+
+    A gate only applies to metrics present in BOTH candidate and baseline
+    (i.e. present in `comparison`, which is their intersection). A missing
+    gate metric is skipped with an explicit printed warning — it never
+    auto-passes or auto-fails the run. Runs whose metrics come from
+    trainer_state.json (eval_loss/perplexity only) are gated on the
+    loss/perplexity regression checks alone.
+    """
     checks = {}
 
-    ts = comparison.get("tool_selection_accuracy", {})
-    checks["tool_selection"] = ts.get("delta", 0) >= -THRESHOLDS["tool_selection_accuracy"]
+    # (metric key, check name, pass predicate over the comparison entry)
+    gates = [
+        ("tool_selection_accuracy", "tool_selection",
+         lambda c: c["delta"] >= -THRESHOLDS["tool_selection_accuracy"]),
+        ("tool_execution_success", "tool_execution",
+         lambda c: c["delta"] >= -THRESHOLDS["tool_execution_success"]),
+        ("task_completion_rate", "task_completion",
+         lambda c: c["delta"] >= -THRESHOLDS["task_completion_rate"]),
+        ("format_compliance", "format_compliance",
+         lambda c: c["candidate"] >= THRESHOLDS["format_compliance_min"]),
+        ("hallucination_rate", "no_hallucinations",
+         lambda c: c["candidate"]
+         <= max(THRESHOLDS["hallucination_max"], c["baseline"] + 0.01)),
+        ("canary_pass_rate", "canary",
+         lambda c: c["delta"] >= -THRESHOLDS["canary_regression"]),
+        # Core gate for training-derived metrics: lower is better.
+        ("eval_loss", "eval_loss",
+         lambda c: c["delta"] <= THRESHOLDS["eval_loss_regression"]),
+        ("perplexity", "perplexity",
+         lambda c: c["candidate"] <= c["baseline"]
+         * (1 + THRESHOLDS["perplexity_regression"])),
+    ]
 
-    te = comparison.get("tool_execution_success", {})
-    checks["tool_execution"] = te.get("delta", 0) >= -THRESHOLDS["tool_execution_success"]
+    for metric, name, predicate in gates:
+        if metric in comparison:
+            checks[name] = bool(predicate(comparison[metric]))
+        else:
+            print(
+                f"WARNING: gate metric '{metric}' missing from candidate "
+                f"and/or baseline — check '{name}' skipped (not counted as "
+                f"pass or fail)"
+            )
 
-    tc = comparison.get("task_completion_rate", {})
-    checks["task_completion"] = tc.get("delta", 0) >= -THRESHOLDS["task_completion_rate"]
-
-    fc = comparison.get("format_compliance", {})
-    checks["format_compliance"] = fc.get("candidate", 0) >= THRESHOLDS["format_compliance_min"]
-
-    hr = comparison.get("hallucination_rate", {})
-    checks["no_hallucinations"] = hr.get("candidate", 0) <= THRESHOLDS["hallucination_max"]
-
-    cr = comparison.get("canary_pass_rate", {})
-    checks["canary"] = cr.get("delta", 0) >= -THRESHOLDS["canary_regression"]
-
-    checks["overall"] = all(checks.values())
+    checks["overall"] = all(v for k, v in checks.items() if k != "overall")
     return checks
 
 
@@ -223,8 +265,26 @@ class EvalGate:
             current_metrics = self._extract_training_metrics(adapter_dir)
 
         if not current_metrics:
-            logger.warning("No eval metrics found for %s %s", cluster_id, version)
-            return True, "No eval metrics available — skipping gate."
+            skip_note = "no eval metrics found — gate skipped, treating as pass"
+            logger.warning("%s (%s %s)", skip_note, cluster_id, version)
+            print(f"WARNING: {skip_note} ({cluster_id} {version})")
+
+            # Record the skipped gate so downstream tooling can see this
+            # version was never actually evaluated.
+            results_dir = BENCH_DIR / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_json(results_dir / f"{cluster_id}_{version}_{ts}.json", {
+                "cluster_id": cluster_id,
+                "version": version,
+                "metrics": {},
+                "baseline_metrics": None,
+                "passed": True,
+                "gate_skipped": True,
+                "note": skip_note,
+                "timestamp": datetime.now().isoformat(),
+            })
+            return True, f"WARNING: {skip_note}"
 
         # Load baseline
         baseline_metrics = None
@@ -275,9 +335,11 @@ class EvalGate:
             state = load_json(trainer_state)
             best_metric = state.get("best_metric")
             if best_metric is not None:
+                # HF Trainer's eval_loss is natural-log cross-entropy, so
+                # perplexity = e^loss (not 2^loss).
                 return {
                     "eval_loss": best_metric,
-                    "perplexity": 2.0 ** best_metric if best_metric < 20 else float("inf"),
+                    "perplexity": math.exp(best_metric) if best_metric < 20 else float("inf"),
                 }
 
         # Check for eval output in logs

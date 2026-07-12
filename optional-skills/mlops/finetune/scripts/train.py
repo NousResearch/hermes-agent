@@ -2,8 +2,8 @@
 """
 Training orchestrator for the finetune pipeline.
 
-Generates per-cluster Axolotl configs, launches QLoRA training, and handles
-merge + quantize of finished adapters.
+Generates per-cluster Axolotl configs and launches QLoRA training.
+(GGUF conversion for serving is handled by manage.py's redeploy flow.)
 
 Usage:
     python train.py [--cluster CLUSTER_ID] [--base-model MODEL] [--dry-run]
@@ -13,6 +13,7 @@ import argparse
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -31,6 +32,52 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # Skill directory (where templates live)
 SKILL_DIR = Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = SKILL_DIR / "templates" / "base_qlora.yaml"
+
+# Datasets below this record count get val_set_size 0 (no eval split):
+# a 10% split of a tiny personal dataset is near-zero records, which
+# axolotl rejects outright.
+MIN_RECORDS_FOR_EVAL_SPLIT = 50
+
+# Keys that only make sense when an eval split exists.
+EVAL_CONFIG_KEYS = (
+    "eval_steps",
+    "eval_strategy",
+    "evaluation_strategy",
+    "early_stopping_patience",
+    "metric_for_best_model",
+    "greater_is_better",
+    "load_best_model_at_end",
+)
+
+
+def _kill_process_group(proc: "subprocess.Popen") -> None:
+    """SIGTERM (then SIGKILL) the whole process group of a Popen launched
+    with start_new_session=True, so training workers don't outlive the
+    accelerate launcher and squat on the GPU."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _count_lines(path: Path) -> int:
+    """Count lines in a file without leaking the handle."""
+    if not path.exists():
+        return 0
+    with open(path, encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
 
 # Maturity-stage overrides
 MATURITY_OVERRIDES = {
@@ -70,11 +117,11 @@ def _next_version(cluster_dir: Path) -> str:
 
 
 class TrainingOrchestrator:
-    """Generate configs, launch training, merge and quantize adapters."""
+    """Generate configs and launch QLoRA training."""
 
     def __init__(self, config: dict = None):
         self.config = config or load_config().get("training", {})
-        self.base_model = self.config.get("base_model", "~/programs/carnice/Carnice-9b-Q8_0.gguf")
+        self.base_model = self.config.get("base_model", "kai-os/Carnice-9b")
         self.chat_template = self.config.get("chat_template", "chatml")
         self.quantization = self.config.get("quantization", "Q5_K_M")
 
@@ -88,8 +135,22 @@ class TrainingOrchestrator:
         ensure_dirs()
         template = _load_template()
 
-        # Override base model and chat template from user config
-        template["base_model"] = self.base_model
+        # Override base model and chat template from user config.
+        # Axolotl needs an HF repo ID or a local safetensors directory —
+        # a GGUF path would produce a config that fails at model load,
+        # so reject it here with an actionable message.
+        base_model = os.path.expanduser(str(self.base_model))
+        if base_model.lower().endswith(".gguf"):
+            raise ValueError(
+                f"finetune.training.base_model points at a GGUF file "
+                f"({base_model}), which axolotl cannot train against. "
+                "Per SKILL.md: \"Axolotl trains against HuggingFace "
+                "safetensors, NOT GGUF. Set finetune.training.base_model "
+                "to the HF repo ID (e.g. kai-os/Carnice-9b), not the GGUF "
+                "path. The GGUF path is only for inference-time serving "
+                "via llama.cpp.\""
+            )
+        template["base_model"] = base_model
         template["chat_template"] = self.chat_template
 
         # Apply maturity-stage overrides
@@ -126,7 +187,23 @@ class TrainingOrchestrator:
         # uses its own internal split. This avoids the val_set_size==0 +
         # eval_steps validation conflict in modern axolotl, where
         # `datasets_eval` is not a recognized key.
-        template["val_set_size"] = 0.1
+        #
+        # Exception: tiny personal datasets. Below ~50 records a 10% split
+        # is near-zero examples and axolotl rejects an empty eval set, so
+        # we disable the split and drop the eval-dependent keys entirely.
+        train_size = _count_lines(train_path)
+        eval_size = _count_lines(eval_path)
+        if train_size < MIN_RECORDS_FOR_EVAL_SPLIT:
+            logger.info(
+                "Dataset has %d records (< %d) — disabling eval split "
+                "(val_set_size 0) for cluster %s",
+                train_size, MIN_RECORDS_FOR_EVAL_SPLIT, cluster_id,
+            )
+            template["val_set_size"] = 0
+            for key in EVAL_CONFIG_KEYS:
+                template.pop(key, None)
+        else:
+            template["val_set_size"] = 0.1
 
         # Set output path
         output_dir = ADAPTERS_DIR / cluster_id / version
@@ -144,9 +221,9 @@ class TrainingOrchestrator:
             "version": version,
             "train_path": str(train_path),
             "eval_path": str(eval_path) if eval_path.exists() else None,
-            "train_size": sum(1 for _ in open(train_path)) if train_path.exists() else 0,
-            "eval_size": sum(1 for _ in open(eval_path)) if eval_path.exists() else 0,
-            "base_model": self.base_model,
+            "train_size": train_size,
+            "eval_size": eval_size,
+            "base_model": base_model,
             "maturity": maturity,
             "generated_at": datetime.now().isoformat(),
         })
@@ -183,7 +260,7 @@ class TrainingOrchestrator:
             logger.error("No training data for cluster %s", cluster_id)
             return None
 
-        train_size = sum(1 for _ in open(train_path))
+        train_size = _count_lines(train_path)
         if train_size == 0:
             logger.error("Training data is empty for cluster %s", cluster_id)
             return None
@@ -204,16 +281,21 @@ class TrainingOrchestrator:
         # Launch training. accelerate ships as a console script in
         # venv/bin/accelerate — it can't be invoked via `python -m accelerate`
         # because the package doesn't define __main__. We resolve the binary
-        # in the same venv as the current Python interpreter so virtual envs
-        # work correctly.
+        # next to the current Python interpreter first (so virtual envs work
+        # correctly), then fall back to whatever is on PATH.
         log_path = LOGS_DIR / f"train_{cluster_id}_{version}_{datetime.now():%Y%m%d_%H%M%S}.log"
         accelerate_bin = Path(sys.executable).parent / "accelerate"
         if not accelerate_bin.exists():
-            logger.error(
-                "accelerate not found at %s — install with: pip install accelerate axolotl",
-                accelerate_bin,
-            )
-            return None
+            which_accelerate = shutil.which("accelerate")
+            if which_accelerate:
+                accelerate_bin = Path(which_accelerate)
+            else:
+                logger.error(
+                    "accelerate not found at %s or on PATH — install with: "
+                    "pip install accelerate axolotl",
+                    accelerate_bin,
+                )
+                return None
 
         cmd = [
             str(accelerate_bin), "launch",
@@ -238,116 +320,47 @@ class TrainingOrchestrator:
         if "PYTORCH_CUDA_ALLOC_CONF" not in train_env:
             train_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-        # Persist Triton autotune results across runs. Models with custom
-        # attention layers (e.g. Qwen3.5's gated delta rule via the FLA
-        # library) trigger Triton kernel autotuning on the first backward
-        # pass — the autotuner allocates several launch configurations
-        # back-to-back, which on tight VRAM can OOM even when steady-state
-        # training would fit. Caching the autotune results to disk means
-        # subsequent runs reuse the chosen kernel config and skip the
-        # bench-driven OOM prone phase entirely. The cache lives at
-        # ~/.triton/cache by default.
-        train_env.setdefault("TRITON_CACHE_AUTOTUNING", "1")
-
         logger.info("Launching training: %s", " ".join(cmd))
         logger.info("Log: %s", log_path)
 
+        # Launch in a new session (own process group) so a timeout can take
+        # down the whole training tree — accelerate spawns worker processes
+        # that would otherwise keep the GPU after the launcher dies.
         try:
             with open(log_path, "w") as log_file:
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     cmd,
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     cwd=str(SKILL_DIR),
                     env=train_env,
-                    timeout=3600 * 24,  # 24h max
+                    start_new_session=True,
                 )
+                try:
+                    returncode = proc.wait(timeout=3600 * 24)  # 24h max
+                except subprocess.TimeoutExpired:
+                    logger.error(
+                        "Training timed out for %s %s — killing process group %d",
+                        cluster_id, version, proc.pid,
+                    )
+                    _kill_process_group(proc)
+                    return None
 
-            if result.returncode != 0:
+            if returncode != 0:
                 logger.error(
                     "Training failed for %s %s (exit code %d). See %s",
-                    cluster_id, version, result.returncode, log_path,
+                    cluster_id, version, returncode, log_path,
                 )
                 return None
 
             logger.info("Training complete: %s %s", cluster_id, version)
             return config_path.parent
 
-        except subprocess.TimeoutExpired:
-            logger.error("Training timed out for %s %s", cluster_id, version)
-            return None
         except FileNotFoundError:
             logger.error(
                 "accelerate not found. Install with: pip install accelerate axolotl"
             )
             return None
-
-    def merge_and_quantize(
-        self, cluster_id: str, version: str,
-    ) -> Optional[Path]:
-        """
-        Merge LoRA adapter into base model and quantize to GGUF.
-
-        Returns path to merged GGUF on success.
-        """
-        adapter_dir = ADAPTERS_DIR / cluster_id / version
-        config_path = adapter_dir / "config.yml"
-        adapter_model_dir = adapter_dir / "adapter_model"
-
-        if not adapter_model_dir.exists():
-            logger.error("Adapter model not found: %s", adapter_model_dir)
-            return None
-
-        # Step 1: Merge LoRA
-        merged_dir = adapter_dir / "merged_model"
-        merge_cmd = [
-            sys.executable, "-m", "axolotl.cli.merge_lora",
-            str(config_path),
-            "--lora_model_dir", str(adapter_model_dir),
-            "--output_dir", str(merged_dir),
-        ]
-
-        logger.info("Merging LoRA adapter...")
-        try:
-            result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=1800)
-            if result.returncode != 0:
-                logger.error("Merge failed: %s", result.stderr[:500])
-                return None
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            logger.error("Merge failed: %s", e)
-            return None
-
-        # Step 2: Quantize to GGUF
-        gguf_path = adapter_dir / "merged.gguf"
-        quant_cmd = ["llama-quantize", str(merged_dir), str(gguf_path), self.quantization]
-
-        logger.info("Quantizing to %s...", self.quantization)
-        try:
-            result = subprocess.run(quant_cmd, capture_output=True, text=True, timeout=3600)
-            if result.returncode != 0:
-                # Try higher quant level
-                logger.warning(
-                    "Quantization at %s failed, trying Q8_0...", self.quantization
-                )
-                quant_cmd[-1] = "Q8_0"
-                result = subprocess.run(quant_cmd, capture_output=True, text=True, timeout=3600)
-                if result.returncode != 0:
-                    logger.error("Quantization failed: %s", result.stderr[:500])
-                    # Keep unmerged adapter for LoRA loading
-                    return None
-        except FileNotFoundError:
-            logger.warning(
-                "llama-quantize not found. Keeping unmerged adapter for LoRA loading."
-            )
-            return None
-
-        # Clean up merged model dir to save space
-        if gguf_path.exists() and merged_dir.exists():
-            shutil.rmtree(merged_dir)
-            logger.info("Cleaned up merged model dir (GGUF available)")
-
-        logger.info("Merged GGUF: %s", gguf_path)
-        return gguf_path
 
     def train_eligible(self, dry_run: bool = False) -> List[str]:
         """Train all eligible clusters (non-embryonic with training data)."""

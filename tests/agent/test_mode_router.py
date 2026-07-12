@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+import agent.mode_router as mode_router
 from agent.mode_router import MODE_DEFINITIONS, ModeDefinition, UnknownModeError, get_mode
 
 
@@ -35,6 +36,10 @@ def test_every_mode_has_an_explicit_immutable_contract_with_verification():
 def test_mode_registry_is_immutable():
     with pytest.raises(TypeError):
         MODE_DEFINITIONS["custom"] = MODE_DEFINITIONS["thinking-expansion"]
+
+
+def test_mode_registry_has_no_module_accessible_mutable_backing_alias():
+    assert not hasattr(mode_router, "_MODE_DEFINITIONS")
 
 
 def test_get_mode_returns_the_code_defined_contract():

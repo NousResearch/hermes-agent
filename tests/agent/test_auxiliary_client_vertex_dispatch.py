@@ -238,3 +238,198 @@ class TestHistoricalRegression:
         finally:
             if original_vertex is not None:
                 PROVIDER_REGISTRY["vertex"] = original_vertex
+
+# ---------------------------------------------------------------------------
+# _resolve_auto — vertex reaches the vertex handler through the full chain
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAutoVertex:
+    """The plugin-catalog fallback must be reachable through the full
+    ``_resolve_auto`` chain that every auxiliary task uses in practice —
+    not just the direct ``resolve_provider_client`` entry point that the
+    other tests hit.
+
+    Prior to the fix, an aux task on a vertex-only deployment:
+      1. ``_resolve_auto`` reads ``main.provider == "vertex"``,
+         ``main.model == "google/gemini-3-pro-preview"``.
+      2. Calls ``resolve_provider_client("vertex", ...)``.
+      3. Registry lookup returns None → the elif-chain never fires.
+      4. Step 1 returns ``(None, None)``.
+      5. Fallback chain (Step 2: OpenRouter → Nous → custom → Codex →
+         API-key providers) runs. On a vertex-only fleet none of these
+         have credentials.
+      6. Chain terminates in ``RuntimeError: No LLM provider configured
+         for task=<task> provider=auto. Run: hermes setup``.
+
+    After the fix, Step 1 succeeds and the aux task runs on the same
+    Gemini model the operator picked for chat."""
+
+    def test_vertex_main_provider_reaches_aux_client(self):
+        from unittest.mock import MagicMock, patch as mpatch
+
+        from agent.auxiliary_client import _resolve_auto
+
+        with (
+            mpatch("agent.auxiliary_client._read_main_provider",
+                   return_value="vertex"),
+            mpatch("agent.auxiliary_client._read_main_model",
+                   return_value="google/gemini-3-pro-preview"),
+            mpatch("agent.vertex_adapter.has_vertex_credentials", return_value=True),
+            mpatch("agent.vertex_adapter.get_vertex_config",
+                   return_value=("mocked-token",
+                                 "https://aiplatform.googleapis.com/x")),
+        ):
+            client, model = _resolve_auto()
+
+        assert client is not None, (
+            "Regression: _resolve_auto Step 1 (main provider + main model) "
+            "returned no client for provider=vertex, meaning "
+            "resolve_provider_client('vertex', ...) fell through to "
+            "(None, None) — the exact silent-break the plugin-catalog "
+            "fallback fixes."
+        )
+        assert model == "google/gemini-3-pro-preview"
+
+
+# ---------------------------------------------------------------------------
+# _refresh_provider_credentials — vertex branch clears the module cache
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshProviderCredentialsVertex:
+    """The cached-Vertex-client stale-token problem @teknium1 flagged.
+
+    Vertex mints OAuth2 access tokens via google-auth and caches the
+    Credentials object in ``vertex_adapter._creds_cache``. That object
+    auto-refreshes on read when < 5min from expiry — but the auxiliary
+    layer caches OpenAI clients with the token baked in as ``api_key``,
+    so the cached client keeps the stale token even after Credentials
+    refresh and 401s until the aux-client cache is evicted.
+
+    ``_refresh_provider_credentials`` is invoked from the auth-retry
+    paths (``_call_fallback_candidate_*``, sync + async main-agent
+    retry). Without a ``vertex`` branch, aux tasks on long-lived
+    sessions could not recover from a stale token and had to wait for
+    process restart. This test pins the branch's contract.
+    """
+
+    def test_refresh_clears_module_cache_and_evicts_aux_clients(self):
+        from unittest.mock import patch as mpatch
+
+        from agent.auxiliary_client import _refresh_provider_credentials
+        from agent import vertex_adapter
+
+        # Prime the module cache with a stale entry so we can observe the
+        # clear() call.
+        vertex_adapter._creds_cache["__adc__"] = (object(), "stale-project")
+
+        with (
+            mpatch("agent.vertex_adapter.get_vertex_config",
+                   return_value=("fresh-token",
+                                 "https://aiplatform.googleapis.com/x")),
+            mpatch("agent.auxiliary_client._evict_cached_clients") as evict,
+        ):
+            ok = _refresh_provider_credentials("vertex")
+
+        assert ok is True
+        assert "__adc__" not in vertex_adapter._creds_cache, (
+            "Cache entry must be cleared so the next get_vertex_config() "
+            "call re-mints from scratch — the whole point of the branch."
+        )
+        evict.assert_called_once_with("vertex")
+
+    def test_refresh_returns_false_when_token_mint_fails(self):
+        """Cache clear happens, but if the fresh mint fails (revoked
+        creds, network blip), the refresh returns False so the caller
+        can bail cleanly rather than serve a stale response."""
+        from unittest.mock import patch as mpatch
+
+        from agent.auxiliary_client import _refresh_provider_credentials
+
+        with (
+            mpatch("agent.vertex_adapter.get_vertex_config",
+                   return_value=(None, None)),
+            mpatch("agent.auxiliary_client._evict_cached_clients") as evict,
+        ):
+            ok = _refresh_provider_credentials("vertex")
+
+        assert ok is False
+        evict.assert_not_called()
+
+    def test_refresh_bails_gracefully_if_vertex_adapter_missing(self):
+        """The google-auth / vertex_adapter import can fail on a
+        minimal install. Refresh must return False rather than raise."""
+        from unittest.mock import patch as mpatch
+
+        from agent.auxiliary_client import _refresh_provider_credentials
+
+        # Simulate ImportError by nulling the adapter in sys.modules.
+        import sys
+        original = sys.modules.pop("agent.vertex_adapter", None)
+        sys.modules["agent.vertex_adapter"] = None  # type: ignore[assignment]
+        try:
+            with mpatch("agent.auxiliary_client._evict_cached_clients") as evict:
+                ok = _refresh_provider_credentials("vertex")
+            assert ok is False
+            evict.assert_not_called()
+        finally:
+            if original is not None:
+                sys.modules["agent.vertex_adapter"] = original
+            else:
+                sys.modules.pop("agent.vertex_adapter", None)
+
+
+# ---------------------------------------------------------------------------
+# _auth_refresh_provider_for_route — global + regional Vertex hosts
+# ---------------------------------------------------------------------------
+
+
+class TestAuthRefreshProviderRouteVertex:
+    """When an auto-routed aux call selects a concrete Vertex client, the
+    refresh helper needs to infer ``provider="vertex"`` from the client's
+    base URL so a 401 retry can force a fresh token. The subtlety: Vertex
+    uses TWO host shapes — a bare ``aiplatform.googleapis.com`` (global
+    location) and ``{region}-aiplatform.googleapis.com`` (regional
+    locations, e.g. ``us-central1-aiplatform...``). The regional form is
+    NOT a subdomain of the bare form (no dot between region and
+    ``aiplatform``), so ``base_url_host_matches`` alone doesn't catch it.
+    """
+
+    def test_global_vertex_host_returns_vertex(self):
+        from agent.auxiliary_client import _auth_refresh_provider_for_route
+
+        assert _auth_refresh_provider_for_route(
+            "auto",
+            "https://aiplatform.googleapis.com/v1beta1/projects/p/"
+            "locations/global/endpoints/openapi",
+        ) == "vertex"
+
+    def test_regional_vertex_host_returns_vertex(self):
+        from agent.auxiliary_client import _auth_refresh_provider_for_route
+
+        assert _auth_refresh_provider_for_route(
+            "auto",
+            "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/p/"
+            "locations/us-central1/endpoints/openapi",
+        ) == "vertex"
+
+    def test_look_alike_host_does_not_match(self):
+        """A malicious or misconfigured host like ``fake-aiplatform.googleapis.com.evil.com``
+        must NOT be classified as vertex."""
+        from agent.auxiliary_client import _auth_refresh_provider_for_route
+
+        assert _auth_refresh_provider_for_route(
+            "auto",
+            "https://fake-aiplatform.googleapis.com.evil.com/v1",
+        ) != "vertex"
+
+    def test_resolved_provider_wins_over_url_inference(self):
+        """When resolved_provider is already concrete, URL inference is
+        skipped — the caller knows better than the URL."""
+        from agent.auxiliary_client import _auth_refresh_provider_for_route
+
+        assert _auth_refresh_provider_for_route(
+            "openrouter",
+            "https://aiplatform.googleapis.com/v1",
+        ) == "openrouter"

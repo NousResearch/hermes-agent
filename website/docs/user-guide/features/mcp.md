@@ -62,8 +62,9 @@ hermes mcp install n8n    # install a catalog entry by name
 The picker shows each entry with its current status:
 
 ```
-n8n          available              Manage and inspect n8n workflows from Hermes
+arcade-agent available              Analyze software architecture asynchronously
 linear       enabled                Linear issue/project management (remote OAuth)
+n8n          available              Manage and inspect n8n workflows from Hermes
 github       installed (disabled)   GitHub repo + PR tools
 ```
 

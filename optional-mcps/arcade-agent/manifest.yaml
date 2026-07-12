@@ -1,0 +1,44 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: arcade-agent
+description: Analyze software architecture through a non-blocking end-to-end pipeline.
+source: https://github.com/lemduc/arcade-agent
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/arcade-mcp"
+  version: 5a26cc6524d95537334ba5788cadfcaa6abfd45b
+
+install:
+  type: git
+  url: https://github.com/lemduc/arcade-agent.git
+  # Pin the commit that introduced the async analyze pipeline. Catalog installs
+  # never float with a branch, so reinstalling produces the same tool surface.
+  ref: 5a26cc6524d95537334ba5788cadfcaa6abfd45b
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install '.[mcp]'"
+
+auth:
+  type: none
+
+# Keep Hermes's model-tool footprint narrow by default. `analyze` performs
+# ingest -> parse -> recover without blocking the MCP event loop, then runs
+# smell detection and metric computation concurrently. `get_full_result`
+# retrieves details from any session IDs returned by the pipeline.
+tools:
+  default_enabled:
+    - analyze
+    - get_full_result
+
+post_install: |
+  Arcade Agent runs locally and needs no credentials. The default tool set is
+  intentionally limited to the async end-to-end pipeline and result retrieval.
+
+  Start a new Hermes session, then ask it to analyze a local repository. Arcade
+  returns reusable graph, architecture, smell, and metric session IDs.
+
+  Enable Arcade's fine-grained parse, recover, query, or visualization tools with:
+    hermes mcp configure arcade-agent

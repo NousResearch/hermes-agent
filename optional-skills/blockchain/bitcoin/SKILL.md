@@ -1,6 +1,6 @@
 ---
 name: bitcoin
-description: "Read-only Bitcoin research client. Query addresses, UTXOs, transactions, blocks, mempool, fees, network stats, price, whale activity, and editorial checklists. Includes CSV/TSV export and automatic API fallback. Standard library only. No API key required."
+description: "Read-only Bitcoin research client for on-chain data."
 version: 1.0.0
 author: Kain
 license: MIT

@@ -583,8 +583,15 @@ def cmd_stats(args):
 
     next_retarget = None
     if diff_adj and isinstance(diff_adj, list) and len(diff_adj) > 0:
-        latest = diff_adj[-1]
-        if isinstance(latest, list) and len(latest) >= 4:
+        # mempool.space returns difficulty-adjustment rows newest-first, but
+        # defensively select the row with the maximum timestamp to avoid
+        # depending on ordering.
+        latest = max(
+            (row for row in diff_adj if isinstance(row, list) and len(row) >= 4),
+            key=lambda row: row[0] if isinstance(row[0], (int, float)) else 0,
+            default=None,
+        )
+        if latest is not None:
             next_retarget = {
                 "estimated_change_percent": latest[3],
                 "last_adjustment_height": latest[1],

@@ -848,7 +848,45 @@ CREATE TABLE IF NOT EXISTS task_checkpoints (
     snapshot_at REAL NOT NULL,
     resume_count INTEGER DEFAULT 0
 );
-"""
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        to_id       TEXT NOT NULL,
+        from_id     TEXT NOT NULL,
+        msg_type    TEXT NOT NULL DEFAULT 'instruction',
+        payload     TEXT NOT NULL DEFAULT '{}',
+        created_at  REAL NOT NULL,
+        read_at     REAL DEFAULT NULL,
+        ttl         INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_blackboard (
+        task_group  TEXT NOT NULL,
+        key         TEXT NOT NULL,
+        value       TEXT NOT NULL DEFAULT '',
+        updated_by  TEXT NOT NULL,
+        updated_at  REAL NOT NULL,
+        ttl         INTEGER DEFAULT 0,
+        PRIMARY KEY (task_group, key)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_traces (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL,
+        tool_name   TEXT NOT NULL,
+        duration_ms REAL DEFAULT 0,
+        success     INTEGER DEFAULT 1,
+        error_class TEXT DEFAULT '',
+        error_message TEXT DEFAULT '',
+        confidence  REAL DEFAULT 0,
+        recovery_action TEXT DEFAULT '',
+        result_summary TEXT DEFAULT '',
+        task_id     TEXT DEFAULT '',
+        at          REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_traces_session
+        ON agent_traces(session_id, at DESC);
+    """
 
 # Indexes that reference columns added in later schema versions must be
 # created AFTER _reconcile_columns() has had a chance to ADD them on

@@ -4260,8 +4260,15 @@ def cmd_status(args):
     show_status(args)
 
 
+def cmd_dashboard(args):
+    """Show agent observability dashboard."""
+    from hermes_cli.subcommands.dashboard import show_dashboard
+
+    show_dashboard(args)
+
+
 def cmd_cron(args):
-    """Cron job management."""
+    """Manage cron jobs."""
     from hermes_cli.cron import cron_command
 
     cron_command(args)
@@ -4351,6 +4358,13 @@ def cmd_dump(args):
     from hermes_cli.dump import run_dump
 
     run_dump(args)
+
+
+def cmd_dashboard(args):
+    """Show agent observability dashboard."""
+    from hermes_cli.dashboard import show_dashboard
+
+    show_dashboard(args)
 
 
 def cmd_debug(args):
@@ -13069,6 +13083,7 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+    build_dashboard_parser(subparsers, cmd_dashboard=cmd_dashboard)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
@@ -14612,13 +14627,30 @@ def main():
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
     # =========================================================================
-    # dashboard command  (parser built in hermes_cli/subcommands/dashboard.py)
+    # dashboard command
     # =========================================================================
-    build_dashboard_parser(
-        subparsers,
-        cmd_dashboard=cmd_dashboard,
-        cmd_dashboard_register=cmd_dashboard_register,
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Show agent observability dashboard",
+        description="Displays a live or snapshot view of the agent's performance, health, and activity.",
     )
+    dashboard_parser.add_argument(
+        "--session",
+        type=str,
+        help="Session ID to show. Defaults to the current or most recent session.",
+    )
+    dashboard_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Enable live-updating dashboard view (refreshes every 2s).",
+    )
+    dashboard_parser.add_argument(
+        "--refresh",
+        type=float,
+        default=2.0,
+        help="Refresh interval in seconds for --live mode.",
+    )
+    dashboard_parser.set_defaults(func=cmd_dashboard)
 
 
     # =========================================================================

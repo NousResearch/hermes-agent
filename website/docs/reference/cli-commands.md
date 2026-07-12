@@ -533,7 +533,7 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | Subcommand | Description |
 |------------|-------------|
 | `list` | Show scheduled jobs. |
-| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`, and optionally setting `--reasoning-effort <none|minimal|low|medium|high|xhigh|max|ultra>`. |
+| `create` / `add` | Create a scheduled job from a prompt, optionally attaching one or more skills via repeated `--skill`, and optionally setting `--reasoning-effort VALUE` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`). |
 | `edit` | Update a job's schedule, prompt, name, delivery, repeat count, attached skills, or reasoning override. Supports `--clear-skills`, `--add-skill`, `--remove-skill`, `--reasoning-effort`, and `--clear-reasoning-effort`. |
 | `pause` | Pause a job without deleting it. |
 | `resume` | Resume a paused job and compute its next future run. |

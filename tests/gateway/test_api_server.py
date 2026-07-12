@@ -4035,6 +4035,18 @@ class TestModelRoutesParsing:
         )
         assert adapter._model_routes["a"] == {"model": "m", "provider": "p"}
 
+    def test_route_reasoning_effort_is_parsed(self):
+        adapter = _make_routing_adapter(
+            {"a": {"model": "m", "reasoning_effort": " HIGH "}}
+        )
+        assert adapter._model_routes["a"]["reasoning_effort"] == "high"
+
+    def test_route_with_invalid_reasoning_effort_is_dropped(self):
+        adapter = _make_routing_adapter(
+            {"bad": {"model": "m", "reasoning_effort": "warp-nine"}}
+        )
+        assert adapter._model_routes == {}
+
     def test_resolve_route_lookup(self):
         adapter = _make_routing_adapter({"minimax-m2": {"model": "minimax/minimax-m1"}})
         assert adapter._resolve_route("minimax-m2") == {"model": "minimax/minimax-m1"}
@@ -4141,6 +4153,24 @@ class TestModelRoutesHandlers:
 
 
 class TestModelRoutesAgentCreation:
+    def test_route_overrides_reasoning_effort(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        adapter = _make_routing_adapter(
+            {"alias": {"model": "other/model", "reasoning_effort": "low"}}
+        )
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="s1", route=adapter._resolve_route("alias"))
+
+        assert captured["reasoning_config"] == {"enabled": True, "effort": "low"}
+
     def test_route_overrides_model_and_credentials(self, monkeypatch):
         captured = {}
 
@@ -4223,7 +4253,13 @@ class TestModelRoutesAgentCreation:
                 captured.update(kwargs)
 
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
-        adapter = _make_routing_adapter({"alias": {"model": "route/model", "api_key": "sk-route"}})
+        adapter = _make_routing_adapter(
+            {"alias": {
+                "model": "route/model",
+                "api_key": "sk-route",
+                "reasoning_effort": "low",
+            }}
+        )
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
         monkeypatch.setattr(
             adapter,
@@ -4237,6 +4273,7 @@ class TestModelRoutesAgentCreation:
         # runtime here, since the gateway applies /model separately) wins.
         assert captured["model"] == "global/model"
         assert captured["api_key"] == "sk-global"
+        assert captured["reasoning_config"] == {}
 
     def test_session_override_lookup_reads_gateway_runner(self, monkeypatch):
         """_session_model_override_for consults GatewayRunner._session_model_overrides."""

@@ -196,7 +196,10 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Lists the agent and configured model-route aliases as available models. The
+advertised base model name defaults to the [profile](/user-guide/profiles) name
+(or `hermes-agent` for the default profile). Required by most frontends for
+model discovery.
 
 ### GET /v1/capabilities
 
@@ -426,10 +429,26 @@ The API server gives full access to hermes-agent's toolset, **including terminal
 
 ### config.yaml
 
+Environment variables configure the listener and client authentication.
+`config.yaml` can additionally map an OpenAI request's `model` field to a
+server-side model route:
+
 ```yaml
-# Not yet supported — use environment variables.
-# config.yaml support coming in a future release.
+platforms:
+  api_server:
+    extra:
+      model_routes:
+        coding:
+          model: "openai/gpt-4o-mini"
+          provider: "openai"
+          reasoning_effort: "low"  # Optional: only for requests using "coding"
 ```
+
+Configured aliases are returned by `GET /v1/models`. A route can also set a
+provider API key or base URL. Its `reasoning_effort` accepts the normal Hermes
+levels (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`)
+and does not modify global configuration. A session-level `/model` selection
+takes precedence over a route.
 
 ## Security Headers
 
@@ -511,7 +530,9 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
-- **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
+- **Unmapped model names are cosmetic** — configure a `model_routes` alias
+  when a request's `model` field should select a server-side model; otherwise
+  the server uses its configured default.
 
 ## Proxy Mode
 

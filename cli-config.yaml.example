@@ -638,6 +638,7 @@ group_sessions_per_user: true
 #             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
 #             #                                 key (NOT caller auth; never logged)
 #             # base_url: "https://..."       # optional — per-route base URL
+#             # reasoning_effort: "low"        # optional — overrides global effort for this route
 #           # GPT clients keep their own alias
 #           gpt-5:
 #             model: "openai/gpt-5"

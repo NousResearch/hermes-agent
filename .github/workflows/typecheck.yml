@@ -28,6 +28,32 @@ jobs:
           command: npm ci --ignore-scripts
       - run: npm run --prefix ${{ matrix.package }} typecheck
 
+  # Keep the stable TypeScript 6/API-dependent toolchain above while proving
+  # the native TypeScript 7 compiler against packages that do not require an
+  # embedded-language compiler API. Pin the pilot version for reproducibility.
+  typescript-7-pilot:
+    name: Check TypeScript 7 (pilot)
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_IGNORE_SCRIPTS: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts
+      - name: Verify native compiler
+        run: test "$(npm exec --yes --package=typescript@7.0.2 -- tsc --version)" = "Version 7.0.2"
+      - name: Check web
+        run: npm exec --yes --package=typescript@7.0.2 -- tsc -p web --noEmit
+      - name: Check TUI
+        run: npm exec --yes --package=typescript@7.0.2 -- tsc -p ui-tui --noEmit
+      - name: Check bootstrap installer
+        run: npm exec --yes --package=typescript@7.0.2 -- tsc -p apps/bootstrap-installer --noEmit
+
   # Production build of the desktop renderer. `typecheck` runs `tsc` only,
   # which does NOT exercise Vite/Rolldown module resolution — so an
   # unresolvable package export (e.g. a transitive @assistant-ui/tap that no

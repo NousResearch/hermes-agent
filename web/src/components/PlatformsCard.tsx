@@ -13,7 +13,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
   > = {
     connected: { tone: "success", label: t.status.connected },
     disconnected: { tone: "warning", label: t.status.disconnected },
-    disabled: { tone: "outline", label: t.status.disabled ?? "Disabled" },
+    disabled: { tone: "outline", label: t.status.disabled },
     fatal: { tone: "destructive", label: t.status.error },
   };
 

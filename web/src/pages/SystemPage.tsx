@@ -43,6 +43,8 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
+import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type {
@@ -67,26 +69,35 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function formatDuration(seconds: number): string {
+function formatDuration(
+  seconds: number,
+  labels: Translations["systemPage"]["host"],
+  format: (template: string, values: Record<string, string | number>) => string,
+): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  if (d > 0) {
+    return format(labels.durationDays, { days: d, hours: h, minutes: m });
+  }
+  if (h > 0) return format(labels.durationHours, { hours: h, minutes: m });
+  return format(labels.durationMinutes, { minutes: m });
 }
 
 type BackupImportTarget =
   | { kind: "upload"; file: File }
   | { kind: "path"; path: string };
 
-function backupImportLabel(target: BackupImportTarget | null): string {
-  if (!target) return "the archive";
+function backupImportLabel(
+  target: BackupImportTarget | null,
+  fallback: string,
+): string {
+  if (!target) return fallback;
   return target.kind === "upload" ? target.file.name : target.path;
 }
 
-function backupFileName(path: string | null): string {
-  if (!path) return "No backup created yet";
+function backupFileName(path: string | null, fallback: string): string {
+  if (!path) return fallback;
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
@@ -104,9 +115,11 @@ function ActionLogViewer({
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
 }) {
+  const { format, t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
+  const [pollFailed, setPollFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const completeRef = useRef(false);
 
@@ -126,7 +139,10 @@ function ActionLogViewer({
         }
         if (st.running) timer.current = setTimeout(poll, 1200);
       } catch {
-        if (!cancelled) setRunning(false);
+        if (!cancelled) {
+          setRunning(false);
+          setPollFailed(true);
+        }
       }
     };
     poll();
@@ -144,19 +160,30 @@ function ActionLogViewer({
             <Terminal className="h-4 w-4 text-muted-foreground" />
             <span className="font-mono text-sm">{action}</span>
             {running ? (
-              <Badge tone="warning">running</Badge>
+              <Badge tone="warning">{t.systemPage.actionLog.running}</Badge>
             ) : (
               <Badge tone={exitCode === 0 ? "success" : "destructive"}>
-                {exitCode === 0 ? "done" : `exit ${exitCode}`}
+                {pollFailed
+                  ? t.status.failed
+                  : exitCode === 0
+                    ? t.systemPage.actionLog.done
+                    : format(t.systemPage.actionLog.exitCode, {
+                        code: exitCode ?? "—",
+                      })}
               </Badge>
             )}
           </div>
-          <Button ghost size="icon" onClick={onClose} aria-label="Close log">
+          <Button
+            ghost
+            size="icon"
+            onClick={onClose}
+            aria-label={t.systemPage.actionLog.close}
+          >
             <X />
           </Button>
         </div>
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-muted-foreground">
-          {lines.length ? lines.join("\n") : "Starting…"}
+          {lines.length ? lines.join("\n") : t.systemPage.actionLog.starting}
         </pre>
       </CardContent>
     </Card>
@@ -172,13 +199,6 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_end",
 ];
 
-const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
-  ready: "ready",
-  needs_config: "needs setup",
-  unavailable: "unavailable",
-  missing: "missing",
-};
-
 const MEMORY_STATUS_TONE: Record<
   MemoryProviderInfo["status"],
   "success" | "warning" | "destructive" | "secondary"
@@ -190,6 +210,7 @@ const MEMORY_STATUS_TONE: Record<
 };
 
 export default function SystemPage() {
+  const { format, t } = useI18n();
   const { toast, showToast } = useToast();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -297,10 +318,21 @@ export default function SystemPage() {
         await api.restartGateway();
         setActiveAction("gateway-restart");
       }
-      showToast(`Gateway ${verb} started`, "success");
-      setTimeout(loadAll, 3000);
+      const translatedVerb = t.systemPage.gateway[`${verb}Verb`];
+      showToast(
+        format(t.systemPage.toast.gatewayStarted, { verb: translatedVerb }),
+        "success",
+      );
+      setTimeout(() => void loadAll(), 3000);
     } catch (e) {
-      showToast(`Gateway ${verb} failed: ${e}`, "error");
+      const translatedVerb = t.systemPage.gateway[`${verb}Verb`];
+      showToast(
+        format(t.systemPage.toast.gatewayFailed, {
+          verb: translatedVerb,
+          error: String(e),
+        }),
+        "error",
+      );
     }
   };
 
@@ -309,10 +341,18 @@ export default function SystemPage() {
     if (!curator) return;
     try {
       await api.setCuratorPaused(!curator.paused);
-      showToast(curator.paused ? "Curator resumed" : "Curator paused", "success");
-      loadAll();
+      showToast(
+        curator.paused
+          ? t.systemPage.toast.curatorResumed
+          : t.systemPage.toast.curatorPaused,
+        "success",
+      );
+      void loadAll();
     } catch (e) {
-      showToast(`Curator toggle failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.curatorToggleFailed, { error: String(e) }),
+        "error",
+      );
     }
   };
 
@@ -327,21 +367,31 @@ export default function SystemPage() {
           const res = await api.resetMemory(
             target as "all" | "memory" | "user",
           );
-          showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
-          loadAll();
+          showToast(
+            format(t.systemPage.toast.memoryReset, {
+              items: res.deleted.join(", ") || t.systemPage.memory.nothing,
+            }),
+            "success",
+          );
+          void loadAll();
         } catch (e) {
-          showToast(`Reset failed: ${e}`, "error");
+          showToast(
+            format(t.systemPage.toast.memoryResetFailed, {
+              error: String(e),
+            }),
+            "error",
+          );
           throw e;
         }
       },
-      [loadAll, showToast],
+      [format, loadAll, showToast, t],
     ),
   });
 
   // ── Credential pool ────────────────────────────────────────────────
   const addCredential = async () => {
     if (!credProvider.trim() || !credKey.trim()) {
-      showToast("Provider and API key required", "error");
+      showToast(t.systemPage.toast.providerKeyRequired, "error");
       return;
     }
     setAddingCred(true);
@@ -351,12 +401,15 @@ export default function SystemPage() {
         credKey.trim(),
         credLabel.trim() || undefined,
       );
-      showToast("Credential added", "success");
+      showToast(t.systemPage.toast.credentialAdded, "success");
       setCredKey("");
       setCredLabel("");
-      loadAll();
+      void loadAll();
     } catch (e) {
-      showToast(`Failed to add credential: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.credentialAddFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setAddingCred(false);
     }
@@ -368,14 +421,19 @@ export default function SystemPage() {
         const [provider, idxStr] = key.split("|");
         try {
           await api.removeCredentialPoolEntry(provider, Number(idxStr));
-          showToast("Credential removed", "success");
-          loadAll();
+          showToast(t.systemPage.toast.credentialRemoved, "success");
+          void loadAll();
         } catch (e) {
-          showToast(`Failed to remove: ${e}`, "error");
+          showToast(
+            format(t.systemPage.toast.credentialRemoveFailed, {
+              error: String(e),
+            }),
+            "error",
+          );
           throw e;
         }
       },
-      [loadAll, showToast],
+      [format, loadAll, showToast, t],
     ),
   });
 
@@ -384,9 +442,18 @@ export default function SystemPage() {
     try {
       const res = await fn();
       setActiveAction(res.name);
-      showToast(`${label} started`, "success");
+      showToast(
+        format(t.systemPage.toast.operationStarted, { operation: label }),
+        "success",
+      );
     } catch (e) {
-      showToast(`${label} failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.operationFailed, {
+          operation: label,
+          error: String(e),
+        }),
+        "error",
+      );
     }
   };
 
@@ -396,9 +463,12 @@ export default function SystemPage() {
       setActiveAction(res.name);
       setPendingBackupArchive(res.archive ?? null);
       setDownloadableBackupArchive(null);
-      showToast("Backup started", "success");
+      showToast(t.systemPage.toast.backupStarted, "success");
     } catch (e) {
-      showToast(`Backup failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.backupFailed, { error: String(e) }),
+        "error",
+      );
     }
   };
 
@@ -407,13 +477,13 @@ export default function SystemPage() {
       if (action === "backup" && pendingBackupArchive) {
         if (exitCode === 0) {
           setDownloadableBackupArchive(pendingBackupArchive);
-          showToast("Backup ready to download", "success");
+          showToast(t.systemPage.toast.backupReady, "success");
         } else {
           setPendingBackupArchive(null);
         }
       }
     },
-    [pendingBackupArchive, showToast],
+    [pendingBackupArchive, showToast, t],
   );
 
   const downloadBackup = async () => {
@@ -427,13 +497,16 @@ export default function SystemPage() {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = backupFileName(archive);
+      link.download = backupFileName(archive, t.systemPage.operations.noBackup);
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      showToast(`Download failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.downloadFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setDownloadingBackup(false);
     }
@@ -452,10 +525,13 @@ export default function SystemPage() {
           ? await api.runImportUpload(target.file, true)
           : await api.runImport(target.path, true);
       setActiveAction(res.name);
-      showToast("Import started", "success");
+      showToast(t.systemPage.toast.importStarted, "success");
       if (target.kind === "upload") clearImportFile();
     } catch (e) {
-      showToast(`Import failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.importFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setImportingBackup(false);
     }
@@ -482,10 +558,10 @@ export default function SystemPage() {
           1500,
         );
       } catch {
-        showToast("Couldn't copy to clipboard", "error");
+        showToast(t.systemPage.toast.copyFailed, "error");
       }
     },
-    [showToast],
+    [showToast, t],
   );
 
   const runDebugShare = useCallback(async () => {
@@ -496,17 +572,23 @@ export default function SystemPage() {
       setShareResult(res);
       const n = Object.keys(res.urls).length;
       showToast(
-        `Uploaded ${n} paste${n === 1 ? "" : "s"}${
-          res.redacted ? " (redacted)" : ""
-        }`,
+        format(
+          res.redacted
+            ? t.systemPage.toast.debugUploadedRedacted
+            : t.systemPage.toast.debugUploaded,
+          { count: n },
+        ),
         "success",
       );
     } catch (e) {
-      showToast(`Debug share failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.debugShareFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setSharing(false);
     }
-  }, [shareRedact, showToast]);
+  }, [format, shareRedact, showToast, t]);
 
 
   // ── Update check / apply ───────────────────────────────────────────
@@ -521,23 +603,33 @@ export default function SystemPage() {
           if (info.update_available) {
             showToast(
               info.behind && info.behind > 0
-                ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
-                : "Update available",
+                ? format(t.systemPage.toast.updateBehind, {
+                    count: info.behind,
+                  })
+                : t.systemPage.toast.updateAvailable,
               "success",
             );
           } else if (info.behind === 0) {
-            showToast("You're on the latest version", "success");
+            showToast(t.systemPage.toast.latestVersion, "success");
           } else if (info.message) {
-            showToast(info.message, "error");
+            showToast(
+              format(t.systemPage.toast.updateCheckFailed, {
+                error: info.message,
+              }),
+              "error",
+            );
           }
         }
       } catch (e) {
-        showToast(`Update check failed: ${e}`, "error");
+        showToast(
+          format(t.systemPage.toast.updateCheckFailed, { error: String(e) }),
+          "error",
+        );
       } finally {
         setCheckingUpdate(false);
       }
     },
-    [showToast, status?.can_update_hermes],
+    [format, showToast, status?.can_update_hermes, t],
   );
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
@@ -545,26 +637,29 @@ export default function SystemPage() {
   const applyUpdate = async () => {
     setUpdateConfirmOpen(false);
     if (status?.can_update_hermes === false) {
-      showToast(
-        "Hermes updates are managed outside this dashboard.",
-        "success",
-      );
+      showToast(t.systemPage.toast.updatesManagedExternally, "success");
       return;
     }
     try {
       const resp = await api.updateHermes();
       if (!resp.ok) {
         showToast(
-          resp.message ??
-            "Updates don't apply from this dashboard.",
-          "success",
+          resp.message
+            ? format(t.systemPage.toast.updateCheckFailed, {
+                error: resp.message,
+              })
+            : t.systemPage.toast.dashboardUpdateUnavailable,
+          resp.message ? "error" : "success",
         );
         return;
       }
       setActiveAction(resp.name ?? "hermes-update");
-      showToast("Update started", "success");
+      showToast(t.systemPage.toast.updateStarted, "success");
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.updateFailed, { error: String(e) }),
+        "error",
+      );
     }
   };
 
@@ -573,18 +668,21 @@ export default function SystemPage() {
       try {
         const res = await api.pruneCheckpoints();
         setActiveAction(res.name);
-        showToast("Checkpoint prune started", "success");
+        showToast(t.systemPage.toast.pruneStarted, "success");
       } catch (e) {
-        showToast(`Prune failed: ${e}`, "error");
+        showToast(
+          format(t.systemPage.toast.pruneFailed, { error: String(e) }),
+          "error",
+        );
         throw e;
       }
-    }, [showToast]),
+    }, [format, showToast, t]),
   });
 
   // ── Hooks ──────────────────────────────────────────────────────────
   const createHook = async () => {
     if (!hookCommand.trim()) {
-      showToast("Command is required", "error");
+      showToast(t.systemPage.toast.commandRequired, "error");
       return;
     }
     setCreatingHook(true);
@@ -596,14 +694,17 @@ export default function SystemPage() {
         timeout: hookTimeout.trim() ? Number(hookTimeout) : undefined,
         approve: hookApprove,
       });
-      showToast("Hook created", "success");
+      showToast(t.systemPage.toast.hookCreated, "success");
       setHookCommand("");
       setHookMatcher("");
       setHookTimeout("");
       setHookModalOpen(false);
-      loadAll();
+      void loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${e}`, "error");
+      showToast(
+        format(t.systemPage.toast.hookCreateFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setCreatingHook(false);
     }
@@ -617,14 +718,19 @@ export default function SystemPage() {
         const command = key.slice(sep + 1);
         try {
           await api.deleteHook(event, command);
-          showToast("Hook removed", "success");
-          loadAll();
+          showToast(t.systemPage.toast.hookRemoved, "success");
+          void loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${e}`, "error");
+          showToast(
+            format(t.systemPage.toast.hookRemoveFailed, {
+              error: String(e),
+            }),
+            "error",
+          );
           throw e;
         }
       },
-      [loadAll, showToast],
+      [format, loadAll, showToast, t],
     ),
   });
 
@@ -662,45 +768,51 @@ export default function SystemPage() {
         open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
-        title="Update Hermes?"
+        title={t.systemPage.confirm.updateTitle}
         description={
           updateInfo && updateInfo.behind && updateInfo.behind > 0
-            ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
-            : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
+            ? format(t.systemPage.confirm.updateBehindDescription, {
+                command: updateInfo.update_command,
+                count: updateInfo.behind,
+              })
+            : format(t.systemPage.confirm.updateDescription, {
+                command: updateInfo?.update_command ?? "hermes update",
+              })
         }
-        confirmLabel="Update now"
+        confirmLabel={t.systemPage.confirm.updateNow}
+        cancelLabel={t.common.cancel}
       />
 
       <DeleteConfirmDialog
         open={memoryReset.isOpen}
         onCancel={memoryReset.cancel}
         onConfirm={memoryReset.confirm}
-        title="Reset memory"
-        description="This permanently erases the selected built-in memory files. This cannot be undone."
+        title={t.systemPage.confirm.resetMemoryTitle}
+        description={t.systemPage.confirm.resetMemoryDescription}
         loading={memoryReset.isDeleting}
       />
       <DeleteConfirmDialog
         open={credDelete.isOpen}
         onCancel={credDelete.cancel}
         onConfirm={credDelete.confirm}
-        title="Remove credential"
-        description="Remove this pooled API key? The agent will no longer rotate through it."
+        title={t.systemPage.confirm.removeCredentialTitle}
+        description={t.systemPage.confirm.removeCredentialDescription}
         loading={credDelete.isDeleting}
       />
       <DeleteConfirmDialog
         open={checkpointsPrune.isOpen}
         onCancel={checkpointsPrune.cancel}
         onConfirm={checkpointsPrune.confirm}
-        title="Prune checkpoints"
-        description="Delete the rollback checkpoint shadow store? Existing /rollback points will be lost."
+        title={t.systemPage.confirm.pruneTitle}
+        description={t.systemPage.confirm.pruneDescription}
         loading={checkpointsPrune.isDeleting}
       />
       <DeleteConfirmDialog
         open={hookDelete.isOpen}
         onCancel={hookDelete.cancel}
         onConfirm={hookDelete.confirm}
-        title="Remove shell hook"
-        description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
+        title={t.systemPage.confirm.removeHookTitle}
+        description={t.systemPage.confirm.removeHookDescription}
         loading={hookDelete.isDeleting}
       />
       <HermesConsoleModal
@@ -723,18 +835,18 @@ export default function SystemPage() {
               size="icon"
               onClick={() => setHookModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
             <header className="p-5 pb-3 border-b border-border">
               <h2 className="font-mondwest text-display text-base tracking-wider">
-                New shell hook
+                {t.systemPage.hooks.newTitle}
               </h2>
             </header>
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="hook-event">Event</Label>
+                <Label htmlFor="hook-event">{t.systemPage.hooks.event}</Label>
                 <Select
                   id="hook-event"
                   value={hookEvent}
@@ -748,7 +860,7 @@ export default function SystemPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="hook-command">Command (absolute path)</Label>
+                <Label htmlFor="hook-command">{t.systemPage.hooks.command}</Label>
                 <Input
                   id="hook-command"
                   autoFocus
@@ -759,16 +871,16 @@ export default function SystemPage() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-matcher">Matcher (optional)</Label>
+                  <Label htmlFor="hook-matcher">{t.systemPage.hooks.matcher}</Label>
                   <Input
                     id="hook-matcher"
-                    placeholder="e.g. terminal"
+                    placeholder={t.systemPage.hooks.matcherPlaceholder}
                     value={hookMatcher}
                     onChange={(e) => setHookMatcher(e.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="hook-timeout">Timeout (s)</Label>
+                  <Label htmlFor="hook-timeout">{t.systemPage.hooks.timeout}</Label>
                   <Input
                     id="hook-timeout"
                     placeholder="10"
@@ -788,13 +900,11 @@ export default function SystemPage() {
                   className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
                   htmlFor="hook-approve"
                 >
-                  Approve now (grant consent so it fires; otherwise it stays
-                  configured but inactive)
+                  {t.systemPage.hooks.approveNow}
                 </Label>
               </div>
               <p className="text-xs text-warning">
-                Shell hooks run arbitrary commands on this host. Only add scripts
-                you trust. Takes effect on the next gateway/session restart.
+                {t.systemPage.hooks.securityWarning}
               </p>
               <div className="flex justify-end">
                 <Button
@@ -804,7 +914,9 @@ export default function SystemPage() {
                   disabled={creatingHook}
                   prefix={creatingHook ? <Spinner /> : undefined}
                 >
-                  {creatingHook ? "Creating" : "Create hook"}
+                  {creatingHook
+                    ? t.systemPage.hooks.creating
+                    : t.systemPage.hooks.create}
                 </Button>
               </div>
             </div>
@@ -815,6 +927,7 @@ export default function SystemPage() {
       {/* Live action log */}
       {activeAction && (
         <ActionLogViewer
+          key={activeAction}
           action={activeAction}
           onComplete={handleActionComplete}
           onClose={() => setActiveAction(null)}
@@ -824,29 +937,29 @@ export default function SystemPage() {
       {/* ── Host / system stats ───────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Server className="h-4 w-4" /> Host
+          <Server className="h-4 w-4" /> {t.systemPage.host.title}
         </H2>
         <Card>
           <CardContent className="py-4">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-6 text-sm">
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">OS</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.os}</div>
                 <div>{stats?.os} {stats?.os_release}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Arch</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.architecture}</div>
                 <div>{stats?.arch}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Host</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.hostname}</div>
                 <div className="truncate">{stats?.hostname}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Python</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.python}</div>
                 <div>{stats?.python_impl} {stats?.python_version}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Hermes</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.hermes}</div>
                 <div className="flex items-center gap-2">
                   <span>v{stats?.hermes_version}</span>
                   {canUpdateHermes &&
@@ -854,20 +967,24 @@ export default function SystemPage() {
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
-                          ? `${updateInfo.behind} behind`
-                          : "update available"}
+                          ? format(t.systemPage.host.behind, {
+                              count: updateInfo.behind,
+                            })
+                          : t.systemPage.host.updateAvailable}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
-                      <Badge tone="success">latest</Badge>
+                      <Badge tone="success">{t.systemPage.host.latest}</Badge>
                     ) : null)}
                 </div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                  <Cpu className="h-3 w-3" /> CPU
+                  <Cpu className="h-3 w-3" /> {t.systemPage.host.cpu}
                 </div>
                 <div>
-                  {stats?.cpu_count ?? "—"} cores
+                  {format(t.systemPage.host.cores, {
+                    count: stats?.cpu_count ?? "—",
+                  })}
                   {typeof stats?.cpu_percent === "number"
                     ? ` · ${stats.cpu_percent.toFixed(0)}%`
                     : ""}
@@ -875,7 +992,7 @@ export default function SystemPage() {
               </div>
               {stats?.memory && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Memory</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.memory}</div>
                   <div>
                     {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)} ({stats.memory.percent}%)
                   </div>
@@ -884,7 +1001,7 @@ export default function SystemPage() {
               {stats?.disk && (
                 <div>
                   <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
-                    <HardDrive className="h-3 w-3" /> Disk
+                    <HardDrive className="h-3 w-3" /> {t.systemPage.host.disk}
                   </div>
                   <div>
                     {formatBytes(stats.disk.used)} / {formatBytes(stats.disk.total)} ({stats.disk.percent}%)
@@ -893,21 +1010,26 @@ export default function SystemPage() {
               )}
               {typeof stats?.uptime_seconds === "number" && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Uptime</div>
-                  <div>{formatDuration(stats.uptime_seconds)}</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.uptime}</div>
+                  <div>
+                    {formatDuration(
+                      stats.uptime_seconds,
+                      t.systemPage.host,
+                      format,
+                    )}
+                  </div>
                 </div>
               )}
               {stats?.load_avg && stats.load_avg.length >= 3 && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Load avg</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.loadAverage}</div>
                   <div>{stats.load_avg.map((n) => n.toFixed(2)).join(" / ")}</div>
                 </div>
               )}
             </div>
             {stats && !stats.psutil && (
               <p className="mt-3 text-xs text-muted-foreground">
-                Install the <span className="font-mono">psutil</span> extra for
-                CPU / memory / disk metrics.
+                {t.systemPage.host.metricsHint}
               </p>
             )}
             {canUpdateHermes && (
@@ -925,7 +1047,7 @@ export default function SystemPage() {
                   }
                   onClick={() => void checkForUpdate(true)}
                 >
-                  Check for updates
+                  {t.systemPage.host.checkUpdates}
                 </Button>
                 {updateInfo?.update_available && updateInfo.can_apply && (
                   <Button
@@ -933,15 +1055,16 @@ export default function SystemPage() {
                     prefix={<Download className="h-3.5 w-3.5" />}
                     onClick={() => setUpdateConfirmOpen(true)}
                   >
-                    Update now
+                    {t.systemPage.host.updateNow}
                   </Button>
                 )}
                 {updateInfo &&
                   !updateInfo.can_apply &&
                   updateInfo.update_available && (
                     <span className="text-xs text-muted-foreground">
-                      Update with{" "}
-                      <span className="font-mono">{updateInfo.update_command}</span>
+                      {format(t.systemPage.host.updateWith, {
+                        command: updateInfo.update_command,
+                      })}
                     </span>
                   )}
                 {updateInfo?.message && !updateInfo.update_available && (
@@ -958,17 +1081,21 @@ export default function SystemPage() {
       {/* ── Portal ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Globe className="h-4 w-4" /> Nous Portal
+          <Globe className="h-4 w-4" /> {t.systemPage.portal.title}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-3 py-4">
             <div className="flex items-center gap-3">
               <Badge tone={portal?.logged_in ? "success" : "secondary"}>
-                {portal?.logged_in ? "logged in" : "not logged in"}
+                {portal?.logged_in
+                  ? t.systemPage.portal.loggedIn
+                  : t.systemPage.portal.loggedOut}
               </Badge>
               {portal?.provider && (
                 <span className="text-sm text-muted-foreground">
-                  inference provider: {portal.provider}
+                  {format(t.systemPage.portal.inferenceProvider, {
+                    provider: portal.provider,
+                  })}
                 </span>
               )}
               <a
@@ -977,13 +1104,13 @@ export default function SystemPage() {
                 rel="noreferrer"
                 className="ml-auto text-xs text-primary underline"
               >
-                Manage subscription
+                {t.systemPage.portal.manageSubscription}
               </a>
             </div>
             {portal?.features && portal.features.length > 0 && (
               <div className="flex flex-col gap-1 border-t border-border pt-3">
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                  Tool Gateway routing
+                  {t.systemPage.portal.toolGatewayRouting}
                 </span>
                 {portal.features.map((f) => (
                   <div key={f.label} className="flex items-center justify-between text-sm">
@@ -995,7 +1122,7 @@ export default function SystemPage() {
             )}
             {!portal?.logged_in && (
               <p className="text-xs text-muted-foreground">
-                Log in with <span className="font-mono">hermes portal</span>.
+                {t.systemPage.portal.loginHint}
               </p>
             )}
           </CardContent>
@@ -1005,30 +1132,47 @@ export default function SystemPage() {
       {/* ── Curator ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Sparkles className="h-4 w-4" /> Skill curator
+          <Sparkles className="h-4 w-4" /> {t.systemPage.curator.title}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
-                {curator?.paused ? "paused" : curator?.enabled ? "active" : "disabled"}
+                {curator?.paused
+                  ? t.systemPage.curator.paused
+                  : curator?.enabled
+                    ? t.systemPage.curator.active
+                    : t.systemPage.curator.disabled}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {curator?.interval_hours ? `every ${curator.interval_hours}h` : ""}
-                {curator?.last_run_at ? ` · last run ${new Date(curator.last_run_at).toLocaleString()}` : " · never run"}
+                {curator?.interval_hours
+                  ? format(t.systemPage.curator.everyHours, {
+                      hours: curator.interval_hours,
+                    })
+                  : ""}
+                {" · "}
+                {curator?.last_run_at
+                  ? format(t.systemPage.curator.lastRun, {
+                      time: new Date(curator.last_run_at).toLocaleString(),
+                    })
+                  : t.systemPage.curator.neverRun}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" ghost onClick={toggleCuratorPaused}>
-                {curator?.paused ? "Resume" : "Pause"}
+                {curator?.paused
+                  ? t.systemPage.curator.resume
+                  : t.systemPage.curator.pause}
               </Button>
               <Button
                 size="sm"
                 ghost
                 prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() => runOp(api.runCurator, "Curator review")}
+                onClick={() =>
+                  runOp(api.runCurator, t.systemPage.curator.reviewOperation)
+                }
               >
-                Run now
+                {t.systemPage.curator.runNow}
               </Button>
             </div>
           </CardContent>
@@ -1038,17 +1182,23 @@ export default function SystemPage() {
       {/* ── Gateway ───────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Power className="h-4 w-4" /> Gateway
+          <Power className="h-4 w-4" /> {t.systemPage.gateway.title}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning ? "running" : "stopped"}
+                {gatewayRunning
+                  ? t.systemPage.gateway.running
+                  : t.systemPage.gateway.stopped}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {status?.gateway_state ?? "—"}
-                {status?.gateway_pid ? ` · pid ${status.gateway_pid}` : ""}
+                {status?.gateway_pid
+                  ? ` · ${format(t.systemPage.gateway.pid, {
+                      pid: status.gateway_pid,
+                    })}`
+                  : ""}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1059,7 +1209,7 @@ export default function SystemPage() {
                 disabled={gatewayRunning}
                 prefix={<Play className="h-3.5 w-3.5" />}
               >
-                Start
+                {t.systemPage.gateway.start}
               </Button>
               <Button
                 size="sm"
@@ -1067,7 +1217,7 @@ export default function SystemPage() {
                 onClick={() => runGateway("restart")}
                 prefix={<RotateCw className="h-3.5 w-3.5" />}
               >
-                Restart
+                {t.systemPage.gateway.restart}
               </Button>
               <Button
                 size="sm"
@@ -1077,7 +1227,7 @@ export default function SystemPage() {
                 disabled={!gatewayRunning}
                 prefix={<Power className="h-3.5 w-3.5" />}
               >
-                Stop
+                {t.systemPage.gateway.stop}
               </Button>
             </div>
           </CardContent>
@@ -1087,54 +1237,60 @@ export default function SystemPage() {
       {/* ── Memory ────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Brain className="h-4 w-4" /> Memory
+          <Brain className="h-4 w-4" /> {t.systemPage.memory.title}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>
-                External provider:{" "}
+                {t.systemPage.memory.externalProvider}{" "}
                 <span className="font-mono text-foreground">
-                  {memory?.active || "built-in only"}
+                  {memory?.active || t.systemPage.memory.builtInOnly}
                 </span>
               </span>
               {activeMemoryProvider && (
                 <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
-                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
+                  {activeMemoryProvider.status === "ready"
+                    ? t.systemPage.memory.statusReady
+                    : activeMemoryProvider.status === "needs_config"
+                      ? t.systemPage.memory.statusNeedsSetup
+                      : activeMemoryProvider.status === "unavailable"
+                        ? t.systemPage.memory.statusUnavailable
+                        : t.systemPage.memory.statusMissing}
                 </Badge>
               )}
               <Link to="/plugins" className="underline">
-                Change in Plugins →
+                {t.systemPage.memory.changeInPlugins}
               </Link>
               <span className="ml-auto">
-                Provider setup:{" "}
+                {t.systemPage.memory.providerSetup}{" "}
                 <Link to="/plugins" className="underline">
-                  configure in Plugins
+                  {t.systemPage.memory.configureInPlugins}
                 </Link>
               </span>
             </div>
 
             {activeMemoryProvider?.status === "missing" && (
               <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+                {t.systemPage.memory.providerMissing}
               </p>
             )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
-                Built-in files — MEMORY.md:{" "}
+                {t.systemPage.memory.builtInFiles} — MEMORY.md:{" "}
                 {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
                 {formatBytes(memory?.builtin_files.user ?? 0)}
               </span>
               <div className="flex items-center gap-2 ml-auto">
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
-                  Reset MEMORY.md
+                  {t.systemPage.memory.resetMemory}
                 </Button>
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
-                  Reset USER.md
+                  {t.systemPage.memory.resetUser}
                 </Button>
                 <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
-                  Reset all
+                  {t.systemPage.memory.resetAll}
                 </Button>
               </div>
             </div>
@@ -1145,32 +1301,32 @@ export default function SystemPage() {
       {/* ── Credential pool ───────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <KeyRound className="h-4 w-4" /> Credential pool
+          <KeyRound className="h-4 w-4" /> {t.systemPage.credentials.title}
         </H2>
         <Card>
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="grid gap-2">
-                <Label htmlFor="cred-provider">Provider</Label>
+                <Label htmlFor="cred-provider">{t.systemPage.credentials.provider}</Label>
                 <Input id="cred-provider" value={credProvider} onChange={(e) => setCredProvider(e.target.value)} placeholder="openrouter" />
               </div>
               <div className="grid gap-2 sm:col-span-2">
-                <Label htmlFor="cred-key">API key</Label>
+                <Label htmlFor="cred-key">{t.systemPage.credentials.apiKey}</Label>
                 <Input id="cred-key" type="password" value={credKey} onChange={(e) => setCredKey(e.target.value)} placeholder="sk-…" />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="cred-label">Label</Label>
-                <Input id="cred-label" value={credLabel} onChange={(e) => setCredLabel(e.target.value)} placeholder="optional" />
+                <Label htmlFor="cred-label">{t.systemPage.credentials.label}</Label>
+                <Input id="cred-label" value={credLabel} onChange={(e) => setCredLabel(e.target.value)} placeholder={t.systemPage.credentials.optional} />
               </div>
             </div>
             <div className="flex justify-end">
               <Button size="sm" className="uppercase" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
-                Add key
+                {t.systemPage.credentials.addKey}
               </Button>
             </div>
             {pool.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                No pooled credentials. Add one above to enable key rotation.
+                {t.systemPage.credentials.empty}
               </p>
             )}
             {pool.map((prov) => (
@@ -1184,7 +1340,7 @@ export default function SystemPage() {
                     <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
                     <Badge tone="outline">{entry.auth_type}</Badge>
                     {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label="Remove credential" onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label={t.systemPage.credentials.remove} onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
                       <Trash2 />
                     </Button>
                   </div>
@@ -1198,30 +1354,30 @@ export default function SystemPage() {
       {/* ── Operations ────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Activity className="h-4 w-4" /> Operations
+          <Activity className="h-4 w-4" /> {t.systemPage.operations.title}
         </H2>
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
-              Open console
+              {t.systemPage.operations.openConsole}
             </Button>
-            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
-              Run doctor
+            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, t.systemPage.operations.doctor)}>
+              {t.systemPage.operations.runDoctor}
             </Button>
-            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>
-              Security audit
+            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, t.systemPage.operations.securityAudit)}>
+              {t.systemPage.operations.securityAudit}
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>
-              Update skills
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, t.systemPage.operations.skillsUpdate)}>
+              {t.systemPage.operations.updateSkills}
             </Button>
-            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, "Prompt size")}>
-              Prompt size
+            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, t.systemPage.operations.promptSize)}>
+              {t.systemPage.operations.promptSize}
             </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, "Support dump")}>
-              Support dump
+            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, t.systemPage.operations.supportDump)}>
+              {t.systemPage.operations.supportDump}
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>
-              Migrate config
+            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, t.systemPage.operations.configMigrate)}>
+              {t.systemPage.operations.migrateConfig}
             </Button>
           </CardContent>
         </Card>
@@ -1230,7 +1386,7 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Full backup</Label>
+                <Label>{t.systemPage.operations.fullBackup}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     size="sm"
@@ -1238,7 +1394,7 @@ export default function SystemPage() {
                     prefix={<Database className="h-3.5 w-3.5" />}
                     onClick={() => void runDashboardBackup()}
                   >
-                    Create backup
+                    {t.systemPage.operations.createBackup}
                   </Button>
                   <Button
                     size="sm"
@@ -1253,13 +1409,18 @@ export default function SystemPage() {
                     }
                     onClick={() => void downloadBackup()}
                   >
-                    Download backup
+                    {t.systemPage.operations.downloadBackup}
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={pendingBackupArchive ?? "No backup created yet"}
+                    title={
+                      pendingBackupArchive ?? t.systemPage.operations.noBackup
+                    }
                   >
-                    {backupFileName(pendingBackupArchive)}
+                    {backupFileName(
+                      pendingBackupArchive,
+                      t.systemPage.operations.noBackup,
+                    )}
                   </span>
                 </div>
               </div>
@@ -1267,7 +1428,7 @@ export default function SystemPage() {
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label>Restore from backup upload</Label>
+                <Label>{t.systemPage.operations.restoreUploadLabel}</Label>
                 <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                   <Button
                     type="button"
@@ -1277,13 +1438,17 @@ export default function SystemPage() {
                     prefix={<Upload className="h-3.5 w-3.5" />}
                     onClick={() => importUploadInputRef.current?.click()}
                   >
-                    Choose restore zip
+                    {t.systemPage.operations.chooseRestoreZip}
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={importFile?.name ?? "No backup archive selected"}
+                    title={
+                      importFile?.name ??
+                      t.systemPage.operations.noArchiveSelected
+                    }
                   >
-                    {importFile?.name ?? "No backup archive selected"}
+                    {importFile?.name ??
+                      t.systemPage.operations.noArchiveSelected}
                   </span>
                 </div>
               </div>
@@ -1297,13 +1462,13 @@ export default function SystemPage() {
                   setImportConfirmTarget({ kind: "upload", file: importFile });
                 }}
               >
-                Restore upload
+                {t.systemPage.operations.restoreUpload}
               </Button>
             </div>
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
               <div className="grid min-w-0 flex-1 gap-2">
-                <Label htmlFor="import-path">Restore from backups path</Label>
+                <Label htmlFor="import-path">{t.systemPage.operations.restorePathLabel}</Label>
                 <Input
                   id="import-path"
                   value={importPath}
@@ -1322,16 +1487,21 @@ export default function SystemPage() {
                   setImportConfirmTarget({ kind: "path", path });
                 }}
               >
-                Restore path
+                {t.systemPage.operations.restorePath}
               </Button>
             </div>
             <ConfirmDialog
               open={!!importConfirmTarget}
-              title="Restore full Hermes backup?"
-              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${backupImportLabel(importConfirmTarget)}. This cannot be undone.`}
+              title={t.systemPage.confirm.restoreTitle}
+              description={format(t.systemPage.confirm.restoreDescription, {
+                archive: backupImportLabel(
+                  importConfirmTarget,
+                  t.systemPage.operations.noArchiveSelected,
+                ),
+              })}
               destructive
-              confirmLabel="Restore"
-              cancelLabel="Cancel"
+              confirmLabel={t.systemPage.confirm.restore}
+              cancelLabel={t.common.cancel}
               onCancel={() => setImportConfirmTarget(null)}
               onConfirm={() => {
                 const target = importConfirmTarget;
@@ -1351,11 +1521,9 @@ export default function SystemPage() {
               <div className="flex items-start gap-2">
                 <Share2 className="h-4 w-4 mt-0.5 text-muted-foreground" />
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium">Share debug report</span>
+                  <span className="text-sm font-medium">{t.systemPage.operations.shareTitle}</span>
                   <span className="text-xs text-muted-foreground max-w-prose">
-                    Uploads system info + logs to a public paste service and
-                    returns links to send the Hermes team. Pastes auto-delete
-                    after 6 hours.
+                    {t.systemPage.operations.shareDescription}
                   </span>
                 </div>
               </div>
@@ -1371,7 +1539,9 @@ export default function SystemPage() {
                 }
                 onClick={() => void runDebugShare()}
               >
-                {sharing ? "Uploading…" : "Generate share link"}
+                {sharing
+                  ? t.systemPage.operations.uploading
+                  : t.systemPage.operations.generateShareLink}
               </Button>
             </div>
 
@@ -1387,7 +1557,7 @@ export default function SystemPage() {
                 className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
                 htmlFor="share-redact"
               >
-                Redact credential-shaped tokens before upload (recommended)
+                {t.systemPage.operations.redactBeforeUpload}
               </Label>
             </div>
 
@@ -1395,16 +1565,19 @@ export default function SystemPage() {
               <div className="flex flex-col gap-2 border-t border-border pt-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Badge tone="success">uploaded</Badge>
+                    <Badge tone="success">{t.systemPage.operations.uploaded}</Badge>
                     {shareResult.redacted ? (
-                      <Badge tone="outline">redacted</Badge>
+                      <Badge tone="outline">{t.systemPage.operations.redacted}</Badge>
                     ) : (
-                      <Badge tone="warning">not redacted</Badge>
+                      <Badge tone="warning">{t.systemPage.operations.notRedacted}</Badge>
                     )}
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
-                      auto-deletes in{" "}
-                      {Math.round(shareResult.auto_delete_seconds / 3600)}h
+                      {format(t.systemPage.operations.autoDeletesHours, {
+                        hours: Math.round(
+                          shareResult.auto_delete_seconds / 3600,
+                        ),
+                      })}
                     </span>
                   </div>
                   {Object.keys(shareResult.urls).length > 1 && (
@@ -1427,7 +1600,7 @@ export default function SystemPage() {
                         )
                       }
                     >
-                      Copy all
+                      {t.systemPage.operations.copyAll}
                     </Button>
                   )}
                 </div>
@@ -1452,7 +1625,9 @@ export default function SystemPage() {
                     <Button
                       ghost
                       size="icon"
-                      aria-label={`Copy ${label} link`}
+                      aria-label={format(t.systemPage.operations.copyLink, {
+                        label,
+                      })}
                       onClick={() => void copyToClipboard(url, label)}
                     >
                       {copiedLabel === label ? <Check /> : <Copy />}
@@ -1462,7 +1637,9 @@ export default function SystemPage() {
 
                 {shareResult.failures.length > 0 && (
                   <span className="text-xs text-destructive">
-                    Some logs failed to upload: {shareResult.failures.join("; ")}
+                    {format(t.systemPage.operations.uploadFailures, {
+                      errors: shareResult.failures.join("; "),
+                    })}
                   </span>
                 )}
               </div>
@@ -1474,16 +1651,18 @@ export default function SystemPage() {
       {/* ── Checkpoints ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Database className="h-4 w-4" /> Checkpoints
+          <Database className="h-4 w-4" /> {t.systemPage.checkpoints.title}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <span className="text-sm text-muted-foreground">
-              {checkpoints?.sessions.length ?? 0} session(s) ·{" "}
-              {formatBytes(checkpoints?.total_bytes ?? 0)}
+              {format(t.systemPage.checkpoints.sessions, {
+                count: checkpoints?.sessions.length ?? 0,
+                size: formatBytes(checkpoints?.total_bytes ?? 0),
+              })}
             </span>
             <Button size="sm" ghost className="text-destructive" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>
-              Prune
+              {t.systemPage.checkpoints.prune}
             </Button>
           </CardContent>
         </Card>
@@ -1493,16 +1672,16 @@ export default function SystemPage() {
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-            <Terminal className="h-4 w-4" /> Shell hooks
+            <Terminal className="h-4 w-4" /> {t.systemPage.hooks.title}
           </H2>
           <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
-            New hook
+            {t.systemPage.hooks.new}
           </Button>
         </div>
         {(!hooks || hooks.hooks.length === 0) && (
           <Card>
             <CardContent className="py-6 text-center text-sm text-muted-foreground">
-              No shell hooks configured.
+              {t.systemPage.hooks.empty}
             </CardContent>
           </Card>
         )}
@@ -1511,20 +1690,26 @@ export default function SystemPage() {
             <CardContent className="flex items-center gap-3 py-3">
               <Badge tone="outline">{h.event}</Badge>
               {h.matcher && (
-                <span className="text-xs text-muted-foreground">matcher: {h.matcher}</span>
+                <span className="text-xs text-muted-foreground">
+                  {format(t.systemPage.hooks.matcherValue, {
+                    matcher: h.matcher,
+                  })}
+                </span>
               )}
               <span className="font-mono text-xs truncate flex-1">{h.command}</span>
               {h.executable === false && (
-                <Badge tone="destructive">not executable</Badge>
+                <Badge tone="destructive">{t.systemPage.hooks.notExecutable}</Badge>
               )}
               <Badge tone={h.allowed ? "success" : "warning"}>
-                {h.allowed ? "allowed" : "not approved"}
+                {h.allowed
+                  ? t.systemPage.hooks.allowed
+                  : t.systemPage.hooks.notApproved}
               </Badge>
               <Button
                 ghost
                 size="icon"
                 className="text-destructive"
-                aria-label="Remove hook"
+                aria-label={t.systemPage.hooks.remove}
                 onClick={() =>
                   hookDelete.requestDelete(`${h.event}|${h.command ?? ""}`)
                 }

@@ -44,14 +44,18 @@ const verbs: string[] = [
 // ── Status bar labels ─────────────────────────────────────────────
 const status: Record<string, string> = {
   'approval needed': 'approval needed',
+  'closing session…': 'closing session…',
   'forging session…': 'forging session…',
   'gateway exited': 'gateway exited',
   'gateway startup timeout': 'gateway startup timeout',
   interrupted: 'interrupted',
+  'interpolating…': 'interpolating…',
+  'interrupting…': 'interrupting…',
   'protocol warning': 'protocol warning',
   queued: 'queued',
   'queued for next turn': 'queued for next turn',
   ready: 'ready',
+  'recovering session…': 'recovering session…',
   resuming: 'resuming…',
   'resuming most recent…': 'resuming most recent…',
   'resuming…': 'resuming…',
@@ -63,6 +67,7 @@ const status: Record<string, string> = {
   'starting agent…': 'starting agent…',
   'sudo password needed': 'sudo password needed',
   'summoning hermes…': 'summoning hermes…',
+  'switching session…': 'switching session…',
   'waiting for input…': 'waiting for input…'
 }
 
@@ -100,6 +105,9 @@ const catalog = {
   'gateway.protocolNoise': 'protocol noise: {preview}',
   'gateway.protocolNoiseDetected': 'protocol noise detected · /logs to inspect',
   'gateway.startupTimedOut': 'gateway startup timed out{trace} · /logs to inspect',
+  'startup.imageAttachFailed': 'startup image attach failed: {message}',
+  'startup.imagePrompt': 'What do you see in this image?',
+  'startup.noActiveSession': 'startup query skipped: no active session',
   'image.attachNotice': '📎 Attached image',
   'image.attachNoticeName': '📎 Attached image: {name}',
   'image.tok': ' tok',
@@ -769,6 +777,8 @@ const catalog = {
   'billing.stepUp.needsPermission': '💳 Terminal billing needs an extra permission (billing:manage).',
   'billing.stepUp.notGranted': '🟡 Terminal billing was not granted (an admin must tick the box).',
   'billing.stepUp.stillWaiting': '🟡 Still waiting on approval — finish in the browser, then run /billing again.',
+  'billing.stepUp.verificationCode': 'If prompted, enter code: {code}',
+  'billing.stepUp.verificationLink': '💳 Open this link to grant terminal billing access:',
   'billing.stepUp.title': 'Grant terminal billing access?',
   'billing.title.autoReload': 'Auto-reload',
   'billing.title.buyCredits': 'Buy usage credits',

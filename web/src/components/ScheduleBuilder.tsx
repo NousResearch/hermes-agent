@@ -64,7 +64,7 @@ export function ScheduleBuilder({ onChange, value }: ScheduleBuilderProps) {
     <div className="grid gap-3">
       <div className="grid gap-2">
         <Label htmlFor="cron-schedule-mode">
-          {cronStrings.scheduleMode ?? "Schedule"}
+          {cronStrings.scheduleMode}
         </Label>
         <Select
           id="cron-schedule-mode"

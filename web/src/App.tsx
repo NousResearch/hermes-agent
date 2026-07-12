@@ -695,7 +695,7 @@ export default function App() {
                   <PluginSlot name="header-right" />
                   <SidebarIconWithTooltip
                     collapsed={isDesktopCollapsed}
-                    label={t.theme?.switchTheme ?? "Switch theme"}
+                    label={t.theme.switchTheme}
                     tooltipWarmRef={tooltipWarmRef}
                   >
                     <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
@@ -1075,17 +1075,12 @@ function SidebarSystemActions({
       <ConfirmDialog
         cancelLabel={t.common.cancel}
         confirmLabel={t.status.restartGateway}
-        description={
-          t.status.restartGatewayConfirmMessage ??
-          "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
-        }
+        description={t.status.restartGatewayConfirmMessage}
         loading={pendingAction === "restart"}
         onCancel={() => setRestartConfirmOpen(false)}
         onConfirm={confirmRestart}
         open={restartConfirmOpen}
-        title={
-          t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
-        }
+        title={t.status.restartGatewayConfirmTitle}
       />
 
       <ConfirmDialog

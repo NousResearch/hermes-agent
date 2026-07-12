@@ -387,7 +387,7 @@ export const uk: TranslationOverlay = {
     rawYaml: "Сирий YAML-конфіг",
     searchResults: "Результати пошуку",
     fields: "поле(ів)",
-    noFieldsMatch: 'Немає полів, що відповідають \"{query}\"',
+    noFieldsMatch: 'Немає полів, що відповідають "{query}"',
     configSaved: "Конфігурацію збережено",
     yamlConfigSaved: "YAML-конфігурацію збережено",
     failedToSave: "Не вдалося зберегти",

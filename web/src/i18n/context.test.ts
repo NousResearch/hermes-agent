@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 import { en } from "./en";
 import {
+  formatTranslation,
   normalizeLocale,
   persistConfiguredLocale,
   resolveNavLabel,
@@ -111,6 +112,15 @@ describe("Dashboard i18n framework", () => {
     await persistConfiguredLocale("zh");
 
     expect(save).toHaveBeenCalledWith({ display: { language: "zh" } });
+  });
+
+  it("interpolates named placeholders independent of language word order", () => {
+    expect(
+      formatTranslation("{user} via {provider}; {missing}", {
+        provider: "portal",
+        user: "alice",
+      }),
+    ).toBe("alice via portal; {missing}");
   });
 
   it("falls back safely for unknown or inherited plugin navigation keys", () => {

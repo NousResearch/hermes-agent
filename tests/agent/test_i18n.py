@@ -146,9 +146,9 @@ def test_config_language_refreshes_without_process_restart(monkeypatch):
 def test_default_when_nothing_set(monkeypatch):
     """With no env var and no config override, falls back to English."""
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
-    # Force config lookup to return None -- patch the cached reader.
+    # Force config lookup to return None.
     i18n.reset_language_cache()
-    monkeypatch.setattr(i18n, "_config_language_cached", lambda: None)
+    monkeypatch.setattr(i18n, "_configured_language", lambda: None)
     assert i18n.get_language() == "en"
 
 

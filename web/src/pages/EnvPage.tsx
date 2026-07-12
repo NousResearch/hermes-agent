@@ -124,7 +124,7 @@ function EnvVarRow({
   clearDialogOpen?: boolean;
   compact?: boolean;
 }) {
-  const { t } = useI18n();
+  const { format, t } = useI18n();
   const isEditing = edits[varKey] !== undefined;
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed
@@ -259,7 +259,10 @@ function EnvVarRow({
               size="icon"
               onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+              aria-label={format(
+                isRevealed ? t.env.hideVariable : t.env.revealVariable,
+                { name: varKey },
+              )}
             >
               {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
@@ -612,7 +615,7 @@ export default function EnvPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { format, t } = useI18n();
   const { setAfterTitle } = usePageHeader();
 
   useEffect(() => {
@@ -625,15 +628,15 @@ export default function EnvPage() {
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: "OAuth" },
-      { id: "section-providers", label: "Providers" },
+      { id: "section-oauth", label: t.env.oauthSection },
+      { id: "section-providers", label: t.env.providersSection },
     ];
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
-        messaging: t.common.gateway ?? "Gateway",
-        setting: "Settings",
+        tool: t.env.toolsSection,
+        messaging: t.common.gateway,
+        setting: t.env.settingsSection,
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -660,7 +663,7 @@ export default function EnvPage() {
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
+        aria-label={t.env.jumpToSection}
       >
         {sections.map((s) => (
           <button
@@ -677,7 +680,7 @@ export default function EnvPage() {
     return () => {
       setAfterTitle(null);
     };
-  }, [vars, sections, setAfterTitle]);
+  }, [sections, setAfterTitle, t.env.jumpToSection, vars]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -707,9 +710,12 @@ export default function EnvPage() {
         delete n[key];
         return n;
       });
-      showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+      showToast(format(t.env.savedNamed, { name: key }), "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
+      showToast(
+        format(t.env.saveFailedNamed, { name: key, error: String(e) }),
+        "error",
+      );
     } finally {
       setSaving(null);
     }
@@ -739,15 +745,21 @@ export default function EnvPage() {
             delete n[key];
             return n;
           });
-          showToast(`${key} ${t.common.removed}`, "success");
+          showToast(format(t.env.removedNamed, { name: key }), "success");
         } catch (e) {
-          showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
+          showToast(
+            format(t.env.removeFailedNamed, {
+              name: key,
+              error: String(e),
+            }),
+            "error",
+          );
           throw e;
         } finally {
           setSaving(null);
         }
       },
-      [showToast, t.common.removed, t.common.failedToRemove],
+      [format, showToast, t.env.removeFailedNamed, t.env.removedNamed],
     ),
   });
 
@@ -764,7 +776,7 @@ export default function EnvPage() {
       const resp = await api.revealEnvVar(key);
       setRevealed((prev) => ({ ...prev, [key]: resp.value }));
     } catch {
-      showToast(`${t.common.failedToReveal} ${key}`, "error");
+      showToast(format(t.env.revealFailedNamed, { name: key }), "error");
     }
   };
 
@@ -839,13 +851,11 @@ export default function EnvPage() {
     // settings and relabelled accordingly.
     const CATEGORY_META_LABELS: Record<string, string> = {
       tool: t.app.nav.keys,
-      messaging: t.common.gateway ?? "Gateway",
+      messaging: t.common.gateway,
       setting: t.app.nav.config,
     };
     const CATEGORY_META_HINTS: Record<string, string | undefined> = {
-      messaging:
-        t.common.gatewayHint ??
-        "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
+      messaging: t.common.gatewayHint,
     };
     const otherCategories = ["tool", "messaging", "setting"];
     const nonProvider = otherCategories.map((cat) => {

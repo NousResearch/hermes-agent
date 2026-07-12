@@ -249,7 +249,7 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
         <span className="inline-flex items-center gap-1.5">
           <Type className="h-3 w-3 text-text-tertiary" />
           <Typography className="text-display text-xs tracking-[0.12em] text-text-tertiary">
-            {t.theme?.fontTitle ?? "Font"}
+            {t.theme.fontTitle}
           </Typography>
         </span>
       </div>
@@ -265,10 +265,10 @@ function FontSection({ fontChoices, fontId, setFont }: FontSectionProps) {
         <span aria-hidden className="h-4 w-9 shrink-0" />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <Typography className="truncate text-xs tracking-normal">
-            {t.theme?.fontDefault ?? "Theme default"}
+            {t.theme.fontDefault}
           </Typography>
           <Typography className="truncate text-xs tracking-normal text-text-tertiary">
-            {t.theme?.fontDefaultHint ?? "Use the active theme's font"}
+            {t.theme.fontDefaultHint}
           </Typography>
         </div>
         <Check

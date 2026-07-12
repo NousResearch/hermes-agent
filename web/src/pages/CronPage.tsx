@@ -194,6 +194,7 @@ function CronAdvancedFields({
   modelOptions: ModelOptionsResponse | null;
   availableToolsets: ToolsetInfo[];
 }) {
+  const { t } = useI18n();
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],
@@ -210,12 +211,12 @@ function CronAdvancedFields({
   return (
     <details className="border border-border bg-background/30 p-3" open>
       <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Advanced fields
+        {t.cron.advancedFields}
       </summary>
       <div className="mt-3 grid gap-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-provider`}>Provider</Label>
+            <Label htmlFor={`${idPrefix}-provider`}>{t.cron.provider}</Label>
             <Select
               id={`${idPrefix}-provider`}
               value={form.provider}
@@ -223,7 +224,7 @@ function CronAdvancedFields({
                 onChange({ ...form, provider: v, model: "" });
               }}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">{t.cron.defaultValue}</SelectOption>
               {selectOptions(
                 form.provider,
                 providers.map((p) => ({ value: p.slug, label: p.name })),
@@ -231,13 +232,13 @@ function CronAdvancedFields({
             </Select>
           </div>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-model`}>Model</Label>
+            <Label htmlFor={`${idPrefix}-model`}>{t.cron.model}</Label>
             <Select
               id={`${idPrefix}-model`}
               value={form.model}
               onValueChange={(v) => update("model", v)}
             >
-              <SelectOption value="">Default</SelectOption>
+              <SelectOption value="">{t.cron.defaultValue}</SelectOption>
               {selectOptions(
                 form.model,
                 models.map((model) => ({ value: model, label: model })),
@@ -247,7 +248,9 @@ function CronAdvancedFields({
         </div>
 
         <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-base-url`}>Base URL override</Label>
+          <Label htmlFor={`${idPrefix}-base-url`}>
+            {t.cron.baseUrlOverride}
+          </Label>
           <Input
             id={`${idPrefix}-base-url`}
             placeholder="https://api.example.com/v1"
@@ -264,10 +267,10 @@ function CronAdvancedFields({
               checked={form.no_agent}
               onChange={(e) => update("no_agent", e.target.checked)}
             />
-            no_agent: run the script only and deliver stdout verbatim
+            {t.cron.noAgentHint}
           </label>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-script`}>Script</Label>
+            <Label htmlFor={`${idPrefix}-script`}>{t.cron.script}</Label>
             <Input
               id={`${idPrefix}-script`}
               value={form.script}
@@ -278,7 +281,7 @@ function CronAdvancedFields({
         </div>
 
         <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}-workdir`}>Workdir</Label>
+          <Label htmlFor={`${idPrefix}-workdir`}>{t.cron.workdir}</Label>
           <Input
             id={`${idPrefix}-workdir`}
             value={form.workdir}
@@ -289,23 +292,27 @@ function CronAdvancedFields({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-context-from`}>context_from job IDs</Label>
+            <Label htmlFor={`${idPrefix}-context-from`}>
+              {t.cron.contextFromJobIds}
+            </Label>
             <textarea
               id={`${idPrefix}-context-from`}
               className="flex min-h-[64px] w-full border border-border bg-background/40 px-3 py-2 text-xs font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-              placeholder="one job id per line"
+              placeholder={t.cron.oneJobIdPerLine}
               value={form.context_from}
               onChange={(e) => update("context_from", e.target.value)}
             />
           </div>
           <div className="grid gap-1">
-            <Label htmlFor={`${idPrefix}-toolsets`}>enabled_toolsets</Label>
+            <Label htmlFor={`${idPrefix}-toolsets`}>
+              {t.cron.enabledToolsets}
+            </Label>
             <NameCheckboxPicker
               id={`${idPrefix}-toolsets`}
               available={availableToolsets}
               selected={form.enabled_toolsets}
               onChange={(v) => update("enabled_toolsets", v)}
-              emptyLabel="No toolsets available."
+              emptyLabel={t.cron.noToolsets}
             />
           </div>
         </div>
@@ -345,7 +352,7 @@ function CronJobFormFields({
     deliveryTargets.map((target) => {
       const base = target.id === "local" ? t.cron.delivery.local : target.name;
       if (target.id !== "local" && !target.home_target_set) {
-        const hint = t.cron.delivery.needsHomeChannel ?? "set a home channel first";
+        const hint = t.cron.delivery.needsHomeChannel;
         return { value: target.id, label: `${base} — ${hint}` };
       }
       return { value: target.id, label: base };
@@ -392,24 +399,22 @@ function CronJobFormFields({
         </Select>
         {onlyLocalAvailable && (
           <p className="text-xs text-muted-foreground">
-            {t.cron.delivery.noneConfigured ??
-              "No messaging platforms configured. Set one up under Channels to deliver reports."}
+            {t.cron.delivery.noneConfigured}
           </p>
         )}
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor={`${idPrefix}-skills`}>Skills (optional)</Label>
+        <Label htmlFor={`${idPrefix}-skills`}>{t.cron.skillsOptional}</Label>
         <NameCheckboxPicker
           id={`${idPrefix}-skills`}
           available={availableSkills}
           selected={form.skills}
           onChange={(skills) => update("skills", skills)}
-          emptyLabel="No skills installed for this profile."
+          emptyLabel={t.cron.noSkills}
         />
         <p className="text-xs text-muted-foreground">
-          Selected skills are loaded before the prompt runs — the cron
-          sets when, the skill sets how.
+          {t.cron.skillsHint}
         </p>
       </div>
 
@@ -515,7 +520,7 @@ export default function CronPage() {
   const [view, setView] = useState<"jobs" | "blueprints">("jobs");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
-  const { t, locale } = useI18n();
+  const { format, t, locale } = useI18n();
   const { setEnd } = usePageHeader();
 
   // Translation surface for the human-readable schedule describer.
@@ -633,22 +638,28 @@ export default function CronPage() {
       !payload.schedule ||
       (!payload.no_agent && !cronJobHasExecutionContent(payload))
     ) {
-      showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
+      showToast(t.cron.executionRequired, "error");
       return;
     }
     if (payload.no_agent && !payload.script) {
-      showToast("no_agent jobs require a script", "error");
+      showToast(t.cron.noAgentRequiresScript, "error");
       return;
     }
     setCreating(true);
     try {
       await api.createCronJob(payload, createProfile);
-      showToast(t.common.create + " ✓", "success");
+      showToast(t.cron.created, "success");
       setCreateForm(emptyCronJobForm());
       setCreateModalOpen(false);
       loadJobs();
     } catch (e) {
-      showToast(`${t.config.failedToSave}: ${e}`, "error");
+      showToast(
+        format(t.common.messageWithDetail, {
+          message: t.config.failedToSave,
+          detail: String(e),
+        }),
+        "error",
+      );
     } finally {
       setCreating(false);
     }
@@ -661,11 +672,11 @@ export default function CronPage() {
       !payload.schedule ||
       (!payload.no_agent && !cronJobHasExecutionContent(payload))
     ) {
-      showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
+      showToast(t.cron.executionRequired, "error");
       return;
     }
     if (payload.no_agent && !payload.script) {
-      showToast("no_agent jobs require a script", "error");
+      showToast(t.cron.noAgentRequiresScript, "error");
       return;
     }
     setSaving(true);
@@ -675,11 +686,17 @@ export default function CronPage() {
         payload,
         getJobProfile(editJob),
       );
-      showToast("Saved changes ✓", "success");
+      showToast(t.cron.savedChanges, "success");
       setEditJob(null);
       loadJobs();
     } catch (e) {
-      showToast(`${t.config.failedToSave}: ${e}`, "error");
+      showToast(
+        format(t.common.messageWithDetail, {
+          message: t.config.failedToSave,
+          detail: String(e),
+        }),
+        "error",
+      );
     } finally {
       setSaving(false);
     }
@@ -692,19 +709,31 @@ export default function CronPage() {
       if (isPaused) {
         await api.resumeCronJob(job.id, profile);
         showToast(
-          `${t.cron.resume}: "${truncateText(getJobTitle(job), 30)}"`,
+          format(t.cron.jobAction, {
+            action: t.cron.resume,
+            title: truncateText(getJobTitle(job), 30),
+          }),
           "success",
         );
       } else {
         await api.pauseCronJob(job.id, profile);
         showToast(
-          `${t.cron.pause}: "${truncateText(getJobTitle(job), 30)}"`,
+          format(t.cron.jobAction, {
+            action: t.cron.pause,
+            title: truncateText(getJobTitle(job), 30),
+          }),
           "success",
         );
       }
       loadJobs();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(
+        format(t.common.messageWithDetail, {
+          message: t.status.error,
+          detail: String(e),
+        }),
+        "error",
+      );
     }
   };
 
@@ -712,12 +741,21 @@ export default function CronPage() {
     try {
       await api.triggerCronJob(job.id, getJobProfile(job));
       showToast(
-        `${t.cron.triggerNow}: "${truncateText(getJobTitle(job), 30)}"`,
+        format(t.cron.jobAction, {
+          action: t.cron.triggerNow,
+          title: truncateText(getJobTitle(job), 30),
+        }),
         "success",
       );
       loadJobs();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(
+        format(t.common.messageWithDetail, {
+          message: t.status.error,
+          detail: String(e),
+        }),
+        "error",
+      );
     }
   };
 
@@ -729,16 +767,25 @@ export default function CronPage() {
         try {
           await api.deleteCronJob(id, profile);
           showToast(
-            `${t.common.delete}: "${job ? truncateText(getJobTitle(job), 30) : id}"`,
+            format(t.cron.jobAction, {
+              action: t.common.delete,
+              title: job ? truncateText(getJobTitle(job), 30) : id,
+            }),
             "success",
           );
           loadJobs();
         } catch (e) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(
+            format(t.common.messageWithDetail, {
+              message: t.status.error,
+              detail: String(e),
+            }),
+            "error",
+          );
           throw e;
         }
       },
-      [jobs, loadJobs, showToast, t.common.delete, t.status.error],
+      [format, jobs, loadJobs, showToast, t],
     ),
   });
 
@@ -826,7 +873,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -842,7 +889,7 @@ export default function CronPage() {
 
             <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{t.cron.profile}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -901,7 +948,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setEditJob(null)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -911,7 +958,7 @@ export default function CronPage() {
                 id="edit-cron-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Edit job
+                {t.cron.editJob}
               </h2>
             </header>
 
@@ -940,7 +987,7 @@ export default function CronPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? t.common.loading : "Save changes"}
+                  {saving ? t.common.loading : t.cron.saveChanges}
                 </Button>
               </div>
             </div>
@@ -960,13 +1007,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{t.cron.profile}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{t.cron.allProfiles}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -1017,7 +1064,9 @@ export default function CronPage() {
                       <Badge tone="outline" title={job.skills.join(", ")}>
                         {job.skills.length === 1
                           ? job.skills[0]
-                          : `${job.skills.length} skills`}
+                          : format(t.cron.skillsCount, {
+                              count: job.skills.length,
+                            })}
                       </Badge>
                     )}
                     {mode !== "agent" && (
@@ -1025,12 +1074,14 @@ export default function CronPage() {
                     )}
                     {modelDisplay && (
                       <Badge tone="outline" title={modelDisplay}>
-                        model
+                        {t.cron.model}
                       </Badge>
                     )}
                     {toolsets.length > 0 && (
                       <Badge tone="outline" title={toolsets.join(", ")}>
-                        {toolsets.length} toolsets
+                        {format(t.cron.toolsetsCount, {
+                          count: toolsets.length,
+                        })}
                       </Badge>
                     )}
                   </div>
@@ -1043,7 +1094,9 @@ export default function CronPage() {
                     <span className="font-mono-ui">
                       {getJobScheduleDisplay(job, scheduleDescribeStrings)}
                     </span>
-                    <span>repeat: {getRepeatDisplay(job)}</span>
+                    <span>
+                      {t.cron.repeat} {getRepeatDisplay(job)}
+                    </span>
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>
@@ -1053,7 +1106,7 @@ export default function CronPage() {
                   </div>
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">
-                      delivery: {job.last_delivery_error}
+                      {t.cron.deliveryLabel} {job.last_delivery_error}
                     </p>
                   )}
                   {job.last_error && (
@@ -1092,8 +1145,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit job"
-                    aria-label="Edit job"
+                    title={t.cron.editJob}
+                    aria-label={t.cron.editJob}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />

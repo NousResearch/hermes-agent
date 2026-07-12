@@ -182,6 +182,18 @@ export function persistLocale(locale: Locale) {
   }
 }
 
+/** Interpolate named placeholders without making word order a component concern. */
+export function formatTranslation(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (placeholder, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key)
+      ? String(values[key])
+      : placeholder,
+  );
+}
+
 /** Persist only the authoritative config leaf; the backend deep-merges it. */
 export function persistConfiguredLocale(locale: Locale) {
   return api.saveConfig({ display: { language: locale } });
@@ -214,12 +226,14 @@ export function resolveNavLabel(
 }
 
 export interface I18nContextValue {
+  format: typeof formatTranslation;
   locale: Locale;
   setLocale: (locale: Locale) => Promise<void>;
   t: Translations;
 }
 
 export const I18nContext = createContext<I18nContextValue>({
+  format: formatTranslation,
   locale: "en",
   setLocale: async () => {},
   t: en,

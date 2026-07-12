@@ -2085,25 +2085,17 @@ def resolve_skin() -> dict:
 
 
 def resolve_language() -> str:
-    """Resolve live language state for TUI-facing gateway metadata.
+    """Resolve live language state through the shared Python contract.
 
-    ``agent.i18n.get_language()`` intentionally caches config reads for hot
-    translation paths. TUI command catalogs are different: the Dashboard can
-    update ``display.language`` while this process stays alive, and
-    ``_load_cfg`` already provides an mtime-aware cache for that contract.
-    Keep the environment override authoritative, then read the live config.
+    ``agent.i18n.get_language()`` owns environment precedence, normalization,
+    and the central mtime-aware config lookup. Keeping the gateway on that
+    boundary prevents its ready event and slash metadata from drifting from
+    Python-rendered messages.
     """
     try:
-        from agent.i18n import normalize_language
+        from agent.i18n import get_language
 
-        env_language = os.environ.get("HERMES_LANGUAGE")
-        if env_language:
-            return normalize_language(env_language)
-
-        cfg = _load_cfg()
-        display = cfg.get("display") if isinstance(cfg, dict) else None
-        language = display.get("language") if isinstance(display, dict) else None
-        return normalize_language(language)
+        return get_language()
     except Exception:
         return "en"
 

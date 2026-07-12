@@ -62,7 +62,7 @@ export function ChatSessionList({
   onPicked,
   onNewChat,
 }: ChatSessionListProps) {
-  const { t } = useI18n();
+  const { format, t } = useI18n();
   const [, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -92,12 +92,12 @@ export function ChatSessionList({
       })
       .catch((e: Error) => {
         if (reqRef.current !== myReq) return;
-        setError(e.message || "failed to load sessions");
+        setError(e.message || t.sessions.loadFailed);
       })
       .finally(() => {
         if (reqRef.current === myReq) setLoading(false);
       });
-  }, [scopeKey]);
+  }, [scopeKey, t.sessions.loadFailed]);
 
   useEffect(() => {
     // Dashboard data surfaces fetch from an effect on mount + scope change;
@@ -202,7 +202,11 @@ export function ChatSessionList({
                 {s.message_count > 0 && (
                   <>
                     <span aria-hidden>·</span>
-                    <span>{s.message_count} msgs</span>
+                    <span>
+                      {format(t.sessions.messageCount, {
+                        count: s.message_count,
+                      })}
+                    </span>
                   </>
                 )}
                 {s.source && s.source !== "cli" && (
@@ -217,7 +221,7 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, format, loading, pick, reload, sessions, t]);
 
   return (
     <aside

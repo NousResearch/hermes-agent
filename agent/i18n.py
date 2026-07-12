@@ -218,7 +218,7 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
-def _config_language_cached() -> str | None:
+def _configured_language() -> str | None:
     """Read the current ``display.language`` through the central config cache.
 
     ``load_config_readonly()`` owns the mtime-aware cache and avoids a deepcopy
@@ -251,7 +251,7 @@ def get_language() -> str:
     env_lang = os.environ.get("HERMES_LANGUAGE")
     if env_lang:
         return _normalize_lang(env_lang)
-    cfg_lang = _config_language_cached()
+    cfg_lang = _configured_language()
     if cfg_lang:
         return cfg_lang
     return DEFAULT_LANGUAGE

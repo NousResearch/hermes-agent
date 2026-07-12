@@ -63,6 +63,7 @@ function NestedValueEditor({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  const { format, t } = useI18n();
   if (isRecord(value)) {
     return (
       <div className="grid gap-2 border border-border p-2">
@@ -91,7 +92,7 @@ function NestedValueEditor({
         {value.map((item, index) => (
           <div key={`${fieldKey}.${index}`} className="grid gap-1">
             <Label className="text-xs text-muted-foreground">
-              {locale === "zh" ? `项目 ${index + 1}` : `Item ${index + 1}`}
+              {format(t.config.itemNumber, { number: index + 1 })}
             </Label>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${index}`}

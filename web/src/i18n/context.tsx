@@ -12,6 +12,7 @@ import type { Locale } from "./types";
 import {
   I18nContext,
   getInitialLocale,
+  formatTranslation,
   persistConfiguredLocale,
   persistLocale,
   readConfiguredLocale,
@@ -68,7 +69,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, [applyLocale]);
 
   const value = useMemo(
-    () => ({ locale, setLocale, t: translations }),
+    () => ({ format: formatTranslation, locale, setLocale, t: translations }),
     [locale, setLocale, translations],
   );
 

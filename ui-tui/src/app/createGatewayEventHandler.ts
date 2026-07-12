@@ -284,18 +284,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       if (!sid) {
-        return sys('startup query skipped: no active session')
+        return sys(ti('startup.noActiveSession'))
       }
 
       if (STARTUP_IMAGE) {
         try {
           await rpc('image.attach', { path: STARTUP_IMAGE, session_id: sid })
         } catch (e) {
-          sys(`startup image attach failed: ${rpcErrorMessage(e)}`)
+          sys(ti('startup.imageAttachFailed', { message: rpcErrorMessage(e) }))
         }
       }
 
-      submitRef.current(STARTUP_QUERY || 'What do you see in this image?')
+      submitRef.current(STARTUP_QUERY || ti('startup.imagePrompt'))
     }, 0)
   }
 
@@ -558,11 +558,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        sys('💳 Open this link to grant terminal billing access:')
+        sys(ti('billing.stepUp.verificationLink'))
         sys(url)
 
         if (code) {
-          sys(`If prompted, enter code: ${code}`)
+          sys(ti('billing.stepUp.verificationCode', { code }))
         }
 
         void openExternalUrl(url)

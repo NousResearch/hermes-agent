@@ -45,14 +45,18 @@ const verbs: string[] = [
 // ── Status bar labels ─────────────────────────────────────────────
 const status: Record<string, string> = {
   'approval needed': '需要确认',
+  'closing session…': '正在关闭会话…',
   'forging session…': '正在创建会话…',
   'gateway exited': '网关已退出',
   'gateway startup timeout': '网关启动超时',
   interrupted: '已中断',
+  'interpolating…': '正在展开输入…',
+  'interrupting…': '正在中断…',
   'protocol warning': '协议警告',
   queued: '排队中',
   'queued for next turn': '已排入下一轮',
   ready: '就绪',
+  'recovering session…': '正在恢复会话…',
   resuming: '正在恢复…',
   'resuming most recent…': '正在恢复最近会话…',
   'resuming…': '正在恢复…',
@@ -64,6 +68,7 @@ const status: Record<string, string> = {
   'starting agent…': '正在启动 Agent…',
   'sudo password needed': '需要 sudo 密码',
   'summoning hermes…': '正在唤醒 Hermes…',
+  'switching session…': '正在切换会话…',
   'waiting for input…': '等待输入…'
 }
 
@@ -101,6 +106,9 @@ const catalog: Record<TranslationKey, string> = {
   'gateway.protocolNoise': '协议输出异常：{preview}',
   'gateway.protocolNoiseDetected': '检测到异常协议输出 · 运行 /logs 查看日志',
   'gateway.startupTimedOut': '网关启动超时{trace} · 运行 /logs 查看日志',
+  'startup.imageAttachFailed': '附加启动图片失败：{message}',
+  'startup.imagePrompt': '你在这张图片中看到了什么？',
+  'startup.noActiveSession': '已跳过启动查询：当前没有活动会话',
   'image.attachNotice': '📎 已附加图片',
   'image.attachNoticeName': '📎 已附加图片：{name}',
   'image.tok': ' Token',
@@ -763,6 +771,8 @@ const catalog: Record<TranslationKey, string> = {
   'billing.stepUp.needsPermission': '💳 终端计费需要额外权限（billing:manage）。',
   'billing.stepUp.notGranted': '🟡 未授予终端计费权限（需要管理员勾选该选项）。',
   'billing.stepUp.stillWaiting': '🟡 仍在等待批准——请在浏览器中完成，然后再次运行 /billing。',
+  'billing.stepUp.verificationCode': '如有提示，请输入代码：{code}',
+  'billing.stepUp.verificationLink': '💳 请打开此链接以授予终端计费权限：',
   'billing.stepUp.title': '授予终端计费访问权限？',
   'billing.title.autoReload': '自动充值',
   'billing.title.buyCredits': '购买使用额度',

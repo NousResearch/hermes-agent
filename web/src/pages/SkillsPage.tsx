@@ -60,6 +60,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -138,7 +139,7 @@ export default function SkillsPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { format, t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   // ── Profile scoping ──
@@ -171,7 +172,7 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProfile]);
+  }, [selectedProfile, showToast, t.common.loading]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -184,11 +185,19 @@ export default function SkillsPage() {
         ),
       );
       showToast(
-        `${skill.name} ${skill.enabled ? t.common.disabled : t.common.enabled}`,
+        format(
+          skill.enabled
+            ? t.skills.disabledNamed
+            : t.skills.enabledNamed,
+          { name: skill.name },
+        ),
         "success",
       );
     } catch {
-      showToast(`${t.common.failedToToggle} ${skill.name}`, "error");
+      showToast(
+        format(t.skills.toggleFailedNamed, { name: skill.name }),
+        "error",
+      );
     } finally {
       setTogglingSkills((prev) => {
         const next = new Set(prev);
@@ -250,7 +259,7 @@ export default function SkillsPage() {
   }, []);
   const handleEditorSaved = useCallback(
     (skillName: string) => {
-      showToast(`${skillName} saved ✓`, "success");
+      showToast(format(t.skills.savedNamed, { name: skillName }), "success");
       // Reload the list so a newly created skill (or an edited description)
       // shows up immediately.
       api
@@ -258,7 +267,7 @@ export default function SkillsPage() {
         .then(setSkills)
         .catch(() => {});
     },
-    [selectedProfile, showToast],
+    [format, selectedProfile, showToast, t.skills.savedNamed],
   );
 
   /* ---- Derived data ---- */
@@ -415,7 +424,7 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label="Browse hub"
+                  label={t.skills.browseHub}
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
@@ -530,7 +539,7 @@ export default function SkillsPage() {
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
-                      Learn a skill
+                      {t.skills.learnSkill}
                     </Button>
                     <Button
                       size="sm"
@@ -538,7 +547,7 @@ export default function SkillsPage() {
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
-                      New skill
+                      {t.skills.newSkill}
                     </Button>
                   </div>
                 </div>
@@ -638,7 +647,7 @@ export default function SkillsPage() {
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
-                                  Configure
+                                  {t.skills.configure}
                                 </Button>
                               </div>
                             </div>
@@ -673,27 +682,25 @@ export default function SkillsPage() {
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogTitle>{t.skills.learnSkill}</DialogTitle>
             <DialogDescription>
-              Point Hermes at anything and it will distill a reusable skill —
-              following the house authoring standards. Fill in any combination
-              below; the agent gathers the sources and writes the skill in chat.
+              {t.skills.learnDescription}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Local file or directory
+                {t.skills.localPath}
               </label>
               <Input
-                placeholder="~/projects/some-sdk  (read with read_file / search_files)"
+                placeholder={t.skills.localPathPlaceholder}
                 value={learnDir}
                 onChange={(e) => setLearnDir(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                URL
+                {t.skills.url}
               </label>
               <Input
                 placeholder="https://docs.example.com/api  (fetched with web_extract)"
@@ -703,12 +710,11 @@ export default function SkillsPage() {
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Anything else — describe the workflow, paste notes, or say
-                "what we just did"
+                {t.skills.notes}
               </label>
               <textarea
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="e.g. how I file an expense report: open the portal, …"
+                placeholder={t.skills.notesPlaceholder}
                 value={learnText}
                 onChange={(e) => setLearnText(e.target.value)}
               />
@@ -716,14 +722,14 @@ export default function SkillsPage() {
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <Button ghost onClick={() => setLearnOpen(false)}>
-              Cancel
+              {t.skills.cancel}
             </Button>
             <Button
               onClick={submitLearn}
               prefix={<Sparkles />}
               disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
             >
-              Learn it
+              {t.skills.learnIt}
             </Button>
           </div>
         </DialogContent>
@@ -740,6 +746,7 @@ function SkillRow({
   onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
+  const { format, t } = useI18n();
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -767,8 +774,8 @@ function SkillRow({
         ghost
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
-        aria-label={`Edit ${skill.name}`}
+        title={t.skills.editSkill}
+        aria-label={format(t.skills.editNamed, { name: skill.name })}
         onClick={onEdit}
       >
         <Pencil />
@@ -814,35 +821,43 @@ interface SkillRowProps {
 /* ------------------------------------------------------------------ */
 
 /** Map a trust level to a Badge tone + label + icon. */
-function trustVisual(level: string): {
+function trustVisual(level: string, t: Translations): {
   tone: "success" | "secondary" | "warning" | "outline";
   label: string;
 } {
   switch (level) {
     case "trusted":
-      return { tone: "success", label: "trusted" };
+      return { tone: "success", label: t.skills.hub.trusted };
     case "builtin":
-      return { tone: "secondary", label: "builtin" };
+      return { tone: "secondary", label: t.skills.hub.builtin };
     case "community":
-      return { tone: "warning", label: "community" };
+      return { tone: "warning", label: t.skills.hub.community };
     default:
-      return { tone: "outline", label: level || "unknown" };
+      return { tone: "outline", label: level || t.skills.hub.unknown };
   }
 }
 
 /** Map a scan verdict to tone + icon. */
-function verdictVisual(verdict: string): {
+function verdictVisual(verdict: string, t: Translations): {
   tone: "success" | "warning" | "destructive";
   Icon: React.ComponentType<{ className?: string }>;
   label: string;
 } {
   switch (verdict) {
     case "safe":
-      return { tone: "success", Icon: ShieldCheck, label: "Safe" };
+      return { tone: "success", Icon: ShieldCheck, label: t.skills.hub.safe };
     case "caution":
-      return { tone: "warning", Icon: ShieldAlert, label: "Caution" };
+      return {
+        tone: "warning",
+        Icon: ShieldAlert,
+        label: t.skills.hub.caution,
+      };
     case "dangerous":
-      return { tone: "destructive", Icon: ShieldAlert, label: "Dangerous" };
+      return {
+        tone: "destructive",
+        Icon: ShieldAlert,
+        label: t.skills.hub.dangerous,
+      };
     default:
       return { tone: "warning", Icon: ShieldQuestion, label: verdict };
   }
@@ -863,6 +878,7 @@ function HubBrowser({
   /** Optional profile scoping installs + installed-state badges. */
   profile?: string;
 }) {
+  const { format, t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -923,7 +939,10 @@ function HubBrowser({
       setTimedOut(r.timed_out || []);
       setInstalled((prev) => ({ ...prev, ...(r.installed || {}) }));
     } catch (e) {
-      showToast(`Hub search failed: ${e}`, "error");
+      showToast(
+        format(t.skills.hub.searchFailed, { error: String(e) }),
+        "error",
+      );
       setResults([]);
       setSourceCounts({});
       setTimedOut([]);
@@ -931,7 +950,7 @@ function HubBrowser({
       setSearchMs(Math.round(performance.now() - t0));
       setSearching(false);
     }
-  }, [query, showToast, profile]);
+  }, [format, profile, query, showToast, t.skills.hub.searchFailed]);
 
   /* ---- Poll a spawned action's log until it exits ---- */
   useEffect(() => {
@@ -968,29 +987,38 @@ function HubBrowser({
     async (identifier: string) => {
       try {
         const res = await api.installSkillFromHub(identifier, profile);
-        showToast(`Installing ${identifier}…`, "success");
+        showToast(
+          format(t.skills.hub.installing, { identifier }),
+          "success",
+        );
         setActionLog([]);
         setActionRunning(true);
         setAction(res.name);
         setDetail(null);
       } catch (e) {
-        showToast(`Install failed: ${e}`, "error");
+        showToast(
+          format(t.skills.hub.installFailed, { error: String(e) }),
+          "error",
+        );
       }
     },
-    [showToast, profile],
+    [format, profile, showToast, t.skills.hub],
   );
 
   const updateAll = useCallback(async () => {
     try {
       const res = await api.updateSkillsFromHub(profile);
-      showToast("Updating installed skills…", "success");
+      showToast(t.skills.hub.updating, "success");
       setActionLog([]);
       setActionRunning(true);
       setAction(res.name);
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(
+        format(t.skills.hub.updateFailed, { error: String(e) }),
+        "error",
+      );
     }
-  }, [showToast, profile]);
+  }, [format, profile, showToast, t.skills.hub]);
 
   const isInstalled = useCallback(
     (identifier: string) => Boolean(installed[identifier]),
@@ -1009,7 +1037,7 @@ function HubBrowser({
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
                 className="h-8 pl-8 text-sm"
-                placeholder="Search the skill hub (GitHub, official, community)…"
+                placeholder={t.skills.hub.searchPlaceholder}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -1023,7 +1051,7 @@ function HubBrowser({
               disabled={searching || !query.trim()}
               prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
             >
-              Search
+              {t.skills.hub.search}
             </Button>
             <Button
               size="sm"
@@ -1031,7 +1059,7 @@ function HubBrowser({
               onClick={() => void updateAll()}
               prefix={<RefreshCw className="h-3.5 w-3.5" />}
             >
-              Update all
+              {t.skills.hub.updateAll}
             </Button>
           </div>
 
@@ -1048,9 +1076,9 @@ function HubBrowser({
               <Download className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="font-mono text-xs">{action}</span>
               {actionRunning ? (
-                <Badge tone="warning">running</Badge>
+                <Badge tone="warning">{t.skills.hub.running}</Badge>
               ) : (
-                <Badge tone="success">done</Badge>
+                <Badge tone="success">{t.skills.hub.done}</Badge>
               )}
               {!actionRunning && (
                 <Button
@@ -1058,14 +1086,16 @@ function HubBrowser({
                   size="xs"
                   className="ml-auto text-muted-foreground"
                   onClick={() => setAction(null)}
-                  aria-label="Dismiss"
+                  aria-label={t.skills.hub.dismiss}
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>
               )}
             </div>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-2 text-xs font-mono text-muted-foreground">
-              {actionLog.length ? actionLog.join("\n") : "Starting…"}
+              {actionLog.length
+                ? actionLog.join("\n")
+                : t.skills.hub.starting}
             </pre>
           </CardContent>
         </Card>
@@ -1083,10 +1113,10 @@ function HubBrowser({
               <div className="flex items-center gap-2 px-1">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
-                  Featured skills
+                  {t.skills.hub.featured}
                 </span>
                 <span className="text-xs text-text-tertiary">
-                  from the Hermes index — search above for thousands more
+                  {t.skills.hub.featuredHint}
                 </span>
               </div>
               {featured.map((r) => (
@@ -1102,8 +1132,7 @@ function HubBrowser({
           ) : (
             <Card className="rounded-none">
               <CardContent className="py-10 text-center text-sm text-muted-foreground">
-                Search the hub above to browse installable skills from the
-                connected sources.
+                {t.skills.hub.landingHint}
               </CardContent>
             </Card>
           )}
@@ -1129,7 +1158,7 @@ function HubBrowser({
           {results.length === 0 ? (
             <Card className="rounded-none">
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                No matching skills found in the hub.
+                {t.skills.hub.noMatches}
               </CardContent>
             </Card>
           ) : (
@@ -1168,16 +1197,18 @@ function ConnectedHubs({
   sources: SkillHubSource[];
   loading: boolean;
 }) {
+  const { t } = useI18n();
   if (loading) {
     return (
-      <p className="text-xs text-muted-foreground">Connecting to skill hubs…</p>
+      <p className="text-xs text-muted-foreground">
+        {t.skills.hub.connecting}
+      </p>
     );
   }
   if (sources.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Results come from the same sources as{" "}
-        <span className="font-mono">hermes skills search</span>.
+        {t.skills.hub.sourceFallback}
       </p>
     );
   }
@@ -1185,7 +1216,7 @@ function ConnectedHubs({
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="flex items-center gap-1 text-xs text-text-tertiary">
         <Globe className="h-3 w-3" />
-        Connected hubs:
+        {t.skills.hub.connected}
       </span>
       {sources.map((s) => {
         const down =
@@ -1198,14 +1229,16 @@ function ConnectedHubs({
             className={cn("text-xs", down && "opacity-60")}
             title={
               s.id === "github" && s.rate_limited
-                ? "GitHub API rate-limited — set GITHUB_TOKEN to raise the limit"
+                ? t.skills.hub.githubRateLimited
                 : s.id === "hermes-index" && s.available === false
-                  ? "Centralized index unavailable — falling back to live sources"
+                  ? t.skills.hub.indexUnavailable
                   : undefined
             }
           >
             {s.label}
-            {s.id === "github" && s.rate_limited ? " (rate-limited)" : ""}
+            {s.id === "github" && s.rate_limited
+              ? ` ${t.skills.hub.rateLimited}`
+              : ""}
           </Badge>
         );
       })}
@@ -1225,13 +1258,20 @@ function SearchMeta({
   timedOut: string[];
   ms: number | null;
 }) {
+  const { format, t } = useI18n();
   const entries = Object.entries(sourceCounts).filter(([, n]) => n > 0);
   return (
     <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-text-tertiary">
       <Badge tone="secondary" className="text-xs">
-        {count} result{count !== 1 ? "s" : ""}
+        {format(t.skills.hub.results, { count })}
       </Badge>
-      {ms != null && <span>{(ms / 1000).toFixed(1)}s</span>}
+      {ms != null && (
+        <span>
+          {format(t.skills.hub.durationSeconds, {
+            seconds: (ms / 1000).toFixed(1),
+          })}
+        </span>
+      )}
       {entries.length > 0 && (
         <span className="flex flex-wrap items-center gap-1.5">
           {entries.map(([sid, n]) => (
@@ -1244,7 +1284,9 @@ function SearchMeta({
       {timedOut.length > 0 && (
         <span className="flex items-center gap-1 text-amber-400">
           <AlertTriangle className="h-3 w-3" />
-          {timedOut.join(", ")} timed out
+          {format(t.skills.hub.timedOut, {
+            sources: timedOut.join(", "),
+          })}
         </span>
       )}
     </div>
@@ -1263,7 +1305,8 @@ function HubResultCard({
   onOpen: () => void;
   onInstall: () => void;
 }) {
-  const trust = trustVisual(result.trust_level);
+  const { format, t } = useI18n();
+  const trust = trustVisual(result.trust_level, t);
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
       <CardContent className="py-3 flex items-start gap-3">
@@ -1271,7 +1314,7 @@ function HubResultCard({
           type="button"
           className="flex-1 min-w-0 text-left"
           onClick={onOpen}
-          aria-label={`Open ${result.name}`}
+          aria-label={format(t.skills.hub.openNamed, { name: result.name })}
         >
           <div className="flex flex-wrap items-center gap-2 mb-0.5">
             <span className="font-mono-ui text-sm hover:underline">
@@ -1285,7 +1328,7 @@ function HubResultCard({
             </Badge>
             {installed && (
               <Badge tone="success" className="text-xs">
-                installed
+                {t.skills.hub.installed}
               </Badge>
             )}
           </div>
@@ -1313,11 +1356,11 @@ function HubResultCard({
             onClick={onOpen}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
-            Details
+            {t.skills.hub.details}
           </Button>
           {installed ? (
             <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-              Installed
+              {t.skills.hub.installed}
             </Button>
           ) : (
             <Button
@@ -1325,7 +1368,7 @@ function HubResultCard({
               onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
             >
-              Install
+              {t.skills.hub.install}
             </Button>
           )}
         </div>
@@ -1348,27 +1391,31 @@ function SkillDetailDialog({
   onInstall: () => void;
   showToast: (msg: string, kind: "success" | "error") => void;
 }) {
+  const { format, t } = useI18n();
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(true);
   const [scan, setScan] = useState<SkillHubScan | null>(null);
   const [scanning, setScanning] = useState(false);
-  const trust = trustVisual(result.trust_level);
+  const trust = trustVisual(result.trust_level, t);
 
   useEffect(() => {
     let cancelled = false;
-    setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
       .then((p) => !cancelled && setPreview(p))
       .catch((e) => {
-        if (!cancelled) showToast(`Preview failed: ${e}`, "error");
+        if (!cancelled)
+          showToast(
+            format(t.skills.hub.previewFailed, { error: String(e) }),
+            "error",
+          );
       })
       .finally(() => !cancelled && setPreviewLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [result.identifier, showToast]);
+  }, [format, result.identifier, showToast, t.skills.hub.previewFailed]);
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -1377,11 +1424,14 @@ function SkillDetailDialog({
       const s = await api.scanSkillFromHub(result.identifier);
       setScan(s);
     } catch (e) {
-      showToast(`Scan failed: ${e}`, "error");
+      showToast(
+        format(t.skills.hub.scanFailed, { error: String(e) }),
+        "error",
+      );
     } finally {
       setScanning(false);
     }
-  }, [result.identifier, showToast]);
+  }, [format, result.identifier, showToast, t.skills.hub.scanFailed]);
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && onClose()}>
@@ -1398,13 +1448,12 @@ function SkillDetailDialog({
             </Badge>
             {installed && (
               <Badge tone="success" className="text-xs">
-                installed
+                {t.skills.hub.installed}
               </Badge>
             )}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Preview the SKILL.md source and run a security scan for {result.name}{" "}
-            before installing.
+            {format(t.skills.hub.previewDescription, { name: result.name })}
           </DialogDescription>
         </DialogHeader>
 
@@ -1423,7 +1472,7 @@ function SkillDetailDialog({
             onClick={() => setTab("readme")}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
-            Read SKILL.md
+            {t.skills.hub.readSkill}
           </Button>
           <Button
             size="sm"
@@ -1438,7 +1487,7 @@ function SkillDetailDialog({
               )
             }
           >
-            {scan ? "Re-scan" : "Security scan"}
+            {scan ? t.skills.hub.rescan : t.skills.hub.securityScan}
           </Button>
           <div className="ml-auto flex items-center gap-3">
             {result.repo && (
@@ -1454,7 +1503,7 @@ function SkillDetailDialog({
             )}
             {installed ? (
               <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-                Installed
+                {t.skills.hub.installed}
               </Button>
             ) : (
               <Button
@@ -1462,7 +1511,7 @@ function SkillDetailDialog({
                 onClick={onInstall}
                 prefix={<Download className="h-3.5 w-3.5" />}
               >
-                Install
+                {t.skills.hub.install}
               </Button>
             )}
           </div>
@@ -1492,18 +1541,18 @@ function SkillDetailDialog({
                 {preview.files.length > 0 && (
                   <div className="text-xs text-text-tertiary">
                     <span className="font-mondwest tracking-[0.1em] uppercase">
-                      Files:{" "}
+                      {t.skills.hub.files}{" "}
                     </span>
                     <span className="font-mono">{preview.files.join("  ")}</span>
                   </div>
                 )}
                 <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
-                  {(preview.skill_md || "").trim() || "(SKILL.md is empty)"}
+                  {(preview.skill_md || "").trim() || t.skills.hub.emptySkill}
                 </pre>
               </div>
             ) : (
               <p className="text-sm text-muted-foreground text-center py-10">
-                Couldn't load the skill source.
+                {t.skills.hub.sourceLoadFailed}
               </p>
             )
           ) : (
@@ -1523,12 +1572,13 @@ function ScanPanel({
   scan: SkillHubScan | null;
   scanning: boolean;
 }) {
+  const { format, t } = useI18n();
   if (scanning && !scan) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
         <span className="text-xs text-muted-foreground">
-          Fetching, quarantining, and scanning…
+          {t.skills.hub.scanning}
         </span>
       </div>
     );
@@ -1536,13 +1586,12 @@ function ScanPanel({
   if (!scan) {
     return (
       <p className="text-sm text-muted-foreground text-center py-10">
-        Run a security scan to inspect this skill for risky patterns before
-        installing.
+        {t.skills.hub.scanHint}
       </p>
     );
   }
 
-  const v = verdictVisual(scan.verdict);
+  const v = verdictVisual(scan.verdict, t);
   const policyTone =
     scan.policy === "allow"
       ? "success"
@@ -1551,10 +1600,10 @@ function ScanPanel({
         : "destructive";
   const policyLabel =
     scan.policy === "allow"
-      ? "Install allowed"
+      ? t.skills.hub.installAllowed
       : scan.policy === "ask"
-        ? "Needs confirmation"
-        : "Install blocked";
+        ? t.skills.hub.needsConfirmation
+        : t.skills.hub.installBlocked;
 
   return (
     <div className="flex flex-col gap-3">
@@ -1572,14 +1621,18 @@ function ScanPanel({
         />
         <div className="flex flex-col">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">Verdict: {v.label}</span>
+            <span className="text-sm font-medium">
+              {format(t.skills.hub.verdict, { verdict: v.label })}
+            </span>
             <Badge tone={v.tone} className="text-xs">
               {scan.verdict}
             </Badge>
           </div>
           <span className="text-xs text-text-tertiary">
-            {scan.trust_level} source · {scan.findings.length} finding
-            {scan.findings.length !== 1 ? "s" : ""}
+            {format(t.skills.hub.sourceFindings, {
+              trust: trustVisual(scan.trust_level, t).label,
+              count: scan.findings.length,
+            })}
           </span>
         </div>
         <Badge tone={policyTone} className="ml-auto text-xs">
@@ -1601,7 +1654,7 @@ function ScanPanel({
         {scan.findings.length === 0 && (
           <span className="flex items-center gap-1 text-xs text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            No risky patterns detected
+            {t.skills.hub.noRisks}
           </span>
         )}
       </div>

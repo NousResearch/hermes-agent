@@ -1129,7 +1129,7 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Brain className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Mixture of Agents
+                {t.modelSettings.moaName}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">

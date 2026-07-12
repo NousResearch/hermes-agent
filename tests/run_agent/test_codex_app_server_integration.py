@@ -377,6 +377,21 @@ class TestRunConversationCodexPath:
 
         assert captured["cwd"] == str(tmp_path)
 
+    def test_agent_passes_model_and_reasoning_to_codex_session(self, monkeypatch):
+        """The app-server session must use the model selected in Hermes, not a
+        global ~/.codex/config.toml model that another Codex consumer left
+        behind."""
+        captured = self._capture_routing_agent(monkeypatch)
+        agent = _make_codex_agent(
+            model="gpt-5.5",
+            reasoning_config={"effort": "high"},
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("use the selected model")
+
+        assert captured["model"] == "gpt-5.5"
+        assert captured["reasoning_config"] == {"effort": "high"}
+
     def _capture_routing_agent(self, monkeypatch):
         """Build a codex agent with a CodexAppServerSession stub that captures
         the request_routing passed at construction time, so we can assert how
@@ -769,4 +784,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

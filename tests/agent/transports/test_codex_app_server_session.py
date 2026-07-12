@@ -149,17 +149,30 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
-        """thread/start carries cwd. We intentionally do NOT pass `permissions`
-        on this codex version (experimentalApi-gated + requires matching
-        config.toml [permissions] table). Letting codex use its default
-        (read-only unless user configures otherwise) is the documented path."""
+    def test_thread_start_passes_cwd_and_model(self):
+        """thread/start carries cwd and Hermes' selected model so Codex does
+        not fall back to a global ~/.codex/config.toml model from another
+        consumer. We still intentionally do NOT pass `permissions` on this
+        codex version (experimentalApi-gated + requires matching config.toml
+        [permissions] table)."""
         client = FakeClient()
-        s = make_session(client, permission_profile="workspace-write")
+        s = make_session(
+            client,
+            permission_profile="workspace-write",
+            model="gpt-5.5",
+        )
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
+        assert params["model"] == "gpt-5.5"
         assert "permissions" not in params  # see session.ensure_started() comment
+
+    def test_thread_start_omits_blank_model(self):
+        client = FakeClient()
+        s = make_session(client, model="  ")
+        s.ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert params == {"cwd": "/tmp"}
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -173,6 +186,32 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
+    def test_turn_start_passes_model_and_reasoning_effort(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed"},
+        )
+        s = make_session(
+            client,
+            model="gpt-5.5",
+            reasoning_config={"effort": "minimal"},
+        )
+
+        result = s.run_turn(
+            "hello",
+            turn_timeout=1.0,
+            notification_poll_timeout=0.001,
+        )
+
+        assert result.error is None
+        method, params = next(r for r in client.requests if r[0] == "turn/start")
+        assert params["threadId"] == "thread-fake-001"
+        assert params["input"] == [{"type": "text", "text": "hello"}]
+        assert params["model"] == "gpt-5.5"
+        assert params["effort"] == "low"
+
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
@@ -1220,6 +1259,15 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure("connection reset") is None
         assert _classify_oauth_failure("model returned bad json") is None
         assert _classify_oauth_failure("rate limit exceeded") is None
+
+    def test_oauth_word_alone_does_not_override_primary_model_error(self):
+        from agent.transports.codex_app_server_session import (
+            _classify_oauth_failure,
+        )
+        assert _classify_oauth_failure(
+            "400 Bad Request: gpt-5.6-sol requires a newer version of Codex",
+            "MCP stderr: Auth: Not logged in. OAuth realm unavailable.",
+        ) is None
 
     def test_empty_inputs(self):
         from agent.transports.codex_app_server_session import (

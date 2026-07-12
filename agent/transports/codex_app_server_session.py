@@ -151,7 +151,6 @@ _OAUTH_REFRESH_FAILURE_HINTS = (
     "please login",
     "auth profile",
     "no auth profile",
-    "oauth",
 )
 
 
@@ -176,6 +175,31 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
                 "`/codex-runtime auto` if the issue persists.)"
             )
     return None
+
+
+def _clean_optional_string(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _codex_reasoning_effort(reasoning_config: Any) -> str:
+    """Return the Codex app-server reasoning effort for a turn.
+
+    Match the direct Codex Responses transport: default to ``medium`` and
+    clamp ``minimal`` to ``low`` because the backend rejects ``minimal``.
+    Sending an explicit effort also prevents app-server from inheriting a
+    stale global ``model_reasoning_effort`` from another Codex consumer.
+    """
+    effort = "medium"
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            return "medium"
+        configured = reasoning_config.get("effort")
+        if configured:
+            effort = str(configured).strip().lower() or effort
+    return {"minimal": "low"}.get(effort, effort)
 
 
 @dataclass
@@ -205,6 +229,8 @@ class CodexAppServerSession:
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
         permission_profile: Optional[str] = None,
+        model: Optional[str] = None,
+        reasoning_config: Optional[dict[str, Any]] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
@@ -219,6 +245,8 @@ class CodexAppServerSession:
                 "workspace-write",
             )
         )
+        self._model = _clean_optional_string(model)
+        self._reasoning_effort = _codex_reasoning_effort(reasoning_config)
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
@@ -268,6 +296,8 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._model:
+            params["model"] = self._model
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -408,14 +438,14 @@ class CodexAppServerSession:
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
-            ts = self._client.request(
-                "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
-                },
-                timeout=10,
-            )
+            params = {
+                "threadId": self._thread_id,
+                "input": [{"type": "text", "text": user_input_text}],
+                "effort": self._reasoning_effort,
+            }
+            if self._model:
+                params["model"] = self._model
+            ts = self._client.request("turn/start", params, timeout=10)
         except CodexAppServerError as exc:
             # Classify auth/refresh failures so the user gets a clear
             # `codex login` pointer instead of a raw RPC error string.

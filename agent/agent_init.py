@@ -1352,6 +1352,22 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Session-level total API-call ceiling — a hard cost backstop against
+    # runaway agent loops. Per-turn max_turns bounds a single turn, but a
+    # long-lived session can still accumulate hundreds of calls across many
+    # turns (a historical session burned 234 calls / ~$52 this way). When set
+    # to a positive integer, the conversation loop hard-stops once the session
+    # has made that many LLM calls, mirroring the existing budget-exhausted
+    # exit path. 0 = disabled (legacy behaviour). Off by default so existing
+    # installs are unchanged until the user opts in.
+    _max_api_calls_raw = _agent_section.get("max_api_calls", 0)
+    try:
+        agent.max_api_calls = int(_max_api_calls_raw)
+    except (TypeError, ValueError):
+        agent.max_api_calls = 0
+    if agent.max_api_calls < 0:
+        agent.max_api_calls = 0
+
     # Universal parallel-tool-call guidance toggle.  Default True.  Separate
     # flag from task_completion_guidance because a user may want one but not
     # the other.  Steers the model to batch independent tool calls into a
@@ -1447,6 +1463,26 @@ def init_agent(
     compression_protect_first = max(
         0, int(_compression_cfg.get("protect_first_n", 3))
     )
+    # Hard context cap — a deterministic last-resort safety net against
+    # unbounded context growth. When the summarizer (auxiliary compression
+    # model) is permanently unavailable — e.g. a 404 "requires available
+    # credits" on a shared Nous account — compression aborts and retries on a
+    # cooldown, but every turn still re-fires should_compress and re-fails, so
+    # the conversation grows without limit. That was the root cause of a
+    # historical ~20M-token / ~$52 runaway session. If prompt_tokens ever
+    # breach this cap AND the summarizer is in a failure state, we drop the
+    # oldest non-protected turns instead of relying on the (dead) summarizer.
+    # 0 = disabled (legacy behaviour). Default here, surfaced to the
+    # ContextCompressor below. 250000 ≈ 1/4 of a 1M-token window: a hard
+    # ceiling well above the compression threshold but far below the model
+    # context limit, so it only bites when summarization has genuinely failed.
+    _hard_cap_raw = _compression_cfg.get("hard_context_cap_tokens", 250000)
+    try:
+        compression_hard_cap_tokens = int(_hard_cap_raw)
+    except (TypeError, ValueError):
+        compression_hard_cap_tokens = 250000
+    if compression_hard_cap_tokens < 0:
+        compression_hard_cap_tokens = 0
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
@@ -1697,6 +1733,7 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
+            hard_context_cap_tokens=compression_hard_cap_tokens,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

@@ -646,6 +646,23 @@ def run_conversation(
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
 
+        # Session-level API-call ceiling (agent.max_api_calls, set from
+        # config.yaml agent.max_api_calls; 0 = disabled). Hard cost backstop:
+        # stops a runaway agent loop from accumulating hundreds of LLM calls
+        # across many turns. Mirrors the existing budget-exhausted path so the
+        # user gets the same clear notice. Honors a single grace call so the
+        # model can still emit a final summary rather than dying mid-sentence.
+        _max_api = getattr(agent, "max_api_calls", 0)
+        if _max_api and api_call_count > _max_api:
+            _turn_exit_reason = "api_call_ceiling"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n⚠️  Session API-call ceiling reached ({api_call_count} calls). "
+                    f"Stopping to bound credit usage — you can raise agent.max_api_calls "
+                    f"in config.yaml or start a fresh session."
+                )
+            break
+
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
         # this iteration regardless of outcome.
@@ -4620,10 +4637,29 @@ def run_conversation(
                     conversation_history = conversation_history_after_compression(
                         agent, messages
                     )
-                
+                else:
+                    # Hard context cap backstop. The summarizer is in a failure
+                    # cooldown (e.g. auxiliary compression model 404'd on low
+                    # credits) so should_compress() returned False and the
+                    # summarizer can't shrink context. If we're still over the
+                    # configured hard ceiling, deterministically drop the oldest
+                    # non-protected turns rather than letting the conversation
+                    # grow without bound. This is the structural fix for the
+                    # compression-death-spiral class of runaway sessions.
+                    _hc = getattr(_compressor, "hard_context_cap_tokens", 0)
+                    if _hc and _real_tokens > _hc:
+                        _trimmed, _did_trim = _compressor.apply_hard_context_cap(
+                            messages, _real_tokens
+                        )
+                        if _did_trim:
+                            messages = _trimmed
+                            conversation_history = conversation_history_after_compression(
+                                agent, messages
+                            )
+
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
-                
+
                 # Continue loop for next response
                 continue
             

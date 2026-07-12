@@ -966,6 +966,7 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        hard_context_cap_tokens: int = 0,
     ):
         self.model = model
         self.base_url = base_url
@@ -989,6 +990,14 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+
+        # Hard context cap (0 = disabled). Deterministic last-resort ceiling
+        # on prompt size. When compression's summarizer is unavailable (e.g. a
+        # permanent credit/404 on the shared Nous account), the normal
+        # summarizer path can't shrink context, so we fall back to dropping the
+        # oldest non-protected turns instead of letting the conversation grow
+        # without bound. See agent_init.py for the rationale.
+        self.hard_context_cap_tokens = max(0, int(hard_context_cap_tokens or 0))
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -1173,8 +1182,115 @@ class ContextCompressor(ContextEngine):
         return True
 
     # ------------------------------------------------------------------
-    # Tool output pruning (cheap pre-pass, no LLM call)
+    # Hard context cap — deterministic last-resort trim (no LLM call)
     # ------------------------------------------------------------------
+
+    def apply_hard_context_cap(
+        self, messages: List[Dict[str, Any]], prompt_tokens: int,
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Drop oldest non-protected turns if a hard token ceiling is breached.
+
+        This is a SAFETY NET only. Normal context control is the summarizer
+        (``compress``), which produces a clean brief. But when the summarizer
+        is permanently unavailable — the documented death-spiral where the
+        auxiliary compression model 404s with "requires available credits" on a
+        shared account — ``compress`` returns unchanged and retries on a
+        cooldown forever, so the conversation grows without bound (observed:
+        ~20M input tokens in a single session). This method guarantees context
+        can never exceed ``hard_context_cap_tokens``: when breached, it drops
+        whole turns (an assistant message together with its tool results) from
+        the oldest end, never touching the system prompt, the first
+        ``protect_first_n`` messages, the last ``protect_last_n`` messages, or
+        any message whose tool results would otherwise be left dangling.
+
+        Returns (trimmed_messages, did_trim). When the cap is disabled (0) or
+        not breached, returns the input unchanged with did_trim=False.
+        """
+        if not self.hard_context_cap_tokens or prompt_tokens <= self.hard_context_cap_tokens:
+            return messages, False
+        if not messages:
+            return messages, False
+
+        # Identify dangling tool_call_ids so we never leave an assistant
+        # tool_call pointing at a deleted result (would 400 the next API call).
+        _tool_call_ids: set = set()
+        for _m in messages:
+            for _tc in (_m.get("tool_calls") or []):
+                _id = (_tc.get("id") if isinstance(_tc, dict) else None)
+                if _id:
+                    _tool_call_ids.add(_id)
+        _result_ids: set = set()
+        for _m in messages:
+            if _m.get("role") == "tool":
+                _rid = _m.get("tool_call_id")
+                if _rid:
+                    _result_ids.add(_rid)
+
+        _sys = 1 if (messages and messages[0].get("role") == "system") else 0
+        _keep_start = _sys + self.protect_first_n
+        _keep_end = len(messages) - self.protect_last_n
+        # Guard: never drop into the protected head/tail; require at least one
+        # droppable message.
+        if _keep_end <= _keep_start + 1:
+            return messages, False
+
+        _dropped = 0
+        _out: List[Dict[str, Any]] = []
+        for _i, _m in enumerate(messages):
+            _drop = (
+                _keep_start <= _i < _keep_end
+                and _m.get("role") != "system"
+            )
+            if _drop:
+                # Decide whether dropping this message would orphan a tool
+                # result or leave a dangling tool_call:
+                #  - a tool *result* is only dropped if its assistant caller is
+                #    also in the droppable range;
+                #  - an assistant *tool-call* turn is only dropped if ALL of its
+                #    referenced results are themselves in the droppable range.
+                # Otherwise keep it (safe) so we never produce an invalid
+                # assistant/tool pairing.
+                _mid = _m.get("tool_call_id")
+                if _mid is not None:
+                    # tool result: keep unless its calling assistant msg is also
+                    # droppable.
+                    _caller_idx = next(
+                        (_j for _j, _cm in enumerate(messages)
+                         if _cm.get("role") == "assistant"
+                         and any(
+                             isinstance(_tc, dict) and _tc.get("id") == _mid
+                             for _tc in (_cm.get("tool_calls") or [])
+                         )),
+                        None,
+                    )
+                    _drop = (_caller_idx is not None
+                             and _keep_start <= _caller_idx < _keep_end)
+                elif _m.get("role") == "assistant" and (_m.get("tool_calls") or []):
+                    _ids = [_tc.get("id") for _tc in _m["tool_calls"]
+                            if isinstance(_tc, dict)]
+                    _result_locs = [
+                        _j for _j, _rm in enumerate(messages)
+                        if _rm.get("role") == "tool"
+                        and _rm.get("tool_call_id") in set(_ids)
+                        and _keep_start <= _j < _keep_end
+                    ]
+                    _drop = bool(_ids) and len(_result_locs) == len(_ids)
+                # else: plain user/assistant text — safe to drop.
+            if _drop:
+                _dropped += 1
+                continue
+            _out.append(_m)
+
+        if _dropped == 0:
+            return messages, False
+        logger.warning(
+            "Hard context cap hit (%d > %d tokens): dropped %d oldest non-protected "
+            "turn(s) to bound context growth (summarizer unavailable).",
+            prompt_tokens, self.hard_context_cap_tokens, _dropped,
+        )
+        return _out, True
+
+
 
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,

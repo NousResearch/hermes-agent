@@ -309,6 +309,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-opus-4-7": 1000000,
     "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000,
+    "claude-sonnet-5": 1000000,
     "claude-sonnet-4-6": 1000000,
     "claude-opus-4.6": 1000000,
     "claude-sonnet-4.6": 1000000,
@@ -2601,6 +2602,49 @@ def get_model_context_length(
             if not _skip_persistent_context_cache(base_url, provider):
                 _maybe_cache_local_context_length(model, base_url, local_ctx)
             return local_ctx
+
+    # 7b. Aggregator cross-provider models.dev lookup.
+    # An aggregator provider (yunwu, and any relay that fronts models from many
+    # upstream vendors behind one API key) can serve gpt-*, gemini-*, deepseek-*,
+    # qwen-*, kimi-*, claude-* etc. Such a provider has NO one-to-one
+    # PROVIDER_TO_MODELS_DEV mapping, so step 5g's per-provider lookup always
+    # misses and every model would fall through to the hardcoded family catalog
+    # below (whack-a-mole: each new gpt/gemini/qwen slug needs a manual entry).
+    # When the provider is named but is NOT a mapped models.dev provider, scan
+    # the WHOLE models.dev registry by model id so ANY vendor's model resolves
+    # to its real window automatically. Gated on the unmapped-but-named case so
+    # a mapped provider that legitimately missed does NOT get a cross-provider
+    # guess. Runs before the hardcoded catalog so live data wins over the
+    # conservative family fallback.
+    from agent.models_dev import (
+        PROVIDER_TO_MODELS_DEV,
+        lookup_models_dev_context_any_provider,
+    )
+    if effective_provider and effective_provider not in PROVIDER_TO_MODELS_DEV:
+        agg_ctx = lookup_models_dev_context_any_provider(model)
+        if agg_ctx:
+            # MiniMax M3: models.dev reports 512K but actual context is 1M.
+            # Mirror the step-5g guard — otherwise an aggregator route (yunwu)
+            # would get the stale 512K here and short-circuit before the step-8
+            # catalog ("minimax-m3": 1M) could correct it.
+            if _model_name_suggests_minimax_m3(model):
+                catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3")
+                if catalog and agg_ctx < catalog:
+                    logger.info(
+                        "Rejecting cross-provider models.dev context=%s for %r "
+                        "(MiniMax-M3 underreport); using hardcoded default %s",
+                        agg_ctx, model, f"{catalog:,}",
+                    )
+                    agg_ctx = catalog
+            logger.info(
+                "Resolved context length %s for %r via cross-provider "
+                "models.dev lookup (aggregator provider %r not in "
+                "PROVIDER_TO_MODELS_DEV)",
+                f"{agg_ctx:,}", model, effective_provider,
+            )
+            if base_url and not _skip_persistent_context_cache(base_url, provider):
+                save_context_length(model, base_url, agg_ctx)
+            return agg_ctx
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).

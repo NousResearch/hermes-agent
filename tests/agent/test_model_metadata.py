@@ -1861,3 +1861,145 @@ class TestMoAContextLength:
             "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
         )
         assert ctx == 500_000
+
+
+# =========================================================================
+# Aggregator cross-provider models.dev lookup (yunwu et al.)
+# =========================================================================
+# An aggregator provider fronts models from many upstream vendors behind one
+# API key, so it has NO one-to-one PROVIDER_TO_MODELS_DEV mapping. Without a
+# cross-provider scan, every model on such a provider falls through to the
+# hardcoded family catalog and under-reports fresh/cross-vendor windows.
+# These tests assert the INVARIANT (cross-provider resolution finds the model's
+# real models.dev window), not a frozen model list.
+
+_AGG_MODELS_DEV_SAMPLE = {
+    "anthropic": {"models": {"claude-fable-5": {"limit": {"context": 1000000}}}},
+    "openai": {"models": {"gpt-5.6-sol": {"limit": {"context": 1050000}}}},
+    "google": {"models": {"gemini-3-pro": {"limit": {"context": 1048576}}}},
+    "deepseek": {"models": {"deepseek-v3": {"limit": {"context": 128000}}}},
+    # A synthetic vendor id that matches NO hardcoded DEFAULT_CONTEXT_LENGTHS
+    # substring — so the negative-gate test can prove the aggregator branch is
+    # what supplies the window (vs. the catalog fuzzy-match at step 8).
+    "othervendor": {"models": {"zzq-only-on-othervendor-1": {"limit": {"context": 333333}}}},
+}
+
+
+class TestAggregatorCrossProviderContext:
+    def test_any_provider_helper_finds_model_across_providers(self):
+        from agent import models_dev
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE):
+            assert models_dev.lookup_models_dev_context_any_provider("gpt-5.6-sol") == 1050000
+            assert models_dev.lookup_models_dev_context_any_provider("gemini-3-pro") == 1048576
+            assert models_dev.lookup_models_dev_context_any_provider("deepseek-v3") == 128000
+            assert models_dev.lookup_models_dev_context_any_provider("GPT-5.6-SOL") == 1050000
+
+    def test_any_provider_helper_returns_none_for_unknown(self):
+        from agent import models_dev
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE):
+            assert models_dev.lookup_models_dev_context_any_provider("no-such-model-xyz") is None
+            assert models_dev.lookup_models_dev_context_any_provider("") is None
+
+    def test_aggregator_provider_resolves_cross_vendor_model(self):
+        """INVARIANT: an aggregator provider (not in PROVIDER_TO_MODELS_DEV)
+        resolves a cross-vendor model to the SAME window models.dev lists for it.
+
+        Hermetic: the yunwu base_url is only recognized as a KNOWN provider when
+        the yunwu plugin is installed (it registers yunwu.ai into _URL_TO_PROVIDER
+        at import). That plugin lives outside the repo, so in a clean CI checkout
+        the custom-endpoint probe (step 2) would fire against an unreachable
+        yunwu.ai and return a probe-tier default BEFORE the aggregator branch.
+        Patch _is_known_provider_base_url -> True (exactly what the installed
+        plugin makes true at runtime) so step 2 is skipped, and neutralize the
+        endpoint probe, making the test independent of plugin-provided state.
+        """
+        from agent import models_dev
+        assert "yunwu" not in models_dev.PROVIDER_TO_MODELS_DEV
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._is_known_provider_base_url", return_value=True), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            for model, expected in (("gpt-5.6-sol", 1050000), ("gemini-3-pro", 1048576), ("deepseek-v3", 128000)):
+                ctx = get_model_context_length(model, base_url="https://yunwu.ai/v1", provider="yunwu")
+                assert ctx == expected, f"{model}: got {ctx}, want {expected} (cross-provider path)"
+
+    def test_mapped_provider_does_not_use_cross_provider_guess(self):
+        """A mapped provider that misses must NOT get a cross-provider guess.
+        Uses a synthetic id present ONLY under a non-mapped vendor in the
+        sample AND absent from the hardcoded catalog, so a resolution to its
+        333333 window could ONLY come from the (wrongly-fired) cross-provider
+        branch. The gate must block it → falls to DEFAULT_FALLBACK_CONTEXT.
+        """
+        from agent import models_dev
+        assert "openai" in models_dev.PROVIDER_TO_MODELS_DEV
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            ctx = get_model_context_length(
+                "zzq-only-on-othervendor-1", base_url="https://api.openai.com/v1", provider="openai"
+            )
+            assert ctx == DEFAULT_FALLBACK_CONTEXT
+
+    def test_aggregator_resolves_id_absent_from_hardcoded_catalog(self):
+        """Positive twin: an aggregator DOES resolve a synthetic cross-vendor id
+        that no hardcoded catalog entry would match — proving live models.dev,
+        not the family catalog, is the source.
+        """
+        from agent import models_dev
+        with patch.object(models_dev, "fetch_models_dev", return_value=_AGG_MODELS_DEV_SAMPLE), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._is_known_provider_base_url", return_value=True), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length(
+                "zzq-only-on-othervendor-1", base_url="https://yunwu.ai/v1", provider="yunwu"
+            )
+            assert ctx == 333333
+
+
+class TestAggregatorGreptileFixes:
+    """Regression tests for the two Greptile findings on the aggregator
+    cross-provider context path (PR #310)."""
+
+    def test_minimax_m3_underreport_corrected_on_aggregator(self):
+        """P1: models.dev reports 512K for minimax-m3 but the real window is 1M.
+        The step-5g guard only fires for MAPPED providers; the aggregator step
+        7b must apply the SAME correction, else a yunwu-routed minimax-m3 gets
+        the stale 512K instead of the catalog 1M."""
+        import agent.model_metadata as mm
+        from agent import models_dev
+        # models.dev sample with the KNOWN-WRONG 512K minimax-m3 window.
+        sample = {
+            "minimax": {"models": {"minimax-m3": {"limit": {"context": 512000}}}},
+        }
+        catalog = mm.DEFAULT_CONTEXT_LENGTHS.get("minimax-m3")
+        assert catalog and catalog > 512000, "catalog must carry the correct 1M"
+        with patch.object(models_dev, "fetch_models_dev", return_value=sample), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._is_known_provider_base_url", return_value=True), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                "minimax-m3", base_url="https://yunwu.ai/v1", provider="yunwu"
+            )
+            # Must be corrected UP to the catalog value, not the 512K underreport.
+            assert ctx == catalog, f"got {ctx}, want catalog {catalog} (underreport guard)"
+
+    def test_cross_provider_suffix_cloud_fallback(self):
+        """P2: some providers store suffixed ids (model:cloud / model-cloud) in
+        models.dev while the live API returns the bare name. The cross-provider
+        lookup must try the suffix fallback, matching lookup_models_dev_context."""
+        from agent import models_dev
+        sample = {
+            "someprov": {"models": {"kimi-fake-x:cloud": {"limit": {"context": 262144}}}},
+        }
+        with patch.object(models_dev, "fetch_models_dev", return_value=sample):
+            # bare id misses exact+case-insensitive, hits the :cloud suffix pass.
+            assert models_dev.lookup_models_dev_context_any_provider("kimi-fake-x") == 262144
+
+    def test_cross_provider_suffix_dash_cloud_fallback(self):
+        from agent import models_dev
+        sample = {
+            "someprov": {"models": {"kimi-fake-y-cloud": {"limit": {"context": 131072}}}},
+        }
+        with patch.object(models_dev, "fetch_models_dev", return_value=sample):
+            assert models_dev.lookup_models_dev_context_any_provider("kimi-fake-y") == 131072

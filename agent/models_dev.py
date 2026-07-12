@@ -377,6 +377,90 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     return None
 
 
+def lookup_models_dev_context_any_provider(model: str) -> Optional[int]:
+    """Look up context_length for a bare model id across ALL models.dev providers.
+
+    For AGGREGATOR providers (yunwu, and any other relay that fronts models
+    from many upstream vendors behind one API key), a single Hermes provider
+    id can serve gpt-*, gemini-*, deepseek-*, qwen-*, kimi-*, claude-* etc.
+    There is no one-to-one PROVIDER_TO_MODELS_DEV mapping for such a provider,
+    so the per-provider ``lookup_models_dev_context`` always misses and the
+    resolver falls through to the hardcoded family catalog (whack-a-mole).
+
+    This scans every provider's model dict in the models.dev registry for the
+    given model id and returns the first valid (>0) context window. Match order
+    per provider: exact id, then case-insensitive. Returns None if no provider
+    lists the id.
+
+    NOTE: this is intentionally called only AFTER the provider-specific
+    resolution branches (Anthropic/Nous/Copilot/Codex/OpenRouter/mapped
+    models.dev) have missed, so a model that legitimately belongs to a mapped
+    provider still resolves through its curated path first. This is the broad
+    net for aggregator ids that belong to no single mapped provider.
+    """
+    if not model:
+        return None
+
+    data = fetch_models_dev()
+    if not isinstance(data, dict):
+        return None
+
+    model_lower = model.lower()
+
+    # Pass 1: exact id match across all providers (cheapest, most precise).
+    for provider_data in data.values():
+        if not isinstance(provider_data, dict):
+            continue
+        models = provider_data.get("models", {})
+        if not isinstance(models, dict):
+            continue
+        entry = models.get(model)
+        if entry:
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
+
+    # Pass 2: case-insensitive id match across all providers.
+    for provider_data in data.values():
+        if not isinstance(provider_data, dict):
+            continue
+        models = provider_data.get("models", {})
+        if not isinstance(models, dict):
+            continue
+        for mid, mdata in models.items():
+            if mid.lower() == model_lower:
+                ctx = _extract_context(mdata)
+                if ctx:
+                    return ctx
+
+    # Pass 3: suffix-aware fallback across all providers. Some providers store
+    # model IDs with :cloud / -cloud suffixes in models.dev while the live API
+    # returns bare names (e.g. kimi-k2.6 vs kimi-k2.6:cloud). Mirrors the same
+    # third pass in the per-provider lookup_models_dev_context so an aggregator
+    # route resolves suffixed entries identically.
+    for suffix in (":cloud", "-cloud"):
+        suffixed = model + suffix
+        suffixed_lower = model_lower + suffix
+        for provider_data in data.values():
+            if not isinstance(provider_data, dict):
+                continue
+            models = provider_data.get("models", {})
+            if not isinstance(models, dict):
+                continue
+            entry = models.get(suffixed)
+            if isinstance(entry, dict):
+                ctx = _extract_context(entry)
+                if ctx:
+                    return ctx
+            for mid, mdata in models.items():
+                if mid.lower() == suffixed_lower and isinstance(mdata, dict):
+                    ctx = _extract_context(mdata)
+                    if ctx:
+                        return ctx
+
+    return None
+
+
 def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
     """Extract context_length from a models.dev model entry.
 

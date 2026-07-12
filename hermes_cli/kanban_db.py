@@ -827,7 +827,18 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
         import shutil
-        shutil.rmtree(d)
+
+        def _ignore_disappeared_sidecar(_func, _path, exc_info):
+            # A concurrent SQLite reader may close between rmtree's directory
+            # scan and unlink, removing its own -wal/-shm sidecar first. Python
+            # 3.13+ ignores these nested FileNotFoundError races; preserve that
+            # behavior on supported older runtimes without hiding other errors.
+            exc = exc_info[1]
+            if isinstance(exc, FileNotFoundError):
+                return
+            raise exc
+
+        shutil.rmtree(d, onerror=_ignore_disappeared_sidecar)
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
@@ -1312,13 +1323,28 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
-    """Open a Kanban SQLite connection with consistent lock waiting."""
+def _sqlite_connect(
+    path: Path,
+    *,
+    create_if_missing: bool = True,
+) -> sqlite3.Connection:
+    """Open a Kanban SQLite connection with consistent lock waiting.
+
+    ``create_if_missing=False`` uses SQLite's ``mode=rw`` URI so a stale
+    reader cannot recreate a named board after it has been archived or
+    deleted.
+    """
     busy_timeout_ms = _resolve_busy_timeout_ms()
+    database = str(path)
+    uri = False
+    if not create_if_missing:
+        database = f"{path.resolve().as_uri()}?mode=rw"
+        uri = True
     conn = sqlite3.connect(
-        str(path),
+        database,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
+        uri=uri,
     )
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
     # the PRAGMA explicitly so it is observable and survives future wrapper
@@ -1328,7 +1354,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
 
 
 @contextlib.contextmanager
-def _cross_process_init_lock(path: Path):
+def _cross_process_init_lock(path: Path, *, create_parent: bool = True):
     """Serialize first-connect WAL/schema/integrity setup across processes.
 
     ``_INIT_LOCK`` only protects threads inside one Python process. During a
@@ -1351,7 +1377,8 @@ def _cross_process_init_lock(path: Path):
     is redundant work, not corruption. A bounded "proceed anyway" beats an
     unbounded hang that silently stops the board.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
     handle = lock_path.open("a+b")
     acquired = False
@@ -1682,6 +1709,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create_if_missing: bool = True,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1700,12 +1728,20 @@ def connect(
     * Neither → :func:`kanban_db_path` resolves via
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
+
+    ``create_if_missing=False`` is for stale/read-only consumers such as the
+    dashboard event stream. It atomically refuses to open a DB that was moved
+    away by board archive/delete instead of silently creating an empty board
+    at the old path.
     """
     if db_path is not None:
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_if_missing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.is_file():
+        raise FileNotFoundError(f"kanban board database does not exist: {path}")
 
     # Fast path: once THIS process has initialized this path, the expensive
     # first-open work (header validation, integrity probe, schema + additive
@@ -1719,7 +1755,7 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, create_if_missing=create_if_missing)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -1735,7 +1771,7 @@ def connect(
             raise
         return conn
 
-    with _cross_process_init_lock(path):
+    with _cross_process_init_lock(path, create_parent=create_if_missing):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
@@ -1744,7 +1780,7 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, create_if_missing=create_if_missing)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:

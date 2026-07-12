@@ -941,6 +941,56 @@ def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp
     assert other_task not in task_ids
 
 
+@pytest.mark.parametrize("hard_delete", [False, True])
+def test_ws_event_poll_does_not_recreate_removed_board(
+    tmp_path, monkeypatch, hard_delete,
+):
+    """An open dashboard event stream must not resurrect a removed board.
+
+    The stream polls every 300 ms. Archiving or hard-deleting the selected
+    board removes its directory, so the next poll must stop instead of opening
+    SQLite in create mode at the old path.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    kb.create_board("ephemeral")
+
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+    delete_url = "/api/plugins/kanban/boards/ephemeral"
+    if hard_delete:
+        delete_url += "?delete=true"
+
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz&board=ephemeral&since=0"
+    ):
+        response = c.delete(delete_url)
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["action"] == (
+            "deleted" if hard_delete else "archived"
+        )
+
+        # Wait for more than two poll intervals. Before the regression fix,
+        # connect(board="ephemeral") recreated an empty directory on the next
+        # tick, making the Dashboard's Archive button look like a no-op.
+        time.sleep(0.75)
+        assert not kb.board_dir("ephemeral").exists()
+
+
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     """``asyncio.CancelledError`` while sleeping in the poll loop is the
     normal uvicorn-shutdown path (``BaseException``, so the bare

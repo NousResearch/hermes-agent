@@ -2417,7 +2417,15 @@ async def stream_events(ws: WebSocket):
             ws_board = None
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
-            conn = kanban_db.connect(board=ws_board)
+            # Named boards are explicitly created through create_board(). The
+            # event tail is a stale/read-only consumer and must never recreate
+            # one after Archive/Delete moved its DB away.
+            conn = kanban_db.connect(
+                board=ws_board,
+                create_if_missing=(
+                    ws_board is None or ws_board == kanban_db.DEFAULT_BOARD
+                ),
+            )
             try:
                 rows = conn.execute(
                     "SELECT id, task_id, run_id, kind, payload, created_at "
@@ -2457,6 +2465,10 @@ async def stream_events(ws: WebSocket):
         # CancelledError is a BaseException in 3.8+ so the bare Exception
         # handler below would not catch it; without this clause Uvicorn
         # surfaces the cancellation as an application traceback. Quiet it.
+        return
+    except FileNotFoundError:
+        # Normal board lifecycle: Archive/Delete removed a named board while
+        # this browser tab still had its old event stream open.
         return
     except Exception as exc:  # defensive: never crash the dashboard worker
         log.warning("Kanban event stream error: %s", exc)

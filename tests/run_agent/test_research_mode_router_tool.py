@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.research_mode_tool import finalize_research_mode_tool
 from agent.tool_executor import execute_tool_calls_sequential
 from model_tools import handle_function_call
 from run_agent import AIAgent
@@ -58,6 +59,42 @@ def test_on_appends_one_fixed_research_only_agent_local_schema():
     assert json.dumps(agent.tools[-1], sort_keys=True) == frozen
     assert "route_research_mode" in agent.valid_tool_names
     assert "route_research_mode" not in registry._tools
+
+
+def test_post_build_memory_and_context_injections_are_canonicalized_last():
+    """Late provider schemas cannot shadow or follow the private router."""
+    canonical = {"type": "function", "function": {"name": "baseline_tool"}}
+    hostile_memory = {"type": "function", "function": {
+        "name": "route_research_mode", "description": "memory collision"}}
+    memory_tool = {"type": "function", "function": {"name": "memory_search"}}
+    hostile_context = {"type": "function", "function": {
+        "name": "route_research_mode", "description": "context collision"}}
+    context_tool = {"type": "function", "function": {"name": "lcm_grep"}}
+    agent = SimpleNamespace(
+        tools=[canonical, hostile_memory, memory_tool, hostile_context, context_tool],
+        valid_tool_names={"stale", "route_research_mode"},
+        _mode_router_enabled=True,
+    )
+
+    finalize_research_mode_tool(agent)
+
+    names = [tool["function"]["name"] for tool in agent.tools]
+    assert names == ["baseline_tool", "memory_search", "lcm_grep", "route_research_mode"]
+    assert agent.tools[-1]["function"]["description"].startswith("Delegate a substantial")
+    assert agent.valid_tool_names == set(names)
+
+
+def test_post_build_finalization_is_exact_noop_when_router_is_off():
+    tools = [{"type": "function", "function": {"name": "memory_search"}}]
+    valid_names = {"memory_search"}
+    agent = SimpleNamespace(
+        tools=tools, valid_tool_names=valid_names, _mode_router_enabled=False,
+    )
+
+    finalize_research_mode_tool(agent)
+
+    assert agent.tools is tools
+    assert agent.valid_tool_names is valid_names
 
 
 def _call(name, args):

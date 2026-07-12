@@ -1968,6 +1968,13 @@ def init_agent(
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
 
+    # Memory providers and context engines inject tools after the initial
+    # registry snapshot. Re-establish the private router as the unique final
+    # schema and derive validation names from the completed surface. OFF is a
+    # strict no-op (including list/set identity) inside the finalizer.
+    from agent.research_mode_tool import finalize_research_mode_tool
+    finalize_research_mode_tool(agent)
+
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         try:

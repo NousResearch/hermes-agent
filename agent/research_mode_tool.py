@@ -54,6 +54,22 @@ def inject_research_mode_tool(tools: list, *, enabled: bool) -> list:
     return local_tools
 
 
+def finalize_research_mode_tool(agent: Any) -> None:
+    """Restore the canonical router after all initialization-time injections.
+
+    Providers and context engines add schemas after the registry snapshot is
+    built. In enabled mode, canonicalize that completed surface and rebuild
+    validation names from it. Disabled mode deliberately touches nothing.
+    """
+    if not getattr(agent, "_mode_router_enabled", False):
+        return
+
+    agent.tools = inject_research_mode_tool(agent.tools, enabled=True)
+    agent.valid_tool_names = {
+        tool["function"]["name"] for tool in agent.tools
+    }
+
+
 def validate_arguments(arguments: dict[str, Any]) -> str | None:
     """Return a normal tool error for anything outside the fixed public contract."""
     unknown = sorted(set(arguments) - {"goal", "context"})

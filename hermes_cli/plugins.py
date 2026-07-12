@@ -220,6 +220,19 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Background-review host contract (P2.1). Plugins piggyback on the
+    # self-improvement review fork through these instead of monkey-patching.
+    #   background_review_started  — kwargs: context (ReviewExecutionContext),
+    #                               prompt, review_memory, review_skills;
+    #                               return {"prompt_suffix": str} (concatenated).
+    #   background_review_message  — kwargs: context, message (observer-only);
+    #                               per assistant message from the fork.
+    #   background_review_finished — kwargs: context, messages (list[dict]),
+    #                               status ("finished"|"failed"), error (str|None);
+    #                               fires once, including exception paths.
+    "background_review_started",
+    "background_review_message",
+    "background_review_finished",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

@@ -1319,6 +1319,8 @@ def run_conversation(
                             started_at=api_start_time,
                             middleware_trace=list(_llm_middleware_trace),
                             request=_request_payload,
+                            execution_kind=getattr(agent, "_execution_kind", "live"),
+                            execution_id=getattr(agent, "_execution_id", None),
                         )
                 except Exception:
                     pass
@@ -4440,6 +4442,8 @@ def run_conversation(
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        execution_kind=getattr(agent, "_execution_kind", "live"),
+                        execution_id=getattr(agent, "_execution_id", None),
                     )
             except Exception:
                 pass

@@ -18,14 +18,53 @@ for invariants and PR review criteria.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import os
+import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Plugin host contract (P2.1)
+#
+# Plugins that piggyback on the background-review fork (e.g. Mnemosya's
+# structured-memory extraction) consume these stable seams instead of
+# monkey-patching module constants and functions. ``HOOK_CONTRACT_VERSION``
+# bumps on ANY signature change to ``ReviewExecutionContext`` or the three
+# ``background_review_*`` hooks; a plugin checks it at startup and fails
+# closed (no piggyback) when the host is older than it expects.
+# ---------------------------------------------------------------------------
+
+#: Bump on any change to ``ReviewExecutionContext`` fields or the
+#: ``background_review_started`` / ``_message`` / ``_finished`` contracts.
+HOOK_CONTRACT_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ReviewExecutionContext:
+    """Immutable description of one fork execution, handed to every
+    ``background_review_*`` hook and (as ``execution_kind``/``execution_id``
+    kwargs) to the ordinary per-turn hooks fired inside the fork.
+
+    Built on the FOREGROUND thread in :func:`spawn_background_review_thread`
+    (before the daemon starts), so ``session_id``/``platform`` are the fork's
+    true source values, captured once — not re-read from foreground activity
+    later (the C5 misattribution class).
+    """
+
+    execution_id: str           # uuid4().hex, unique per fork run
+    execution_kind: str         # "background_review"
+    session_id: str             # parent session, pinned at spawn
+    parent_turn_id: str         # foreground turn that spawned the fork
+    platform: Optional[str]     # from the live agent at spawn time
+    started_at: str             # UTC isoformat
 
 
 # ---------------------------------------------------------------------------
@@ -618,12 +657,22 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    context: Optional[ReviewExecutionContext] = None,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
     Spawns a forked ``AIAgent`` inheriting the parent's runtime, runs the
     review prompt, and surfaces a compact action summary back to the user
     via ``agent._safe_print`` and ``agent.background_review_callback``.
+
+    P2.1: the fork's ordinary per-turn hooks (``pre_llm_call``,
+    ``pre_api_request`` …) are tagged ``execution_kind="background_review"``
+    via ``review_agent._execution_kind``/``_execution_id`` so plugins can
+    tell fork turns from live turns without prompt-text or turn-id
+    heuristics. ``background_review_message`` fires per assistant message
+    and ``background_review_finished`` fires exactly once (success or
+    failure) with the full review_messages, replacing the summarizer-wrap
+    extraction seam.
     """
     # Local import to avoid a hard circular dep at module load.
     from run_agent import AIAgent
@@ -787,6 +836,13 @@ def _run_review_in_thread(
                 # if a future code path bypasses the cache.
                 review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            # P2.1: tag this fork's ordinary per-turn hooks so plugins can
+            # gate on execution_kind without prompt-text/turn-id heuristics.
+            # _execution_id ties every hook firing in this fork to the same
+            # ReviewExecutionContext handed to background_review_started.
+            review_agent._execution_kind = "background_review"
+            if context is not None:
+                review_agent._execution_id = context.execution_id
             # The fork shares the parent's live session_id (pinned above for
             # prefix-cache parity). It is single-lifecycle and calls close()
             # right after this run_conversation(); without opting out, close()
@@ -865,6 +921,22 @@ def _run_review_in_thread(
             # summary still needs the completed review agent's tool results.
             review_messages = list(getattr(review_agent, "_session_messages", []))
 
+            # P2.1: fire background_review_message for each assistant message
+            # (observer-only). Plugins use it for live debug taps; the
+            # finished hook below is where extraction/commit happens.
+            if context is not None:
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    for _msg in review_messages:
+                        if isinstance(_msg, dict) and _msg.get("role") == "assistant":
+                            _invoke_hook(
+                                "background_review_message",
+                                context=context, message=_msg,
+                            )
+                except Exception:
+                    logger.warning("background_review_message hook dispatch failed",
+                                   exc_info=True)
+
             # Tear down memory providers while stdout is still
             # redirected so background thread teardown (Honcho flush,
             # Hindsight sync, etc.) stays silent.  The finally block
@@ -878,6 +950,23 @@ def _run_review_in_thread(
             except Exception:
                 pass
             review_agent = None
+
+        # P2.1: background_review_finished — fired BEFORE summarize so plugins
+        # (Mnemosya) extract <mv> from the full review_messages and commit on
+        # the daemon thread. Replaces the summarize_background_review_actions
+        # monkey-patch seam. The host fires it exactly once per fork; on the
+        # success path here, on the failure path in the except below.
+        if context is not None:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "background_review_finished",
+                    context=context, messages=review_messages,
+                    status="finished", error=None,
+                )
+            except Exception:
+                logger.warning("background_review_finished hook dispatch failed",
+                               exc_info=True)
 
         # Scan the review agent's messages for successful tool actions
         # and surface a compact summary to the user. Tool messages
@@ -924,6 +1013,20 @@ def _run_review_in_thread(
                     pass
 
     except Exception as e:
+        # P2.1: fire background_review_finished on the failure path too so the
+        # plugin's _active_reviews entry is always retired (counters stay
+        # consistent: fork_started == fork_finished + fork_failed).
+        if context is not None:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "background_review_finished",
+                    context=context, messages=list(review_messages),
+                    status="failed", error=str(e),
+                )
+            except Exception:
+                logger.warning("background_review_finished hook dispatch failed",
+                               exc_info=True)
         logger.warning("Background memory/skill review failed: %s", e)
         agent._emit_auxiliary_failure("background review", e)
     finally:
@@ -964,6 +1067,13 @@ def spawn_background_review_thread(
     Returns a ``(target, prompt)`` tuple.  The caller (``AIAgent._spawn_background_review``)
     owns the actual ``threading.Thread`` construction so test-level patches
     of ``run_agent.threading.Thread`` keep working.
+
+    P2.1: builds a :class:`ReviewExecutionContext` HERE, on the foreground
+    thread (before the daemon starts), and fires the ``background_review_*``
+    host contract. ``background_review_started`` lets a plugin append a
+    ``prompt_suffix`` (replaces constant monkey-patching); the context is
+    threaded into the daemon so ``background_review_message`` /
+    ``background_review_finished`` carry immutable provenance.
     """
     # Pick the right prompt based on which triggers fired.  Allow per-agent
     # override (the prompts moved to module-level constants but old code paths
@@ -975,13 +1085,46 @@ def spawn_background_review_thread(
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    # Build the immutable execution context on the foreground thread. The fork
+    # pins review_agent.session_id = agent.session_id (see _run_review_in_thread),
+    # so agent.session_id IS the fork's source session — captured once here.
+    context = ReviewExecutionContext(
+        execution_id=uuid.uuid4().hex,
+        execution_kind="background_review",
+        session_id=str(getattr(agent, "session_id", "") or ""),
+        parent_turn_id=str(getattr(agent, "_current_turn_id", "") or ""),
+        platform=getattr(agent, "platform", None),
+        started_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+    )
+
+    # background_review_started: plugins may return {"prompt_suffix": ...};
+    # the host concatenates every non-empty suffix onto the prompt. Replaces
+    # the old "patch the _MEMORY/_SKILL/_COMBINED_REVIEW_PROMPT constants"
+    # seam. A hook that raises is isolated by invoke_hook; the fork simply
+    # runs without that plugin's suffix.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        for _r in _invoke_hook(
+            "background_review_started",
+            context=context,
+            prompt=prompt,
+            review_memory=review_memory,
+            review_skills=review_skills,
+        ):
+            if isinstance(_r, dict) and _r.get("prompt_suffix"):
+                prompt = prompt + "\n" + str(_r["prompt_suffix"])
+    except Exception:
+        logger.warning("background_review_started hook dispatch failed", exc_info=True)
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(agent, messages_snapshot, prompt, context)
 
     return _target, prompt
 
 
 __all__ = [
+    "HOOK_CONTRACT_VERSION",
+    "ReviewExecutionContext",
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",

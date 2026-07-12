@@ -1,7 +1,8 @@
 """Hermetic tests for the seerr skill.
 
 Stdlib + pytest + unittest.mock only; no live network. Every HTTP call is
-intercepted at urllib.request.urlopen and asserted on.
+intercepted at urllib.request.urlopen and asserted on. HOME is redirected to a
+temp dir so the script's ~/.hermes/.env fallback cannot read the real one.
 
     scripts/run_tests.sh tests/skills/test_seerr_skill.py -q
 """
@@ -10,16 +11,17 @@ from __future__ import annotations
 
 import io
 import json
+import pathlib
 import re
 import sys
 import urllib.error
+import urllib.parse
 from email.message import Message
-from pathlib import Path
 from unittest import mock
 
 import pytest
 
-_HERE = Path(__file__).resolve()
+_HERE = pathlib.Path(__file__).resolve()
 SKILL_DIR = _HERE.parent.parent.parent / "skills" / "media" / "seerr"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
@@ -28,6 +30,16 @@ import seerr  # noqa: E402
 
 
 ENV = {"SEERR_URL": "http://seerr.test:5055", "SEERR_API_KEY": "k3y"}
+ARR_ENV = {"RADARR_URL": "http://radarr.test:7878", "RADARR_API_KEY": "r4d"}
+
+
+@pytest.fixture(autouse=True)
+def isolate_home(tmp_path, monkeypatch):
+    """Never let the real ~/.hermes/.env satisfy a test that should fail."""
+    monkeypatch.setattr(seerr.pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    seerr._ENV_LOADED = False
+    yield tmp_path
+    seerr._ENV_LOADED = False
 
 
 class _Response:
@@ -46,20 +58,20 @@ class _Response:
         return False
 
 
-def _fake_urlopen(payload, captured: list):
-    def _open(request, timeout=None):
-        captured.append(request)
-        return _Response(json.dumps(payload).encode("utf-8"))
-
-    return _open
-
-
-def _run(argv, payload=None, env=None):
+def _run(argv, payload=None, env=None, routes=None):
     """Run the CLI with urlopen mocked. Returns (exit_code, stdout, requests)."""
     captured: list = []
+
+    def _open(request, timeout=None):
+        captured.append(request)
+        if routes is not None:
+            path = urllib.parse.urlsplit(request.full_url).path
+            return _Response(json.dumps(routes[path]).encode("utf-8"))
+        return _Response(json.dumps(payload if payload is not None else {}).encode("utf-8"))
+
     stdout = io.StringIO()
-    with mock.patch.dict("os.environ", env if env is not None else ENV, clear=True), \
-         mock.patch("urllib.request.urlopen", _fake_urlopen(payload or {}, captured)), \
+    with mock.patch.dict("os.environ", ENV if env is None else env, clear=True), \
+         mock.patch("urllib.request.urlopen", _open), \
          mock.patch("sys.stdout", stdout):
         code = seerr.main(argv)
     return code, stdout.getvalue(), captured
@@ -90,6 +102,12 @@ def test_required_frontmatter_metadata_present():
     assert front["name"] == "seerr"
 
 
+def test_only_seerr_credentials_are_mandatory():
+    """Radarr/Sonarr are optional: a Seerr-only user must not be prompted for them."""
+    names = {v["name"] for v in _frontmatter()["required_environment_variables"]}
+    assert names == {"SEERR_URL", "SEERR_API_KEY"}
+
+
 def test_every_yaml_block_in_skill_md_is_valid_yaml():
     """Regression: the v1 skill documented dotenv KEY=value inside a ```yaml fence.
 
@@ -100,10 +118,17 @@ def test_every_yaml_block_in_skill_md_is_valid_yaml():
     blocks = re.findall(r"```yaml\n(.*?)```", SKILL_MD.read_text(encoding="utf-8"), re.DOTALL)
     assert blocks, "expected at least one yaml block (the config.yaml example)"
     for block in blocks:
-        yaml.safe_load(block)  # raises if the block is dotenv or otherwise invalid
+        yaml.safe_load(block)
         assert not re.search(r"^[A-Z_]+=", block, re.MULTILINE), (
             "dotenv KEY=value lines must not appear inside a ```yaml fence"
         )
+
+
+def test_skill_md_hardcodes_no_root_folder_paths():
+    """The tables of real paths went stale twice; discovery replaced them."""
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert "rootFolderPath" not in text.replace("`rootFolder`, not `rootFolderPath`", "")
+    assert "/data/media/" not in text, "no install-specific paths in the skill"
 
 
 # ── Query encoding ────────────────────────────────────────────────────────
@@ -116,13 +141,11 @@ def test_search_percent_encodes_reserved_characters():
 
     assert "Tom%20%26%20Jerry" in url
     assert "+" not in url, "space must encode as %20, not '+'"
-    query = url.split("?", 1)[1]
-    assert query.count("&") == 1, "the only '&' may be the separator before page="
+    assert url.split("?", 1)[1].count("&") == 1, "only the page= separator may be a bare '&'"
 
 
 def test_encode_params_escapes_every_reserved_character():
-    encoded = seerr._encode_params({"query": "a&b=c d/e?f#g"})
-    assert encoded == "query=a%26b%3Dc%20d%2Fe%3Ff%23g"
+    assert seerr._encode_params({"query": "a&b=c d/e?f#g"}) == "query=a%26b%3Dc%20d%2Fe%3Ff%23g"
 
 
 # ── Requests ──────────────────────────────────────────────────────────────
@@ -149,14 +172,12 @@ def test_movie_request_uses_rootFolder_not_rootFolderPath():
 
 def test_tv_request_parses_seasons_and_accepts_all():
     _, _, requests = _run(
-        ["request", "--type", "tv", "--tmdb-id", "136315", "--seasons", "1,3"],
-        {"id": 8, "media": {}},
+        ["request", "--type", "tv", "--tmdb-id", "136315", "--seasons", "1,3"], {"id": 8, "media": {}}
     )
     assert _body(requests[0])["seasons"] == [1, 3]
 
     _, _, requests = _run(
-        ["request", "--type", "tv", "--tmdb-id", "136315", "--seasons", "all"],
-        {"id": 9, "media": {}},
+        ["request", "--type", "tv", "--tmdb-id", "136315", "--seasons", "all"], {"id": 9, "media": {}}
     )
     assert _body(requests[0])["seasons"] == "all"
 
@@ -174,7 +195,7 @@ def test_optional_request_fields_are_omitted_when_unset():
         assert field not in body
 
 
-# ── Auth, discovery, parsing ──────────────────────────────────────────────
+# ── Discovery, auth, parsing ──────────────────────────────────────────────
 
 
 def test_api_key_is_sent_as_header():
@@ -191,18 +212,8 @@ def test_servers_reports_root_folders_from_seerr():
             "profiles": [{"id": 4, "name": "HD-1080p"}],
         },
     }
+    code, out, _ = _run(["servers", "radarr"], routes=routes)
 
-    def _open(request, timeout=None):
-        path = request.full_url.split("5055", 1)[1].split("?", 1)[0]
-        return _Response(json.dumps(routes[path]).encode("utf-8"))
-
-    stdout = io.StringIO()
-    with mock.patch.dict("os.environ", ENV, clear=True), \
-         mock.patch("urllib.request.urlopen", _open), \
-         mock.patch("sys.stdout", stdout):
-        code = seerr.main(["servers", "radarr"])
-
-    out = stdout.getvalue()
     assert code == 0
     assert "server 0: Radarr (default)" in out
     assert "root folder: /data/movies" in out
@@ -213,10 +224,7 @@ def test_seasons_excludes_specials():
     payload = {
         "name": "The Bear",
         "firstAirDate": "2022-06-23",
-        "seasons": [
-            {"seasonNumber": 0, "episodeCount": 3},
-            {"seasonNumber": 1, "episodeCount": 8},
-        ],
+        "seasons": [{"seasonNumber": 0, "episodeCount": 3}, {"seasonNumber": 1, "episodeCount": 8}],
     }
     _, out, _ = _run(["seasons", "136315"], payload)
     assert "season 1" in out
@@ -237,7 +245,56 @@ def test_search_ignores_people_and_flags_existing_library_items():
     assert "[already in library]" in out
 
 
-# ── Failure modes ─────────────────────────────────────────────────────────
+# ── Optional Radarr/Sonarr commands ───────────────────────────────────────
+
+
+def test_diskspace_formats_mounts_and_hits_radarr():
+    payload = [{"path": "/data", "freeSpace": 549_800_000_000, "totalSpace": 3_936_800_000_000}]
+    _, out, requests = _run(["diskspace"], payload, env={**ENV, **ARR_ENV})
+
+    assert "/api/v3/diskspace" in requests[0].full_url
+    assert requests[0].get_header("X-api-key") == "r4d", "must use the Radarr key, not Seerr's"
+    assert "549.8 GB free" in out
+
+
+def test_optional_arr_commands_fail_cleanly_without_credentials():
+    """A Seerr-only user must get a clear message, not a traceback."""
+    code, _, requests = _run(["diskspace"], env=ENV)  # no RADARR_* set
+    assert code == 1
+    assert not requests
+
+
+def test_queue_reports_progress():
+    payload = {"records": [{"title": "Dune", "size": 100, "sizeleft": 25, "status": "downloading"}]}
+    _, out, _ = _run(["queue"], payload, env={**ENV, **ARR_ENV})
+    assert "75%" in out
+
+
+# ── Configuration fallback ────────────────────────────────────────────────
+
+
+def test_dotenv_fallback_supplies_vars_hermes_did_not_export(isolate_home):
+    """On a real Hermes box SEERR_URL is absent from the shell; ~/.hermes/.env has it."""
+    hermes = isolate_home / ".hermes"
+    hermes.mkdir()
+    (hermes / ".env").write_text(
+        "# comment\nSEERR_URL=http://from-dotenv:5055\nexport SEERR_API_KEY='dotenv-key'\n",
+        encoding="utf-8",
+    )
+
+    _, _, requests = _run(["search", "dune"], {"results": []}, env={})
+
+    assert requests[0].full_url.startswith("http://from-dotenv:5055")
+    assert requests[0].get_header("X-api-key") == "dotenv-key"
+
+
+def test_real_environment_wins_over_dotenv(isolate_home):
+    hermes = isolate_home / ".hermes"
+    hermes.mkdir()
+    (hermes / ".env").write_text("SEERR_URL=http://stale:5055\n", encoding="utf-8")
+
+    _, _, requests = _run(["search", "dune"], {"results": []})  # ENV has seerr.test
+    assert requests[0].full_url.startswith("http://seerr.test:5055")
 
 
 @pytest.mark.parametrize("missing", ["SEERR_URL", "SEERR_API_KEY"])
@@ -250,11 +307,21 @@ def test_missing_config_reports_a_clean_error(missing):
 
 def test_rejected_api_key_reports_a_clean_error():
     def _raise(request, timeout=None):
-        raise urllib.error.HTTPError(
-            request.full_url, 401, "Unauthorized", Message(), io.BytesIO(b"")
-        )
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", Message(), io.BytesIO(b""))
 
     with mock.patch.dict("os.environ", ENV, clear=True), \
-         mock.patch("urllib.request.urlopen", _raise):
-        with pytest.raises(seerr.SeerrError, match="API key"):
-            seerr.api("search", params={"query": "x"})
+         mock.patch("urllib.request.urlopen", _raise), \
+         mock.patch("sys.stderr", io.StringIO()):
+        assert seerr.main(["search", "dune"]) == 1
+
+
+def test_already_requested_is_reported_as_such():
+    def _raise(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 409, "Conflict", Message(), io.BytesIO(b""))
+
+    stderr = io.StringIO()
+    with mock.patch.dict("os.environ", ENV, clear=True), \
+         mock.patch("urllib.request.urlopen", _raise), \
+         mock.patch("sys.stderr", stderr):
+        assert seerr.main(["request", "--type", "movie", "--tmdb-id", "1"]) == 1
+    assert "Already requested" in stderr.getvalue()

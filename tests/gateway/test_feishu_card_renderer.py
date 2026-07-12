@@ -14,6 +14,7 @@ from gateway.rendering.document import (
 )
 from gateway.platforms.feishu_card_renderer import (
     FeishuCardRenderingError,
+    build_feishu_card_v2_payloads,
     render_document_to_feishu_card_v2,
 )
 
@@ -88,6 +89,24 @@ def test_raw_markdown_table_preserves_trailing_newlines_when_degraded():
 
     assert card["body"]["elements"] == [
         {"tag": "markdown", "content": f"```markdown\n{raw}```", "text_size": "normal"}
+    ]
+
+
+def test_public_text_entrypoint_preserves_fenced_trailing_newlines():
+    payloads = build_feishu_card_v2_payloads("```python\nprint('hi')\n\n```")
+
+    card = json.loads(payloads[0])
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": "```python\nprint('hi')\n\n```", "text_size": "normal"}
+    ]
+
+
+def test_public_text_entrypoint_does_not_invent_empty_fence_newlines():
+    payloads = build_feishu_card_v2_payloads("```\n```")
+
+    card = json.loads(payloads[0])
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": "```\n```", "text_size": "normal"}
     ]
 
 

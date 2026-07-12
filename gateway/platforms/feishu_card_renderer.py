@@ -962,13 +962,13 @@ def _strip_inline_markdown(text: str) -> str:
 
 def _render_code_block_content(block: CodeBlock) -> str:
     code = block.code.replace("\r\n", "\n")
-    closing_separator = "" if code.endswith("\n") else "\n"
+    closing_separator = "" if not code or code.endswith("\n") else "\n"
     return f"```{block.language}\n{code}{closing_separator}```"
 
 
 def _render_code_block_content_from_raw(*, language: str, code: str) -> str:
     normalized = code.replace("\r\n", "\n")
-    closing_separator = "" if normalized.endswith("\n") else "\n"
+    closing_separator = "" if not normalized or normalized.endswith("\n") else "\n"
     return f"```{language}\n{normalized}{closing_separator}```"
 
 

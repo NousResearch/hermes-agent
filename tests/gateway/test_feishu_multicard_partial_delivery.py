@@ -191,6 +191,28 @@ async def test_first_card_api_failure_still_falls_back():
 
 
 @pytest.mark.asyncio
+async def test_first_card_timeout_is_ambiguous_and_never_falls_back():
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("read timed out")
+
+    adapter._feishu_send_with_retry = fake_send
+    result = await adapter.send(
+        "oc_1",
+        "ambiguous timeout final response",
+        metadata={"hermes_final_response": True},
+    )
+
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivery_ambiguous"] is True
+    assert [call["msg_type"] for call in calls] == ["interactive"]
+
+
+@pytest.mark.asyncio
 async def test_try_send_final_rich_second_card_failure_returns_partial():
     """try_send_final_rich_response returns partial on second card failure."""
     adapter = _make_adapter()
@@ -227,6 +249,38 @@ async def test_try_send_final_rich_second_card_failure_returns_partial():
     assert result.success is False
     assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
     assert result.raw_response["delivered_cards"] == 1
+
+
+@pytest.mark.asyncio
+async def test_try_send_final_rich_first_card_timeout_never_falls_back():
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("read timed out")
+
+    adapter._feishu_send_with_retry = fake_send
+    adapter._download_remote_image = AsyncMock(return_value="/tmp/fake.png")
+    adapter._upload_image_for_card = AsyncMock(return_value="img_key")
+
+    result = await adapter.try_send_final_rich_response(
+        chat_id="oc_1",
+        original_response="ambiguous rich timeout",
+        text_content="ambiguous rich timeout",
+        images=[("http://example.com/img.png", "test")],
+        media_files=[],
+        local_files=[],
+        force_document_attachments=False,
+        reply_to=None,
+        metadata={"hermes_final_response": True},
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivery_ambiguous"] is True
+    assert [call["msg_type"] for call in calls] == ["interactive"]
 
 
 @pytest.mark.asyncio

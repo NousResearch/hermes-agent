@@ -52,14 +52,19 @@ def parse_markdown_document(text: str) -> MessageDocument:
             flush_paragraph()
             language = fence.group(1).strip()
             code_lines: list[str] = []
+            closed_fence = False
             i += 1
             while i < len(lines):
                 if lines[i].strip() == "```":
+                    closed_fence = True
                     i += 1
                     break
                 code_lines.append(lines[i])
                 i += 1
-            blocks.append(CodeBlock(language=language, code="\n".join(code_lines)))
+            code = "\n".join(code_lines)
+            if closed_fence and code_lines:
+                code += "\n"
+            blocks.append(CodeBlock(language=language, code=code))
             continue
 
         table = _parse_table_at(lines, i)

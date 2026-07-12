@@ -292,6 +292,31 @@ def _validate_interactive_request_body_size(request_body: Any) -> None:
         )
 
 
+def _is_ambiguous_delivery_exception(exc: Exception) -> bool:
+    """Return True when an interactive request may have landed despite an error."""
+    return isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+
+
+def _ambiguous_card_delivery_result(
+    *,
+    error: str,
+    delivered_cards: int,
+    total_cards: int,
+) -> SendResult:
+    """Suppress cross-format fallback when Feishu acceptance is unknowable."""
+    return SendResult(
+        success=False,
+        error=error,
+        delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+        raw_response={
+            "delivery_ambiguous": True,
+            "delivered_cards": delivered_cards,
+            "total_cards": total_cards,
+            "failed_index": delivered_cards,
+        },
+    )
+
+
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -2042,6 +2067,7 @@ class FeishuAdapter(BasePlatformAdapter):
         sent_cards = 0
         last_result: Optional[SendResult] = None
         payloads: list = []
+        card_send_attempted = False
         try:
             image_key_by_source: Dict[str, str] = {}
             for source, image_path, _alt in image_sources:
@@ -2065,6 +2091,7 @@ class FeishuAdapter(BasePlatformAdapter):
             for part_index, payload in enumerate(payloads):
                 if part_index:
                     await _sleep_between_feishu_multicard_parts()
+                card_send_attempted = True
                 response = await self._feishu_send_with_retry(
                     chat_id=chat_id,
                     msg_type="interactive",
@@ -2091,11 +2118,17 @@ class FeishuAdapter(BasePlatformAdapter):
                                 "failed_index": sent_cards,
                             },
                         )
+                    if self._is_timeout_error(result.error):
+                        return _ambiguous_card_delivery_result(
+                            error=result.error or "Feishu interactive send timed out",
+                            delivered_cards=0,
+                            total_cards=len(payloads),
+                        )
                     return None
                 last_result = result
                 sent_cards += 1
             return last_result
-        except Exception:
+        except Exception as exc:
             if sent_cards:
                 logger.warning(
                     "[Feishu] Final rich card raised after %d card(s); "
@@ -2112,6 +2145,12 @@ class FeishuAdapter(BasePlatformAdapter):
                         "total_cards": len(payloads),
                         "failed_index": sent_cards,
                     },
+                )
+            if card_send_attempted and _is_ambiguous_delivery_exception(exc):
+                return _ambiguous_card_delivery_result(
+                    error=f"{type(exc).__name__}: {exc}",
+                    delivered_cards=0,
+                    total_cards=len(payloads),
                 )
             logger.warning("[Feishu] Final rich card failed; falling back to legacy delivery", exc_info=True)
             return None
@@ -2131,6 +2170,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._should_send_final_response_as_card(content, metadata, reply_to):
             payloads: list = []
             sent_cards = 0
+            card_send_attempted = False
             try:
                 last_result: Optional[SendResult] = None
                 payloads = build_feishu_card_v2_payloads(
@@ -2140,6 +2180,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 for part_index, card_payload in enumerate(payloads):
                     if part_index:
                         await _sleep_between_feishu_multicard_parts()
+                    card_send_attempted = True
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="interactive",
@@ -2166,6 +2207,12 @@ class FeishuAdapter(BasePlatformAdapter):
                                     "failed_index": sent_cards,
                                 },
                             )
+                        if self._is_timeout_error(result.error):
+                            return _ambiguous_card_delivery_result(
+                                error=result.error or "Feishu interactive send timed out",
+                                delivered_cards=0,
+                                total_cards=len(payloads),
+                            )
                         logger.warning("[Feishu] Final response card API failed; falling back to legacy payload: %s", result.error)
                         last_result = None
                         break
@@ -2190,6 +2237,12 @@ class FeishuAdapter(BasePlatformAdapter):
                             "total_cards": len(payloads),
                             "failed_index": sent_cards,
                         },
+                    )
+                if card_send_attempted and _is_ambiguous_delivery_exception(exc):
+                    return _ambiguous_card_delivery_result(
+                        error=f"{type(exc).__name__}: {exc}",
+                        delivered_cards=0,
+                        total_cards=len(payloads),
                     )
                 logger.warning(
                     "[Feishu] Final response card send failed; falling back to legacy payload: %s",

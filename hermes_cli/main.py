@@ -6357,6 +6357,11 @@ def _update_via_zip(args):
             print(
                 f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
             )
+        if result.get("migrated"):
+            print(
+                f"  ⇪ {len(result['migrated'])} migrated optional→bundled: "
+                f"{', '.join(result['migrated'])}"
+            )
         if result.get("user_modified"):
             print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
             print(
@@ -6365,7 +6370,7 @@ def _update_via_zip(args):
             )
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
-        if not result["copied"] and not result.get("updated"):
+        if not result["copied"] and not result.get("updated") and not result.get("migrated"):
             print("  ✓ Skills are up to date")
     except Exception:
         pass
@@ -10001,6 +10006,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
                 )
+            if result.get("migrated"):
+                print(
+                    f"  ⇪ {len(result['migrated'])} migrated optional→bundled: "
+                    f"{', '.join(result['migrated'])}"
+                )
             if result.get("user_modified"):
                 print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
                 print(
@@ -10009,7 +10019,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if result.get("cleaned"):
                 print(f"  − {len(result['cleaned'])} removed from manifest")
-            if not result["copied"] and not result.get("updated"):
+            if not result["copied"] and not result.get("updated") and not result.get("migrated"):
                 print("  ✓ Skills are up to date")
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)

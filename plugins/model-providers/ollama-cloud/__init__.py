@@ -51,7 +51,7 @@ class OllamaCloudProfile(ProviderProfile):
                 return {}, {}
             if effort == "none":
                 return {}, {}  # explicit none → suppress thinking
-            if effort in ("xhigh", "max"):
+            if effort in ("xhigh", "max", "ultra"):
                 top_level["reasoning_effort"] = "max"
             elif effort in ("low", "medium", "high"):
                 top_level["reasoning_effort"] = effort

@@ -1415,7 +1415,10 @@ export const ja = defineLocale({
     customPlaceholder: '0 9 * * * または weekdays at 9am',
     customHint: 'Cron 式、または「every hour」「weekdays at 9am」のようなフレーズ。',
     optional: '省略可能',
+    promptRequired: 'プロンプトは必須です。',
     promptScheduleRequired: 'プロンプトとスケジュールは必須です。',
+    scheduleRequired: 'スケジュールは必須です。',
+    scriptOnlyEditHint: 'スクリプトのみのジョブ（AI プロンプトなし）。ジョブ ID:',
     saveChanges: '変更を保存',
     createAction: 'Cron を作成'
   },
@@ -1981,7 +1984,9 @@ export const ja = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '特高',
       max: '最大',
+      ultra: 'ウルトラ',
       updateFailed: 'モデルオプションの更新に失敗しました',
       fastFailed: '高速モードの更新に失敗しました'
     },

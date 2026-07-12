@@ -1470,7 +1470,10 @@ export const en: Translations = {
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',
     optional: 'Optional',
+    promptRequired: 'Prompt is required.',
     promptScheduleRequired: 'Prompt and schedule are required.',
+    scheduleRequired: 'Schedule is required.',
+    scriptOnlyEditHint: 'Script-only job (no AI prompt). Job id:',
     saveChanges: 'Save changes',
     createAction: 'Create cron'
   },
@@ -2036,7 +2039,9 @@ export const en: Translations = {
       low: 'Low',
       medium: 'Medium',
       high: 'High',
+      xhigh: 'Extra High',
       max: 'Max',
+      ultra: 'Ultra',
       updateFailed: 'Model option update failed',
       fastFailed: 'Fast mode update failed'
     },

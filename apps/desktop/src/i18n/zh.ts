@@ -1647,7 +1647,10 @@ export const zh: Translations = {
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',
     optional: '可选',
+    promptRequired: '提示词为必填项。',
     promptScheduleRequired: '提示词和排程为必填项。',
+    scheduleRequired: '排程为必填项。',
+    scriptOnlyEditHint: '仅脚本任务（无 AI 提示词）。任务 ID：',
     saveChanges: '保存更改',
     createAction: '创建定时任务'
   },
@@ -2200,7 +2203,9 @@ export const zh: Translations = {
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '极高',
       max: '最高',
+      ultra: '超高',
       updateFailed: '模型选项更新失败',
       fastFailed: '快速模式更新失败'
     },

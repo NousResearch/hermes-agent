@@ -158,6 +158,10 @@ class PlatformEntry:
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
 
+    # Return True when this configuration binds a local TCP listener. Used by
+    # profile multiplexing to reject only modes that would collide.
+    is_port_binding_fn: Optional[Callable[[Any], bool]] = None
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

@@ -8567,7 +8567,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile's listener already serves every profile via the
             # /p/<profile>/ prefix, so a second bind can only collide. This is a
             # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
+            from gateway.platform_registry import platform_registry
+
+            registry_entry = platform_registry.get(platform.value)
+            plugin_binds_port = bool(
+                registry_entry
+                and registry_entry.is_port_binding_fn
+                and registry_entry.is_port_binding_fn(platform_config)
+            )
+            if platform.value in _PORT_BINDING_PLATFORM_VALUES or plugin_binds_port:
                 raise MultiplexConfigError(
                     f"Profile '{profile_name}' enables the port-binding platform "
                     f"'{platform.value}', but gateway.multiplex_profiles is on. The "

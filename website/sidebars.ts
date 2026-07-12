@@ -636,6 +636,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/feishu',
             'user-guide/messaging/wecom',
             'user-guide/messaging/wecom-callback',
+            'user-guide/messaging/webex',
             'user-guide/messaging/weixin',
             'user-guide/messaging/qqbot',
             'user-guide/messaging/yuanbao',

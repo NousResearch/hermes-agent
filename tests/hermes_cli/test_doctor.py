@@ -1,10 +1,12 @@
 """Tests for hermes_cli.doctor."""
 
+import json
 import os
 import sys
 import types
 import io
 import contextlib
+from datetime import datetime, timedelta, timezone
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -241,6 +243,232 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
         doctor_mod.run_doctor(Namespace(fix=False))
 
     assert seen["interactive"] == "1"
+
+
+def test_long_term_optimization_honors_memory_limit_overrides(monkeypatch, tmp_path, capsys):
+    home = tmp_path / ".hermes"
+    memories = home / "memories"
+    memories.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "memory:\n"
+        "  memory_char_limit: 100\n"
+        "  user_char_limit: 50\n",
+        encoding="utf-8",
+    )
+    (memories / "MEMORY.md").write_text("x" * 85, encoding="utf-8")
+    (memories / "USER.md").write_text("brief profile", encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+
+    issues = []
+    doctor._check_long_term_optimization(issues)
+
+    out = capsys.readouterr().out
+    assert "Long-Term Optimization" in out
+    assert "MEMORY.md is close to its Tier-1 memory budget" in out
+    assert "(85/100 chars, 85%)" in out
+    assert "USER.md has Tier-1 memory headroom" in out
+    assert issues == [
+        f"Curate {home}/memories/MEMORY.md; keep it below about 80% of its configured limit."
+    ]
+
+
+def test_long_term_optimization_flags_pending_and_uncurated_agent_skills(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / ".hermes"
+    skills = home / "skills"
+    pending = home / "pending" / "skills"
+    skills.mkdir(parents=True)
+    pending.mkdir(parents=True)
+    (home / "config.yaml").write_text("curator:\n  enabled: true\n", encoding="utf-8")
+    (pending / "pending-skill.json").write_text("{}", encoding="utf-8")
+
+    usage = {}
+    for index in range(doctor._AGENT_SKILL_REVIEW_WARN_COUNT):
+        name = f"agent-skill-{index}"
+        skill_dir = skills / "agent" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test skill\n---\n\nUse it.\n",
+            encoding="utf-8",
+        )
+        usage[name] = {"created_by": "agent"}
+
+    archived_dir = skills / ".archive" / "old-agent-skill"
+    archived_dir.mkdir(parents=True)
+    (archived_dir / "SKILL.md").write_text(
+        "---\nname: old-agent-skill\ndescription: archived\n---\n",
+        encoding="utf-8",
+    )
+    usage["old-agent-skill"] = {"created_by": "agent"}
+
+    backup_dir = skills / ".curator_backups" / "snapshot" / "backup-agent-skill"
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "SKILL.md").write_text(
+        "---\nname: backup-agent-skill\ndescription: backup\n---\n",
+        encoding="utf-8",
+    )
+    usage["backup-agent-skill"] = {"created_by": "agent"}
+
+    (skills / ".usage.json").write_text(json.dumps(usage), encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+
+    issues = []
+    doctor._check_long_term_optimization(issues)
+
+    out = capsys.readouterr().out
+    assert "1 pending skill write(s) need review" in out
+    assert f"{doctor._AGENT_SKILL_REVIEW_WARN_COUNT} curator-managed agent-created skill(s) tracked" in out
+    assert "Skill curator has not recorded a review run" in out
+    assert "old-agent-skill" not in out
+    assert "backup-agent-skill" not in out
+    assert "Review pending skill writes with '/skills pending' before they pile up." in issues
+    assert any("hermes curator run --dry-run" in issue for issue in issues)
+
+
+def test_long_term_optimization_accepts_recent_curator_run(monkeypatch, tmp_path, capsys):
+    home = tmp_path / ".hermes"
+    skills = home / "skills"
+    skills.mkdir(parents=True)
+    recent = datetime.now(timezone.utc) - timedelta(days=2)
+    (skills / ".curator_state").write_text(
+        json.dumps({"last_run_at": recent.isoformat()}),
+        encoding="utf-8",
+    )
+
+    usage = {}
+    for index in range(doctor._AGENT_SKILL_REVIEW_WARN_COUNT):
+        name = f"recent-skill-{index}"
+        skill_dir = skills / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test skill\n---\n\nUse it.\n",
+            encoding="utf-8",
+        )
+        usage[name] = {"agent_created": True}
+    (skills / ".usage.json").write_text(json.dumps(usage), encoding="utf-8")
+
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+
+    issues = []
+    doctor._check_long_term_optimization(issues)
+
+    out = capsys.readouterr().out
+    assert "Skill curator ran recently" in out
+    assert all("curator run --dry-run" not in issue for issue in issues)
+
+
+def test_optimizer_audit_flags_provider_context_mcp_and_cron_drift(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / ".hermes"
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: anthropic/claude-sonnet-4\n"
+        "  context_length: 32000\n"
+        "  max_tokens: 20000\n"
+        "compression:\n"
+        "  enabled: false\n"
+        "context_file_max_chars: 500000\n"
+        "mcp_servers:\n"
+        "  missing:\n"
+        "    command: definitely-not-a-real-mcp-binary\n",
+        encoding="utf-8",
+    )
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "daily",
+                        "name": "Daily research",
+                        "enabled": True,
+                        "no_agent": False,
+                        "provider": None,
+                        "model": None,
+                        "provider_snapshot": "anthropic",
+                        "model_snapshot": "claude-sonnet-4",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_window = SimpleNamespace(label="API key quota", used_percent=95)
+    fake_usage = SimpleNamespace(
+        unavailable_reason=None,
+        windows=(fake_window,),
+        details=("Credits balance: $0.00",),
+    )
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+    monkeypatch.setattr(doctor, "_fetch_doctor_account_usage", lambda *a, **kw: fake_usage)
+
+    issues = []
+    doctor._check_optimizer_audit(issues)
+
+    out = capsys.readouterr().out
+    assert "Optimizer Audit" in out
+    assert "Active model pinned in config" in out
+    assert "openrouter account usage available" in out
+    assert "openrouter API key quota nearly exhausted" in out
+    assert "MCP server 'missing' command not found" in out
+    assert "Automatic context compression disabled" in out
+    assert "Active model has a small context window" in out
+    assert "max_tokens reserves a large share of the window" in out
+    assert "context_file_max_chars may crowd the prompt" in out
+    assert "1 scheduled job(s) follow global provider/model" in out
+    assert "1 scheduled job(s) have provider/model drift" in out
+    assert any("quota is 95% used" in issue for issue in issues)
+    assert any("mcp_servers.missing.command" in issue for issue in issues)
+    assert any("compression.enabled" in issue for issue in issues)
+    assert any("provider/model drift" in issue for issue in issues)
+
+
+def test_long_term_optimization_scans_agent_created_skill_guard_findings(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / ".hermes"
+    skills = home / "skills"
+    skill_dir = skills / "agent" / "risky"
+    skill_dir.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "skills:\n"
+        "  guard_agent_created: true\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: risky\ndescription: risky test\n---\n\nUse it.\n",
+        encoding="utf-8",
+    )
+    (skills / ".usage.json").write_text(
+        json.dumps({"risky": {"created_by": "agent"}}),
+        encoding="utf-8",
+    )
+
+    fake_finding = SimpleNamespace(severity="critical")
+    fake_scan = SimpleNamespace(verdict="dangerous", findings=[fake_finding])
+
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+    monkeypatch.setattr("tools.skills_guard.scan_skill", lambda *a, **kw: fake_scan)
+
+    issues = []
+    doctor._check_long_term_optimization(issues)
+
+    out = capsys.readouterr().out
+    assert "Agent-created skill 'risky' has guard findings" in out
+    assert "skills.guard_agent_created: false" not in out
+    assert any("Review agent-created skill 'risky'" in issue for issue in issues)
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):

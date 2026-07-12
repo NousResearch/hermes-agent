@@ -104,12 +104,18 @@ def test_manual_notification_subscription_cannot_grant_approval_authority(
         claimed = kb.claim_task(conn, task_id, claimer="test:owner")
         assert claimed is not None
 
-        with pytest.raises(ValueError, match="trusted gateway approval origin"):
-            _request(conn, claimed)
+        unavailable = _request(conn, claimed)
 
-        assert kb.get_task(conn, task_id).status == "running"
+        assert unavailable is not None
+        assert unavailable["status"] == "unavailable"
+        assert unavailable["id"].startswith("kau_")
+        assert kb.get_task(conn, task_id).status == "blocked"
+        assert kb.get_run(conn, claimed.current_run_id).outcome == (
+            "approval_unavailable"
+        )
         assert kb.list_task_approvals(conn, task_id=task_id) == []
         assert kb.get_task_approval_route(conn, task_id) is None
+        assert kb.recompute_ready(conn) == 0
 
 
 def test_approval_origin_requires_exact_user_principal(kanban_home):
@@ -140,11 +146,31 @@ def test_removed_origin_subscription_fails_before_request_is_persisted(
             thread_id="thread-1",
         ) is True
 
-        with pytest.raises(ValueError, match="no active delivery"):
-            _request(conn, task)
+        unavailable = _request(conn, task)
 
-        assert kb.get_task(conn, task.id).status == "running"
+        assert unavailable is not None
+        assert unavailable["status"] == "unavailable"
+        assert unavailable["approval_unavailable"] is True
+        assert unavailable["id"].startswith("kau_")
+        parked = kb.get_task(conn, task.id)
+        assert parked.status == "blocked"
+        assert parked.current_run_id is None
+        assert parked.claim_lock is None
+        run = kb.get_run(conn, task.current_run_id)
+        assert run.status == "approval_pending"
+        assert run.outcome == "approval_unavailable"
         assert kb.list_task_approvals(conn, task_id=task.id) == []
+        assert kb.list_pending_unnotified_task_approvals(
+            conn,
+            task_id=task.id,
+        ) == []
+        assert kb.decide_task_approval(
+            conn,
+            unavailable["id"],
+            "approve",
+        ) is None
+        assert kb.list_events(conn, task.id)[-1].kind == "approval_unavailable"
+        assert kb.recompute_ready(conn) == 0
 
 
 def test_approval_origin_is_immutable_and_idempotent(kanban_home):
@@ -458,6 +484,245 @@ def test_route_bound_decision_requeues_binds_and_consumes_once(kanban_home):
         }
         assert kb.consume_task_approval(conn, **consume_args) is True
         assert kb.consume_task_approval(conn, **consume_args) is False
+
+
+def test_review_approval_restores_review_lane_and_binds_exact_grant(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="review approval",
+            assignee="worker",
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        review_run = kb.claim_review_task(
+            conn,
+            task_id,
+            claimer="test:review-owner",
+        )
+        assert review_run is not None
+        request = _request(conn, review_run)
+        assert request is not None and request["status"] == "pending"
+
+        approved = kb.decide_task_approval(
+            conn,
+            request["id"],
+            "approve",
+            **_DEFAULT_ROUTE,
+        )
+
+        assert approved is not None and approved["status"] == "approved"
+        assert kb.get_task(conn, task_id).status == "review"
+        assert kb.claim_task(conn, task_id, claimer="wrong:ready-lane") is None
+
+        resumed = kb.claim_review_task(
+            conn,
+            task_id,
+            claimer="test:review-resume",
+        )
+        assert resumed is not None
+        assert resumed.approval_request_id == request["id"]
+        assert resumed.approval_grant_nonce == approved["grant_nonce"]
+        assert resumed.approval_worker_session_id == "20260712_120000_abcdef"
+        stored = kb.get_task_approval(conn, request["id"])
+        assert stored["resume_run_id"] == resumed.current_run_id
+        assert kb.consume_task_approval(
+            conn,
+            request_id=request["id"],
+            grant_nonce=approved["grant_nonce"],
+            task_id=task_id,
+            resume_run_id=resumed.current_run_id,
+            profile="worker",
+            action_digest=request["action_digest"],
+        ) is True
+
+
+def test_expired_unbound_review_grant_blocks_review_dispatch(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="expired review approval",
+            assignee="worker",
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        review_run = kb.claim_review_task(conn, task_id, claimer="test:review")
+        request = _request(conn, review_run)
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+        assert approved is not None
+        assert kb.get_task(conn, task_id).status == "review"
+        conn.execute(
+            "UPDATE kanban_approval_requests SET expires_at = 1 WHERE id = ?",
+            (request["id"],),
+        )
+
+        assert kb.expire_task_approvals(conn, now=2) == 1
+
+        assert kb.get_task(conn, task_id).status == "blocked"
+        assert kb.claim_review_task(conn, task_id, claimer="must:not-spawn") is None
+        assert kb.get_task_approval(conn, request["id"])["status"] == "expired"
+
+
+@pytest.mark.parametrize("failure_stage", ["workspace", "spawn"])
+def test_review_resume_failure_requeues_review_and_preserves_unbound_grant(
+    kanban_home,
+    monkeypatch,
+    failure_stage,
+):
+    profile = kanban_home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title=f"review {failure_stage} failure",
+            assignee="worker",
+            workspace_kind=("worktree" if failure_stage == "workspace" else "scratch"),
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        initial = kb.claim_review_task(conn, task_id, claimer="test:review")
+        assert initial is not None
+        request = _request(conn, initial)
+        assert request is not None
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+        assert approved is not None
+        original_nonce = approved["grant_nonce"]
+
+        spawn_calls = []
+
+        if failure_stage == "workspace":
+            def fail_workspace(*_args, **_kwargs):
+                raise OSError("synthetic workspace failure")
+
+            monkeypatch.setattr(kb, "_resolve_worktree_workspace", fail_workspace)
+
+            def spawn_fn(*_args, **_kwargs):
+                spawn_calls.append(True)
+                raise AssertionError("spawn reached after workspace failure")
+        else:
+            def spawn_fn(*_args, **_kwargs):
+                spawn_calls.append(True)
+                raise OSError("synthetic Popen failure")
+
+        kb.dispatch_once(conn, spawn_fn=spawn_fn, failure_limit=5)
+
+        after = kb.get_task(conn, task_id)
+        grant = kb.get_task_approval(conn, request["id"])
+        assert after.status == "review"
+        assert after.current_run_id is None
+        assert grant["status"] == "approved"
+        assert grant["resume_run_id"] is None
+        assert grant["grant_nonce"] != original_nonce
+        assert kb.claim_task(conn, task_id, claimer="wrong:ready-lane") is None
+        resumed = kb.claim_review_task(conn, task_id, claimer="test:retry-review")
+        assert resumed is not None
+        assert resumed.approval_request_id == request["id"]
+        assert resumed.approval_grant_nonce == grant["grant_nonce"]
+        assert bool(spawn_calls) is (failure_stage == "spawn")
+
+
+def test_stale_claim_reaper_returns_review_run_to_review_lane(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="stale review worker",
+            assignee="worker",
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        claimed = kb.claim_review_task(conn, task_id, claimer="remote:review")
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires = 1 WHERE id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = 1 WHERE id = ?",
+            (claimed.current_run_id,),
+        )
+
+        assert kb.release_stale_claims(conn) == 1
+
+        requeued = kb.get_task(conn, task_id)
+        ended = kb.get_run(conn, claimed.current_run_id)
+        assert requeued.status == "review"
+        assert requeued.current_run_id is None
+        assert ended.outcome == "reclaimed"
+        assert kb.claim_task(conn, task_id, claimer="wrong:ready-lane") is None
+        assert kb.claim_review_task(conn, task_id, claimer="test:review-retry")
+
+
+def test_review_crash_at_failure_threshold_blocks_instead_of_respawning(
+    kanban_home,
+    monkeypatch,
+):
+    host = kb._claimer_id().split(":", 1)[0]
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="crashed review worker",
+            assignee="worker",
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'review', max_retries = 1 WHERE id = ?",
+            (task_id,),
+        )
+        claimed = kb.claim_review_task(
+            conn,
+            task_id,
+            claimer=f"{host}:review",
+        )
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 424242, started_at = 1 WHERE id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = 424242, started_at = 1 WHERE id = ?",
+            (claimed.current_run_id,),
+        )
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(
+            kb,
+            "_classify_worker_exit",
+            lambda _pid: ("nonzero_exit", 1),
+        )
+
+        assert kb.detect_crashed_workers(conn) == [task_id]
+
+        blocked = kb.get_task(conn, task_id)
+        assert blocked.status == "blocked"
+        assert blocked.current_run_id is None
+        assert blocked.consecutive_failures == 1
+        assert task_id in kb.detect_crashed_workers._last_auto_blocked
+        assert kb.claim_review_task(conn, task_id, claimer="must:not-respawn") is None
+        assert kb.list_events(conn, task_id)[-1].kind == "gave_up"
+
+
+def test_legacy_claim_event_without_source_status_resumes_ready(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        claimed_event = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed'",
+            (task.id, task.current_run_id),
+        ).fetchone()
+        payload = json.loads(claimed_event["payload"])
+        payload.pop("source_status", None)
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload), claimed_event["id"]),
+        )
+
+        request = _request(conn, task)
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+
+        assert approved is not None
+        assert kb.get_task(conn, task.id).status == "ready"
 
 
 def test_approved_task_is_parent_gated(kanban_home):

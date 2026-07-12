@@ -316,6 +316,17 @@ Understanding how Hermes behaves in different contexts:
 In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
 :::
 
+### Thread engagement commands
+
+Two commands give you fine-grained control over Hermes' participation in a thread. Both are Slack-only and must be used as thread replies (the `!cmd` prefix works inside threads):
+
+| Command | What it does |
+|---------|-------------|
+| `!leave` | Hermes **leaves the thread** — stops responding to all messages in it. Cleans up session state. @mention the bot again to re-engage. |
+| `!silent` | Hermes **goes silent** — continues reading messages and maintaining context but stops sending replies. Useful when you want the bot to track a conversation without participating. @mention it to re-enable. |
+
+**Re-activation:** using `@Hermes` (or your configured bot name) in a thread automatically removes it from both left and silent states, and the bot resumes normal participation.
+
 ---
 
 ## Configuration Options

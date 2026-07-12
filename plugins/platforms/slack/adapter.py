@@ -460,6 +460,14 @@ class SlackAdapter(BasePlatformAdapter):
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
+        # Track threads that the bot has explicitly left via /leave command.
+        # These threads should not respond even if other conditions are met.
+        self._left_threads: set = set()
+        self._LEFT_THREADS_MAX = 1000
+        # Track threads where the bot should stay silent but maintain context.
+        # Bot will read messages and maintain context but not respond unless @mentioned.
+        self._silent_threads: set = set()
+        self._SILENT_THREADS_MAX = 1000
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
         # events, and they carry the user/thread identity needed for stable
@@ -2848,6 +2856,10 @@ class SlackAdapter(BasePlatformAdapter):
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
+                # Check if this thread was explicitly left via /leave command
+                if event_thread_ts and event_thread_ts in self._left_threads:
+                    return  # Bot explicitly left this thread
+
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
                 )
@@ -2870,6 +2882,12 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+            # If this thread was previously left, remove it from left threads since user explicitly mentioned the bot
+            if event_thread_ts and event_thread_ts in self._left_threads:
+                self._left_threads.discard(event_thread_ts)
+            # If this thread was in silent mode, remove it from silent threads since user explicitly mentioned the bot
+            if event_thread_ts and event_thread_ts in self._silent_threads:
+                self._silent_threads.discard(event_thread_ts)
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would

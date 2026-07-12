@@ -8882,6 +8882,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
 
+        # Check if this is from a silent Slack thread (silent mode).
+        # Silent threads: process message for context but suppress the response,
+        # unless it is a slash command (allow commands even in silent mode).
+        if source.platform.value == 'slack':
+            adapter = self.adapters.get(source.platform)
+            if adapter and hasattr(adapter, '_silent_threads'):
+                if source.thread_id in adapter._silent_threads:
+                    logger.info(
+                        "SILENT MODE: Processing message from silent thread %s",
+                        source.thread_id,
+                    )
+                    if not event.text.startswith("/"):  # Allow slash commands even in silent mode
+                        # Process the message for context but don't respond
+                        await self._handle_message_silently(event)
+                        return None  # Don't send any response
+                    else:
+                        logger.info("SILENT MODE: Allowing slash command: %s", event.text)
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not getattr(event, "internal", False)
@@ -9989,6 +10007,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "leave":
+            return await self._handle_leave_command(event)
+
+        if canonical == "silent":
+            return await self._handle_silent_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -10777,6 +10801,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         _reply_id = getattr(event, "reply_to_message_id", None)
         _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+
+        # Initialize session env tokens to None in case of early exception
+        # (prevents NameError in the finally: _clear_session_env block)
+        _session_env_tokens = None
+
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
             _platform_name, source.user_name or source.user_id or "unknown",
@@ -12301,6 +12330,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
+
+    async def _handle_message_silently(self, event: MessageEvent) -> None:
+        """Handle a message from a silent thread.
+
+        Process the message through the full agent pipeline for context continuity,
+        but suppress the response so the bot stays quiet in the thread.
+        Slash commands bypass this handler and are allowed through normally.
+        """
+        source = event.source
+        _quick_key = f"{source.platform.value}:{source.chat_id}"
+
+        logger.info("SILENT HANDLER: Processing message silently: %r", (event.text or "")[:50])
+
+        try:
+            # Don't process if an agent is already running for this session
+            if _quick_key in self._running_agents:
+                logger.debug(
+                    "Silent thread message for active session %s — skipping to avoid conflicts",
+                    _quick_key,
+                )
+                return
+
+            # Set running agent sentinel to prevent concurrent processing
+            generation = self._begin_session_run_generation(_quick_key)
+            self._running_agents[_quick_key] = generation
+            self._running_agents_ts[_quick_key] = time.time()
+
+            try:
+                # Run the full agent processing pipeline for context, but suppress the response
+                agent_response = await self._handle_message_with_agent(
+                    event, source, _quick_key, generation
+                )
+                if agent_response:
+                    logger.info(
+                        "SILENT MODE: Agent generated response (%d chars) but suppressing it",
+                        len(agent_response),
+                    )
+                else:
+                    logger.info("SILENT MODE: Agent processing completed (no response generated)")
+            finally:
+                # Clean up running agent sentinel
+                self._running_agents.pop(_quick_key, None)
+                self._running_agents_ts.pop(_quick_key, None)
+
+        except Exception as e:
+            logger.exception("Silent message processing failed: %s", e)
+            # Clean up on error
+            self._running_agents.pop(_quick_key, None)
+            self._running_agents_ts.pop(_quick_key, None)
 
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, profile-scoped.

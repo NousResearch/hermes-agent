@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Activity,
+  AlertTriangle,
+  Archive,
   Brain,
+  Bug,
   Check,
   Clock,
   Copy,
@@ -13,6 +16,7 @@ import {
   HardDrive,
   KeyRound,
   Link2,
+  Network,
   Play,
   Plus,
   Power,
@@ -58,6 +62,8 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
+  VpsExitName,
+  VpsOpsStatus,
 } from "@/lib/api";
 
 function formatBytes(n: number): string {
@@ -75,6 +81,57 @@ function formatDuration(seconds: number): string {
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
 }
+
+function formatAgeSeconds(raw?: string): string {
+  if (!raw) return "—";
+  const n = Number(raw);
+  return Number.isFinite(n) ? formatDuration(n) : raw;
+}
+
+function opsTone(status?: string): "success" | "warning" | "destructive" | "secondary" {
+  const value = (status || "").toLowerCase();
+  if (value === "ok" || value === "running" || value === "success") return "success";
+  if (value === "warn" || value === "warning" || value === "degraded") return "warning";
+  if (value === "fail" || value === "failed" || value === "down") return "destructive";
+  return "secondary";
+}
+
+function compactExitLabel(raw?: string): string {
+  if (!raw) return "—";
+  if (raw.includes("1090")) return "surfshark";
+  if (raw.includes("1080")) return "residential";
+  return raw;
+}
+
+function VpsMetric({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone?: "success" | "warning" | "destructive" | "secondary";
+}) {
+  return (
+    <div className="min-w-0 border border-border bg-background/35 px-3 py-2">
+      <div className="text-xs uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 flex min-w-0 items-center gap-2">
+        {tone ? <Badge tone={tone}>{value}</Badge> : <span className="truncate text-sm font-medium">{value}</span>}
+      </div>
+      {detail && (
+        <div className="mt-1 truncate text-xs text-muted-foreground" title={detail}>
+          {detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const VPS_EXIT_NAMES: VpsExitName[] = ["surfshark", "residential", "direct"];
 
 type BackupImportTarget =
   | { kind: "upload"; file: File }
@@ -203,6 +260,10 @@ export default function SystemPage() {
   const [curator, setCurator] = useState<CuratorStatus | null>(null);
   const [portal, setPortal] = useState<PortalStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [vpsOps, setVpsOps] = useState<VpsOpsStatus | null>(null);
+  const [vpsOpsLoading, setVpsOpsLoading] = useState(true);
+  const [vpsDetailsOpen, setVpsDetailsOpen] = useState(false);
+  const [directExitConfirmOpen, setDirectExitConfirmOpen] = useState(false);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -283,6 +344,77 @@ export default function SystemPage() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  const loadVpsOps = useCallback(() => {
+    setVpsOpsLoading(true);
+    api
+      .getVpsOpsStatus()
+      .then(setVpsOps)
+      .catch((e) =>
+        setVpsOps({
+          available: false,
+          script: null,
+          overall: "fail",
+          captured_at: null,
+          exit_code: null,
+          summary: { ok: null, warn: null, fail: null },
+          launchd: [],
+          tunnel_watch: {},
+          backup: {},
+          exit: {},
+          ops_events: {
+            path: "",
+            recorded: 0,
+            recent_non_ok: 0,
+            recent: [],
+          },
+          attention: [],
+          raw_lines: [],
+          error: String(e),
+        }),
+      )
+      .finally(() => setVpsOpsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getVpsOpsStatus()
+      .then((next) => {
+        if (!cancelled) setVpsOps(next);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setVpsOps({
+            available: false,
+            script: null,
+            overall: "fail",
+            captured_at: null,
+            exit_code: null,
+            summary: { ok: null, warn: null, fail: null },
+            launchd: [],
+            tunnel_watch: {},
+            backup: {},
+            exit: {},
+            ops_events: {
+              path: "",
+              recorded: 0,
+              recent_non_ok: 0,
+              recent: [],
+            },
+            attention: [],
+            raw_lines: [],
+            error: String(e),
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setVpsOpsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Gateway lifecycle ──────────────────────────────────────────────
   const runGateway = async (verb: "start" | "stop" | "restart") => {
@@ -385,6 +517,20 @@ export default function SystemPage() {
       const res = await fn();
       setActiveAction(res.name);
       showToast(`${label} started`, "success");
+    } catch (e) {
+      showToast(`${label} failed: ${e}`, "error");
+    }
+  };
+
+  const runVpsOp = async (
+    fn: () => Promise<{ name: string }>,
+    label: string,
+  ) => {
+    try {
+      const res = await fn();
+      setActiveAction(res.name);
+      showToast(`${label} started`, "success");
+      setTimeout(loadVpsOps, 3000);
     } catch (e) {
       showToast(`${label} failed: ${e}`, "error");
     }
@@ -644,6 +790,10 @@ export default function SystemPage() {
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
+  const vpsDoctorSummary = vpsOps
+    ? `ok=${vpsOps.summary.ok ?? "?"} warn=${vpsOps.summary.warn ?? "?"} fail=${vpsOps.summary.fail ?? "?"}`
+    : "—";
+  const vpsDefaultExit = compactExitLabel(vpsOps?.exit.default);
 
   return (
     <div className="flex flex-col gap-8">
@@ -669,6 +819,19 @@ export default function SystemPage() {
             : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
         }
         confirmLabel="Update now"
+      />
+      <ConfirmDialog
+        open={directExitConfirmOpen}
+        onCancel={() => setDirectExitConfirmOpen(false)}
+        onConfirm={() => {
+          setDirectExitConfirmOpen(false);
+          void runVpsOp(() => api.runVpsExitSet("direct"), "Set direct");
+        }}
+        title="Set direct exit?"
+        description="This changes the remote default exit to direct traffic and bypasses the configured proxy path until you switch it back."
+        destructive
+        confirmLabel="Set direct"
+        cancelLabel="Cancel"
       />
 
       <DeleteConfirmDialog
@@ -950,6 +1113,316 @@ export default function SystemPage() {
                   </span>
                 )}
               </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* ── VPS Ops ──────────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+            <Network className="h-4 w-4" /> VPS Ops
+          </H2>
+          <Button
+            size="sm"
+            ghost
+            disabled={vpsOpsLoading}
+            prefix={
+              vpsOpsLoading ? (
+                <Spinner className="h-3.5 w-3.5" />
+              ) : (
+                <RotateCw className="h-3.5 w-3.5" />
+              )
+            }
+            onClick={loadVpsOps}
+          >
+            Refresh
+          </Button>
+        </div>
+        <Card>
+          <CardContent className="flex flex-col gap-4 py-4">
+            {vpsOpsLoading && !vpsOps ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner className="h-4 w-4" /> Loading VPS ops status…
+              </div>
+            ) : !vpsOps?.available ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <Badge tone="secondary">unavailable</Badge>
+                  <span className="text-sm text-muted-foreground">
+                    {vpsOps?.error ?? "VPS ops wrapper not found."}
+                  </span>
+                </div>
+                {vpsOps?.ops_events.recent.length ? (
+                  <div className="border-t border-border pt-3">
+                    <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Recent ops events
+                    </div>
+                    <div className="mt-2 grid gap-2">
+                      {vpsOps.ops_events.recent.map((event) => (
+                        <div
+                          key={`${event.ts}-${event.component}-${event.message}`}
+                          className="flex min-w-0 items-center gap-2 text-xs"
+                        >
+                          <Badge tone={opsTone(event.status)}>{event.status}</Badge>
+                          <span className="font-mono text-muted-foreground">
+                            {event.component}
+                          </span>
+                          <span className="min-w-0 truncate">{event.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Badge tone={opsTone(vpsOps.overall)}>
+                    {vpsOps.overall}
+                  </Badge>
+                  <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+                    {vpsOps.script}
+                  </span>
+                  {vpsOps.captured_at && (
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {vpsOps.captured_at}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <VpsMetric
+                    label="Doctor"
+                    value={vpsOps.overall}
+                    detail={vpsOps.error ?? vpsDoctorSummary}
+                    tone={opsTone(vpsOps.overall)}
+                  />
+                  <VpsMetric
+                    label="Tunnel watch"
+                    value={vpsOps.tunnel_watch.overall ?? "unknown"}
+                    detail={vpsOps.tunnel_watch.last_run}
+                    tone={opsTone(vpsOps.tunnel_watch.overall)}
+                  />
+                  <VpsMetric
+                    label="Backup"
+                    value={vpsOps.backup.verified ?? vpsOps.backup.latest ?? "unknown"}
+                    detail={
+                      vpsOps.backup.age_seconds
+                        ? `age ${formatAgeSeconds(vpsOps.backup.age_seconds)}`
+                        : vpsOps.backup.at
+                    }
+                  />
+                  <VpsMetric
+                    label="Default exit"
+                    value={vpsDefaultExit}
+                    detail={vpsOps.exit.default}
+                    tone={
+                      vpsDefaultExit === "—"
+                        ? "secondary"
+                        : vpsDefaultExit === "direct"
+                          ? "warning"
+                          : "success"
+                    }
+                  />
+                  <VpsMetric
+                    label="Events"
+                    value={`${vpsOps.ops_events.recorded} recorded`}
+                    detail={`${vpsOps.ops_events.recent_non_ok} recent non-ok`}
+                    tone={
+                      vpsOps.ops_events.recent_non_ok > 0
+                        ? "warning"
+                        : "success"
+                    }
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Stethoscope className="h-3.5 w-3.5" />}
+                    onClick={() => runVpsOp(api.runVpsDoctor, "VPS doctor")}
+                  >
+                    Doctor
+                  </Button>
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<RotateCw className="h-3.5 w-3.5" />}
+                    onClick={() => runVpsOp(api.runVpsRepair, "VPS repair")}
+                  >
+                    Repair
+                  </Button>
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Database className="h-3.5 w-3.5" />}
+                    onClick={() =>
+                      runVpsOp(api.runVpsBackupVerify, "VPS backup verify")
+                    }
+                  >
+                    Verify backup
+                  </Button>
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Download className="h-3.5 w-3.5" />}
+                    onClick={() =>
+                      runVpsOp(api.runVpsBackupPull, "VPS backup pull")
+                    }
+                  >
+                    Pull backup
+                  </Button>
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Archive className="h-3.5 w-3.5" />}
+                    onClick={() =>
+                      runVpsOp(api.runVpsIncident, "VPS incident bundle")
+                    }
+                  >
+                    Incident bundle
+                  </Button>
+                </div>
+
+                <div className="flex flex-col gap-3 border-t border-border pt-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Globe className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm font-medium">Exit policy</span>
+                    {VPS_EXIT_NAMES.map((exitName) => (
+                      <Button
+                        key={`verify-${exitName}`}
+                        size="sm"
+                        ghost
+                        onClick={() =>
+                          runVpsOp(
+                            () => api.runVpsExitVerify(exitName),
+                            `Verify ${exitName}`,
+                          )
+                        }
+                      >
+                        Verify {exitName}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                      Set default
+                    </span>
+                    {VPS_EXIT_NAMES.map((exitName) => (
+                      <Button
+                        key={`set-${exitName}`}
+                        size="sm"
+                        ghost
+                        className={cn(exitName === "direct" && "text-warning")}
+                        onClick={() => {
+                          if (exitName === "direct") {
+                            setDirectExitConfirmOpen(true);
+                            return;
+                          }
+                          runVpsOp(
+                            () => api.runVpsExitSet(exitName),
+                            `Set ${exitName}`,
+                          );
+                        }}
+                      >
+                        {exitName}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                {vpsOps.attention.length > 0 && (
+                  <div className="flex flex-col gap-2 border border-warning/50 bg-warning/10 px-3 py-2">
+                    <div className="flex items-center gap-2 text-sm text-warning">
+                      <AlertTriangle className="h-4 w-4" />
+                      Attention
+                    </div>
+                    {vpsOps.attention.map((line) => (
+                      <div key={line} className="font-mono text-xs text-muted-foreground">
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,0.8fr)]">
+                  <div className="min-w-0 border border-border bg-background/35">
+                    <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wider text-muted-foreground">
+                      Launchd
+                    </div>
+                    <div className="divide-y divide-border/70">
+                      {vpsOps.launchd.map((entry) => (
+                        <div
+                          key={entry.name}
+                          className="grid grid-cols-[minmax(7rem,0.7fr)_minmax(0,1fr)] gap-3 px-3 py-2 text-sm"
+                        >
+                          <span className="font-mono text-xs">{entry.name}</span>
+                          <span className="min-w-0 truncate text-muted-foreground">
+                            {entry.detail}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="min-w-0 border border-border bg-background/35">
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <Bug className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-xs uppercase tracking-wider text-muted-foreground">
+                        Ops events
+                      </span>
+                    </div>
+                    <div className="divide-y divide-border/70">
+                      {vpsOps.ops_events.recent.length ? (
+                        vpsOps.ops_events.recent.slice(-5).map((event) => (
+                          <div
+                            key={`${event.ts}-${event.component}-${event.message}`}
+                            className="grid gap-1 px-3 py-2 text-xs"
+                          >
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Badge tone={opsTone(event.status)}>
+                                {event.status}
+                              </Badge>
+                              <span className="font-mono text-muted-foreground">
+                                {event.component}
+                              </span>
+                            </div>
+                            <div className="min-w-0 truncate" title={event.message}>
+                              {event.message}
+                            </div>
+                            <div className="font-mono text-muted-foreground">
+                              {event.ts}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="px-3 py-4 text-sm text-muted-foreground">
+                          No events recorded.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-border pt-3">
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Terminal className="h-3.5 w-3.5" />}
+                    onClick={() => setVpsDetailsOpen((open) => !open)}
+                  >
+                    {vpsDetailsOpen ? "Hide raw status" : "Show raw status"}
+                  </Button>
+                  {vpsDetailsOpen && (
+                    <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border border-border bg-background/50 p-3 font-mono text-xs text-muted-foreground">
+                      {vpsOps.raw_lines.join("\n")}
+                    </pre>
+                  )}
+                </div>
+              </>
             )}
           </CardContent>
         </Card>

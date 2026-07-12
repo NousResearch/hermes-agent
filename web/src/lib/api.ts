@@ -1177,6 +1177,29 @@ export const api = {
       body: JSON.stringify({ event, command }),
     }),
   getSystemStats: () => fetchJSON<SystemStats>("/api/system/stats"),
+  getVpsOpsStatus: () => fetchJSON<VpsOpsStatus>("/api/ops/vps/status"),
+  runVpsDoctor: () =>
+    fetchJSON<ActionResponse>("/api/ops/vps/doctor", { method: "POST" }),
+  runVpsRepair: () =>
+    fetchJSON<ActionResponse>("/api/ops/vps/repair", { method: "POST" }),
+  runVpsBackupPull: () =>
+    fetchJSON<ActionResponse>("/api/ops/vps/backup/pull", { method: "POST" }),
+  runVpsBackupVerify: () =>
+    fetchJSON<ActionResponse>("/api/ops/vps/backup/verify", { method: "POST" }),
+  runVpsIncident: () =>
+    fetchJSON<ActionResponse>("/api/ops/vps/incident", { method: "POST" }),
+  runVpsExitVerify: (exit_name: VpsExitName) =>
+    fetchJSON<ActionResponse>("/api/ops/vps/exit/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exit_name }),
+    }),
+  runVpsExitSet: (exit_name: VpsExitName) =>
+    fetchJSON<ActionResponse>("/api/ops/vps/exit/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exit_name }),
+    }),
 
   // ── Admin: Curator ──────────────────────────────────────────────────
   getCurator: () => fetchJSON<CuratorStatus>("/api/curator"),
@@ -1727,6 +1750,39 @@ export interface CheckpointSession {
 export interface CheckpointsResponse {
   sessions: CheckpointSession[];
   total_bytes: number;
+}
+
+export type VpsExitName = "surfshark" | "residential" | "direct";
+
+export interface VpsOpsEvent {
+  ts: string;
+  host: string;
+  component: string;
+  status: string;
+  message: string;
+  details?: string | null;
+}
+
+export interface VpsOpsStatus {
+  available: boolean;
+  script: string | null;
+  overall: "ok" | "warn" | "fail" | "unavailable" | string;
+  captured_at: string | null;
+  exit_code: number | null;
+  summary: { ok: number | null; warn: number | null; fail: number | null };
+  launchd: Array<{ name: string; state: string; detail: string }>;
+  tunnel_watch: Record<string, string>;
+  backup: Record<string, string>;
+  exit: Record<string, string>;
+  ops_events: {
+    path: string;
+    recorded: number;
+    recent_non_ok: number;
+    recent: VpsOpsEvent[];
+  };
+  attention: string[];
+  raw_lines: string[];
+  error: string | null;
 }
 
 /** Per-call overrides for {@link fetchJSON}. */

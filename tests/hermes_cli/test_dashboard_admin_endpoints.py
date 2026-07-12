@@ -8,6 +8,7 @@ visible to the CLI data layer), not specific catalog values.
 """
 
 import pytest
+import subprocess
 
 
 def _client():
@@ -393,6 +394,186 @@ class TestOpsEndpoints:
         r = self.client.post("/api/ops/import", json={"archive": "/no/such.zip"})
         assert r.status_code == 404
 
+    def test_vps_status_parses_control_output(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+        from hermes_constants import get_hermes_home
+
+        ledger = get_hermes_home() / "state" / "ops-events.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            '{"ts":"2026-06-27T15:00:00+00:00","host":"mac",'
+            '"component":"backup_pull","status":"ok","message":"verified"}\n'
+        )
+        script = tmp_path / "hermes-control.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "cat <<'EOF'\n"
+            "Hermes Control Status\n"
+            "captured_at=2026-06-27 11:39:47\n"
+            "\n"
+            "launchd:\n"
+            "  gateway                  running pid=123\n"
+            "  tunnel-watch             loaded calendar idle last_exit=0\n"
+            "\n"
+            "tunnel-watch: overall=ok last_run=2026-06-27 11:38:35\n"
+            "backup: verified=hermes-20260627.tar.gz.gpg age_seconds=12 sha256=abc at=2026-06-27 11:38:37\n"
+            "ops-events: recorded=1 recent_non_ok=0\n"
+            "exit: default=socks5h://127.0.0.1:1090\n"
+            "doctor: ok=17 warn=0 fail=0\n"
+            "attention:\n"
+            "none\n"
+            "EOF\n"
+        )
+        script.chmod(0o755)
+        monkeypatch.setattr(ws, "_ops_control_script", lambda: script)
+
+        r = self.client.get("/api/ops/vps/status")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["available"] is True
+        assert body["overall"] == "ok"
+        assert body["summary"] == {"ok": 17, "warn": 0, "fail": 0}
+        assert body["launchd"][0]["name"] == "gateway"
+        assert body["backup"]["verified"] == "hermes-20260627.tar.gz.gpg"
+        assert body["exit"]["default"] == "socks5h://127.0.0.1:1090"
+        assert body["ops_events"]["recent"][0]["component"] == "backup_pull"
+
+    def test_vps_status_warn_attention_stays_warning(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        script = tmp_path / "hermes-control.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "cat <<'EOF'\n"
+            "Hermes Control Status\n"
+            "doctor: ok=17 warn=1 fail=0\n"
+            "attention:\n"
+            "WARN  backup age is high\n"
+            "EOF\n"
+        )
+        script.chmod(0o755)
+        monkeypatch.setattr(ws, "_ops_control_script", lambda: script)
+
+        r = self.client.get("/api/ops/vps/status")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["overall"] == "warn"
+        assert body["attention"] == ["WARN  backup age is high"]
+
+    def test_vps_status_timeout_accepts_partial_bytes(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        script = tmp_path / "hermes-control.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=args[0],
+                timeout=kwargs.get("timeout"),
+                output=b"Hermes Control Status\ncaptured_at=partial\n",
+                stderr=b"doctor still running\n",
+            )
+
+        monkeypatch.setattr(ws, "_ops_control_script", lambda: script)
+        monkeypatch.setattr(ws.subprocess, "run", fake_run)
+
+        r = self.client.get("/api/ops/vps/status")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["overall"] == "fail"
+        assert body["error"] == "VPS ops status timed out."
+        assert "captured_at=partial" in body["raw_lines"]
+        assert "doctor still running" in body["raw_lines"]
+
+    def test_vps_status_unavailable_when_wrapper_missing(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_ops_control_script", lambda: None)
+
+        r = self.client.get("/api/ops/vps/status")
+
+        assert r.status_code == 200
+        assert r.json()["available"] is False
+
+    @pytest.mark.parametrize(
+        ("path", "payload", "expected_args", "expected_name"),
+        [
+            ("/api/ops/vps/doctor", None, ["doctor"], "vps-doctor"),
+            ("/api/ops/vps/repair", None, ["repair"], "vps-repair"),
+            (
+                "/api/ops/vps/backup/pull",
+                None,
+                ["backup", "pull"],
+                "vps-backup-pull",
+            ),
+            (
+                "/api/ops/vps/backup/verify",
+                None,
+                ["backup", "verify"],
+                "vps-backup-verify",
+            ),
+            ("/api/ops/vps/incident", None, ["incident"], "vps-incident"),
+            (
+                "/api/ops/vps/exit/verify",
+                {"exit_name": "surfshark"},
+                ["exit", "verify", "surfshark"],
+                "vps-exit-verify",
+            ),
+            (
+                "/api/ops/vps/exit/set",
+                {"exit_name": "residential"},
+                ["exit", "set", "residential"],
+                "vps-exit-set",
+            ),
+        ],
+    )
+    def test_vps_actions_spawn_control_wrapper(
+        self, monkeypatch, tmp_path, path, payload, expected_args, expected_name
+    ):
+        import hermes_cli.web_server as ws
+
+        script = tmp_path / "hermes-control.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        calls = []
+
+        class FakeProc:
+            pid = 4242
+
+        def fake_spawn(command, name):
+            calls.append((command, name))
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_ops_control_script", lambda: script)
+        monkeypatch.setattr(ws, "_spawn_external_action", fake_spawn)
+
+        if payload is None:
+            r = self.client.post(path)
+        else:
+            r = self.client.post(path, json=payload)
+
+        assert r.status_code == 200
+        assert r.json()["name"] == expected_name
+        assert calls == [([str(script), *expected_args], expected_name)]
+
+    def test_vps_exit_name_validation(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        script = tmp_path / "hermes-control.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        monkeypatch.setattr(ws, "_ops_control_script", lambda: script)
+
+        r = self.client.post(
+            "/api/ops/vps/exit/verify", json={"exit_name": "coffee-shop"}
+        )
+
+        assert r.status_code == 400
+
 
 class TestSystemStatsEndpoint:
     @pytest.fixture(autouse=True)
@@ -773,6 +954,7 @@ class TestAdminEndpointsAuthGate:
             "/api/memory",
             "/api/ops/hooks",
             "/api/ops/checkpoints",
+            "/api/ops/vps/status",
             "/api/curator",
             "/api/portal",
             "/api/system/stats",
@@ -785,6 +967,10 @@ class TestAdminEndpointsAuthGate:
 
     def test_webhooks_enable_post_gated(self):
         resp = self.client.post("/api/webhooks/enable")
+        assert resp.status_code in (401, 403)
+
+    def test_vps_action_post_gated(self):
+        resp = self.client.post("/api/ops/vps/doctor")
         assert resp.status_code in (401, 403)
 
 

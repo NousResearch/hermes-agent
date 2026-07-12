@@ -3182,6 +3182,13 @@ _ACTION_LOG_FILES: Dict[str, str] = {
     "dump": "action-dump.log",
     "config-migrate": "action-config-migrate.log",
     "tools-post-setup": "action-tools-post-setup.log",
+    "vps-doctor": "action-vps-doctor.log",
+    "vps-repair": "action-vps-repair.log",
+    "vps-backup-pull": "action-vps-backup-pull.log",
+    "vps-backup-verify": "action-vps-backup-verify.log",
+    "vps-incident": "action-vps-incident.log",
+    "vps-exit-verify": "action-vps-exit-verify.log",
+    "vps-exit-set": "action-vps-exit-set.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
@@ -3262,6 +3269,40 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     return proc
 
 
+def _spawn_external_action(command: List[str], name: str) -> subprocess.Popen:
+    """Spawn a trusted local operator helper and register it as an action log."""
+    if name not in _ACTION_LOG_FILES:
+        raise RuntimeError(f"unknown action log: {name}")
+
+    log_file_name = _ACTION_LOG_FILES[name]
+    _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _ACTION_LOG_DIR / log_file_name
+    log_file = open(log_path, "ab", buffering=0)
+    log_file.write(
+        f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+    )
+    log_file.write(("command: " + " ".join(command) + "\n").encode("utf-8", errors="replace"))
+
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = windows_detach_flags()
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(command, **popen_kwargs)
+    log_file.close()
+    _ACTION_RESULTS.pop(name, None)
+    _ACTION_COMMANDS[name] = tuple(command)
+    _ACTION_PROCS[name] = proc
+    return proc
+
+
 def _tail_lines(path: Path, n: int) -> List[str]:
     """Return the last ``n`` lines of ``path`` without loading huge logs."""
     if n <= 0 or not path.exists():
@@ -3307,6 +3348,268 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     if drop_partial_first_line and lines:
         lines = lines[1:]
     return lines[-n:]
+
+
+_OPS_KV_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|$)")
+
+
+def _ops_control_script() -> Optional[Path]:
+    """Locate Ian's optional Hermes VPS operator wrapper, if installed."""
+    raw = os.environ.get("HERMES_OPS_BIN_DIR")
+    candidates: List[Path] = []
+    if raw:
+        candidates.append(Path(raw).expanduser())
+    hermes_parent = get_hermes_home().expanduser().resolve().parent
+    candidates.extend([
+        hermes_parent / "AI" / "shared" / "hermes-vps" / "bin",
+        Path.home() / "AI" / "shared" / "hermes-vps" / "bin",
+    ])
+    seen: set[str] = set()
+    for directory in candidates:
+        key = str(directory)
+        if key in seen:
+            continue
+        seen.add(key)
+        script = directory / "hermes-control.sh"
+        if script.is_file() and os.access(script, os.X_OK):
+            return script
+    return None
+
+
+def _parse_ops_kv(text: str) -> Dict[str, str]:
+    return {
+        match.group(1): match.group(2).strip()
+        for match in _OPS_KV_RE.finditer(text.strip())
+    }
+
+
+def _parse_ops_summary(line: str) -> Dict[str, Optional[int]]:
+    values = _parse_ops_kv(line)
+    out: Dict[str, Optional[int]] = {"ok": None, "warn": None, "fail": None}
+    for key in out:
+        raw = values.get(key)
+        if raw is None:
+            continue
+        try:
+            out[key] = int(raw)
+        except ValueError:
+            pass
+    return out
+
+
+def _read_ops_events(limit: int = 8) -> Dict[str, Any]:
+    ledger = get_hermes_home() / "state" / "ops-events.jsonl"
+    if not ledger.exists():
+        return {"path": str(ledger), "recorded": 0, "recent_non_ok": 0, "recent": []}
+    records: List[Dict[str, Any]] = []
+    try:
+        for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                records.append({
+                    "ts": str(item.get("ts") or ""),
+                    "host": str(item.get("host") or ""),
+                    "component": str(item.get("component") or "unknown"),
+                    "status": str(item.get("status") or "unknown"),
+                    "message": str(item.get("message") or ""),
+                    "details": str(item.get("details") or "") or None,
+                })
+    except OSError:
+        return {"path": str(ledger), "recorded": 0, "recent_non_ok": 0, "recent": []}
+
+    recent_non_ok = sum(
+        1
+        for item in records[-50:]
+        if item.get("status") not in {"ok", "info"}
+    )
+    return {
+        "path": str(ledger),
+        "recorded": len(records),
+        "recent_non_ok": recent_non_ok,
+        "recent": records[-limit:],
+    }
+
+
+def _parse_ops_status_output(text: str, exit_code: int) -> Dict[str, Any]:
+    raw_lines = [line.rstrip() for line in text.splitlines()]
+    launchd: List[Dict[str, str]] = []
+    attention: List[str] = []
+    summary: Dict[str, Optional[int]] = {"ok": None, "warn": None, "fail": None}
+    tunnel_watch: Dict[str, str] = {}
+    backup: Dict[str, str] = {}
+    exit_state: Dict[str, str] = {}
+    ops_events_summary: Dict[str, Any] = {}
+    captured_at: Optional[str] = None
+
+    in_launchd = False
+    in_attention = False
+    for line in raw_lines:
+        stripped = line.strip()
+        if stripped.startswith("captured_at="):
+            captured_at = stripped.split("=", 1)[1]
+        if stripped == "launchd:":
+            in_launchd = True
+            in_attention = False
+            continue
+        if stripped == "attention:":
+            in_attention = True
+            in_launchd = False
+            continue
+        if not stripped:
+            in_launchd = False
+            continue
+
+        if in_launchd and line.startswith("  "):
+            parts = stripped.split(None, 1)
+            if parts:
+                launchd.append({
+                    "name": parts[0],
+                    "detail": parts[1] if len(parts) > 1 else "",
+                    "state": (parts[1].split(None, 1)[0] if len(parts) > 1 and parts[1] else "unknown"),
+                })
+            continue
+
+        if in_attention and stripped.lower() != "none":
+            attention.append(stripped)
+
+        if stripped.startswith("tunnel-watch:"):
+            tunnel_watch = _parse_ops_kv(stripped.split(":", 1)[1])
+        elif stripped.startswith("backup:"):
+            backup = _parse_ops_kv(stripped.split(":", 1)[1])
+        elif stripped.startswith("exit:"):
+            exit_state = _parse_ops_kv(stripped.split(":", 1)[1])
+        elif stripped.startswith("ops-events:"):
+            values = _parse_ops_kv(stripped.split(":", 1)[1])
+            for key, value in values.items():
+                try:
+                    ops_events_summary[key] = int(value)
+                except ValueError:
+                    ops_events_summary[key] = value
+        elif stripped.startswith("doctor:"):
+            summary = _parse_ops_summary(stripped.split(":", 1)[1])
+
+    fail_count = summary.get("fail") or 0
+    warn_count = summary.get("warn") or 0
+    has_fail_attention = any(line.startswith("FAIL ") for line in attention)
+    has_warn_attention = any(line.startswith("WARN ") for line in attention)
+    if exit_code != 0 or fail_count > 0 or has_fail_attention:
+        overall = "fail"
+    elif warn_count > 0 or has_warn_attention:
+        overall = "warn"
+    else:
+        overall = "ok"
+
+    events = _read_ops_events()
+    events.update({k: v for k, v in ops_events_summary.items() if k in {"recorded", "recent_non_ok"}})
+    return {
+        "available": True,
+        "overall": overall,
+        "captured_at": captured_at,
+        "exit_code": exit_code,
+        "summary": summary,
+        "launchd": launchd,
+        "tunnel_watch": tunnel_watch,
+        "backup": backup,
+        "exit": exit_state,
+        "ops_events": events,
+        "attention": attention,
+        "raw_lines": raw_lines[-240:],
+        "error": None,
+    }
+
+
+def _ops_process_output_text(stdout: Any, stderr: Any = None) -> str:
+    parts: List[str] = []
+    for value in (stdout, stderr):
+        if not value:
+            continue
+        if isinstance(value, bytes):
+            parts.append(value.decode("utf-8", errors="replace"))
+        else:
+            parts.append(str(value))
+    return "\n".join(parts)
+
+
+def _collect_vps_ops_status() -> Dict[str, Any]:
+    script = _ops_control_script()
+    if script is None:
+        return {
+            "available": False,
+            "script": None,
+            "overall": "unavailable",
+            "captured_at": None,
+            "exit_code": None,
+            "summary": {"ok": None, "warn": None, "fail": None},
+            "launchd": [],
+            "tunnel_watch": {},
+            "backup": {},
+            "exit": {},
+            "ops_events": _read_ops_events(),
+            "attention": [],
+            "raw_lines": [],
+            "error": "Hermes VPS ops wrapper is not installed on this host.",
+        }
+    try:
+        proc = subprocess.run(
+            [str(script), "status"],
+            cwd=str(PROJECT_ROOT),
+            env={**os.environ, "HERMES_NONINTERACTIVE": "1"},
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired as exc:
+        lines = _ops_process_output_text(exc.stdout, exc.stderr).splitlines()
+        return {
+            "available": True,
+            "script": str(script),
+            "overall": "fail",
+            "captured_at": None,
+            "exit_code": None,
+            "summary": {"ok": None, "warn": None, "fail": None},
+            "launchd": [],
+            "tunnel_watch": {},
+            "backup": {},
+            "exit": {},
+            "ops_events": _read_ops_events(),
+            "attention": ["VPS ops status timed out."],
+            "raw_lines": lines[-240:],
+            "error": "VPS ops status timed out.",
+        }
+
+    parsed = _parse_ops_status_output(
+        _ops_process_output_text(proc.stdout, proc.stderr),
+        proc.returncode,
+    )
+    parsed["script"] = str(script)
+    if proc.returncode != 0 and not parsed.get("error"):
+        parsed["error"] = f"hermes-control.sh status exited {proc.returncode}"
+    return parsed
+
+
+def _spawn_vps_control_action(args: List[str], action_name: str) -> subprocess.Popen:
+    script = _ops_control_script()
+    if script is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hermes VPS ops wrapper is not installed on this host.",
+        )
+    return _spawn_external_action([str(script), *args], action_name)
+
+
+def _validate_vps_exit_name(exit_name: str) -> str:
+    value = (exit_name or "").strip()
+    if value not in {"surfshark", "residential", "direct"}:
+        raise HTTPException(
+            status_code=400,
+            detail="exit_name must be one of: surfshark, residential, direct",
+        )
+    return value
 
 
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
@@ -11738,6 +12041,102 @@ async def download_dashboard_backup(archive: str):
         filename=target.name,
         content_disposition_type="attachment",
     )
+
+
+@app.get("/api/ops/vps/status")
+async def get_vps_ops_status():
+    """Return structured status from the optional local Hermes VPS ops wrapper."""
+    return await asyncio.to_thread(_collect_vps_ops_status)
+
+
+@app.post("/api/ops/vps/doctor")
+async def run_vps_doctor():
+    try:
+        proc = _spawn_vps_control_action(["doctor"], "vps-doctor")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS doctor")
+        raise HTTPException(status_code=500, detail=f"Failed to run VPS doctor: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-doctor"}
+
+
+@app.post("/api/ops/vps/repair")
+async def run_vps_repair():
+    try:
+        proc = _spawn_vps_control_action(["repair"], "vps-repair")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS repair")
+        raise HTTPException(status_code=500, detail=f"Failed to run VPS repair: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-repair"}
+
+
+@app.post("/api/ops/vps/backup/pull")
+async def run_vps_backup_pull():
+    try:
+        proc = _spawn_vps_control_action(["backup", "pull"], "vps-backup-pull")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS backup pull")
+        raise HTTPException(status_code=500, detail=f"Failed to pull VPS backup: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-backup-pull"}
+
+
+@app.post("/api/ops/vps/backup/verify")
+async def run_vps_backup_verify():
+    try:
+        proc = _spawn_vps_control_action(["backup", "verify"], "vps-backup-verify")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS backup verify")
+        raise HTTPException(status_code=500, detail=f"Failed to verify VPS backup: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-backup-verify"}
+
+
+@app.post("/api/ops/vps/incident")
+async def run_vps_incident():
+    try:
+        proc = _spawn_vps_control_action(["incident"], "vps-incident")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS incident bundle")
+        raise HTTPException(status_code=500, detail=f"Failed to create VPS incident bundle: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-incident"}
+
+
+class VpsExitRequest(BaseModel):
+    exit_name: str
+
+
+@app.post("/api/ops/vps/exit/verify")
+async def run_vps_exit_verify(body: VpsExitRequest):
+    exit_name = _validate_vps_exit_name(body.exit_name)
+    try:
+        proc = _spawn_vps_control_action(["exit", "verify", exit_name], "vps-exit-verify")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS exit verify")
+        raise HTTPException(status_code=500, detail=f"Failed to verify VPS exit: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-exit-verify"}
+
+
+@app.post("/api/ops/vps/exit/set")
+async def run_vps_exit_set(body: VpsExitRequest):
+    exit_name = _validate_vps_exit_name(body.exit_name)
+    try:
+        proc = _spawn_vps_control_action(["exit", "set", exit_name], "vps-exit-set")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn VPS exit set")
+        raise HTTPException(status_code=500, detail=f"Failed to set VPS exit: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "vps-exit-set"}
 
 
 class ImportRequest(BaseModel):

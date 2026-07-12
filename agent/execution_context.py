@@ -26,6 +26,7 @@ class ExecutionRole(str, Enum):
 
     DIRECT = "direct"
     KANBAN_OWNER = "kanban_owner"
+    KANBAN_DELEGATE = "kanban_delegate"
     DELEGATE = "delegate"
 
 
@@ -54,14 +55,20 @@ def execution_role_from_environment(
 def bind_agent_execution_context(agent: Any) -> Token:
     """Bind *agent*'s execution role for one conversation turn."""
 
+    base_role = getattr(agent, "_execution_role", ExecutionRole.DIRECT)
+    try:
+        base_role = ExecutionRole(base_role)
+    except (TypeError, ValueError):
+        base_role = ExecutionRole.DIRECT
+
     if getattr(agent, "_delegate_depth", 0) > 0:
-        role = ExecutionRole.DELEGATE
+        role = (
+            ExecutionRole.KANBAN_DELEGATE
+            if base_role is ExecutionRole.KANBAN_OWNER
+            else ExecutionRole.DELEGATE
+        )
     else:
-        role = getattr(agent, "_execution_role", ExecutionRole.DIRECT)
-        try:
-            role = ExecutionRole(role)
-        except (TypeError, ValueError):
-            role = ExecutionRole.DIRECT
+        role = base_role
     return _EXECUTION_ROLE.set(role)
 
 
@@ -86,6 +93,17 @@ def is_kanban_owner_context() -> bool:
     """
 
     return _EXECUTION_ROLE.get() is ExecutionRole.KANBAN_OWNER
+
+
+def is_kanban_delegate_context() -> bool:
+    """Return whether a delegated child originated from a Kanban card owner.
+
+    Such a child must neither consume the owner's one-use grant nor fall into
+    the legacy unattended fail-open path. Approval policy uses this separate
+    role to require the delegate's explicit callback or deny the action.
+    """
+
+    return _EXECUTION_ROLE.get() is ExecutionRole.KANBAN_DELEGATE
 
 
 def kanban_approval_pending_metadata(result: Any) -> Optional[dict[str, Any]]:
@@ -118,6 +136,7 @@ __all__ = [
     "bind_agent_execution_context",
     "current_execution_role",
     "execution_role_from_environment",
+    "is_kanban_delegate_context",
     "is_kanban_owner_context",
     "kanban_approval_pending_metadata",
     "reset_agent_execution_context",

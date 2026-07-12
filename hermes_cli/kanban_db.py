@@ -124,6 +124,16 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# Durable cross-process approval requests used by dispatcher-spawned workers.
+# A grant is deliberately short-lived and single-use: the resumed worker must
+# present the request id, opaque nonce, new run id, profile, and exact action
+# digest before an approval can be consumed.
+KANBAN_APPROVAL_REQUEST_TIMEOUT_SECONDS = 15 * 60
+KANBAN_APPROVAL_GRANT_TTL_SECONDS = 15 * 60
+KANBAN_APPROVAL_STATES = frozenset(
+    {"pending", "approved", "denied", "expired", "consumed", "cancelled"}
+)
+
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
 # unblocker (usually a cron) and routes the task to ``triage`` instead of back
@@ -323,6 +333,45 @@ def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
         return f"{h}h ago"
     d = delta // 86400
     return f"{d}d ago"
+
+
+def kanban_action_digest(
+    action_kind: str,
+    raw_action: str,
+    env_type: str,
+    has_host_access: bool = False,
+    workdir: Optional[str] = None,
+) -> str:
+    """Return the versioned digest for one exact approval-gated action.
+
+    Only the digest crosses the process boundary or reaches the board DB. The
+    raw command/code is never persisted there. Security-relevant execution
+    context is included so a grant for (for example) a container command
+    cannot be replayed against the host, or from a different working tree.
+    """
+    canonical_workdir: Optional[str] = None
+    if workdir:
+        try:
+            canonical_workdir = str(
+                Path(workdir).expanduser().resolve(strict=False)
+            )
+        except (OSError, RuntimeError, ValueError):
+            canonical_workdir = str(workdir)
+    payload = {
+        "action": str(raw_action),
+        "action_kind": str(action_kind).strip().casefold(),
+        "env_type": str(env_type).strip().casefold(),
+        "has_host_access": bool(has_host_access),
+        "version": 1,
+        "workdir": canonical_workdir,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -915,6 +964,12 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Transient dispatcher-only fields. They are populated by ``claim_task``
+    # when a human-approved action is bound to the newly-created resume run;
+    # they do not exist in ``tasks`` and are never serialized by from_row().
+    approval_request_id: Optional[str] = None
+    approval_grant_nonce: Optional[str] = None
+    approval_worker_session_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1089,6 +1144,87 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class KanbanApprovalRequest:
+    """Durable approval handoff between a worker and its gateway owner."""
+
+    id: str
+    task_id: str
+    requested_run_id: int
+    resume_run_id: Optional[int]
+    profile: str
+    action_kind: str
+    action_digest: str
+    display_target: str
+    description: Optional[str]
+    worker_session_id: str
+    state: str
+    grant_nonce: Optional[str]
+    platform: Optional[str]
+    chat_id: Optional[str]
+    thread_id: Optional[str]
+    user_id: Optional[str]
+    notifier_profile: Optional[str]
+    requested_at: int
+    decided_at: Optional[int]
+    expires_at: int
+    decided_by: Optional[str]
+    decision_reason: Optional[str]
+    consumed_at: Optional[int]
+    cancelled_at: Optional[int]
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "KanbanApprovalRequest":
+        return cls(
+            id=str(row["id"]),
+            task_id=str(row["task_id"]),
+            requested_run_id=int(row["requested_run_id"]),
+            resume_run_id=(
+                int(row["resume_run_id"])
+                if row["resume_run_id"] is not None
+                else None
+            ),
+            profile=str(row["profile"]),
+            action_kind=str(row["action_kind"]),
+            action_digest=str(row["action_digest"]),
+            display_target=str(row["display_target"]),
+            description=row["description"],
+            worker_session_id=str(row["worker_session_id"]),
+            state=str(row["state"]),
+            grant_nonce=row["grant_nonce"],
+            platform=row["platform"],
+            chat_id=row["chat_id"],
+            thread_id=row["thread_id"],
+            user_id=row["user_id"],
+            notifier_profile=row["notifier_profile"],
+            requested_at=int(row["requested_at"]),
+            decided_at=(
+                int(row["decided_at"])
+                if row["decided_at"] is not None
+                else None
+            ),
+            expires_at=int(row["expires_at"]),
+            decided_by=row["decided_by"],
+            decision_reason=row["decision_reason"],
+            consumed_at=(
+                int(row["consumed_at"])
+                if row["consumed_at"] is not None
+                else None
+            ),
+            cancelled_at=(
+                int(row["cancelled_at"])
+                if row["cancelled_at"] is not None
+                else None
+            ),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            name: getattr(self, name)
+            for name in self.__dataclass_fields__
+        }
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1215,7 +1351,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: running | done | blocked | approval_pending | crashed | timed_out | failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
@@ -1225,7 +1361,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | approval_pending | (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -1264,6 +1400,36 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable, board-scoped approval broker for detached Kanban workers. Raw
+-- commands/code are intentionally absent: only a canonical digest and a
+-- redacted display target cross the process boundary.
+CREATE TABLE IF NOT EXISTS kanban_approval_requests (
+    id               TEXT PRIMARY KEY,
+    task_id          TEXT NOT NULL,
+    requested_run_id INTEGER NOT NULL,
+    resume_run_id    INTEGER,
+    profile          TEXT NOT NULL,
+    action_kind      TEXT NOT NULL,
+    action_digest    TEXT NOT NULL,
+    display_target   TEXT NOT NULL,
+    description      TEXT,
+    worker_session_id TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    grant_nonce      TEXT,
+    platform         TEXT,
+    chat_id          TEXT,
+    thread_id        TEXT,
+    user_id          TEXT,
+    notifier_profile TEXT,
+    requested_at     INTEGER NOT NULL,
+    decided_at       INTEGER,
+    expires_at       INTEGER NOT NULL,
+    decided_by       TEXT,
+    decision_reason  TEXT,
+    consumed_at      INTEGER,
+    cancelled_at     INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1274,6 +1440,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_task_state  ON kanban_approval_requests(task_id, state);
+CREATE INDEX IF NOT EXISTS idx_approvals_route_state ON kanban_approval_requests(platform, chat_id, thread_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_one_pending_per_task
+    ON kanban_approval_requests(task_id) WHERE state = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_one_grant_per_task
+    ON kanban_approval_requests(task_id) WHERE state = 'approved';
 """
 
 
@@ -3287,6 +3459,34 @@ def _end_run(
     conn.execute(
         "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,),
     )
+    bound_request = conn.execute(
+        "SELECT id FROM kanban_approval_requests "
+        "WHERE task_id = ? AND resume_run_id = ? AND state = 'approved'",
+        (task_id, run_id),
+    ).fetchone()
+    cancelled = conn.execute(
+        "UPDATE kanban_approval_requests "
+        "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ?, "
+        "    decision_reason = COALESCE(decision_reason, ?) "
+        "WHERE task_id = ? AND resume_run_id = ? AND state = 'approved'",
+        (
+            now,
+            f"bound run ended before grant consumption: {outcome}",
+            task_id,
+            run_id,
+        ),
+    )
+    if cancelled.rowcount:
+        _append_event(
+            conn,
+            task_id,
+            "approval_cancelled",
+            {
+                "request_id": bound_request["id"] if bound_request else None,
+                "reason": f"bound run ended before grant consumption: {outcome}",
+            },
+            run_id=run_id,
+        )
     return run_id
 
 
@@ -3349,6 +3549,605 @@ def _synthesize_ended_run(
 
 
 # ---------------------------------------------------------------------------
+# Durable worker approvals
+# ---------------------------------------------------------------------------
+
+def _approval_as_dict(request: KanbanApprovalRequest) -> dict[str, Any]:
+    data = request.as_dict()
+    # ``status`` is the wire-facing spelling used by gateway/UI callers;
+    # retain ``state`` as the schema-native spelling for DB diagnostics.
+    data["status"] = request.state
+    return data
+
+
+def get_task_approval(
+    conn: sqlite3.Connection,
+    request_id: Optional[str] = None,
+    *,
+    task_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return one approval request by id, or the task's newest request."""
+    if request_id:
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (str(request_id),),
+        ).fetchone()
+    elif task_id:
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE task_id = ? "
+            "ORDER BY requested_at DESC, rowid DESC LIMIT 1",
+            (str(task_id),),
+        ).fetchone()
+    else:
+        raise ValueError("request_id or task_id is required")
+    if row is None:
+        return None
+    return _approval_as_dict(KanbanApprovalRequest.from_row(row))
+
+
+def list_task_approvals(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str] = None,
+    state: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """List durable approval requests for gateway pollers and diagnostics."""
+    if state is not None and state not in KANBAN_APPROVAL_STATES:
+        raise ValueError(f"unknown approval state: {state}")
+    sql = "SELECT * FROM kanban_approval_requests WHERE 1=1"
+    params: list[Any] = []
+    if task_id is not None:
+        sql += " AND task_id = ?"
+        params.append(str(task_id))
+    if state is not None:
+        sql += " AND state = ?"
+        params.append(state)
+    if notifier_profile is not None:
+        sql += " AND notifier_profile = ?"
+        params.append(notifier_profile)
+    sql += " ORDER BY requested_at ASC, rowid ASC"
+    return [
+        _approval_as_dict(KanbanApprovalRequest.from_row(row))
+        for row in conn.execute(sql, params).fetchall()
+    ]
+
+
+def _approval_route_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    route: Optional[dict[str, Any]],
+) -> dict[str, Optional[str]]:
+    """Normalize an explicit route or select the task's first gateway route."""
+    selected: Optional[dict[str, Any]] = route
+    if selected is None:
+        row = conn.execute(
+            "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+            "FROM kanban_notify_subs "
+            "WHERE task_id = ? AND lower(platform) != 'tui' "
+            "  AND chat_id IS NOT NULL AND chat_id != '' "
+            "ORDER BY created_at ASC, rowid ASC "
+            "LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        selected = dict(row) if row is not None else {}
+    platform = str(selected.get("platform") or "").strip() or None
+    if platform and platform.casefold() == "tui":
+        raise ValueError("TUI notification routes cannot own Kanban approvals")
+    chat_id = str(selected.get("chat_id") or "").strip() or None
+    if bool(platform) != bool(chat_id):
+        raise ValueError("approval route requires both platform and chat_id")
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": str(selected.get("thread_id") or "") if platform else None,
+        "user_id": (
+            str(selected.get("user_id"))
+            if selected.get("user_id") is not None
+            else None
+        ),
+        "notifier_profile": (
+            str(selected.get("notifier_profile"))
+            if selected.get("notifier_profile") is not None
+            else None
+        ),
+    }
+
+
+def request_task_approval(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    action_kind: str,
+    action_digest: str,
+    display_target: str,
+    worker_session_id: str,
+    expected_run_id: int,
+    profile: str,
+    description: Optional[str] = None,
+    expected_claim_lock: Optional[str] = None,
+    route: Optional[dict[str, Any]] = None,
+    expires_at: Optional[int] = None,
+    timeout_seconds: int = KANBAN_APPROVAL_REQUEST_TIMEOUT_SECONDS,
+) -> Optional[dict[str, Any]]:
+    """Persist an approval request and atomically park its running task.
+
+    The task/run/claim/profile checks form one CAS boundary. A stale worker can
+    therefore never park a newer run or mint a request for a task it no longer
+    owns. Existing identical requests are returned idempotently; a different
+    pending action for the same task is rejected.
+    """
+    task_id = str(task_id).strip()
+    action_kind = str(action_kind).strip().casefold()
+    action_digest = str(action_digest).strip()
+    display_target = str(display_target).strip()
+    worker_session_id = str(worker_session_id).strip()
+    canonical_profile = _canonical_assignee(profile)
+    if not task_id or not action_kind or not action_digest or not display_target:
+        raise ValueError("task, action kind, digest, and display target are required")
+    if not worker_session_id or len(worker_session_id) > 512:
+        raise ValueError("a valid worker_session_id is required")
+    if canonical_profile is None:
+        raise ValueError("profile is required")
+    now = int(time.time())
+    deadline = (
+        int(expires_at)
+        if expires_at is not None
+        else now + max(1, int(timeout_seconds))
+    )
+    if deadline <= now:
+        raise ValueError("approval request expiry must be in the future")
+    normalized_route = _approval_route_for_task(conn, task_id, route)
+
+    with write_txn(conn):
+        existing = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state = 'pending'",
+            (task_id,),
+        ).fetchone()
+        if existing is not None:
+            request = KanbanApprovalRequest.from_row(existing)
+            if (
+                request.requested_run_id == int(expected_run_id)
+                and request.profile == canonical_profile
+                and request.action_kind == action_kind
+                and request.action_digest == action_digest
+                and request.worker_session_id == worker_session_id
+            ):
+                return _approval_as_dict(request)
+            return None
+
+        task = conn.execute(
+            "SELECT status, assignee, current_run_id, claim_lock "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            task is None
+            or task["status"] != "running"
+            or task["current_run_id"] is None
+            or int(task["current_run_id"]) != int(expected_run_id)
+            or task["assignee"] != canonical_profile
+            or not task["claim_lock"]
+            or (
+                expected_claim_lock is not None
+                and task["claim_lock"] != str(expected_claim_lock)
+            )
+        ):
+            return None
+        run = conn.execute(
+            "SELECT status, ended_at, profile, claim_lock FROM task_runs "
+            "WHERE id = ? AND task_id = ?",
+            (int(expected_run_id), task_id),
+        ).fetchone()
+        if (
+            run is None
+            or run["status"] != "running"
+            or run["ended_at"] is not None
+            or run["profile"] != canonical_profile
+            or run["claim_lock"] != task["claim_lock"]
+        ):
+            return None
+
+        bound_grant = conn.execute(
+            "SELECT id, resume_run_id, profile "
+            "FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state = 'approved'",
+            (task_id,),
+        ).fetchone()
+        if bound_grant is not None:
+            if (
+                bound_grant["resume_run_id"] is None
+                or int(bound_grant["resume_run_id"]) != int(expected_run_id)
+                or bound_grant["profile"] != canonical_profile
+            ):
+                return None
+            # A resumed action can legitimately differ after the model sees
+            # new context, or the short-lived grant can expire before the tool
+            # retries. Supersede only the grant bound to THIS exact active run,
+            # then park a fresh request below. This avoids both replay and the
+            # clean-exit protocol-violation path.
+            cancelled = conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ?, "
+                "    decision_reason = 'superseded by a fresh action request' "
+                "WHERE id = ? AND state = 'approved' AND resume_run_id = ?",
+                (now, bound_grant["id"], int(expected_run_id)),
+            )
+            if cancelled.rowcount != 1:
+                return None
+            _append_event(
+                conn,
+                task_id,
+                "approval_cancelled",
+                {
+                    "request_id": bound_grant["id"],
+                    "reason": "superseded by a fresh action request",
+                },
+                run_id=int(expected_run_id),
+            )
+
+        request_id = "ka_" + secrets.token_hex(12)
+        # CAS the live task before inserting the request. Any later failure in
+        # this transaction rolls the task update back with it.
+        params: list[Any] = [task_id, int(expected_run_id), canonical_profile]
+        claim_sql = ""
+        if expected_claim_lock is not None:
+            claim_sql = " AND claim_lock = ?"
+            params.append(str(expected_claim_lock))
+        updated = conn.execute(
+            "UPDATE tasks "
+            "SET status = 'blocked', claim_lock = NULL, claim_expires = NULL, "
+            "    worker_pid = NULL, current_run_id = NULL, "
+            "    block_kind = 'needs_input' "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "  AND assignee = ?" + claim_sql,
+            params,
+        )
+        if updated.rowcount != 1:
+            return None
+        run_update = conn.execute(
+            "UPDATE task_runs "
+            "SET status = 'approval_pending', outcome = 'approval_pending', "
+            "    summary = 'paused for a durable human approval', ended_at = ?, "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "  AND ended_at IS NULL",
+            (now, int(expected_run_id), task_id),
+        )
+        if run_update.rowcount != 1:
+            raise RuntimeError("approval request lost active-run CAS")
+        conn.execute(
+            """
+            INSERT INTO kanban_approval_requests (
+                id, task_id, requested_run_id, profile,
+                action_kind, action_digest, display_target, description,
+                worker_session_id, state,
+                platform, chat_id, thread_id, user_id, notifier_profile,
+                requested_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request_id,
+                task_id,
+                int(expected_run_id),
+                canonical_profile,
+                action_kind,
+                action_digest,
+                display_target[:2048],
+                description[:2048] if description else None,
+                worker_session_id,
+                normalized_route["platform"],
+                normalized_route["chat_id"],
+                normalized_route["thread_id"],
+                normalized_route["user_id"],
+                normalized_route["notifier_profile"],
+                now,
+                deadline,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "approval_requested",
+            {
+                "request_id": request_id,
+                "action_kind": action_kind,
+                "display_target": display_target[:2048],
+                "description": description[:2048] if description else None,
+            },
+            run_id=int(expected_run_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+        return _approval_as_dict(KanbanApprovalRequest.from_row(row))
+
+
+def decide_task_approval(
+    conn: sqlite3.Connection,
+    request_id: str,
+    decision: str,
+    *,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+    decided_by: Optional[str] = None,
+    reason: Optional[str] = None,
+    grant_ttl_seconds: int = KANBAN_APPROVAL_GRANT_TTL_SECONDS,
+    grant_expires_at: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Approve or deny a pending request with optional exact-route checks."""
+    normalized = str(decision).strip().casefold()
+    if normalized in {"approve", "approved", "allow", "yes"}:
+        new_state = "approved"
+    elif normalized in {"deny", "denied", "reject", "no"}:
+        new_state = "denied"
+    else:
+        raise ValueError("decision must be approve or deny")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (str(request_id),),
+        ).fetchone()
+        if row is None or row["state"] != "pending":
+            return None
+        request = KanbanApprovalRequest.from_row(row)
+        supplied_route = {
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "notifier_profile": notifier_profile,
+        }
+        for field_name, expected in supplied_route.items():
+            if expected is not None and str(getattr(request, field_name) or "") != str(expected):
+                return None
+        if request.expires_at <= now:
+            conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'expired', decided_at = ?, decision_reason = ? "
+                "WHERE id = ? AND state = 'pending'",
+                (now, "request expired before decision", request.id),
+            )
+            _append_event(
+                conn,
+                request.task_id,
+                "approval_expired",
+                {"request_id": request.id},
+                run_id=request.requested_run_id,
+            )
+            expired = conn.execute(
+                "SELECT * FROM kanban_approval_requests WHERE id = ?",
+                (request.id,),
+            ).fetchone()
+            return _approval_as_dict(KanbanApprovalRequest.from_row(expired))
+
+        task = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (request.task_id,),
+        ).fetchone()
+        if (
+            task is None
+            or task["status"] != "blocked"
+            or task["current_run_id"] is not None
+            or task["assignee"] != request.profile
+        ):
+            return None
+
+        grant_nonce: Optional[str] = None
+        grant_expiry = request.expires_at
+        if new_state == "approved":
+            grant_nonce = secrets.token_urlsafe(32)
+            grant_expiry = (
+                int(grant_expires_at)
+                if grant_expires_at is not None
+                else now + max(1, int(grant_ttl_seconds))
+            )
+            if grant_expiry <= now:
+                raise ValueError("approval grant expiry must be in the future")
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests "
+            "SET state = ?, grant_nonce = ?, decided_at = ?, expires_at = ?, "
+            "    decided_by = ?, decision_reason = ? "
+            "WHERE id = ? AND state = 'pending'",
+            (
+                new_state,
+                grant_nonce,
+                now,
+                grant_expiry,
+                decided_by,
+                reason,
+                request.id,
+            ),
+        )
+        if changed.rowcount != 1:
+            return None
+
+        target_status = "blocked"
+        if new_state == "approved":
+            undone_parent = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? "
+                "  AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                (request.task_id,),
+            ).fetchone()
+            target_status = "todo" if undone_parent else "ready"
+            task_update = conn.execute(
+                "UPDATE tasks SET status = ?, block_kind = NULL "
+                "WHERE id = ? AND status = 'blocked' "
+                "  AND current_run_id IS NULL AND assignee = ?",
+                (target_status, request.task_id, request.profile),
+            )
+            if task_update.rowcount != 1:
+                raise RuntimeError("approval decision lost task-state CAS")
+        _append_event(
+            conn,
+            request.task_id,
+            "approval_approved" if new_state == "approved" else "approval_denied",
+            {
+                "request_id": request.id,
+                "decided_by": decided_by,
+                "reason": reason,
+                "task_status": target_status,
+            },
+            run_id=request.requested_run_id,
+        )
+        decided = conn.execute(
+            "SELECT * FROM kanban_approval_requests WHERE id = ?",
+            (request.id,),
+        ).fetchone()
+        return _approval_as_dict(KanbanApprovalRequest.from_row(decided))
+
+
+def consume_task_approval(
+    conn: sqlite3.Connection,
+    *,
+    request_id: str,
+    grant_nonce: str,
+    task_id: str,
+    resume_run_id: int,
+    profile: str,
+    action_digest: str,
+) -> bool:
+    """Consume one exact, bound grant once; reject every partial match."""
+    canonical_profile = _canonical_assignee(profile)
+    if canonical_profile is None:
+        return False
+    now = int(time.time())
+    with write_txn(conn):
+        changed = conn.execute(
+            "UPDATE kanban_approval_requests "
+            "SET state = 'consumed', consumed_at = ?, grant_nonce = NULL "
+            "WHERE id = ? AND state = 'approved' AND grant_nonce = ? "
+            "  AND task_id = ? AND resume_run_id = ? AND profile = ? "
+            "  AND action_digest = ? AND expires_at > ? AND consumed_at IS NULL",
+            (
+                now,
+                str(request_id),
+                str(grant_nonce),
+                str(task_id),
+                int(resume_run_id),
+                canonical_profile,
+                str(action_digest),
+                now,
+            ),
+        )
+        if changed.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            str(task_id),
+            "approval_consumed",
+            {"request_id": str(request_id)},
+            run_id=int(resume_run_id),
+        )
+        return True
+
+
+def cancel_bound_task_approval(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    resume_run_id: int,
+    request_id: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> bool:
+    """Unbind an unconsumed grant after a dispatcher spawn failure.
+
+    The approval remains valid for its original digest, but its nonce rotates
+    before a later run can bind it. This preserves the user's decision without
+    leaving a credential tied to a run that never started.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        sql = (
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND resume_run_id = ? AND state = 'approved'"
+        )
+        params: list[Any] = [str(task_id), int(resume_run_id)]
+        if request_id is not None:
+            sql += " AND id = ?"
+            params.append(str(request_id))
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return False
+        request = KanbanApprovalRequest.from_row(row)
+        if request.expires_at <= now:
+            changed = conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'expired', grant_nonce = NULL "
+                "WHERE id = ? AND state = 'approved' AND resume_run_id = ?",
+                (request.id, int(resume_run_id)),
+            )
+        else:
+            changed = conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET resume_run_id = NULL, grant_nonce = ? "
+                "WHERE id = ? AND state = 'approved' AND resume_run_id = ?",
+                (secrets.token_urlsafe(32), request.id, int(resume_run_id)),
+            )
+        if changed.rowcount != 1:
+            return False
+        _append_event(
+            conn,
+            request.task_id,
+            "approval_resume_unbound",
+            {"request_id": request.id, "reason": reason},
+            run_id=int(resume_run_id),
+        )
+        return True
+
+
+def expire_task_approvals(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+) -> int:
+    """Expire stale pending/granted requests and fail closed when unbound."""
+    current = int(time.time()) if now is None else int(now)
+    expired_count = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE state IN ('pending', 'approved') AND expires_at <= ?",
+            (current,),
+        ).fetchall()
+        for row in rows:
+            request = KanbanApprovalRequest.from_row(row)
+            changed = conn.execute(
+                "UPDATE kanban_approval_requests "
+                "SET state = 'expired', grant_nonce = NULL, decided_at = COALESCE(decided_at, ?), "
+                "    decision_reason = COALESCE(decision_reason, 'approval expired') "
+                "WHERE id = ? AND state IN ('pending', 'approved') AND expires_at <= ?",
+                (current, request.id, current),
+            )
+            if changed.rowcount != 1:
+                continue
+            expired_count += 1
+            if request.resume_run_id is None:
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input' "
+                    "WHERE id = ? AND status IN ('ready', 'todo') "
+                    "  AND current_run_id IS NULL",
+                    (request.task_id,),
+                )
+            _append_event(
+                conn,
+                request.task_id,
+                "approval_expired",
+                {"request_id": request.id},
+                run_id=request.resume_run_id or request.requested_run_id,
+            )
+    return expired_count
+
+
+# ---------------------------------------------------------------------------
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
@@ -3371,10 +4170,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
       finish, transient infra error clears).
 
     The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+    blocking / ``"unblocked"`` event for the task. Human-denied or expired
+    durable approvals are blocking decisions too; they must not be undone by
+    the next dispatcher tick simply because their parent dependencies are
+    already satisfied.
 
     Returns ``False`` when there is no such event at all (e.g. the task
     was set to ``status='blocked'`` by the circuit breaker or by direct
@@ -3383,11 +4182,14 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? "
+        "  AND kind IN ('blocked', 'unblocked', 'approval_denied', 'approval_expired') "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {
+        "blocked", "approval_denied", "approval_expired",
+    }
 
 
 def recompute_ready(
@@ -3432,6 +4234,15 @@ def recompute_ready(
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            pending_approval = conn.execute(
+                "SELECT 1 FROM kanban_approval_requests "
+                "WHERE task_id = ? AND state = 'pending' LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if pending_approval:
+                # A durable approval request, unlike a dependency/circuit
+                # breaker block, can only be released by its routed decision.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3497,6 +4308,88 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        initial_task = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if initial_task is None or initial_task["status"] != "ready":
+            # In particular, do not let a losing concurrent claimer mutate a
+            # grant that the winning claimer already bound to a running task.
+            return None
+        approval_row = conn.execute(
+            "SELECT * FROM kanban_approval_requests "
+            "WHERE task_id = ? AND state IN ('pending', 'approved') "
+            "ORDER BY requested_at DESC, rowid DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        approval: Optional[KanbanApprovalRequest] = None
+        if approval_row is not None:
+            approval = KanbanApprovalRequest.from_row(approval_row)
+            if approval.expires_at <= now:
+                conn.execute(
+                    "UPDATE kanban_approval_requests "
+                    "SET state = 'expired', grant_nonce = NULL, "
+                    "    decided_at = COALESCE(decided_at, ?), "
+                    "    decision_reason = COALESCE(decision_reason, 'approval expired') "
+                    "WHERE id = ? AND state IN ('pending', 'approved')",
+                    (now, approval.id),
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'ready' AND current_run_id IS NULL",
+                    (task_id,),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "approval_expired",
+                    {"request_id": approval.id},
+                    run_id=approval.requested_run_id,
+                )
+                return None
+            if approval.state == "pending":
+                # Defend against a manual status edit: pending means parked,
+                # regardless of what the tasks.status column currently says.
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'ready' AND current_run_id IS NULL",
+                    (task_id,),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_rejected",
+                    {"reason": "approval_pending", "request_id": approval.id},
+                )
+                return None
+            if (
+                approval.resume_run_id is not None
+                or initial_task["assignee"] != approval.profile
+                or not approval.grant_nonce
+                or not approval.worker_session_id
+            ):
+                # A reassignment invalidates the prior principal's decision;
+                # a pre-bound grant must never be rebound to another run.
+                conn.execute(
+                    "UPDATE kanban_approval_requests "
+                    "SET state = 'cancelled', grant_nonce = NULL, cancelled_at = ? "
+                    "WHERE id = ? AND state = 'approved'",
+                    (now, approval.id),
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input' "
+                    "WHERE id = ? AND status = 'ready' AND current_run_id IS NULL",
+                    (task_id,),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "approval_cancelled",
+                    {"request_id": approval.id, "reason": "profile_or_binding_changed"},
+                )
+                return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3587,12 +4480,25 @@ def claim_task(
             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
             (run_id, task_id),
         )
+        if approval is not None:
+            bound = conn.execute(
+                "UPDATE kanban_approval_requests SET resume_run_id = ? "
+                "WHERE id = ? AND task_id = ? AND state = 'approved' "
+                "  AND resume_run_id IS NULL AND expires_at > ?",
+                (int(run_id), approval.id, task_id, now),
+            )
+            if bound.rowcount != 1:
+                raise RuntimeError("failed to bind approval grant to claimed run")
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id},
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
+        if claimed is not None and approval is not None:
+            claimed.approval_request_id = approval.id
+            claimed.approval_grant_nonce = approval.grant_nonce
+            claimed.approval_worker_session_id = approval.worker_session_id
     _fire_kanban_lifecycle_hook(
         "kanban_task_claimed",
         task_id,
@@ -5587,6 +6493,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_requests WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
 
@@ -5610,6 +6517,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_requests WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
 
@@ -6026,6 +6934,8 @@ class DispatchResult:
     """Outcome of a single ``dispatch`` pass."""
 
     reclaimed: int = 0
+    expired_approvals: int = 0
+    """Durable approval requests/grants expired during this tick."""
     promoted: int = 0
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
@@ -7549,6 +8459,7 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    result.expired_approvals = expire_task_approvals(conn)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7769,6 +8680,14 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"workspace setup failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
@@ -7814,6 +8733,14 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"worker spawn failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -7861,6 +8788,14 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"workspace setup failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
@@ -7895,6 +8830,14 @@ def _dispatch_once_locked(
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
+            if claimed.approval_request_id and claimed.current_run_id is not None:
+                cancel_bound_task_approval(
+                    conn,
+                    task_id=claimed.id,
+                    resume_run_id=claimed.current_run_id,
+                    request_id=claimed.approval_request_id,
+                    reason=f"worker spawn failed: {type(exc).__name__}",
+                )
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -8193,7 +9136,43 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
+    if task.approval_request_id:
+        prompt = (
+            f"resume kanban task {task.id} after its human approval; "
+            "continue the interrupted action, then finish the task"
+        )
     env = dict(os.environ)
+
+    # The dispatcher commonly lives inside a gateway (and may also have run a
+    # cron turn). Those ambient markers describe the *parent process*, not this
+    # detached worker. Inheriting them puts terminal/code approval into a mode
+    # whose callback queue exists only in the parent process, causing a deadlock
+    # or an unsafe fail-open. Scrub every routing/interactive authority marker
+    # before setting the worker's explicit Kanban identity below.
+    for key in tuple(env):
+        if (
+            key.startswith("HERMES_SESSION_")
+            or key.startswith("HERMES_TUI_")
+            or key.startswith("HERMES_GATEWAY_")
+        ):
+            env.pop(key, None)
+        elif key.startswith("HERMES_CRON_AUTO_DELIVER_"):
+            env.pop(key, None)
+    for key in (
+        "HERMES_CRON_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_GATEWAY",
+        "_HERMES_GATEWAY",
+        "HERMES_GATEWAY_ELEVATED_HANDOFF",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_INTERACTIVE",
+        "HERMES_KANBAN_APPROVAL_ID",
+        "HERMES_KANBAN_APPROVAL_NONCE",
+        "HERMES_TUI",
+        "HERMES_YOLO_MODE",
+    ):
+        env.pop(key, None)
+    env["HERMES_KANBAN_SESSION"] = "1"
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -8237,6 +9216,9 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    if task.approval_request_id and task.approval_grant_nonce:
+        env["HERMES_KANBAN_APPROVAL_ID"] = task.approval_request_id
+        env["HERMES_KANBAN_APPROVAL_NONCE"] = task.approval_grant_nonce
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.
@@ -8304,6 +9286,11 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+    if task.approval_worker_session_id:
+        # Resume is a top-level CLI option and must precede the ``chat``
+        # subcommand. This restores the exact conversation whose tool call was
+        # interrupted, rather than asking a new agent to reconstruct intent.
+        cmd.extend(["--resume", task.approval_worker_session_id])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

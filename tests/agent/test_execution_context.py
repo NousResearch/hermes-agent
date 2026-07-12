@@ -11,6 +11,7 @@ from agent.execution_context import (
     bind_agent_execution_context,
     current_execution_role,
     execution_role_from_environment,
+    is_kanban_delegate_context,
     is_kanban_owner_context,
     reset_agent_execution_context,
 )
@@ -45,8 +46,25 @@ def test_delegated_child_is_not_the_card_owner():
 
     token = bind_agent_execution_context(agent)
     try:
+        assert current_execution_role() is ExecutionRole.KANBAN_DELEGATE
+        assert is_kanban_owner_context() is False
+        assert is_kanban_delegate_context() is True
+    finally:
+        reset_agent_execution_context(token)
+
+
+def test_ordinary_delegated_child_stays_non_kanban_delegate():
+    agent = type(
+        "Agent",
+        (),
+        {"_execution_role": ExecutionRole.DIRECT, "_delegate_depth": 1},
+    )()
+
+    token = bind_agent_execution_context(agent)
+    try:
         assert current_execution_role() is ExecutionRole.DELEGATE
         assert is_kanban_owner_context() is False
+        assert is_kanban_delegate_context() is False
     finally:
         reset_agent_execution_context(token)
 

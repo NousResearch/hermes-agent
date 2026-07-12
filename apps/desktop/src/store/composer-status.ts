@@ -42,8 +42,8 @@ const dismissedBySession = new Map<string, Set<string>>()
 // Finished tasks self-clear so the stack only ever holds running work. Success
 // goes quick; failure lingers longer so its exit code stays readable (the output
 // also lives in the transcript). A manual X still drops either at once.
-const SUCCESS_LINGER_MS = 4_000
-const FAILURE_LINGER_MS = 12_000
+const SUCCESS_LINGER_MS = 30_000
+const FAILURE_LINGER_MS = 60_000
 const autoClearTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>()
 
 function scheduleAutoDismiss(sid: string, id: string, delayMs: number) {

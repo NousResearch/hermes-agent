@@ -80,11 +80,11 @@ _PROJECT_MARKERS = (
     "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts",
     "Gemfile", "composer.json", "mix.exs", "pubspec.yaml",
     "CMakeLists.txt", "Makefile", "Dockerfile",
-    "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    ".hermes.md", "HERMES.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
 )
 
 # Agent-instruction files surfaced separately from manifests in the snapshot.
-_CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
+_CONTEXT_FILES = (".hermes.md", "HERMES.md", "AGENTS.md", "CLAUDE.md", ".cursorrules")
 
 # Source-file extensions that make a git repo a *code* workspace even with no
 # manifest. Without this, `git init` on a notes/writing/research folder (a huge

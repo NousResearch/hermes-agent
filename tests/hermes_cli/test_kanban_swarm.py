@@ -1,4 +1,6 @@
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_swarm import (
     SwarmWorkerSpec,
@@ -104,6 +106,37 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         kb.recompute_ready(conn)
         assert kb.get_task(conn, created.verifier_id).status == "ready"
         assert kb.get_task(conn, created.synthesizer_id).status == "todo"
+
+        with pytest.raises(kb.CompletionGateError, match='metadata.*gate.*pass'):
+            kb.complete_task(
+                conn,
+                created.verifier_id,
+                summary="Claimed verification without a gate",
+            )
+        assert kb.get_task(conn, created.verifier_id).status == "ready"
+        assert kb.get_task(conn, created.synthesizer_id).status == "todo"
+        blocked_events = [
+            event for event in kb.list_events(conn, created.verifier_id)
+            if event.kind == "completion_blocked_gate"
+        ]
+        assert len(blocked_events) == 1
+        assert blocked_events[0].payload == {
+            "required_gate": "pass",
+            "provided_gate": None,
+        }
+
+        # The requirement is structured immutable state, not editable prose.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET body = ? WHERE id = ?",
+                ("Body replaced through a supported edit surface", created.verifier_id),
+            )
+        with pytest.raises(kb.CompletionGateError):
+            kb.complete_task(
+                conn,
+                created.verifier_id,
+                metadata={"gate": "fail"},
+            )
 
         kb.complete_task(
             conn,

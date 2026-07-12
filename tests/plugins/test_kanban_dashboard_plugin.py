@@ -317,6 +317,36 @@ def test_patch_status_complete(client):
     assert any(x["id"] == t["id"] for x in done["tasks"])
 
 
+def test_patch_status_complete_returns_conflict_for_unsatisfied_gate(client):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "review"}).json()["task"]
+    with kb.connect_closing() as conn:
+        kb.require_completion_gate(conn, task["id"], gate="pass")
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "done", "metadata": {"gate": "fail"}},
+    )
+
+    assert response.status_code == 409
+    assert "requires metadata" in response.json()["detail"]
+
+
+def test_bulk_complete_reports_unsatisfied_gate_per_task(client):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "review"}).json()["task"]
+    with kb.connect_closing() as conn:
+        kb.require_completion_gate(conn, task["id"], gate="pass")
+
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [task["id"]], "status": "done"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["ok"] is False
+    assert "requires metadata" in result["error"]
+
+
 def test_patch_block_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

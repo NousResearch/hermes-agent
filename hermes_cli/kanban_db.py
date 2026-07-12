@@ -3121,6 +3121,17 @@ def _append_event(
     )
 
 
+def require_completion_gate(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    gate: str,
+) -> None:
+    """Attach an immutable, structured completion requirement to a task."""
+    with write_txn(conn):
+        _append_event(conn, task_id, "completion_gate_required", {"gate": gate})
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3975,6 +3986,18 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionGateError(ValueError):
+    """Raised when a task's durable completion gate was not satisfied."""
+
+    def __init__(self, task_id: str, required_gate: str):
+        self.task_id = task_id
+        self.required_gate = required_gate
+        super().__init__(
+            f"completion blocked: task requires metadata "
+            f'{{"gate": "{required_gate}"}}; review the evidence and retry'
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4014,6 +4037,33 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+
+    # Completion requirements are immutable structured events, so normal task
+    # edits cannot remove or weaken a verifier gate.
+    gate_row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'completion_gate_required' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    required_gate = None
+    if gate_row is not None and gate_row["payload"]:
+        required_gate = json.loads(gate_row["payload"]).get("gate")
+    if (
+        required_gate
+        and (not isinstance(metadata, dict) or metadata.get("gate") != required_gate)
+    ):
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "completion_blocked_gate",
+                {
+                    "required_gate": required_gate,
+                    "provided_gate": metadata.get("gate") if isinstance(metadata, dict) else None,
+                },
+            )
+        raise CompletionGateError(task_id, required_gate)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a

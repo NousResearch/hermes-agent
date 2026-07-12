@@ -191,6 +191,7 @@ def create_swarm(
         workspace_path=workspace_path,
         skills=["requesting-code-review"],
     )
+    kb.require_completion_gate(conn, verifier, gate="pass")
 
     synthesizer_body = (
         "Synthesize the verified worker outputs into the final deliverable. "

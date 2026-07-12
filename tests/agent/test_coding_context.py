@@ -189,6 +189,20 @@ class TestProjectFacts:
         block = cc.build_coding_workspace_block(tmp_path)
         assert "Context files: AGENTS.md" in block
 
+    def test_hermes_context_file_marks_and_describes_non_git_workspace(self, tmp_path):
+        (tmp_path / ".hermes.md").write_text("# Hermes rules")
+
+        facts = cc.detect_project_facts(tmp_path)
+        block = cc.build_coding_workspace_block(tmp_path)
+
+        assert facts.context_files == [".hermes.md"]
+        assert "Context files: .hermes.md" in block
+        assert cc.is_coding_context(
+            platform="cli",
+            cwd=tmp_path,
+            config={"agent": {"coding_context": "auto"}},
+        )
+
     def test_worktree_detected_without_primary_path(self, tmp_path):
         # A linked worktree should be detected, but the output must NOT contain
         # the absolute path to the primary tree — exposing that path causes the

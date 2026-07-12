@@ -353,8 +353,8 @@ def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
 
 def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypatch):
     """Large Codex inputs can legitimately take longer than the small-request
-    first-byte cutoff before the first SSE frame. Preserve the full input and
-    wait instead of killing/retrying at TTFB."""
+    first-byte cutoff before the first SSE frame. Scale the TTFB timeout up
+    for those requests instead of killing/retrying at the small-request cutoff."""
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
@@ -384,6 +384,45 @@ def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypat
     resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
+
+
+def test_large_codex_request_can_still_ttfb_reconnect_when_capped(tmp_path, monkeypatch):
+    """Large Codex requests should keep a finite TTFB watchdog instead of
+    disabling it entirely. A low max cap should still force an early reconnect."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "1")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    large_input = "x" * 44_000  # ~11k estimated tokens, above the large-request gate.
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+        assert "TTFB threshold: 1s" in str(excinfo.value)
+        assert "codex_ttfb_kill" in closes
+    finally:
+        stop["flag"] = True
 
 
 def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypatch):

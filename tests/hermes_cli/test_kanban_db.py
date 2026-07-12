@@ -450,7 +450,9 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
-        assert killed == [signal.SIGTERM]
+        # A stale board PID without this gateway's live Popen record is
+        # diagnostic only; reclaim must never signal a potentially reused PID.
+        assert killed == []
 
 
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(

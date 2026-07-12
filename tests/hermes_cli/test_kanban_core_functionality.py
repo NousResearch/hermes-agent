@@ -4172,9 +4172,10 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
         assert len(reclaim_evs) == 1
         assert reclaim_evs[0].get("manual") is True
         assert reclaim_evs[0].get("reason") == "test reason"
-        assert reclaim_evs[0].get("termination_attempted") is True
-        assert reclaim_evs[0].get("terminated") is True
-        assert killed == [signal.SIGTERM]
+        assert reclaim_evs[0].get("termination_attempted") is False
+        assert reclaim_evs[0].get("ownership_reason") == "missing_registry_record"
+        assert reclaim_evs[0].get("terminated") is False
+        assert killed == []
     finally:
         conn.close()
 

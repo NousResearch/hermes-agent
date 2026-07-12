@@ -6004,6 +6004,23 @@ _worker_registry: "dict[int, _WorkerProcess]" = {}
 _worker_exit_context: "dict[int, _WorkerProcess]" = {}
 
 
+def _trim_worker_exit_context(*, now: Optional[float] = None) -> None:
+    """Bound retained exit evidence and release exited ``Popen`` references."""
+    now = time.time() if now is None else now
+    cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
+    for pid in list(_worker_exit_context):
+        entry = _recent_worker_exits.get(pid)
+        if entry is None or entry[1] < cutoff:
+            _worker_exit_context.pop(pid, None)
+    if len(_worker_exit_context) > _RECENT_WORKER_EXITS_MAX:
+        ordered = sorted(
+            _worker_exit_context,
+            key=lambda pid: _recent_worker_exits.get(pid, (0, 0.0))[1],
+        )
+        for pid in ordered[:len(_worker_exit_context) - _RECENT_WORKER_EXITS_MAX]:
+            _worker_exit_context.pop(pid, None)
+
+
 def _register_worker_process(
     proc: Any,
     task: Task,
@@ -6047,6 +6064,7 @@ def _poll_registered_workers() -> list[int]:
         _worker_exit_context[pid] = record
         _worker_registry.pop(pid, None)
         reaped.append(pid)
+    _trim_worker_exit_context()
     return reaped
 
 
@@ -6209,7 +6227,13 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Terminate only a child whose live identity this gateway can prove.
+
+    A board PID is diagnostic state, not authority to signal.  After a gateway
+    restart or PID reuse the in-memory ``Popen`` record is absent, so cleanup
+    fails closed and the caller defers the claim instead of risking an
+    unrelated process.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -6218,6 +6242,8 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "ownership_verified": False,
+        "ownership_reason": None,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -6227,37 +6253,47 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is None:
+    record = _worker_registry.get(int(pid))
+    if record is None:
+        info["ownership_reason"] = "missing_registry_record"
+        return info
+    if record.pid != int(pid) or getattr(record.proc, "pid", None) != int(pid):
+        info["ownership_reason"] = "pid_identity_mismatch"
+        return info
+    try:
+        if record.proc.poll() is not None:
+            info["ownership_reason"] = "popen_not_live"
+            return info
+    except Exception:
+        info["ownership_reason"] = "popen_liveness_unknown"
         return info
 
-    info["termination_attempted"] = True
-    group_signalled = False
-    record = _worker_registry.get(int(pid))
-    # Only kill a process group when this gateway still owns the exact Popen
-    # child and its current group matches the launch-time group. This avoids
-    # signalling an unrelated process after PID reuse.
-    if (
-        signal_fn is None and os.name != "nt" and record is not None
-        and record.process_group is not None
-    ):
-        try:
-            if os.getpgid(int(pid)) == record.process_group:
-                os.killpg(record.process_group, signal.SIGTERM)
-                info["process_group"] = record.process_group
-                group_signalled = True
-        except (ProcessLookupError, OSError):
-            info["terminated"] = True
+    if os.name != "nt":
+        if record.process_group is None:
+            info["ownership_reason"] = "missing_process_group"
             return info
+        try:
+            if os.getpgid(int(pid)) != record.process_group:
+                info["ownership_reason"] = "process_group_mismatch"
+                return info
+        except (ProcessLookupError, OSError):
+            info["ownership_reason"] = "process_group_unavailable"
+            return info
+
+    info["ownership_verified"] = True
+    info["ownership_reason"] = "live_popen_identity_match"
+    info["termination_attempted"] = True
     try:
-        if not group_signalled:
-            kill(int(pid), signal.SIGTERM)
+        if os.name == "nt":
+            # The live Popen handle is the Windows ownership proof; never use
+            # a bare PID signal because a reused PID is indistinguishable.
+            record.proc.terminate()
+        else:
+            # The isolated session/group was identity-checked immediately above.
+            # Never fall back to kill(pid) when this evidence changes.
+            os.killpg(record.process_group, signal.SIGTERM)
+            info["process_group"] = record.process_group
     except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
         info["terminated"] = True
         return info
     except OSError:
@@ -6271,17 +6307,14 @@ def _terminate_reclaimed_worker(
 
     if _pid_alive(pid):
         try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            if group_signalled and record is not None and record.process_group is not None:
-                # Revalidate the leader/group association before escalating.
-                if os.getpgid(int(pid)) == record.process_group:
-                    os.killpg(record.process_group, _sigkill)
-                else:
-                    kill(int(pid), _sigkill)
+            if os.name == "nt":
+                record.proc.kill()
             else:
-                kill(int(pid), _sigkill)
+                if os.getpgid(int(pid)) != record.process_group:
+                    info["ownership_verified"] = False
+                    info["ownership_reason"] = "process_group_mismatch_escalation"
+                    return info
+                os.killpg(record.process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -6747,6 +6780,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "preserved": row["workspace_kind"] != "scratch",
                 },
             }
+            # Exit evidence is single-consumer classification data. The envelope
+            # above is durable; dropping this reference releases the exited
+            # Popen promptly and prevents a later PID reuse from reusing it.
+            _worker_exit_context.pop(pid, None)
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -8048,38 +8085,75 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
 
 
 def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, Any]:
-    """Validate deterministic worker-launch prerequisites without spawning.
+    """Validate every worker-launch prerequisite before ``Popen``.
 
-    The route is intentionally credential-free. Credentials remain in the
-    profile auth store and are never persisted into events or run metadata.
+    Errors are typed and deliberately redacted: routes identify provider/model
+    names only, while credential material remains solely in the target profile.
     """
+    def fail(code: str, detail: str) -> dict[str, Any]:
+        return {"ok": False, "code": code, "detail": detail[:200]}
+
     if not workspace or not os.path.isabs(workspace) or not os.path.isdir(workspace):
-        return {"ok": False, "code": "workspace_invalid", "detail": "workspace must be an existing absolute directory"}
+        return fail("workspace_invalid", "workspace must be an existing absolute directory")
+    if task.workspace_kind == "worktree":
+        try:
+            top = subprocess.run(
+                ["git", "-C", workspace, "rev-parse", "--show-toplevel"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                timeout=3, check=True,
+            ).stdout.strip()
+            if os.path.realpath(top) != os.path.realpath(workspace):
+                return fail("workspace_invalid", "worktree workspace must be its own Git worktree root")
+        except (OSError, subprocess.SubprocessError):
+            return fail("workspace_invalid", "worktree workspace must be a resolvable Git worktree")
     if not task.assignee:
-        return {"ok": False, "code": "profile_invalid", "detail": "task has no assignee"}
+        return fail("profile_invalid", "task has no assignee")
+    if not task.id or task.current_run_id is None or not task.claim_lock:
+        return fail("claim_invalid", "task must have an active claimed run")
+    try:
+        with contextlib.closing(connect(board=board)) as conn:
+            row = conn.execute(
+                "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?", (task.id,),
+            ).fetchone()
+        if not row or row["status"] != "running" or row["current_run_id"] != task.current_run_id or row["claim_lock"] != task.claim_lock:
+            return fail("claim_invalid", "task claim no longer matches the active board run")
+    except Exception:
+        return fail("board_invalid", "board state could not be verified")
     try:
         from hermes_cli.profiles import normalize_profile_name, profile_exists, resolve_profile_env
         profile = normalize_profile_name(task.assignee)
         if not profile_exists(profile):
-            return {"ok": False, "code": "profile_invalid", "detail": f"profile {profile!r} does not exist"}
+            return fail("profile_invalid", f"profile {profile!r} does not exist")
         profile_home = resolve_profile_env(profile)
-    except Exception as exc:
-        return {"ok": False, "code": "profile_invalid", "detail": str(exc)[:200]}
+    except Exception:
+        return fail("profile_invalid", "profile could not be resolved")
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
         token = set_hermes_home_override(profile_home)
         try:
             cfg = load_config()
+            model_cfg = cfg.get("model") or {}
+            provider = str(model_cfg.get("provider") or "").strip()
+            model = str(task.model_override or model_cfg.get("default") or "").strip()
+            if not provider or not model:
+                return fail("route_invalid", "profile must resolve a provider and model")
+            from providers import get_provider_profile
+            if get_provider_profile(provider) is None:
+                return fail("route_invalid", "configured provider is unavailable")
+            worker_toolsets = _resolve_worker_cli_toolsets(profile_home)
+            if not worker_toolsets:
+                return fail("toolsets_invalid", "profile has no available CLI toolsets")
+            if task.skills:
+                from agent.skill_commands import scan_skill_commands
+                available = {entry["name"] for entry in scan_skill_commands().values()}
+                missing = [str(skill) for skill in task.skills if str(skill) not in available]
+                if missing:
+                    return fail("skills_invalid", "attached skills are unavailable in target profile")
         finally:
             reset_hermes_home_override(token)
-        model_cfg = cfg.get("model") or {}
-        provider = str(model_cfg.get("provider") or "").strip()
-        model = str(task.model_override or model_cfg.get("default") or "").strip()
-        if not provider or not model:
-            return {"ok": False, "code": "route_invalid", "detail": "profile must resolve non-empty provider and model"}
-    except Exception as exc:
-        return {"ok": False, "code": "route_invalid", "detail": str(exc)[:200]}
+    except Exception:
+        return fail("route_invalid", "profile route could not be resolved")
     return {
         "ok": True,
         "board": _normalize_board_slug(board) or get_current_board(),
@@ -8288,9 +8362,19 @@ def _default_spawn(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+        token = set_hermes_home_override(env.get("HERMES_HOME"))
+        try:
+            provider = str((load_config().get("model") or {}).get("provider") or "").strip()
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        provider = ""
     _register_worker_process(
         proc, task, board=board, log_path=str(log_path),
-        route={"profile": profile_arg, "model": task.model_override or ""},
+        route={"profile": profile_arg, "provider": provider, "model": task.model_override or ""},
     )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The

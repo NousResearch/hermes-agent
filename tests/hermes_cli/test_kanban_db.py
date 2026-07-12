@@ -324,6 +324,21 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_recompute_ready_preserves_initial_human_block(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="human gate",
+            assignee="main",
+            initial_status="blocked",
+        )
+
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+
+
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
     """blocked tasks with all parents done should be promoted to ready,
     unless the circuit-breaker failure limit has been reached."""

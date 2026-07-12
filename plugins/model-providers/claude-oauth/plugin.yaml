@@ -1,0 +1,5 @@
+name: claude-oauth-provider
+kind: model-provider
+version: 0.1.0
+description: Fail-closed Claude subscription provider using the official Claude Code runtime
+author: Nous Research

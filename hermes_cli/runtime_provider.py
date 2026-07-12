@@ -340,6 +340,7 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    "claude_agent_sdk",
 }
 
 
@@ -1524,6 +1525,19 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+
+    if requested_provider in {"claude-oauth", "claude-code"}:
+        # Dedicated official Claude Code runtime. No API credential is resolved
+        # here by design: the child process must authenticate exclusively with
+        # a live first-party Claude.ai subscription session.
+        return {
+            "provider": "claude-oauth",
+            "api_mode": "claude_agent_sdk",
+            "base_url": "claude-oauth://local",
+            "api_key": "subscription-oauth-external",
+            "source": "claude-code-oauth",
+            "requested_provider": requested_provider,
+        }
 
     if requested_provider == "moa":
         return {

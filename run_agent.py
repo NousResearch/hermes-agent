@@ -5836,6 +5836,13 @@ class AIAgent:
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
+    def _run_claude_oauth_turn(self, *, messages, original_user_message=None):
+        """Forwarder for the fail-closed official Claude subscription runtime."""
+        from agent.claude_oauth_runtime import run_claude_oauth_turn
+        return run_claude_oauth_turn(
+            self, messages=messages, original_user_message=original_user_message
+        )
+
 def main(
     query: str = None,
     model: str = "",

@@ -640,6 +640,12 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    if agent.api_mode == "claude_agent_sdk":
+        return agent._run_claude_oauth_turn(
+            messages=messages,
+            original_user_message=original_user_message,
+        )
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()

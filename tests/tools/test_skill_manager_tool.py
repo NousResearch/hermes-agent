@@ -581,6 +581,44 @@ class TestSkillManageDispatcher:
         assert result["success"] is True
         assert usage["review-sediment"]["created_by"] == "agent"
 
+    def test_create_uses_configured_default_write_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        local = hermes_home / "skills"
+        shared = tmp_path / "shared-skills"
+        local.mkdir(parents=True)
+        shared.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  default_write_dir: {shared}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = json.loads(
+            skill_manage(action="create", name="shared-created", content=VALID_SKILL_CONTENT)
+        )
+
+        assert result["success"] is True
+        assert result["path"] == "shared-created"
+        assert (shared / "shared-created" / "SKILL.md").exists()
+        assert not (local / "shared-created").exists()
+
+    def test_invalid_default_write_dir_does_not_fall_back(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        local = hermes_home / "skills"
+        local.mkdir(parents=True)
+        missing = tmp_path / "missing-shared-skills"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  default_write_dir: {missing}\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = json.loads(
+            skill_manage(action="create", name="must-not-fallback", content=VALID_SKILL_CONTENT)
+        )
+
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
+        assert not (local / "must-not-fallback").exists()
+
     def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
         # Dispatcher must plumb absorbed_into through to _delete_skill so the
         # validation + message suffix paths are exercised end-to-end.

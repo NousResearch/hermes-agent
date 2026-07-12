@@ -328,13 +328,27 @@ skills:
 
 Paths support `~` expansion and `${VAR}` environment variable substitution.
 
+To create new agent-managed skills in one of these shared locations, set
+`default_write_dir`. The directory must already exist. It is automatically
+included in skill discovery, so it does not also need to appear in
+`external_dirs`:
+
+```yaml
+skills:
+  default_write_dir: ~/.agents/skills
+  external_dirs:
+    - /home/shared/team-skills
+```
+
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Configurable creation root**: New skills are written to `skills.default_write_dir` when configured, otherwise to the active profile's local `skills/` directory. An invalid configured write directory causes creation to fail instead of silently writing somewhere else.
+- **Update in place**: Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
-- **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
+- **Discovery precedence**: Local skills win first, followed by `default_write_dir`, then the remaining `external_dirs`.
+- **Curator ownership**: Background curator maintenance may manage agent-created skills in the local or default write root. Other `external_dirs` remain read-only to autonomous curation.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
-- **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
+- **Missing paths**: Non-existent `external_dirs` are silently skipped. A missing `default_write_dir` is ignored for discovery but blocks skill creation until the directory is created or the setting is removed.
 
 ### Example
 

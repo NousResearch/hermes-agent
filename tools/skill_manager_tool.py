@@ -42,7 +42,7 @@ import contextvars as _ctxvars
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
 
@@ -577,9 +577,14 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
+    from agent.skill_utils import get_skill_write_dir
+
+    write_dir, error = get_skill_write_dir(_skills_dir())
+    if error or write_dir is None:
+        raise ValueError(error or "Could not resolve skill write directory.")
     if category:
-        return _skills_dir() / category / name
-    return _skills_dir() / name
+        return write_dir / category / name
+    return write_dir / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -819,7 +824,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         }
 
     # Create the skill directory
-    skill_dir = _resolve_skill_dir(name, category)
+    try:
+        skill_dir = _resolve_skill_dir(name, category)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
@@ -845,7 +853,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(_skills_dir())),
+        "path": str(skill_dir.relative_to(_resolve_skill_dir(""))),
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -1427,7 +1435,8 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Manage skills (create, update, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
+        "New skills go to skills.default_write_dir when configured, otherwise "
+        "to the active profile's skills directory; existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "

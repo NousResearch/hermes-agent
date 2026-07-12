@@ -444,6 +444,44 @@ def test_restore_skill_moves_back(skills_home):
     assert get_record("temp-skill")["state"] == "active"
 
 
+def test_archive_and_restore_stay_in_default_write_root(skills_home):
+    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+
+    shared = skills_home.parent / "shared-skills"
+    shared.mkdir()
+    (skills_home / "config.yaml").write_text(
+        f"skills:\n  default_write_dir: {shared}\n"
+    )
+    _write_skill(shared, "shared-agent-skill")
+    mark_agent_created("shared-agent-skill")
+
+    ok, msg = archive_skill("shared-agent-skill")
+    assert ok, msg
+    assert (shared / ".archive" / "shared-agent-skill" / "SKILL.md").exists()
+    assert not (shared / "shared-agent-skill").exists()
+
+    ok, msg = restore_skill("shared-agent-skill")
+    assert ok, msg
+    assert (shared / "shared-agent-skill" / "SKILL.md").exists()
+
+
+def test_restore_refuses_ambiguous_archives_across_writable_roots(skills_home):
+    from tools.skill_usage import restore_skill
+
+    local = skills_home / "skills"
+    shared = skills_home.parent / "shared-skills"
+    shared.mkdir()
+    (skills_home / "config.yaml").write_text(
+        f"skills:\n  default_write_dir: {shared}\n"
+    )
+    _write_skill(local / ".archive", "ambiguous")
+    _write_skill(shared / ".archive", "ambiguous")
+
+    ok, msg = restore_skill("ambiguous")
+    assert not ok
+    assert "ambiguous" in msg
+
+
 def test_restore_skill_finds_nested_archive_subdir(skills_home):
     """Skills archived under nested category subdirs (e.g.
     .archive/<category>/<skill>/) — left behind by older archive layouts or

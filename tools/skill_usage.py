@@ -122,8 +122,8 @@ def _usage_file_lock():
         fd.close()
 
 
-def _archive_dir() -> Path:
-    return _skills_dir() / ".archive"
+def _archive_dir(root: Optional[Path] = None) -> Path:
+    return (root or _skills_dir()) / ".archive"
 
 
 def _now_iso() -> str:
@@ -338,47 +338,48 @@ def list_agent_created_skill_names() -> List[str]:
     included; manually authored skills are not inferred from filesystem
     location.
     """
-    base = _skills_dir()
-    if not base.exists():
-        return []
+    from agent.skill_utils import get_curator_writable_skills_dirs
+
     hub = _read_hub_installed_names()
     bundled = _read_bundled_manifest_names()
     prune_builtins = _prune_builtins_enabled()
     usage = load_usage()
 
     names: List[str] = []
-    # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
-    for skill_md in base.rglob("SKILL.md"):
-        # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
-        if is_excluded_skill_path(skill_md):
+    for base in get_curator_writable_skills_dirs():
+        if not base.exists():
             continue
+        for skill_md in base.rglob("SKILL.md"):
+        # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
+            if is_excluded_skill_path(skill_md):
+                continue
         # External skill dirs can be mounted below the local skills tree.
         # Discovery may see them, but autonomous lifecycle curation must not.
-        if is_external_skill_path(skill_md):
-            continue
-        try:
-            skill_md.relative_to(base)
-        except ValueError:
-            continue
-        name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
+            if is_external_skill_path(skill_md):
+                continue
+            try:
+                skill_md.relative_to(base)
+            except ValueError:
+                continue
+            name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         # Hub-installed skills are always off-limits.
-        if name in hub:
-            continue
+            if name in hub:
+                continue
         # Protected built-ins are never curation candidates — exempt from the
         # automatic transition walk AND the LLM consolidation pass.
-        if is_protected_builtin(name):
-            continue
-        if name in bundled:
+            if is_protected_builtin(name):
+                continue
+            if name in bundled:
             # Built-ins are only candidates when pruning is enabled. They never
             # carry a curator-managed record, so the record gate is skipped.
-            if not prune_builtins:
+                if not prune_builtins:
+                    continue
+                names.append(name)
+                continue
+        # Agent-authored (or local-manual) skills must opt in via their record.
+            if not _is_curator_managed_record(usage.get(name)):
                 continue
             names.append(name)
-            continue
-        # Agent-authored (or local-manual) skills must opt in via their record.
-        if not _is_curator_managed_record(usage.get(name)):
-            continue
-        names.append(name)
     return sorted(set(names))
 
 
@@ -389,10 +390,14 @@ def list_archived_skill_names() -> List[str]:
     so the directory name is the skill name. Used by ``hermes curator
     list-archived`` to help users pass a name to ``hermes curator restore``.
     """
-    archive_root = _archive_dir()
-    if not archive_root.exists():
-        return []
-    return sorted({p.name for p in archive_root.iterdir() if p.is_dir()})
+    from agent.skill_utils import get_curator_writable_skills_dirs
+
+    names: Set[str] = set()
+    for root in get_curator_writable_skills_dirs():
+        archive_root = _archive_dir(root)
+        if archive_root.exists():
+            names.update(p.name for p in archive_root.iterdir() if p.is_dir())
+    return sorted(names)
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
@@ -724,7 +729,15 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
 
-    archive_root = _archive_dir()
+    from agent.skill_utils import get_curator_writable_skills_dirs
+
+    matching_roots = [
+        root
+        for root in get_curator_writable_skills_dirs()
+        if skill_dir == root or root in skill_dir.parents
+    ]
+    source_root = max(matching_roots, key=lambda root: len(root.parts), default=_skills_dir())
+    archive_root = _archive_dir(source_root)
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -778,14 +791,25 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
             f"skill '{skill_name}' is now bundled; "
             "restore would shadow the upstream version"
         )
-    archive_root = _archive_dir()
-    if not archive_root.exists():
+    from agent.skill_utils import get_curator_writable_skills_dirs
+
+    archive_roots = [
+        _archive_dir(root)
+        for root in get_curator_writable_skills_dirs()
+        if _archive_dir(root).exists()
+    ]
+    if not archive_roots:
         return False, "no archive directory"
 
     # Try exact name match first, then the timestamped-duplicate fallback.
     # Recursive walk handles nested archive layouts (e.g. .archive/<category>/<skill>/)
     # left behind by older archive paths or external imports.
-    candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
+    candidates = [
+        p
+        for archive_root in archive_roots
+        for p in archive_root.rglob("*")
+        if p.is_dir() and p.name == skill_name
+    ]
     if not candidates:
         # A name collision makes archive_skill() disambiguate by appending its
         # UTC timestamp ("<skill>-YYYYMMDDHHMMSS", a 14-digit suffix), so only
@@ -797,7 +821,9 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         prefix = f"{skill_name}-"
         candidates = sorted(
             [
-                p for p in archive_root.rglob("*")
+                p
+                for archive_root in archive_roots
+                for p in archive_root.rglob("*")
                 if p.is_dir()
                 and p.name.startswith(prefix)
                 and len(p.name) - len(prefix) == 14
@@ -807,9 +833,20 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         )
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
+    candidate_roots = {
+        archive_root.parent
+        for archive_root in archive_roots
+        for candidate in candidates
+        if archive_root == candidate or archive_root in candidate.parents
+    }
+    if len(candidate_roots) > 1:
+        return False, f"skill '{skill_name}' has ambiguous archives across multiple skill roots"
 
     src = candidates[0]
-    dest = _skills_dir() / skill_name
+    destination_root = next(
+        root for root in candidate_roots
+    )
+    dest = destination_root / skill_name
     if dest.exists():
         return False, f"destination already exists: {dest}"
 
@@ -835,24 +872,26 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
     (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
     """
-    base = _skills_dir()
-    if not base.exists():
-        return None
-    for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
+    from agent.skill_utils import get_curator_writable_skills_dirs
+
+    for base in get_curator_writable_skills_dirs():
+        if not base.exists():
             continue
-        if is_external_skill_path(skill_md):
-            continue
-        if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
-            return skill_md.parent
+        for skill_md in base.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            if is_external_skill_path(skill_md):
+                continue
+            if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
+                return skill_md.parent
     return None
 
 
 def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
     """Locate a skill under configured external dirs by frontmatter name."""
-    from agent.skill_utils import get_all_skills_dirs
+    from agent.skill_utils import get_readonly_external_skills_dirs
 
-    for base in get_all_skills_dirs()[1:]:
+    for base in get_readonly_external_skills_dirs():
         if not base.exists():
             continue
         for skill_md in base.rglob("SKILL.md"):

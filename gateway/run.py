@@ -8636,16 +8636,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
             # Persist the home-startup notification before releasing the shutdown
-            # event.  start_gateway() waits on that event and may otherwise exit
-            # before a supervisor-triggered SIGTERM leaves any durable handoff.
-            is_external_signal_restart = (
-                getattr(self, "_signal_initiated_shutdown", False)
-                and not self._restart_requested
-            )
+            # event. start_gateway() waits on that event and may otherwise exit
+            # before a confirmed non-chat restart handoff is durable.
+            #
+            # An unexpected SIGTERM is deliberately not enough evidence: the same
+            # signal path covers OOM recovery and a bare `kill`, after which a
+            # later manual cold start must not emit a stale recovery notice.
             is_non_chat_restart = (
                 self._restart_requested and self._restart_command_source is None
             )
-            if is_non_chat_restart or is_external_signal_restart:
+            if is_non_chat_restart:
                 try:
                     atomic_json_write(
                         _planned_restart_notification_path(),

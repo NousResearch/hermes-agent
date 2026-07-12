@@ -398,12 +398,34 @@ def _stopped_state_persisted(runner) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_external_signal_persists_home_marker_before_releasing_shutdown(tmp_path, monkeypatch):
-    """Supervisor restarts must retain the startup notice before process exit."""
+async def test_unexpected_signal_does_not_persist_home_startup_marker(tmp_path, monkeypatch):
+    """An OOM or bare kill must not notify a later manual cold start."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     runner._signal_initiated_shutdown = True
+    writes = []
+
+    def record_marker(path, payload, **kwargs):
+        writes.append((path.name, payload, runner._shutdown_event.is_set()))
+
+    monkeypatch.setattr(gateway_run, "atomic_json_write", record_marker)
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert writes == []
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_non_chat_restart_persists_home_marker_before_releasing_shutdown(tmp_path, monkeypatch):
+    """A confirmed restart handoff must retain its notice before process exit."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._restart_requested = True
+    runner._restart_command_source = None
     writes = []
 
     def record_marker(path, payload, **kwargs):

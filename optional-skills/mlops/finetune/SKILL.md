@@ -57,6 +57,8 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 | `/finetune rollback [cluster]` | Roll back to previous version |
 | `/finetune redeploy` | **Convert active adapter to GGUF and restart llama-server with it loaded** |
 | `/finetune route "prompt"` | Test which adapter would route for a prompt |
+| `/finetune route enable` | **Install the inference-time adapter-routing plugin** |
+| `/finetune route disable` | Remove the adapter-routing plugin |
 | `/finetune run` | **Full pipeline, no bench gate** — fast, auto-promotes |
 | `/finetune run --with-bench` | **Full pipeline + bench gate** — auto-rollback on regression |
 | `/finetune cron` | Schedule recurring retraining |
@@ -283,6 +285,31 @@ This is the closed-loop "retrain and validate without human intervention" workfl
 
 ---
 
+## Inference-Time Adapter Routing
+
+Once adapters are trained and promoted, hermes can pick the best one per
+prompt automatically. Routing runs as a standard hermes plugin
+(`finetune-routing`, shipped in this skill's `plugin/` directory) that
+registers `llm_request` middleware: it embeds the incoming prompt, matches
+it against cluster centroids, and injects the matched adapter as a
+per-request `extra_body.lora_adapters` entry for local llama.cpp
+endpoints. The decision is carried on the request payload — no
+process-global state — so concurrent sessions can't observe each other's
+adapter selection.
+
+```bash
+/finetune route enable      # copy the plugin into <hermes-home>/plugins/
+# then set in ~/.hermes/config.yaml:
+#   finetune:
+#     routing:
+#       enabled: true
+/finetune route disable     # remove the plugin
+```
+
+The plugin only activates for local endpoints (localhost/127.0.0.1) — a
+remote provider can't load a LoRA from a local path. Restart hermes after
+enabling; plugins are discovered at session start.
+
 ## Retroactive Labeling
 
 The automated quality scorer is conservative — early in the pipeline you'll likely see most assistant turns score around 0.5, which means they fall below the default `min_turn_score: 0.7` threshold and don't contribute to training. The retro flow lets you go back and label specific turns by hand, seeding real ground-truth signal that the trainer will then prefer.
@@ -376,6 +403,8 @@ Every step from Workflow A can be invoked on its own. This is mainly for debuggi
 | `/finetune promote --cluster c-id --version v2` | Mark an adapter active |
 | `/finetune rollback --cluster c-id` | Revert to the previous version |
 | `/finetune route "prompt text"` | Show which adapter would handle this prompt |
+| `/finetune route enable` | Install the routing plugin into `<hermes-home>/plugins/` |
+| `/finetune route disable` | Remove the routing plugin |
 | `/finetune retro <subcommand>` | Retroactively label sessions and turns (see "Retroactive Labeling" above) |
 | `/finetune status` | Display pipeline state, active adapters, cluster maturity |
 | `/finetune cron weekly` | Schedule `/finetune run --with-bench` to run on a cron |

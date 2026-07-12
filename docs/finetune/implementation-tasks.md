@@ -216,9 +216,10 @@
 - Fall back to `_general` or base model below threshold
 - Log routing decisions for re-clustering analysis
 
-### 7.2 Provider pre-request hook
+### 7.2 Routing plugin (llm_request middleware)
 
-- Integrate with `run_agent.py`'s `pre_llm_call` hook system (lines ~7029-7062)
+- Ship a `finetune-routing` plugin inside the skill (`plugin/finetune-routing/`); `/finetune route enable` installs it into `<hermes-home>/plugins/` where standard plugin discovery loads it
+- Register `llm_request` middleware that rewrites the request payload per call (request-local — no env vars or process-global state)
 - Only activate when provider is local (llama.cpp, custom endpoint)
 - No-op for cloud providers (OpenRouter, Nous Portal, OpenAI)
 - Pass selected adapter path to llama.cpp server

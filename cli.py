@@ -8401,6 +8401,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint("  /finetune retro list      — show priority queue of unlabeled sessions")
             _cprint("  /finetune retro show <id> — show a session's full conversation")
             _cprint("  /finetune retro good <id> [turns] — label session/turns as good")
+            _cprint("  /finetune route enable    — install the adapter-routing plugin")
+            _cprint("  /finetune route disable   — remove the adapter-routing plugin")
             return
 
         subcommand = parts[1]

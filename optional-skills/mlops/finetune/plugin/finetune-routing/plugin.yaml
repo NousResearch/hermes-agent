@@ -1,0 +1,7 @@
+name: finetune-routing
+version: 0.1.0
+description: >-
+  Routes prompts on local llama.cpp endpoints to the best fine-tuned LoRA
+  adapter (cosine similarity against cluster centroids). Shipped with the
+  mlops/finetune optional skill; enable with `/finetune route enable`.
+author: hermes-finetune skill

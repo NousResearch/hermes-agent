@@ -1526,3 +1526,153 @@ class TestInstalledSkill:
         info = json.loads(proc.stdout.strip().splitlines()[-1])
         assert info["n_cases"] > 200, info
         assert info["backend"] == "docker", info
+
+
+# ============================================================================
+# Routing plugin (llm_request middleware)
+# ============================================================================
+
+def _load_routing_plugin():
+    """Import the plugin module fresh from its bundle location."""
+    import importlib.util
+
+    plugin_init = (
+        Path(__file__).resolve().parent.parent
+        / "optional-skills" / "mlops" / "finetune"
+        / "plugin" / "finetune-routing" / "__init__.py"
+    )
+    spec = importlib.util.spec_from_file_location("finetune_routing_plugin", plugin_init)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestRoutingPlugin:
+    def _stub_router(self, mod, route_result, enabled=True):
+        class _Router:
+            def __init__(self):
+                self.enabled = enabled
+                self.calls = []
+
+            def route(self, prompt):
+                self.calls.append(prompt)
+                return route_result
+
+        router = _Router()
+        mod._router = router
+        mod._router_failed = False
+        return router
+
+    def test_injects_adapter_for_local_endpoint(self):
+        mod = _load_routing_plugin()
+        router = self._stub_router(mod, {
+            "cluster_id": "c-dev", "adapter_path": "/adapters/c-dev/v2",
+            "confidence": 0.91, "label": "coding",
+        })
+        request = {
+            "model": "carnice",
+            "messages": [{"role": "user", "content": "Refactor the config loader in this repo"}],
+        }
+        result = mod.finetune_llm_request_middleware(
+            request=request, base_url="http://localhost:8008/v1", model="carnice",
+        )
+        assert result is not None
+        rewritten = result["request"]
+        assert rewritten["extra_body"]["lora_adapters"] == [
+            {"path": "/adapters/c-dev/v2", "scale": 1.0}
+        ]
+        # The original request dict is not mutated in place
+        assert "extra_body" not in request
+        # No process-global state left behind
+        assert "_HERMES_FINETUNE_ADAPTER" not in os.environ
+        assert router.calls, "router.route() should have been consulted"
+
+    def test_skips_remote_endpoints(self):
+        mod = _load_routing_plugin()
+        router = self._stub_router(mod, {
+            "cluster_id": "c-dev", "adapter_path": "/adapters/c-dev/v2",
+            "confidence": 0.91, "label": "coding",
+        })
+        result = mod.finetune_llm_request_middleware(
+            request={"messages": [{"role": "user", "content": "long enough prompt here"}]},
+            base_url="https://openrouter.ai/api/v1", model="carnice",
+        )
+        assert result is None
+        assert not router.calls
+
+    def test_skips_when_router_disabled(self):
+        mod = _load_routing_plugin()
+        self._stub_router(mod, {"adapter_path": "/x"}, enabled=False)
+        result = mod.finetune_llm_request_middleware(
+            request={"messages": [{"role": "user", "content": "long enough prompt here"}]},
+            base_url="http://127.0.0.1:8008/v1", model="carnice",
+        )
+        assert result is None
+
+    def test_skips_short_and_missing_messages(self):
+        mod = _load_routing_plugin()
+        router = self._stub_router(mod, {"adapter_path": "/x"})
+        for messages in ([], [{"role": "user", "content": "hi"}], [{"role": "assistant", "content": "text"}]):
+            result = mod.finetune_llm_request_middleware(
+                request={"messages": messages},
+                base_url="http://localhost:8008/v1", model="carnice",
+            )
+            assert result is None
+        assert not router.calls
+
+    def test_no_adapter_match_leaves_request_untouched(self):
+        mod = _load_routing_plugin()
+        self._stub_router(mod, {"cluster_id": None, "adapter_path": None,
+                                "confidence": 0.1, "label": "no match"})
+        result = mod.finetune_llm_request_middleware(
+            request={"messages": [{"role": "user", "content": "long enough prompt here"}]},
+            base_url="http://localhost:8008/v1", model="carnice",
+        )
+        assert result is None
+
+    def test_multipart_user_content(self):
+        mod = _load_routing_plugin()
+        router = self._stub_router(mod, {
+            "cluster_id": "c-dev", "adapter_path": "/adapters/c-dev/v2",
+            "confidence": 0.9, "label": "coding",
+        })
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please refactor this module for clarity"},
+                {"type": "image_url", "image_url": {"url": "data:..."}},
+            ],
+        }]
+        result = mod.finetune_llm_request_middleware(
+            request={"messages": messages},
+            base_url="http://localhost:8008/v1", model="carnice",
+        )
+        assert result is not None
+        assert "refactor this module" in router.calls[0]
+
+    def test_register_uses_middleware_lifecycle(self):
+        mod = _load_routing_plugin()
+
+        class _Ctx:
+            def __init__(self):
+                self.registered = []
+
+            def register_middleware(self, kind, callback):
+                self.registered.append((kind, callback))
+
+        ctx = _Ctx()
+        mod.register(ctx)
+        assert ctx.registered == [("llm_request", mod.finetune_llm_request_middleware)]
+
+    def test_enable_disable_install_plugin(self, tmp_hermes):
+        """route.py enable/disable copies/removes the plugin under
+        <hermes-home>/plugins/."""
+        import route as route_mod
+
+        assert route_mod.enable_routing_plugin() is True
+        dest = tmp_hermes / "plugins" / "finetune-routing"
+        assert (dest / "plugin.yaml").exists()
+        assert (dest / "__init__.py").exists()
+
+        assert route_mod.disable_routing_plugin() is True
+        assert not dest.exists()

@@ -944,14 +944,6 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             "promptId": str(uuid.uuid4()),
         }
 
-    # Finetune adapter routing: if a LoRA adapter was selected by the
-    # finetune routing hook, inject it for local llama.cpp providers.
-    # The env var is set by the routing hook and cleared after use.
-    _ft_additions = None
-    _ft_adapter = os.environ.pop("_HERMES_FINETUNE_ADAPTER", "")
-    if _ft_adapter and not _is_or and not _is_nous and not _is_gh:
-        _ft_additions = {"lora_adapters": [{"path": _ft_adapter, "scale": 1.0}]}
-
     # ── Provider profile path (registered providers) ───────────────────
     # Profiles handle per-provider quirks via hooks. When a profile is
     # found, delegate fully; otherwise fall through to the legacy flag path.
@@ -985,7 +977,6 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
-            extra_body_additions=_ft_additions,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
@@ -1027,7 +1018,6 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         ollama_num_ctx=agent._ollama_num_ctx,
-        extra_body_additions=_ft_additions,
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
         qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,

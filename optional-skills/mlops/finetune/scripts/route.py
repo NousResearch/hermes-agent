@@ -3,11 +3,15 @@
 Inference-time adapter routing for the finetune pipeline.
 
 Embeds incoming prompts, matches against cluster centroids, and selects
-the best adapter. Designed to integrate with Hermes's provider pre-request hook.
+the best adapter. At inference time this runs as the finetune-routing
+plugin (shipped in the skill's plugin/ directory), which registers
+``llm_request`` middleware through the standard hermes plugin lifecycle.
 
 Usage:
     python route.py "Your prompt text here"
-    python route.py --test  # Run routing diagnostics
+    python route.py --test    # Run routing diagnostics
+    python route.py enable    # Install the routing plugin into <hermes-home>/plugins/
+    python route.py disable   # Remove the routing plugin
 """
 
 import argparse
@@ -198,48 +202,94 @@ class AdapterRouter:
         return provider.lower() in [p.lower() for p in self.allowed_providers]
 
 
-def _pre_llm_call_hook(**kwargs) -> Optional[Dict]:
-    """
-    Hook for Hermes's pre_llm_call system.
+PLUGIN_NAME = "finetune-routing"
+PLUGIN_SRC = Path(__file__).resolve().parent.parent / "plugin" / PLUGIN_NAME
 
-    This function is called before each LLM API call. It checks if the
-    current provider supports adapter routing and, if so, selects the
-    appropriate adapter.
 
-    Returns a dict with adapter routing info, or None if routing doesn't apply.
-    """
-    platform = kwargs.get("platform", "")
-    model = kwargs.get("model", "")
-    user_message = kwargs.get("user_message", "")
+def enable_routing_plugin() -> bool:
+    """Copy the routing plugin into <hermes-home>/plugins/ so the standard
+    plugin discovery (hermes_cli/plugins.py) loads it at session start."""
+    import shutil
 
-    router = AdapterRouter()
+    from common import HERMES_HOME
 
-    # Only route for local providers
-    # (Cloud providers don't support LoRA loading)
-    if not router.should_route(platform or "local"):
-        return None
+    if not PLUGIN_SRC.is_dir():
+        print(f"Routing plugin source not found: {PLUGIN_SRC}")
+        return False
 
-    result = router.route(user_message)
+    dest = HERMES_HOME / "plugins" / PLUGIN_NAME
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(PLUGIN_SRC, dest)
+    print(f"Routing plugin installed at {dest}")
 
-    if result.get("adapter_path"):
-        logger.info(
-            "Routing to adapter: %s (cluster=%s, confidence=%.3f)",
-            result["label"], result["cluster_id"], result["confidence"],
+    # User plugins are opt-in: they load only when listed in the
+    # plugins.enabled allow-list. Add it through the official CLI helper so
+    # the canonical key resolution stays in one place; fall back to printing
+    # the command when hermes_cli isn't importable (bare repo checkout).
+    try:
+        from hermes_cli.plugins_cmd import cmd_enable
+        cmd_enable(PLUGIN_NAME, allow_tool_override=False)
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.debug("cmd_enable unavailable: %s", e)
+        print(
+            "Now allow-list it (plugins are opt-in):\n"
+            f"    hermes plugins enable {PLUGIN_NAME}"
         )
-        return {
-            "adapter_path": result["adapter_path"],
-            "cluster_id": result["cluster_id"],
-            "routing_confidence": result["confidence"],
-        }
 
-    return None
+    print("It takes effect for new hermes sessions.")
+
+    cfg = load_config()
+    if not cfg.get("routing", {}).get("enabled", False):
+        print(
+            "Note: finetune.routing.enabled is false in config.yaml — the\n"
+            "plugin loads but stays inactive until you set it to true."
+        )
+    return True
+
+
+def disable_routing_plugin() -> bool:
+    """Remove the routing plugin from <hermes-home>/plugins/."""
+    import shutil
+
+    from common import HERMES_HOME
+
+    dest = HERMES_HOME / "plugins" / PLUGIN_NAME
+    if not dest.exists():
+        print("Routing plugin is not installed.")
+        return True
+
+    # Drop it from the plugins.enabled allow-list BEFORE removing the files
+    # (cmd_disable resolves the plugin key from the installed directory).
+    try:
+        from hermes_cli.plugins_cmd import cmd_disable
+        cmd_disable(PLUGIN_NAME)
+    except SystemExit:
+        pass
+    except Exception as e:
+        logger.debug("cmd_disable unavailable: %s", e)
+
+    shutil.rmtree(dest)
+    print(f"Routing plugin removed from {dest}")
+    return True
 
 
 def main():
     parser = argparse.ArgumentParser(description="Test adapter routing")
-    parser.add_argument("prompt", nargs="?", default=None, help="Prompt to route")
+    parser.add_argument(
+        "prompt", nargs="?", default=None,
+        help="Prompt to route, or 'enable'/'disable' to manage the routing plugin",
+    )
     parser.add_argument("--test", action="store_true", help="Run routing diagnostics")
     args = parser.parse_args()
+
+    if args.prompt == "enable":
+        raise SystemExit(0 if enable_routing_plugin() else 1)
+    if args.prompt == "disable":
+        raise SystemExit(0 if disable_routing_plugin() else 1)
 
     router = AdapterRouter()
 

@@ -498,13 +498,11 @@ def find_arbitrage(
 
     selected = platforms or ["mercari", "yahoo_auction", "ebay", "amazon_jp"]
     market = search_markets(keyword, selected, limit, dry_run=dry_run)
-    min_yen = int(min_profit_yen if min_profit_yen is not None else core.DEFAULTS["min_profit_yen"])
-    min_rate = float(min_profit_rate if min_profit_rate is not None else core.DEFAULTS["min_profit_rate"])
+    # KPI thresholds (core.KPI_DEFAULTS is the single source of truth)
+    profit_yen = int(min_profit_yen) if min_profit_yen is not None else core.KPI_DEFAULTS["min_profit_yen"]
+    profit_rate = float(min_profit_rate) if min_profit_rate is not None else core.KPI_DEFAULTS["min_profit_rate"]
     # Arb scans often target mid-ticket niches (GPU/golf); default wider than beginner 1万円.
-    if budget_yen is not None:
-        budget = int(budget_yen)
-    else:
-        budget = int(os.environ.get("WARASHIBE_ARB_BUDGET", "80000"))
+    budget = int(budget_yen) if budget_yen is not None else int(os.environ.get("WARASHIBE_ARB_BUDGET", "80000"))
 
     # Shipping/overhead estimates by buy→sell route (yen).
     route_ship = {
@@ -565,7 +563,7 @@ def find_arbitrage(
                 packaging=int(core.DEFAULTS.get("packaging_cost", 80)),
             )
             # Override go with explicit thresholds (also handles ebay fee_flat quirks).
-            go = profit["profit"] >= min_yen and profit["profit_rate"] >= min_rate
+            go = profit["profit"] >= profit_yen and profit["profit_rate"] >= profit_rate
             sell_item = max(sell_items, key=lambda x: x.get("landed_price") or 0)
             combos.append(
                 {
@@ -592,8 +590,8 @@ def find_arbitrage(
         "keyword": keyword,
         "retrieved_at": datetime.now(timezone.utc).isoformat(),
         "thresholds": {
-            "min_profit_yen": min_yen,
-            "min_profit_rate": min_rate,
+            "min_profit_yen": profit_yen,
+            "min_profit_rate": profit_rate,
             "budget_yen": budget,
         },
         "market": market,

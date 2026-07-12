@@ -23,14 +23,23 @@ PLATFORMS = {
     "paypay":      {"name": "PayPayフリマ",   "fee_pct": 5,   "fee_flat": 0,   "shipping": "ゆうゆく/PayPay便",  "api": "非公式", "scrape": "browser-use可"},
 }
 
-# ── Profit Calculator ─────────────────────────────────────────────────
+# ── KPI Defaults ─────────────────────────────────────────────────────
+KPI_DEFAULTS = {
+    "min_profit_yen": 500,        # KPI: absolute minimum profit per unit
+    "min_profit_rate": 0.30,      # KPI: minimum profit margin (30%)
+    "max_turnaround_days": 14,    # operational: inventory days target
+    "packaging_cost": 80,         # cost model: shipping supplies
+    "listing_time_cost": 0,       # automation assumes zero manual time
+}
+
+# ── Legacy DEFAULTS (kept for backward compat) ──────────────────────
 DEFAULTS = {
     "budget_yen": 10000,
-    "min_profit_rate": 0.30,
-    "min_profit_yen": 500,
-    "max_turnaround_days": 14,
-    "packaging_cost": 80,    # ゆうパケット簡易書留wich
-    "listing_time_cost": 0,  # 自動化で0
+    "min_profit_rate": KPI_DEFAULTS["min_profit_rate"],
+    "min_profit_yen": KPI_DEFAULTS["min_profit_yen"],
+    "max_turnaround_days": KPI_DEFAULTS["max_turnaround_days"],
+    "packaging_cost": KPI_DEFAULTS["packaging_cost"],
+    "listing_time_cost": KPI_DEFAULTS["listing_time_cost"],
 }
 
 def calc_profit(buy_price: int, sell_price: int, platform: str = "mercari",

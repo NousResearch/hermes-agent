@@ -15,13 +15,13 @@ Features:
 Usage:
     # Run a single task with local environment
     python mini_swe_runner.py --task "Create a hello world Python script" --env local
-    
+
     # Run with Docker
     python mini_swe_runner.py --task "List files in /tmp" --env docker --image python:3.11-slim
-    
+
     # Run with Modal (cloud)
     python mini_swe_runner.py --task "Install numpy and test it" --env modal --image python:3.11-slim
-    
+
     # Batch mode from JSONL file
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
@@ -123,29 +123,29 @@ def create_environment(
 ):
     """
     Create an execution environment using Hermes-Agent's built-in backends.
-    
+
     Args:
         env_type: One of "local", "docker", "modal"
         image: Docker/Modal image name (ignored for local)
         cwd: Working directory
         timeout: Default command timeout
         **kwargs: Additional environment-specific options
-        
+
     Returns:
         Environment instance with execute() and cleanup() methods
     """
     if env_type == "local":
         from tools.environments.local import LocalEnvironment
         return LocalEnvironment(cwd=cwd, timeout=timeout)
-    
+
     elif env_type == "docker":
         from tools.environments.docker import DockerEnvironment
         return DockerEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
-    
+
     elif env_type == "modal":
         from tools.environments.modal import ModalEnvironment
         return ModalEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
-    
+
     else:
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
 
@@ -159,7 +159,7 @@ class MiniSWERunner:
     Agent runner that uses Hermes-Agent's built-in execution environments
     and outputs trajectories in Hermes-Agent format.
     """
-    
+
     def __init__(
         self,
         model: str = "anthropic/claude-sonnet-4.6",
@@ -174,7 +174,7 @@ class MiniSWERunner:
     ):
         """
         Initialize the Mini-SWE Runner.
-        
+
         Args:
             model: Model name for OpenAI-compatible API
             base_url: API base URL (optional, uses env vars if not provided)
@@ -193,9 +193,9 @@ class MiniSWERunner:
         self.env_type = env_type
         self.image = image
         self.cwd = cwd
-        
+
         self.logger = logging.getLogger(__name__)
-        
+
         # Initialize LLM client via centralized provider router.
         # If explicit api_key/base_url are provided (e.g. from CLI args),
         # construct directly.  Otherwise use the router for OpenRouter.
@@ -220,20 +220,20 @@ class MiniSWERunner:
                 self.client = OpenAI(
                     base_url="https://openrouter.ai/api/v1",
                     api_key=os.getenv("OPENROUTER_API_KEY", ""))
-        
+
         # Environment will be created per-task
         self.env = None
-        
+
         # Tool definition
         self.tools = [TERMINAL_TOOL_DEFINITION]
-        
+
         print("🤖 Mini-SWE Runner initialized")
         print(f"   Model: {self.model}")
         print(f"   Environment: {self.env_type}")
         if self.env_type != "local":
             print(f"   Image: {self.image}")
         print(f"   Max iterations: {self.max_iterations}")
-    
+
     def _create_env(self):
         """Create the execution environment."""
         print(f"🔧 Creating {self.env_type} environment...")
@@ -244,7 +244,7 @@ class MiniSWERunner:
             timeout=self.command_timeout
         )
         print("✅ Environment ready")
-    
+
     def _cleanup_env(self):
         """Cleanup the execution environment."""
         if self.env is not None:
@@ -253,21 +253,21 @@ class MiniSWERunner:
             elif hasattr(self.env, 'stop'):
                 self.env.stop()
             self.env = None
-    
+
     def _execute_command(self, command: str, timeout: int = None) -> Dict[str, Any]:
         """
         Execute a command in the environment.
-        
+
         Args:
             command: Bash command to execute
             timeout: Optional timeout override
-            
+
         Returns:
             Dict with 'output' and 'returncode'
         """
         if self.env is None:
             self._create_env()
-        
+
         try:
             result = self.env.execute(command, timeout=timeout or self.command_timeout)
             return {
@@ -281,7 +281,7 @@ class MiniSWERunner:
                 "exit_code": -1,
                 "error": str(e)
             }
-    
+
     def _format_tools_for_system_message(self) -> str:
         """Format tool definitions for the system message."""
         formatted_tools = []
@@ -294,7 +294,7 @@ class MiniSWERunner:
                 "required": None
             })
         return json.dumps(formatted_tools, ensure_ascii=False)
-    
+
     def _convert_to_hermes_format(
         self,
         messages: List[Dict[str, Any]],
@@ -303,11 +303,11 @@ class MiniSWERunner:
     ) -> List[Dict[str, Any]]:
         """
         Convert internal message format to Hermes trajectory format.
-        
+
         This produces the exact format used by batch_runner.py.
         """
         trajectory = []
-        
+
         # System message with tool definitions
         system_msg = (
             "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
@@ -322,27 +322,27 @@ class MiniSWERunner:
             "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
             "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
         )
-        
+
         trajectory.append({"from": "system", "value": system_msg})
         trajectory.append({"from": "human", "value": user_query})
-        
+
         # Process messages (skip first user message as we already added it)
         i = 1
         while i < len(messages):
             msg = messages[i]
-            
+
             if msg["role"] == "assistant":
                 if "tool_calls" in msg and msg["tool_calls"]:
                     # Assistant message with tool calls
                     content = ""
-                    
+
                     # Add reasoning if present
                     if msg.get("reasoning"):
                         content = f"<think>{msg['reasoning']}</think>"
-                    
+
                     if msg.get("content"):
                         content += msg["content"] + "\n"
-                    
+
                     # Add tool calls in XML format
                     for tool_call in msg["tool_calls"]:
                         if not tool_call or not isinstance(tool_call, dict): continue
@@ -352,29 +352,29 @@ class MiniSWERunner:
                                 else tool_call["function"]["arguments"]
                         except json.JSONDecodeError:
                             arguments = {}
-                        
+
                         tool_call_json = {
                             "name": tool_call["function"]["name"],
                             "arguments": arguments
                         }
                         content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
-                    
+
                     trajectory.append({"from": "gpt", "value": content.rstrip()})
-                    
+
                     # Collect subsequent tool responses
                     tool_responses = []
                     j = i + 1
                     while j < len(messages) and messages[j]["role"] == "tool":
                         tool_msg = messages[j]
                         tool_content = tool_msg["content"]
-                        
+
                         # Try to parse as JSON
                         try:
                             if tool_content.strip().startswith(("{", "[")):
                                 tool_content = json.loads(tool_content)
                         except (json.JSONDecodeError, AttributeError):
                             pass
-                        
+
                         tool_response = "<tool_response>\n"
                         tool_response += json.dumps({
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
@@ -385,11 +385,11 @@ class MiniSWERunner:
                         tool_response += "\n</tool_response>"
                         tool_responses.append(tool_response)
                         j += 1
-                    
+
                     if tool_responses:
                         trajectory.append({"from": "tool", "value": "\n".join(tool_responses)})
                         i = j - 1
-                
+
                 else:
                     # Regular assistant message (no tool calls)
                     content = ""
@@ -397,34 +397,34 @@ class MiniSWERunner:
                         content = f"<think>{msg['reasoning']}</think>"
                     content += msg.get("content") or ""
                     trajectory.append({"from": "gpt", "value": content})
-            
+
             elif msg["role"] == "user":
                 trajectory.append({"from": "human", "value": msg["content"]})
-            
+
             i += 1
-        
+
         return trajectory
-    
+
     def run_task(self, task: str) -> Dict[str, Any]:
         """
         Run a single task and return the result with trajectory.
-        
+
         Args:
             task: The task/prompt to execute
-            
+
         Returns:
             Dict with trajectory, completion status, and metadata
         """
         print(f"\n{'='*60}")
         print(f"📝 Task: {task[:80]}{'...' if len(task) > 80 else ''}")
         print(f"{'='*60}")
-        
+
         # Initialize environment
         self._create_env()
-        
+
         # Message history
         messages = [{"role": "user", "content": task}]
-        
+
         # System prompt for the LLM (ephemeral - not saved to trajectory)
         system_prompt = """You are an AI agent that can execute bash commands to complete tasks.
 
@@ -437,19 +437,19 @@ When you need to run commands, use the 'terminal' tool with your bash command.
 - Avoid interactive commands (no vim, nano, less, etc.)
 
 Complete the user's task step by step."""
-        
+
         api_call_count = 0
         completed = False
         final_response = None
-        
+
         try:
             while api_call_count < self.max_iterations:
                 api_call_count += 1
                 print(f"\n🔄 API call #{api_call_count}/{self.max_iterations}")
-                
+
                 # Prepare API messages
                 api_messages = [{"role": "system", "content": system_prompt}] + messages
-                
+
                 # Make API call
                 try:
                     api_kwargs = {
@@ -469,17 +469,17 @@ Complete the user's task step by step."""
                 except Exception as e:
                     self.logger.error(f"API call failed: {e}")
                     break
-                
+
                 assistant_message = response.choices[0].message
-                
+
                 # Log assistant response
                 if assistant_message.content:
                     print(f"🤖 Assistant: {assistant_message.content[:100]}...")
-                
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     print(f"🔧 Tool calls: {len(assistant_message.tool_calls)}")
-                    
+
                     # Add assistant message with tool calls
                     messages.append({
                         "role": "assistant",
@@ -496,22 +496,22 @@ Complete the user's task step by step."""
                             for tc in assistant_message.tool_calls
                         ]
                     })
-                    
+
                     # Execute each tool call
                     for tc in assistant_message.tool_calls:
                         try:
                             args = json.loads(tc.function.arguments)
                         except json.JSONDecodeError:
                             args = {}
-                        
+
                         command = args.get("command", "echo 'No command provided'")
                         timeout = args.get("timeout", self.command_timeout)
-                        
+
                         print(f"   📞 terminal: {command[:60]}...")
-                        
+
                         # Execute command
                         result = self._execute_command(command, timeout)
-                        
+
                         # Format result
                         result_json = json.dumps({
                             "content": {
@@ -520,24 +520,24 @@ Complete the user's task step by step."""
                                 "error": result["error"]
                             }
                         }, ensure_ascii=False)
-                        
+
                         # Check for task completion signal
                         if "MINI_SWE_AGENT_FINAL_OUTPUT" in result["output"]:
                             print("   ✅ Task completion signal detected!")
                             completed = True
-                        
+
                         # Add tool response
                         messages.append(make_tool_result_message(
                             tc.function.name, result_json, tc.id,
                         ))
-                        
+
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
-                    
+
                     # If task completed, we can stop
                     if completed:
                         final_response = assistant_message.content
                         break
-                
+
                 else:
                     # No tool calls - final response
                     final_response = assistant_message.content or ""
@@ -548,17 +548,17 @@ Complete the user's task step by step."""
                     completed = True
                     print("🎉 Agent finished (no more tool calls)")
                     break
-            
+
             if api_call_count >= self.max_iterations:
                 print(f"⚠️  Reached max iterations ({self.max_iterations})")
-        
+
         finally:
             # Cleanup environment
             self._cleanup_env()
-        
+
         # Convert to Hermes trajectory format
         trajectory = self._convert_to_hermes_format(messages, task, completed)
-        
+
         return {
             "conversations": trajectory,
             "completed": completed,
@@ -569,7 +569,7 @@ Complete the user's task step by step."""
                 "timestamp": datetime.now().isoformat()
             }
         }
-    
+
     def run_batch(
         self,
         prompts: List[str],
@@ -577,35 +577,35 @@ Complete the user's task step by step."""
     ) -> List[Dict[str, Any]]:
         """
         Run multiple tasks and save trajectories to a JSONL file.
-        
+
         Args:
             prompts: List of task prompts
             output_file: Output JSONL file path
-            
+
         Returns:
             List of results
         """
         results = []
-        
+
         print(f"\n📦 Running batch of {len(prompts)} tasks")
         print(f"📁 Output: {output_file}")
-        
+
         with open(output_file, 'w', encoding='utf-8') as f:
             for i, prompt in enumerate(prompts, 1):
                 print(f"\n{'='*60}")
                 print(f"📋 Task {i}/{len(prompts)}")
                 print(f"{'='*60}")
-                
+
                 try:
                     result = self.run_task(prompt)
                     results.append(result)
-                    
+
                     # Write to file immediately
                     f.write(json.dumps(result, ensure_ascii=False) + "\n")
                     f.flush()
-                    
+
                     print(f"✅ Task {i} completed (api_calls={result['api_calls']})")
-                    
+
                 except Exception as e:
                     self.logger.error(f"Error on task {i}: {e}")
                     error_result = {
@@ -618,7 +618,7 @@ Complete the user's task step by step."""
                     results.append(error_result)
                     f.write(json.dumps(error_result, ensure_ascii=False) + "\n")
                     f.flush()
-        
+
         print(f"\n✅ Batch complete! {len(results)} trajectories saved to {output_file}")
         return results
 
@@ -643,7 +643,7 @@ def main(
 ):
     """
     Run SWE tasks with Hermes trajectory format output.
-    
+
     Args:
         task: Single task to run (use this OR prompts_file)
         prompts_file: JSONL file with prompts (each line: {"prompt": "..."})
@@ -657,27 +657,27 @@ def main(
         max_iterations: Maximum tool-calling iterations (default: 15)
         timeout: Command timeout in seconds (default: 60)
         verbose: Enable verbose logging
-        
+
     Examples:
         # Single task with local environment
         python mini_swe_runner.py --task "Create hello.py that prints Hello World"
-        
+
         # Single task with Docker
         python mini_swe_runner.py --task "List files" --env docker
-        
+
         # Batch from file
         python mini_swe_runner.py --prompts_file tasks.jsonl --output_file results.jsonl
     """
     print("🚀 Mini-SWE Runner with Hermes Trajectory Format")
     print("=" * 60)
-    
+
     # Configure root logging at the entry point (not in library __init__).
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%H:%M:%S'
     )
-    
+
     # Initialize runner
     runner = MiniSWERunner(
         model=model,
@@ -690,20 +690,20 @@ def main(
         command_timeout=timeout,
         verbose=verbose,
     )
-    
+
     if task:
         # Single task mode
         result = runner.run_task(task)
-        
+
         # Save to file
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
-        
+
         print(f"\n📁 Trajectory saved to: {output_file}")
         print(f"✅ Completed: {result['completed']}")
         print(f"📞 API calls: {result['api_calls']}")
         print(f"💬 Turns: {len(result['conversations'])}")
-        
+
     elif prompts_file:
         # Batch mode
         prompts = []
@@ -716,13 +716,13 @@ def main(
                         prompts.append(entry.get("prompt", entry.get("task", "")))
                     except json.JSONDecodeError:
                         prompts.append(line)
-        
+
         if not prompts:
             print(f"❌ No prompts found in {prompts_file}")
             return
-        
+
         runner.run_batch(prompts, output_file)
-    
+
     else:
         print("❌ Please provide either --task or --prompts_file")
         print("   Example: python mini_swe_runner.py --task 'Create a hello world script'")

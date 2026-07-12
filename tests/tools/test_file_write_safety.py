@@ -168,6 +168,38 @@ class TestMultipleSafeWriteRoots:
         assert _is_write_denied(str(inside)) is False
 
 
+class TestGetWriteDeniedError:
+    """get_write_denied_error() should distinguish credential vs safe-root blocks."""
+
+    def test_credential_path_message(self):
+        from agent.file_safety import get_write_denied_error
+
+        err = get_write_denied_error(os.path.expanduser("~/.ssh/id_rsa"))
+        assert err is not None
+        assert "protected system/credential file" in err
+        assert "HERMES_WRITE_SAFE_ROOT" not in err
+
+    def test_safe_root_message(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_write_denied_error
+
+        safe_root = tmp_path / "workspace"
+        outside = tmp_path / "outside.txt"
+        os.makedirs(safe_root, exist_ok=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        err = get_write_denied_error(str(outside))
+        assert err is not None
+        assert "outside HERMES_WRITE_SAFE_ROOT" in err
+        assert str(safe_root) in err
+        assert "protected system/credential file" not in err
+
+    def test_allowed_path_returns_none(self, tmp_path: Path):
+        from agent.file_safety import get_write_denied_error
+
+        target = tmp_path / "ok.txt"
+        assert get_write_denied_error(str(target)) is None
+
+
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 

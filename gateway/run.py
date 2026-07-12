@@ -2686,6 +2686,28 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _should_continue_goal_after_turn(agent_result, final_text) -> bool:
+    """Return True only when a standing goal may be continued after this turn.
+
+    A continuation must be gated on *real* progress. ``final_text`` alone is not
+    enough: ``_normalize_empty_agent_response()`` deliberately returns non-empty,
+    user-facing text for ``failed``/``partial``/interrupted/errored results, so a
+    provider failure still yields a non-empty final response. Feeding that to the
+    goal judge makes it answer "continue", which re-enqueues the same synthetic
+    ``[Continuing toward your standing goal]`` prompt and loops on the failure.
+
+    Require non-empty text *and* the same success semantics used by
+    ``_should_clear_resume_pending_after_turn`` so only genuinely completed turns
+    advance the goal. Non-dict results (bare string replies) are treated as
+    successful, matching the legacy text-only behaviour.
+    """
+    if not str(final_text or "").strip():
+        return False
+    if not isinstance(agent_result, dict):
+        return True
+    return _should_clear_resume_pending_after_turn(agent_result)
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -10290,10 +10312,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
-                # Skip for empty responses (interrupted / errored) — the
-                # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # Skip for empty, failed, partial, or interrupted turns — a
+                # provider failure is normalized into non-empty user-facing
+                # text, and the judge would almost always say "continue", so
+                # we'd loop on the error and append duplicate continuation
+                # prompts. Require a genuinely successful turn instead; let the
+                # user drive the next one otherwise.
+                if _should_continue_goal_after_turn(_agent_result, _final_text):
                     try:
                         session_entry = await self.async_session_store.get_or_create_session(source)
                     except Exception:

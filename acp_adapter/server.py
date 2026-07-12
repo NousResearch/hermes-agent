@@ -1623,6 +1623,13 @@ class HermesACPAgent(acp.Agent):
                     user_text,
                     final_response,
                     state.history,
+                    main_runtime={
+                        "model": getattr(state.agent, "model", None),
+                        "provider": getattr(state.agent, "provider", None),
+                        "base_url": getattr(state.agent, "base_url", None),
+                        "api_key": getattr(state.agent, "api_key", None),
+                        "api_mode": getattr(state.agent, "api_mode", None),
+                    },
                     title_callback=_notify_title_update,
                 )
             except Exception:

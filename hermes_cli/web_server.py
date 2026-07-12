@@ -696,7 +696,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
-        "options": ["", "low", "medium", "high"],
+        "options": ["", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     },
     "updates.non_interactive_local_changes": {
         "type": "select",
@@ -900,6 +900,11 @@ class ManagedFileUpload(BaseModel):
     overwrite: bool = True
 
 
+class ChatImageUpload(BaseModel):
+    data_url: str
+    filename: Optional[str] = None
+
+
 class ManagedDirectoryCreate(BaseModel):
     path: str
 
@@ -1018,19 +1023,42 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
        ``normalize_model_for_provider`` (e.g. ``anthropic/claude-opus-4.6``
        on native anthropic → ``claude-opus-4-6``).
     """
+    from hermes_cli.config import get_compatible_custom_providers
     from hermes_cli.models import _KNOWN_PROVIDER_NAMES, normalize_provider
     from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
 
     prov_in = (provider or "").strip()
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
+
+    # User-declared providers are real routing targets, not analytics vendor
+    # labels. Resolve them before the unknown-vendor fallback. ``providers:``
+    # keeps its declared bare slug; ``custom_providers:`` canonicalizes both a
+    # bare display name and ``custom:<name>`` to the durable custom slug.
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    user_providers = cfg.get("providers") if isinstance(cfg, dict) else None
+    user_provider = resolve_user_provider(
+        prov_in, user_providers if isinstance(user_providers, dict) else {}
+    )
+    custom_provider = resolve_custom_provider(
+        prov_in,
+        get_compatible_custom_providers(cfg) if isinstance(cfg, dict) else [],
+    )
+    if user_provider is not None:
+        return user_provider.id, model_in
+    if custom_provider is not None:
+        return custom_provider.id, model_in
 
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.
         try:
-            cur_cfg = load_config().get("model", {})
+            cur_cfg = cfg.get("model", {})
             cur_provider = (
                 str(cur_cfg.get("provider", "") or "").strip().lower()
                 if isinstance(cur_cfg, dict) else ""
@@ -1764,6 +1792,91 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     if len(data) > _MANAGED_FILE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File is too large")
     return data, mime_type
+
+
+_CHAT_IMAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_CHAT_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+    (b"BM", ".bmp"),
+)
+
+
+def _sanitize_chat_image_filename(filename: str | None) -> str:
+    candidate = Path(str(filename or "").strip()).name
+    candidate = re.sub(r"[\x00-\x1f]+", "_", candidate)
+    candidate = candidate.strip().strip(".")
+    return candidate or "pasted-image"
+
+
+def _chat_image_extension(data: bytes) -> str | None:
+    head = data[:16]
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return ".webp"
+    for sig, ext in _CHAT_IMAGE_MAGIC:
+        if head.startswith(sig):
+            return ext
+    return None
+
+
+def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str]:
+    data, mime_type = _decode_data_url(payload.data_url)
+    if not mime_type.lower().startswith("image/"):
+        raise HTTPException(status_code=400, detail="Upload payload must be an image")
+    if len(data) > _CHAT_IMAGE_UPLOAD_MAX_BYTES:
+        mb = _CHAT_IMAGE_UPLOAD_MAX_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"Image is too large; cap is {mb} MB")
+
+    ext = _chat_image_extension(data)
+    if ext not in _CHAT_IMAGE_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported image type")
+    return data, mime_type, ext
+
+
+@app.post("/api/chat/image-upload")
+async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
+    """Persist a browser-provided chat image where the embedded TUI can read it.
+
+    The dashboard /chat page runs Hermes inside an xterm.js PTY. Browser
+    clipboard image bytes are not visible to the server-side clipboard, so the
+    page uploads them here, then drives the TUI's ``/image <path>`` command
+    with the returned gateway-visible path. Files land under
+    ``HERMES_HOME/images/`` — the same directory ``clipboard.paste`` /
+    ``image.attach`` already use.
+    """
+    data, mime_type, ext = _decode_chat_image_upload(payload)
+    with _profile_scope(profile) as scoped_home:
+        home = scoped_home or get_hermes_home()
+        img_dir = Path(home) / "images"
+        try:
+            img_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}")
+
+        stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+        stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+
+        try:
+            target.write_bytes(data)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not write image: {exc}")
+
+    return {
+        "ok": True,
+        "path": str(target),
+        "name": target.name,
+        "bytes": len(data),
+        "mime_type": mime_type,
+    }
 
 
 @app.get("/api/files")
@@ -10052,9 +10165,6 @@ def _validate_dashboard_cron_context_from(
             )
 
 
-_CRON_PROFILE_LOCK = threading.RLock()
-
-
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Return dashboard profile records, falling back to a directory scan."""
     from hermes_cli import profiles as profiles_mod
@@ -10092,33 +10202,23 @@ def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[st
 def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args, **kwargs):
     """Run cron.jobs helpers against the selected profile's cron directory.
 
-    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
-    from the process HERMES_HOME at import time. The dashboard is a single
-    process that can inspect many profiles, so temporarily retarget those
-    globals while holding a lock and restore them immediately after the call.
+    The dashboard is a single process that can inspect many profiles. Route
+    storage through cron.jobs' execution-context override so dashboard calls
+    cannot retarget a concurrent desktop ticker's load/save transaction.
     """
     profile_name, home = _cron_profile_home(target_profile)
-    with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
-        )
+    from cron import jobs as cron_jobs
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        token = set_hermes_home_override(str(home))
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
             result = getattr(cron_jobs, func_name)(*args, **kwargs)
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
-            reset_hermes_home_override(token)
+    finally:
+        reset_hermes_home_override(token)
 
     if isinstance(result, list):
         return [_annotate_cron_job(j, profile_name, home) for j in result]
@@ -10412,31 +10512,26 @@ def _fire_cron_job_for_profile(profile: str, job_id: str) -> bool:
     """Run ONE due cron job end-to-end for ``profile`` via the resolved
     scheduler provider's ``fire_due`` (store CAS claim + ``run_one_job``).
 
-    Retargets the ``cron.jobs`` module globals to the profile's cron dir under
-    the shared lock — same mechanism as ``_call_cron_for_profile`` — so the
-    claim and the run operate on the right profile's ``jobs.json``. Runs with
-    no live adapters; delivery falls back to the per-platform send path (the
-    dashboard process has no gateway adapter handles, exactly like the desktop
-    cron path above).
+    Scope both cron storage and the runtime Hermes home so the job's store,
+    config, credentials, scripts, skills, and output all belong to the selected
+    profile. Runs with no live adapters; delivery falls back to the per-platform
+    send path.
     """
     _profile_name, home = _cron_profile_home(profile)
-    with _CRON_PROFILE_LOCK:
-        from cron import jobs as cron_jobs
-        from cron.scheduler_provider import resolve_cron_scheduler
+    from cron import jobs as cron_jobs
+    from cron.scheduler_provider import resolve_cron_scheduler
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
-        old_cron_dir = cron_jobs.CRON_DIR
-        old_jobs_file = cron_jobs.JOBS_FILE
-        old_output_dir = cron_jobs.OUTPUT_DIR
-        cron_jobs.CRON_DIR = home / "cron"
-        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
-        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
-        try:
+    token = set_hermes_home_override(str(home))
+    try:
+        with cron_jobs.use_cron_store(home):
             provider = resolve_cron_scheduler()
             return bool(provider.fire_due(job_id, adapters=None, loop=None))
-        finally:
-            cron_jobs.CRON_DIR = old_cron_dir
-            cron_jobs.JOBS_FILE = old_jobs_file
-            cron_jobs.OUTPUT_DIR = old_output_dir
+    finally:
+        reset_hermes_home_override(token)
 
 
 @app.post("/api/cron/fire")

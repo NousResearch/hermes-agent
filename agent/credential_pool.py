@@ -445,6 +445,44 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
+def credential_pool_matches_provider(
+    pool_or_provider: Any,
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether a pool belongs to the requested runtime provider.
+
+    Named custom endpoints intentionally use two identities: the live agent is
+    ``custom`` while its pool is keyed ``custom:<name>``. Accept that pair only
+    when the runtime base URL resolves to the exact same custom pool key.
+    Empty string identities fail closed. Legacy pool adapters without a
+    ``provider`` attribute remain compatible; production pools are scoped.
+    """
+    raw_pool_provider = getattr(pool_or_provider, "provider", None)
+    if raw_pool_provider is None:
+        if isinstance(pool_or_provider, str):
+            raw_pool_provider = pool_or_provider
+        else:
+            # Backward compatibility for lightweight/unscoped pool adapters.
+            # Production CredentialPool instances always carry ``provider``;
+            # old plugins and tests may expose only select()/has_credentials().
+            return True
+    pool_provider = str(raw_pool_provider or "").strip().lower()
+    provider_norm = str(provider or "").strip().lower()
+    if not pool_provider or not provider_norm:
+        return False
+    if pool_provider == provider_norm:
+        return True
+    if provider_norm != "custom" or not pool_provider.startswith(CUSTOM_POOL_PREFIX):
+        return False
+    try:
+        matched_pool = get_custom_provider_pool_key(base_url or "")
+    except Exception:
+        return False
+    return str(matched_pool or "").strip().lower() == pool_provider
+
+
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
 
 

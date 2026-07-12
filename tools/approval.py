@@ -572,6 +572,17 @@ DANGEROUS_PATTERNS = [
     # *next* line to satisfy the negative lookahead, silently allowing DELETE without WHERE.
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
+    # Bitwarden CLI — credential exposure via terminal. Covers both BSM
+    # (`bws secret get`) and Password Manager (`bw get`, `bw list`,
+    # `bw export`, `bw sync`). These are dangerous because they return
+    # plaintext secrets to the model's context — attacker-controlled or
+    # prompt-injected commands can silently exfiltrate all vault contents.
+    # The `bws secret list` variant is excluded: it lists secret *names*
+    # without values, which is the reference the existing `get_secret()`
+    # provider needs.  `bw` (Password Manager) has no analogous split.
+    (r'\bbws\s+secret\s+get\b', "Bitwarden BSM — read secret value (credential exposure)"),
+    (r'\bbw\s+get\b', "Bitwarden vault — read credential (credential exposure)"),
+    (r'\bbw\s+(list|export|sync)\b', "Bitwarden vault — list/export/sync (credential exposure)"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),

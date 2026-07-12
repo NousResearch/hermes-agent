@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -2800,6 +2801,18 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
+        # Session IDs are non-content linkage metadata. Include each actual child
+        # ID so trusted synchronous callers can correlate their route event.
+        _child_sessions = {
+            index: getattr(child, "session_id", None)
+            for index, _, child in children
+        }
+        for entry in results:
+            index = entry.get("task_index")
+            child_session_id = _child_sessions.get(index)
+            if isinstance(child_session_id, str) and child_session_id:
+                entry["child_session_id"] = child_session_id
+
         return {
             "results": results,
             "total_duration_seconds": total_duration,
@@ -3404,6 +3417,27 @@ def _log_trusted_mode_decision(
     )
 
 
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _trusted_child_session_id(result: Any) -> Optional[str]:
+    """Extract only a bounded, identifier-shaped child ID from delegate JSON."""
+    if not isinstance(result, str):
+        return None
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return None
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list) or len(results) != 1:
+        return None
+    entry = results[0]
+    candidate = entry.get("child_session_id") if isinstance(entry, dict) else None
+    if not isinstance(candidate, str) or not _SAFE_SESSION_ID_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
 def route_trusted_mode(
     *,
     mode: str,
@@ -3458,26 +3492,36 @@ def route_trusted_mode(
         )
         return decision
 
-    # Log the decision before synchronous delegation so failures remain observable.
-    _log_trusted_mode_decision(
-        mode=contract.name, route="child", delegated=True,
-        policy_toolsets=policy_toolsets, execution_authorized=authorized,
-        authorization_reason=(
-            "explicitly-authorized"
-            if contract.name == "execution-development"
-            else "not-required"
-        ),
-        parent_agent=parent_agent,
+    authorization_reason = (
+        "explicitly-authorized"
+        if contract.name == "execution-development"
+        else "not-required"
     )
     # delegate_task remains authoritative for child capability intersection and
     # dangerous-command approvals.
-    result = delegate_task(
-        goal=goal,
-        context=context,
-        background=False,
+    try:
+        result = delegate_task(
+            goal=goal,
+            context=context,
+            background=False,
+            parent_agent=parent_agent,
+            _trusted_toolsets=policy_toolsets,
+            _trusted_mode=contract.name,
+        )
+    except Exception:
+        # Preserve observability for failed attempts without emitting task content.
+        _log_trusted_mode_decision(
+            mode=contract.name, route="child", delegated=True,
+            policy_toolsets=policy_toolsets, execution_authorized=authorized,
+            authorization_reason=authorization_reason, parent_agent=parent_agent,
+        )
+        raise
+    _log_trusted_mode_decision(
+        mode=contract.name, route="child", delegated=True,
+        policy_toolsets=policy_toolsets, execution_authorized=authorized,
+        authorization_reason=authorization_reason,
         parent_agent=parent_agent,
-        _trusted_toolsets=policy_toolsets,
-        _trusted_mode=contract.name,
+        child_session_id=_trusted_child_session_id(result),
     )
     return ModeRoutingDecision(
         contract.name, goal, "child", "mode-contract-requires-child", result, True

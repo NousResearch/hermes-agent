@@ -1,6 +1,7 @@
 """Trusted, code-only mode routing into delegation."""
 
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -122,6 +123,55 @@ def test_every_route_logs_privacy_safe_structured_decision(caplog):
     assert secret_context not in record.getMessage()
     assert secret_goal not in repr(record.__dict__)
     assert secret_context not in repr(record.__dict__)
+
+
+def test_successful_child_route_logs_validated_child_session_id_once(caplog):
+    child_session_id = "child-session_123"
+    result = json.dumps({
+        "results": [{"status": "completed", "child_session_id": child_session_id}]
+    })
+
+    with patch("tools.delegate_tool.delegate_task", return_value=result):
+        with caplog.at_level("INFO", logger="tools.delegate_tool"):
+            route_trusted_mode(
+                mode="research-analysis",
+                goal="private goal must not be logged",
+                context="private context must not be logged",
+                parent_agent=_parent(),
+            )
+
+    records = [
+        record for record in caplog.records
+        if getattr(record, "event_name", None) == "trusted_mode_route_decision"
+    ]
+    assert len(records) == 1
+    assert records[0].child_session_id == child_session_id
+    assert result not in repr(records[0].__dict__)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        "not-json",
+        '{"results": []}',
+        '{"results": [{"child_session_id": "contains spaces/private"}]}',
+        '{"results": [{"child_session_id": 123}]}',
+    ],
+)
+def test_successful_child_route_logs_none_for_unsafe_or_missing_session_id(caplog, result):
+    with patch("tools.delegate_tool.delegate_task", return_value=result):
+        with caplog.at_level("INFO", logger="tools.delegate_tool"):
+            route_trusted_mode(
+                mode="research-analysis", goal="private", parent_agent=_parent()
+            )
+
+    records = [
+        record for record in caplog.records
+        if getattr(record, "event_name", None) == "trusted_mode_route_decision"
+    ]
+    assert len(records) == 1
+    assert records[0].child_session_id is None
+    assert result not in repr(records[0].__dict__)
 
 
 def test_unknown_mode_logs_normalized_fail_closed_event_without_input(caplog):

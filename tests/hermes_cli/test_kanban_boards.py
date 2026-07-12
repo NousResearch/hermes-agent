@@ -126,17 +126,39 @@ class TestPathResolution:
             fresh_home / "kanban" / "boards" / "other" / "logs"
         )
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_explicit_board_arg_beats_env_var_db_override(self, fresh_home, tmp_path, monkeypatch):
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board="override") == (
+            fresh_home / "kanban" / "boards" / "override" / "kanban.db"
+        )
 
-    def test_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
+    def test_scoped_board_beats_env_var_db_override(self, fresh_home, tmp_path, monkeypatch):
+        forced = tmp_path / "custom.db"
+        kb.create_board("scoped")
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        with kb.scoped_current_board("scoped"):
+            assert kb.kanban_db_path() == (
+                fresh_home / "kanban" / "boards" / "scoped" / "kanban.db"
+            )
+
+    def test_explicit_board_arg_beats_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
         forced = tmp_path / "ws"
         monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
-        assert kb.workspaces_root(board="any") == forced
+        assert kb.workspaces_root() == forced
+        assert kb.workspaces_root(board="any") == (
+            fresh_home / "kanban" / "boards" / "any" / "workspaces"
+        )
+
+    def test_scoped_board_beats_env_var_workspaces_override(self, fresh_home, tmp_path, monkeypatch):
+        forced = tmp_path / "ws"
+        kb.create_board("scoped")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(forced))
+        with kb.scoped_current_board("scoped"):
+            assert kb.workspaces_root() == (
+                fresh_home / "kanban" / "boards" / "scoped" / "workspaces"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +484,55 @@ class TestWorkerSpawnEnv:
         assert env["HERMES_KANBAN_BOARD"] == "default"
         assert env["HERMES_KANBAN_DB"] == str(fresh_home / "kanban.db")
 
+    def test_default_spawn_explicit_board_beats_ambient_env_pins(self, fresh_home, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            pid = 2
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        kb.create_board("ambient")
+        kb.create_board("override")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB",
+            str(fresh_home / "kanban" / "boards" / "ambient" / "kanban.db"),
+        )
+        monkeypatch.setenv(
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+            str(fresh_home / "kanban" / "boards" / "ambient" / "workspaces"),
+        )
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "ambient")
+        task = kb.Task(
+            id="t_override",
+            title="",
+            body=None,
+            assignee="teknium",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(fresh_home / "ws"), board="override")
+        env = captured["env"]
+        assert env["HERMES_KANBAN_BOARD"] == "override"
+        assert env["HERMES_KANBAN_DB"] == str(
+            fresh_home / "kanban" / "boards" / "override" / "kanban.db"
+        )
+        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
+            fresh_home / "kanban" / "boards" / "override" / "workspaces"
+        )
+
 
 # ---------------------------------------------------------------------------
 # CLI surface
@@ -531,6 +602,47 @@ class TestCLI:
         assert titlesA == ["Task A"]
         assert titlesB == ["Task B"]
         assert titlesD == []
+
+    def test_cli_board_override_create_and_comment_beat_ambient_pins(self, tmp_path, monkeypatch):
+        env = {"HERMES_HOME": str(tmp_path)}
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert _cli(["boards", "create", "ambient"], env_extra=env).returncode == 0
+        assert _cli(["boards", "create", "override"], env_extra=env).returncode == 0
+        env.update({
+            "HERMES_KANBAN_BOARD": "ambient",
+            "HERMES_KANBAN_DB": str(tmp_path / "kanban" / "boards" / "ambient" / "kanban.db"),
+            "HERMES_KANBAN_WORKSPACES_ROOT": str(tmp_path / "kanban" / "boards" / "ambient" / "workspaces"),
+        })
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "ambient")
+        monkeypatch.setenv("HERMES_KANBAN_DB", env["HERMES_KANBAN_DB"])
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", env["HERMES_KANBAN_WORKSPACES_ROOT"])
+
+        created = _cli(
+            [
+                "--board", "override", "create", "Task Override",
+                "--assignee", "dev", "--json",
+            ],
+            env_extra=env,
+        )
+        assert created.returncode == 0, created.stderr
+        task = json.loads(created.stdout)
+        task_id = task["id"]
+
+        show = _cli(["--board", "override", "show", task_id, "--json"], env_extra=env)
+        assert show.returncode == 0, show.stderr
+        assert json.loads(show.stdout)["task"]["id"] == task_id
+
+        comment = _cli(["--board", "override", "comment", task_id, "hello"], env_extra=env)
+        assert comment.returncode == 0, comment.stderr
+
+        with kb.connect_closing(board="ambient") as conn:
+            assert kb.get_task(conn, task_id) is None
+        with kb.connect_closing(board="override") as conn:
+            stored = kb.get_task(conn, task_id)
+            assert stored is not None
+            comments = kb.list_comments(conn, task_id)
+            assert len(comments) == 1
+            assert comments[0].body == "hello"
 
     def test_board_flag_rejects_unknown(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}

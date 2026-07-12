@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from plugins.platforms.kindle.adapter import DEFAULT_REPLY_TIMEOUT, KindleAdapter
+from plugins.platforms.kindle.adapter import DEFAULT_REPLY_TIMEOUT, KindleAdapter, _is_connected
 
 
 def _adapter(monkeypatch: pytest.MonkeyPatch, *, timeout: float = 1.0) -> KindleAdapter:
@@ -335,3 +335,11 @@ def test_notebook_token_env_is_preferred(monkeypatch: pytest.MonkeyPatch) -> Non
     adapter = KindleAdapter(PlatformConfig(enabled=True, token="", extra={}))
 
     assert adapter._token == "notebook-token"
+
+
+def test_notebook_token_marks_platform_connected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOTEBOOK_INGEST_TOKEN", "notebook-token")
+    monkeypatch.delenv("KINDLE_INGEST_TOKEN", raising=False)
+    monkeypatch.delenv("KINDLE_INSECURE", raising=False)
+
+    assert _is_connected(None) is True

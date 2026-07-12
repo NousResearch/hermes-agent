@@ -18,6 +18,8 @@ Open this directory in Android Studio or run `gradlew.bat assembleDebug` after i
 
 Install the debug APK from `app/build/outputs/apk/debug/app-debug.apk` with ADB or BOOX's APK installer.
 
+Physical-device testers should follow [BOOX-TESTING.md](BOOX-TESTING.md).
+
 ## Current milestone
 
 This first native milestone includes pen capture, eraser/palm handling, atomic offline recovery,

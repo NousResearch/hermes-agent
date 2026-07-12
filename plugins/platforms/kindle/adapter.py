@@ -231,7 +231,8 @@ class KindleAdapter(BasePlatformAdapter):
 
         if not self._token and not self._insecure:
             msg = (
-                "[kindle] Refusing to start: KINDLE_INGEST_TOKEN not set. Set a shared "
+                "[kindle] Refusing to start: NOTEBOOK_INGEST_TOKEN or KINDLE_INGEST_TOKEN "
+                "not set. Set a shared "
                 "secret the diary bridge presents, or KINDLE_INSECURE=true for localhost dev."
             )
             logger.error(msg)
@@ -391,7 +392,11 @@ class KindleAdapter(BasePlatformAdapter):
 def _is_connected(config) -> bool:
     """Connected once the ingest server is meant to run. Presence of a token
     (or explicit insecure) is the minimal readiness signal."""
-    return bool(os.getenv("KINDLE_INGEST_TOKEN") or os.getenv("KINDLE_INSECURE"))
+    return bool(
+        os.getenv("NOTEBOOK_INGEST_TOKEN")
+        or os.getenv("KINDLE_INGEST_TOKEN")
+        or os.getenv("KINDLE_INSECURE")
+    )
 
 
 def _build_adapter(config):

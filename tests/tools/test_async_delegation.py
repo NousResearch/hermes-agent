@@ -510,6 +510,35 @@ def test_dispatch_never_forwards_model_toolsets():
     assert "toolsets" not in captured
 
 
+def test_dispatch_fails_closed_while_split_runtime_is_active():
+    """Child agents must not silently execute routed reads on the server."""
+    import json
+    from unittest.mock import patch
+
+    import run_agent
+    from gateway.tool_channel_state import reset_current_split_runtime, set_current_split_runtime
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    token = set_current_split_runtime({
+        "enabled": True,
+        "routed_toolsets": ["file"],
+        "request_timeout_seconds": 1,
+    })
+    try:
+        with patch("tools.delegate_tool.delegate_task") as delegate:
+            result = run_agent.AIAgent._dispatch_delegate_task(
+                _FakeAgent(),
+                {"goal": "read local files"},
+            )
+    finally:
+        reset_current_split_runtime(token)
+
+    assert json.loads(result)["code"] == "split_runtime_delegation_unsupported"
+    delegate.assert_not_called()
+
+
 def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
     """A background child must NOT remain in parent._active_children —
     otherwise parent-turn interrupts / cache evicts / session close would

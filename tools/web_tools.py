@@ -544,7 +544,15 @@ def _truncate_with_footer(
         tail = tail[nl + 1:]
 
     total = len(content)
-    stored_path = _store_full_text(url, content)
+    try:
+        from gateway.tool_channel_state import get_current_split_runtime
+
+        split_runtime_active = bool(get_current_split_runtime())
+    except Exception:
+        split_runtime_active = True
+    # read_file is client-routed during split-runtime turns, so a server-side
+    # cache path would be unusable and could expose the wrong workspace.
+    stored_path = None if split_runtime_active else _store_full_text(url, content)
     shown = len(head) + len(tail)
 
     footer_lines = [

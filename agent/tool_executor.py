@@ -66,6 +66,45 @@ def _budget_for_agent(agent) -> BudgetConfig:
     except Exception:
         return DEFAULT_BUDGET
 
+
+def _tool_result_storage_target(tool_name: str, effective_task_id: str):
+    """Return `(env, inline_only)` for execution-target-aware result storage."""
+
+    env = get_active_env(effective_task_id)
+    try:
+        from gateway.tool_channel_state import get_current_split_runtime
+
+        if get_current_split_runtime():
+            # In a split-runtime turn, even server-tool artifacts are
+            # unreachable through the client-routed read_file tool.
+            return None, True
+    except Exception:
+        logging.warning(
+            "Could not resolve result-storage target for %s; using inline-only output",
+            tool_name,
+            exc_info=True,
+        )
+        return None, True
+    return env, False
+
+
+def _tool_result_is_local(tool_name: str) -> bool:
+    """Whether this result came from a client-routed tool call."""
+
+    try:
+        from agent.split_runtime_router import should_route_tool_locally
+
+        return should_route_tool_locally(tool_name)
+    except Exception:
+        try:
+            from gateway.tool_channel_state import get_current_split_runtime
+            from tools.execution_target import LOCAL_ROUTABLE_TOOLS
+
+            return bool(get_current_split_runtime()) and tool_name in LOCAL_ROUTABLE_TOOLS
+        except Exception:
+            return False
+
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
@@ -821,6 +860,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
+    inline_only_tool_call_ids: set[str] = set()
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
@@ -943,15 +983,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
+        result_is_local = _tool_result_is_local(name)
+        result_env, inline_only = _tool_result_storage_target(name, effective_task_id)
+        if inline_only:
+            inline_only_tool_call_ids.add(tc.id)
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=name,
             tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
+            env=result_env,
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
-        subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
+        subdir_hints = (
+            ""
+            if result_is_local
+            else agent._subdirectory_hints.check_tool_call(name, args)
+        )
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
                 # Append the hint to the text summary part so the model
@@ -1008,7 +1056,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(
+            turn_tool_msgs,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+            inline_only_tool_call_ids=inline_only_tool_call_ids,
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -1023,6 +1076,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+    inline_only_tool_call_ids: set[str] = set()
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1634,16 +1688,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
+        result_is_local = _tool_result_is_local(function_name)
+        result_env, inline_only = _tool_result_storage_target(
+            function_name,
+            effective_task_id,
+        )
+        if inline_only:
+            inline_only_tool_call_ids.add(tool_call.id)
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=function_name,
             tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
+            env=result_env,
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
-        subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
+        subdir_hints = (
+            ""
+            if result_is_local
+            else agent._subdirectory_hints.check_tool_call(function_name, function_args)
+        )
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
@@ -1717,7 +1782,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
     if num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(
+            messages[-num_tools_seq:],
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+            inline_only_tool_call_ids=inline_only_tool_call_ids,
+        )
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,

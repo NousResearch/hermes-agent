@@ -78,6 +78,30 @@ class TestTruncation:
         assert "UNIQUE_MIDDLE_MARKER" in full
         assert "row 2500" in full  # the omitted-middle row is in the stored file
 
+    def test_split_runtime_does_not_emit_server_cache_path(self):
+        from gateway.tool_channel_state import (
+            reset_current_split_runtime,
+            set_current_split_runtime,
+        )
+
+        body = "\n".join(f"line {i} " + "x" * 50 for i in range(2000))
+        token = set_current_split_runtime({"enabled": True, "routed_toolsets": ["file"]})
+        try:
+            with patch("tools.web_tools._store_full_text") as store:
+                out, truncated = wt._truncate_with_footer(
+                    body,
+                    "https://example.com/page",
+                    4000,
+                )
+        finally:
+            reset_current_split_runtime(token)
+
+        assert truncated is True
+        store.assert_not_called()
+        assert "Full text saved to:" not in out
+        assert "read_file path=" not in out
+        assert "Full text could not be stored" in out
+
 
 class TestCharLimitConfig:
     def test_default_when_unset(self):

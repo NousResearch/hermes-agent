@@ -519,6 +519,24 @@ class TestEnforceTurnBudget:
         # Should be truncated (no sandbox available)
         assert "Truncated" in msgs[0]["content"] or PERSISTED_OUTPUT_TAG in msgs[0]["content"]
 
+    def test_inline_only_result_never_writes_to_server_environment(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "tool_call_id": "local-call", "content": "x" * 250_000},
+        ]
+
+        enforce_turn_budget(
+            msgs,
+            env=env,
+            config=BudgetConfig(turn_budget=200_000),
+            inline_only_tool_call_ids={"local-call"},
+        )
+
+        env.execute.assert_not_called()
+        assert "Truncated" in msgs[0]["content"]
+        assert PERSISTED_OUTPUT_TAG not in msgs[0]["content"]
+
     def test_returns_same_list(self):
         msgs = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]
         result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))

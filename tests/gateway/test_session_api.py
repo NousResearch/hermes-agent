@@ -67,12 +67,96 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
+    assert features["run_tool_result"] is False
+    assert features["tool_request_events"] is False
+    assert data["runtime"]["split_runtime"] is False
+    assert data["runtime"]["tool_execution"] == "server"
+    assert data["runtime"]["runs_tool_execution"] == "server"
+    assert data["runtime"]["split_runtime_toolsets"] == []
+    assert data["runtime"]["split_runtime_tools"] == []
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
     }
+
+
+@pytest.mark.asyncio
+async def test_capabilities_advertises_split_runtime_when_enabled(session_db):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={
+        "split_runtime": {
+            "enabled": True,
+            "routed_toolsets": ["file"],
+            "request_timeout_seconds": 1,
+        }
+    }))
+    adapter._session_db = session_db
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/v1/capabilities")
+        assert resp.status == 200
+        data = await resp.json()
+
+    assert data["runtime"]["tool_execution"] == "server"
+    assert data["runtime"]["runs_tool_execution"] == "split"
+    assert data["runtime"]["split_runtime"] is True
+    assert data["runtime"]["split_runtime_toolsets"] == ["file"]
+    assert data["runtime"]["split_runtime_tools"] == ["read_file", "search_files"]
+    assert data["runtime"]["split_runtime_protocol"] == {
+        "version": 1,
+        "correlation_key": "request_id",
+        "single_events_consumer": True,
+        "delegation_supported": False,
+        "unsupported_api_modes": ["codex_app_server"],
+    }
+    assert data["features"]["run_tool_result"] is True
+    assert data["features"]["tool_request_events"] is True
+    assert data["endpoints"]["run_tool_result"] == {
+        "method": "POST",
+        "path": "/v1/runs/{run_id}/tool_result",
+    }
+
+
+@pytest.mark.asyncio
+async def test_capabilities_do_not_advertise_unimplemented_split_toolsets(session_db):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={
+        "split_runtime": {
+            "enabled": True,
+            "routed_toolsets": ["terminal", "unknown"],
+        }
+    }))
+    adapter._session_db = session_db
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/v1/capabilities")
+        data = await resp.json()
+
+    assert data["runtime"]["split_runtime"] is False
+    assert data["runtime"]["runs_tool_execution"] == "server"
+    assert data["runtime"]["split_runtime_toolsets"] == []
+    assert data["runtime"]["split_runtime_tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_capabilities_require_file_toolset_on_api_platform(session_db, monkeypatch):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={
+        "split_runtime": {"enabled": True, "routed_toolsets": ["file"]}
+    }))
+    adapter._session_db = session_db
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda config, platform, **kwargs: {"web"},
+    )
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/v1/capabilities")
+        data = await resp.json()
+
+    assert data["runtime"]["split_runtime"] is False
+    assert data["runtime"]["runs_tool_execution"] == "server"
+    assert data["runtime"]["split_runtime_tools"] == []
+    assert data["runtime"]["split_runtime_protocol"] is None
 
 
 @pytest.mark.asyncio

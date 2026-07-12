@@ -801,6 +801,25 @@ app.use((req, res, next) => {
   next();
 });
 
+// API key authentication
+const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY || '';
+
+function requireApiKey(req, res, next) {
+  if (req.path === '/health') return next();
+  if (!BRIDGE_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized: BRIDGE_API_KEY not set' });
+  }
+  const authHeader = req.headers['authorization'];
+  const apiKeyHeader = req.headers['x-api-key'];
+  const provided = (authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null) || apiKeyHeader;
+  if (provided !== BRIDGE_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.use(requireApiKey);
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);

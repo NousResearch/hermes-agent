@@ -952,6 +952,21 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
+    def test_denylist_blocks_claude_code_credentials(self, tmp_path, monkeypatch):
+        """Claude Code subscription auth material under the user's home must
+        not be delivered as a native attachment in permissive default mode.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        claude_dir = fake_home / ".claude"
+        claude_dir.mkdir(parents=True)
+        secret = claude_dir / ".credentials.json"
+        secret.write_text('{"access_token": "live-oauth-token"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
     def test_denylist_blocks_system_prefixes(self, tmp_path, monkeypatch):
         """Files under /etc, /proc, /sys, /root, /boot, /var/{log,lib,run}
         are denied. We construct the test by patching the denylist root

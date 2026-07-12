@@ -36,13 +36,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return None
 
     if reasoning_config.get("enabled") is False:
-        # Gemini can hide thought parts even when internal thinking still
-        # happens; omit thinkingLevel to avoid model-specific validation quirks.
-        return {"includeThoughts": False}
+        # Thinking explicitly disabled — omit the field entirely so Gemini
+        # never sees thinking_config/thinkingConfig and rejects with HTTP 400.
+        return None
 
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if effort == "none":
-        return {"includeThoughts": False}
+        return None
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
 

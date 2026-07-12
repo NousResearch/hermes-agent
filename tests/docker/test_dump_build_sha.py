@@ -1,27 +1,22 @@
-"""Regression test: ``hermes dump`` reports a real git SHA inside the container.
+"""Docker artifacts expose the same exact source revision everywhere.
 
-Background: ``.dockerignore`` excludes ``.git``, so ``git rev-parse HEAD``
-fails inside the published image and ``hermes dump`` used to report
-``version: ... [(unknown)]``.  The Dockerfile now writes the build-time
-``$HERMES_GIT_SHA`` build-arg to ``/opt/hermes/.hermes_build_sha`` and
-``hermes_cli/build_info.py`` reads it as a fallback.
+``.dockerignore`` excludes ``.git``, so the image must rely on immutable
+package-relative build metadata. CI passes ``$HERMES_GIT_SHA`` and the
+Dockerfile writes it to ``hermes_cli/_build_metadata.json``; local builds
+without the argument carry an explicit null revision.
 
 CI (``.github/workflows/docker.yml``) always sets the build-arg
-to ``${{ github.sha }}``.  Local ``docker build`` (the ``built_image``
-fixture in ``tests/docker/conftest.py``) does NOT — so locally the file
-is absent and ``hermes dump`` correctly falls back to ``(unknown)``.
+to ``${{ github.sha }}``. The local ``built_image`` fixture passes its clean
+checkout revision, or omits the argument when the checkout is dirty.
 
-This test handles both cases:
-
-* If ``/opt/hermes/.hermes_build_sha`` exists in the image, assert that
-  ``hermes dump`` surfaces its content as the version SHA (not
-  ``(unknown)``).
-* If the file is absent, assert the legacy behaviour (``(unknown)``)
-  still holds — defensive guard against the helper accidentally
-  reporting bogus data from somewhere else.
+The test reads the artifact file, resolves the public build-info API with no
+Git directory, and checks the legacy short ``hermes dump`` display derives
+from that same full revision.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 
@@ -50,28 +45,51 @@ def _run_dump(image: str) -> str:
     return r.stdout
 
 
-def _read_baked_sha_from_image(image: str) -> str | None:
-    """Return the ``/opt/hermes/.hermes_build_sha`` content, or None if absent."""
+def _read_baked_metadata_from_image(image: str) -> dict:
     r = subprocess.run(
         [
             "docker", "run", "--rm", "--entrypoint", "cat", image,
-            "/opt/hermes/.hermes_build_sha",
+            "/opt/hermes/hermes_cli/_build_metadata.json",
         ],
         capture_output=True, text=True, timeout=30,
     )
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
 
 
-def test_dump_reports_baked_sha_when_present(built_image: str) -> None:
+def _resolve_source_revision_in_image(image: str) -> str:
+    r = subprocess.run(
+        [
+            "docker", "run", "--rm",
+            "--entrypoint", "/opt/hermes/.venv/bin/python", image,
+            "-c",
+            "from hermes_cli.build_info import get_source_revision; "
+            "print(get_source_revision())",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+def test_docker_build_identity_matches_dump(
+    built_image: str,
+    built_image_source_revision: str | None,
+) -> None:
     """When the image was built with ``HERMES_GIT_SHA``, dump must surface it.
 
     Together with the smoke-test action (which exercises ``--help``), this
     closes the regression loop for the missing-sha bug: any future change
     that breaks the baked-file -> dump pipeline will fail CI here.
     """
-    baked = _read_baked_sha_from_image(built_image)
+    metadata = _read_baked_metadata_from_image(built_image)
+    assert set(metadata) == {"source_revision"}
+    baked = metadata["source_revision"]
+    assert baked is None or re.fullmatch(r"[0-9a-f]{40}", baked)
+    if not os.environ.get("HERMES_TEST_IMAGE"):
+        assert baked == built_image_source_revision
+
+    resolved = _resolve_source_revision_in_image(built_image)
     stdout = _run_dump(built_image)
 
     match = _VERSION_LINE.search(stdout)
@@ -83,22 +101,19 @@ def test_dump_reports_baked_sha_when_present(built_image: str) -> None:
     reported = sha_match.group("sha")
 
     if baked is None:
-        # Local-build path: no build-arg was passed.  Verify the legacy
-        # fallback ``(unknown)`` is intact — guards against the helper
-        # ever inventing a SHA from thin air.
+        assert resolved == "None"
         assert reported == "(unknown)", (
             f"expected '(unknown)' when no SHA baked, got {reported!r}"
         )
         return
 
-    # CI path: build-arg was set, baked file exists.  ``hermes dump``
-    # truncates to 8 chars via ``git rev-parse --short=8`` semantics.
+    assert resolved == baked
     assert reported != "(unknown)", (
-        "baked SHA file present in image but dump still reported "
+        "build metadata present in image but dump still reported "
         f"'(unknown)' — the build-info fallback is broken.  "
-        f"Baked file content: {baked!r}"
+        f"Metadata revision: {baked!r}"
     )
     assert reported == baked[:8], (
-        f"dump reported {reported!r} but baked file contained {baked!r} "
+        f"dump reported {reported!r} but metadata contained {baked!r} "
         f"(expected first 8 chars: {baked[:8]!r})"
     )

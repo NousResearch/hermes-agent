@@ -13,6 +13,8 @@ smoke test against staging Portal.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -92,6 +94,20 @@ def test_status_preserves_existing_fields(loopback_client):
     }
     missing = expected_keys - set(body.keys())
     assert not missing, f"/api/status dropped fields: {missing}"
+
+
+def test_status_reports_optional_exact_source_revision(loopback_client):
+    """The real HTTP response exposes only a full lowercase SHA or null."""
+    from hermes_cli.build_info import get_source_revision
+
+    response = loopback_client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "source_revision" in body
+    revision = body["source_revision"]
+    assert revision is None or re.fullmatch(r"[0-9a-f]{40}", revision)
+    assert revision == get_source_revision()
 
 
 # Host-local detail (absolute paths, PID, internal gateway URL) is deployment

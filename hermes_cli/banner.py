@@ -407,7 +407,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     For source installs and dev images this runs ``git rev-parse`` against
     the active checkout.  When no checkout is available — the canonical case
     is the published Docker image, which excludes ``.git`` from the build
-    context — we fall back to the baked-in build SHA (see
+    context — we fall back to package-relative exact build metadata (see
     ``hermes_cli/build_info.py``) and return it as a frozen
     ``upstream == local`` state with ``ahead=0``.  A built image is by
     definition pinned to one commit, so "ahead" is always zero and the

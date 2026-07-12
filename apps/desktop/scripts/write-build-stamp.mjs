@@ -26,7 +26,7 @@
  * bootstrap without a stamp.
  */
 
-import { mkdirSync, writeFileSync } from "fs"
+import { existsSync, mkdirSync, writeFileSync } from "fs"
 import { resolve, join, relative } from "path"
 import { execSync } from "child_process"
 
@@ -36,6 +36,9 @@ const DESKTOP_ROOT = resolve(import.meta.dirname, "..")
 const REPO_ROOT = resolve(DESKTOP_ROOT, "..", "..")
 const OUT_DIR = join(DESKTOP_ROOT, "build")
 const OUT_FILE = join(OUT_DIR, "install-stamp.json")
+const BUILD_METADATA_DIR = join(OUT_DIR, "hermes_cli")
+const BUILD_METADATA_FILE = join(BUILD_METADATA_DIR, "_build_metadata.json")
+const FULL_SOURCE_REVISION = /^[0-9a-f]{40}$/
 
 function tryExec(cmd, opts) {
   try {
@@ -49,10 +52,14 @@ function fromCI() {
   const sha = process.env.GITHUB_SHA
   if (!sha) return null
   const branch = process.env.GITHUB_REF_NAME || process.env.GITHUB_HEAD_REF || null
+  const hasGitMetadata = existsSync(join(REPO_ROOT, ".git"))
+  const local = hasGitMetadata ? fromLocalGit() : null
   return {
     commit: sha,
     branch: branch,
-    dirty: false, // CI builds from a checkout-of-ref by definition
+    dirty:
+      hasGitMetadata &&
+      (local === null || local.dirty || local.commit !== sha),
     source: "ci"
   }
 }
@@ -61,14 +68,11 @@ function fromLocalGit() {
   const sha = tryExec("git rev-parse HEAD", { cwd: REPO_ROOT })
   if (!sha) return null
   const branch = tryExec("git rev-parse --abbrev-ref HEAD", { cwd: REPO_ROOT })
-  // `git status --porcelain -uno` is empty iff tracked files match HEAD.
-  // We exclude untracked files (-uno) intentionally: a developer who's
-  // checked out an installer scratch dir alongside the repo shouldn't
-  // poison every local build with a [DIRTY] stamp.  We DO care about
-  // tracked-but-modified files because those mean the .exe content
-  // differs from the commit being pinned.
-  const status = tryExec("git status --porcelain -uno", { cwd: REPO_ROOT })
-  const dirty = status !== null && status.length > 0
+  // Exact build identity requires every non-ignored source path to match HEAD:
+  // an untracked module or asset can enter the packaged app just as easily as
+  // a tracked modification. Generated build outputs are covered by .gitignore.
+  const status = tryExec("git status --porcelain --untracked-files=normal", { cwd: REPO_ROOT })
+  const dirty = status === null || status.length > 0
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
@@ -88,6 +92,12 @@ function main() {
         "\n" +
         "Packaged builds require a git ref to pin first-launch install.ps1\n" +
         "against. Run from a git checkout or set $GITHUB_SHA explicitly."
+    )
+    process.exit(1)
+  }
+  if (!FULL_SOURCE_REVISION.test(stamp.commit)) {
+    console.error(
+      "[write-build-stamp] ERROR: build revision must be a full lowercase 40-character Git SHA."
     )
     process.exit(1)
   }
@@ -113,6 +123,12 @@ function main() {
 
   mkdirSync(OUT_DIR, { recursive: true })
   writeFileSync(OUT_FILE, JSON.stringify(payload, null, 2) + "\n", "utf8")
+  mkdirSync(BUILD_METADATA_DIR, { recursive: true })
+  writeFileSync(
+    BUILD_METADATA_FILE,
+    JSON.stringify({ source_revision: stamp.dirty ? null : stamp.commit }) + "\n",
+    "utf8"
+  )
   console.log(
     "[write-build-stamp] wrote " +
       relative(REPO_ROOT, OUT_FILE) +
@@ -120,6 +136,12 @@ function main() {
       stamp.commit.slice(0, 12) +
       (stamp.branch ? " (" + stamp.branch + ")" : "") +
       (stamp.dirty ? " [DIRTY]" : "")
+  )
+  console.log(
+    "[write-build-stamp] wrote " +
+      relative(REPO_ROOT, BUILD_METADATA_FILE) +
+      " -> " +
+      (stamp.dirty ? "null [DIRTY]" : stamp.commit)
   )
 }
 

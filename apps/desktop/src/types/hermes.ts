@@ -802,6 +802,8 @@ export interface StatusResponse {
   hermes_home: string
   latest_config_version: number
   release_date: string
+  /** Full lowercase source SHA, null when unprovable, absent on older Hermes. */
+  source_revision?: string | null
   version: string
 }
 

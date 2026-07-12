@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.metadata
 import importlib.util
 import inspect
@@ -2074,7 +2075,25 @@ def has_hook(hook_name: str) -> bool:
     return get_plugin_manager().has_hook(hook_name)
 
 
-_thread_tool_whitelist = threading.local()
+# Tool whitelist scope — keyed to the logical TASK (contextvars Context), NOT
+# the physical OS thread. The background-review fork arms this to restrict
+# itself to memory/skill tools. The gateway runs every session's turn on ONE
+# shared ThreadPoolExecutor (gateway/run.py::_get_executor, max_workers=10),
+# so a threading.local() whitelist armed on a pooled worker and not cleared on
+# that exact worker leaks to the NEXT task the pool recycles onto it — denying
+# a later foreground/cron turn's tools (the recycle-leak bug). A ContextVar set
+# inside the turn's copy_context().run(...) (which both _run_in_executor_with_context
+# and propagate_context_to_thread use) is scoped to that turn's context copy, so
+# a recycled worker starts each task with a fresh (default None) value — the
+# leak becomes structurally impossible. Payload holds (allowed_set, deny_fmt);
+# a paired token stack keeps clear_*() arg-free and nesting-safe (reset restores
+# the outer scope, never blanket-None).
+_tool_whitelist_var: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar(
+    "hermes_tool_whitelist", default=None
+)
+_tool_whitelist_tokens: "contextvars.ContextVar[tuple]" = contextvars.ContextVar(
+    "hermes_tool_whitelist_tokens", default=()
+)
 
 
 @dataclass(frozen=True)
@@ -2086,14 +2105,39 @@ class _PreToolCallDirective:
 
 def set_thread_tool_whitelist(
     allowed: Optional[Set[str]],
-    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this task's tool whitelist",
 ) -> None:
-    _thread_tool_whitelist.allowed = allowed
-    _thread_tool_whitelist.fmt = deny_msg_fmt
+    """Arm a tool whitelist for the current TASK context (not the OS thread).
+
+    Despite the legacy name, scope is the active ``contextvars`` Context — a
+    recycled thread-pool worker never inherits a stale whitelist. Nestable:
+    each call pushes a reset token so ``clear_thread_tool_whitelist`` restores
+    the prior scope exactly.
+    """
+    frozen = frozenset(allowed) if allowed is not None else None
+    token = _tool_whitelist_var.set((frozen, deny_msg_fmt))
+    _tool_whitelist_tokens.set(_tool_whitelist_tokens.get() + (token,))
 
 
 def clear_thread_tool_whitelist() -> None:
-    _thread_tool_whitelist.allowed = None
+    """Disarm the most recent whitelist scope for the current task context.
+
+    Pops the last reset token and restores the prior scope (outer whitelist if
+    nested, else the default unset). Arg-free by design so the existing
+    ``finally: clear_thread_tool_whitelist()`` call sites are unchanged.
+    """
+    tokens = _tool_whitelist_tokens.get()
+    if tokens:
+        try:
+            _tool_whitelist_var.reset(tokens[-1])
+        except ValueError:
+            # Token minted in a different Context (e.g. set/clear split across
+            # a raw thread hop without copy_context). Fall back to explicit
+            # clear so we never leave a stale whitelist armed.
+            _tool_whitelist_var.set(None)
+        _tool_whitelist_tokens.set(tokens[:-1])
+    else:
+        _tool_whitelist_var.set(None)
 
 
 def _get_pre_tool_call_directive_details(
@@ -2132,13 +2176,14 @@ def _get_pre_tool_call_directive_details(
     The first valid directive wins. Invalid or irrelevant hook return values
     are silently ignored so existing observer-only hooks are unaffected.
     """
-    allowed = getattr(_thread_tool_whitelist, "allowed", None)
-    if allowed is not None and tool_name not in allowed:
-        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return _PreToolCallDirective(
-            action="block",
-            message=fmt.format(tool_name=tool_name),
-        )
+    _wl_payload = _tool_whitelist_var.get()
+    if _wl_payload is not None:
+        allowed, fmt = _wl_payload
+        if allowed is not None and tool_name not in allowed:
+            return _PreToolCallDirective(
+                action="block",
+                message=fmt.format(tool_name=tool_name),
+            )
 
     hook_results = invoke_hook(
         "pre_tool_call",

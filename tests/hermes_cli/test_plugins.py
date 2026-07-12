@@ -1145,8 +1145,16 @@ class TestThreadToolWhitelist:
         # return [] here, so result is None).
         assert get_pre_tool_call_block_message("terminal", {}) is None
 
-    def test_whitelist_is_thread_local(self, monkeypatch):
-        """Setting a whitelist in one thread must NOT leak into another."""
+    def test_whitelist_does_not_leak_into_a_bare_worker_thread(self, monkeypatch):
+        """A whitelist armed in one thread must NOT leak into a bare worker thread.
+
+        (Formerly ``test_whitelist_is_thread_local``.) Storage is now a ContextVar,
+        not ``threading.local`` — a bare ``threading.Thread`` starts with an empty
+        contextvars Context, so it still does not inherit the parent's whitelist.
+        This asserts the cross-thread non-leak property; the recycled-pool-worker
+        case (the real bug) is covered by
+        ``test_no_leak_across_recycled_pool_worker``.
+        """
         import threading
 
         from hermes_cli.plugins import (
@@ -1178,6 +1186,142 @@ class TestThreadToolWhitelist:
             )
         finally:
             clear_thread_tool_whitelist()
+
+    def test_no_leak_across_recycled_pool_worker(self, monkeypatch):
+        """Regression: a whitelist armed in one turn's copy_context().run() on a
+        shared pool worker must NOT leak to the next turn the pool recycles onto
+        the SAME worker.
+
+        This models the real gateway dispatch (gateway/run.py
+        ::_run_in_executor_with_context: ``ctx = copy_context();
+        run_in_executor(executor, ctx.run, func)``) — every turn runs inside its
+        own context snapshot. RED on the old threading.local storage (the stale
+        whitelist survives the ctx.run boundary), GREEN on the ContextVar storage.
+        """
+        import contextvars
+        import concurrent.futures
+        from hermes_cli.plugins import set_thread_tool_whitelist
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="hermes-gateway"
+        )
+        try:
+            # Turn A: fresh snapshot of the clean ambient context, run on the
+            # pool worker; arm the review whitelist and deliberately do NOT
+            # clear (worst case — the finally clear is what a crash/thread-hop
+            # would skip).
+            def turn_a():
+                def body():
+                    set_thread_tool_whitelist({"memory"})
+                return contextvars.copy_context().run(body)
+
+            # Turn B: pool recycles the SAME worker; a NEW clean snapshot runs
+            # turn B. It must see no whitelist.
+            def turn_b():
+                def body():
+                    return get_pre_tool_call_block_message("terminal", {})
+                return contextvars.copy_context().run(body)
+
+            pool.submit(turn_a).result()
+            leaked = pool.submit(turn_b).result()
+            assert leaked is None, (
+                "tool whitelist leaked from turn A onto the recycled pool "
+                "worker into turn B (recycle-leak regression)"
+            )
+        finally:
+            pool.shutdown(wait=True)
+
+    def test_clean_context_blocks_nothing(self, monkeypatch):
+        """I3: a context with no whitelist armed sees all tools."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_clear_with_foreign_token_fails_safe_to_unset(self, monkeypatch):
+        """RC2: if clear() runs where its reset token is invalid for the current
+        Context (a set/clear split across a raw thread hop without copy_context),
+        the ValueError fallback must fail SAFE — disarm to unset, never leave a
+        stale whitelist armed. Verifies the fallback branch in
+        clear_thread_tool_whitelist (plugins.py).
+        """
+        import threading
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Arm on the MAIN thread (mints a token bound to main's context).
+        set_thread_tool_whitelist({"memory"})
+        try:
+            # Clear from a BARE worker thread: the token stack copied into the
+            # worker's fresh context is empty (ContextVar default ()), so clear
+            # hits the `else: set(None)` arm — and even if a token were present
+            # it would be foreign → ValueError → set(None). Either way: no crash,
+            # and the worker's own context ends unset.
+            err = {}
+
+            def worker():
+                try:
+                    clear_thread_tool_whitelist()
+                    err["blocked_after"] = (
+                        get_pre_tool_call_block_message("terminal", {})
+                    )
+                except Exception as e:  # must NOT raise
+                    err["exc"] = repr(e)
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            assert "exc" not in err, err.get("exc")
+            # Worker context sees no whitelist (fail-safe unset), not a stale one.
+            assert err["blocked_after"] is None
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_nested_whitelist_restores_outer_scope(self, monkeypatch):
+        """I4: nested arm -> arm -> clear restores the OUTER whitelist exactly,
+        not a blanket clear."""
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Outer: only 'memory' allowed -> 'skill_manage' blocked.
+        set_thread_tool_whitelist({"memory"}, deny_msg_fmt="outer: {tool_name}")
+        try:
+            # Inner: also allow 'skill_manage'.
+            set_thread_tool_whitelist(
+                {"memory", "skill_manage"}, deny_msg_fmt="inner: {tool_name}"
+            )
+            try:
+                assert get_pre_tool_call_block_message("skill_manage", {}) is None
+            finally:
+                clear_thread_tool_whitelist()
+            # Back to outer scope: 'skill_manage' blocked again, with the OUTER
+            # deny message (proves reset restored the outer payload, not None).
+            msg = get_pre_tool_call_block_message("skill_manage", {})
+            assert msg == "outer: skill_manage", msg
+        finally:
+            clear_thread_tool_whitelist()
+        # Fully cleared: nothing blocked.
+        assert get_pre_tool_call_block_message("skill_manage", {}) is None
 
 
 # ── TestPluginContext ──────────────────────────────────────────────────────

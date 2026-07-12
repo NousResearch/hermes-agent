@@ -1440,6 +1440,69 @@ def test_nous_pool_terminal_refresh_removes_device_code_entry(tmp_path, monkeypa
     assert refresh_calls["count"] == 1
 
 
+def test_nous_pool_terminal_refresh_keeps_entries_when_auth_store_save_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:invoke",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    import agent.credential_pool as credential_pool_mod
+    from agent.credential_pool import load_pool
+    from hermes_cli import auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="nous",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    pool = load_pool("nous")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "device_code"
+
+    monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials", _terminal_refresh_failure)
+
+    def _save_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(credential_pool_mod, "_save_auth_store", _save_failure)
+
+    assert pool.try_refresh_current() is None
+
+    # Quarantine save failed: the entry must stay in the pool so that auth.json
+    # and the pool remain consistent (both still hold the revoked token).
+    assert [entry.source for entry in pool.entries()] == ["device_code"]
+
+    # auth.json tokens must be untouched.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    nous_state = auth_payload["providers"]["nous"]
+    assert nous_state.get("refresh_token") == "refresh-token"
+    assert nous_state.get("access_token") == "access-token"
+
+
 def test_load_pool_removes_nous_device_code_when_singleton_quarantined(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(
@@ -2873,6 +2936,53 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     assert refresh_calls["count"] == 1
 
 
+def test_xai_oauth_terminal_refresh_keeps_entries_when_auth_store_save_fails(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(tmp_path, _xai_auth_store("old-access-token", "old-refresh-token"))
+
+    import agent.credential_pool as credential_pool_mod
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("xai-oauth")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "device_code"
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _terminal_refresh_failure)
+
+    def _save_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(credential_pool_mod, "_save_auth_store", _save_failure)
+
+    assert pool.try_refresh_current() is None
+
+    # Quarantine save failed: the entry must stay in the pool so that auth.json
+    # and the pool remain consistent (both still hold the revoked token).
+    assert [entry.source for entry in pool.entries()] == ["device_code"]
+
+    # auth.json tokens must be untouched.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    tokens = auth_payload["providers"]["xai-oauth"].get("tokens", {})
+    assert tokens.get("access_token") == "old-access-token"
+    assert tokens.get("refresh_token") == "old-refresh-token"
+
+
 def test_xai_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("XAI_API_KEY", raising=False)
@@ -3012,6 +3122,53 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # A second try_refresh_current must not call refresh_codex_oauth_pure again.
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
+
+
+def test_codex_oauth_terminal_refresh_keeps_entries_when_auth_store_save_fails(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+
+    _write_auth_store(tmp_path, _codex_auth_store("old-access-token", "old-refresh-token"))
+
+    import agent.credential_pool as credential_pool_mod
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "device_code"
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="openai-codex",
+            code="codex_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
+
+    def _save_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(credential_pool_mod, "_save_auth_store", _save_failure)
+
+    assert pool.try_refresh_current() is None
+
+    # Quarantine save failed: the entry must stay in the pool so that auth.json
+    # and the pool remain consistent (both still hold the revoked token).
+    assert [entry.source for entry in pool.entries()] == ["device_code"]
+
+    # auth.json tokens must be untouched.
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
+    assert tokens.get("access_token") == "old-access-token"
+    assert tokens.get("refresh_token") == "old-refresh-token"
 
 
 def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):

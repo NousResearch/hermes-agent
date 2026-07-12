@@ -1142,6 +1142,7 @@ class CredentialPool:
                     logger.debug(
                         "xAI OAuth refresh token is terminally invalid; clearing local token state"
                     )
+                    cleared = False
                     try:
                         with _auth_store_lock():
                             auth_store = _load_auth_store()
@@ -1165,21 +1166,23 @@ class CredentialPool:
                                         }
                                         _save_provider_state(auth_store, "xai-oauth", state)
                                         _save_auth_store(auth_store)
+                            cleared = True
                     except Exception as clear_exc:
-                        logger.debug(
+                        logger.warning(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc
                         )
-                    removed_ids = [
-                        item.id for item in self._entries
-                        if item.source == "device_code"
-                    ]
-                    self._entries = [
-                        item for item in self._entries
-                        if item.source != "device_code"
-                    ]
-                    if self._current_id == entry.id:
-                        self._current_id = None
-                    self._persist(removed_ids=removed_ids)
+                    if cleared:
+                        removed_ids = [
+                            item.id for item in self._entries
+                            if item.source == "device_code"
+                        ]
+                        self._entries = [
+                            item for item in self._entries
+                            if item.source != "device_code"
+                        ]
+                        if self._current_id == entry.id:
+                            self._current_id = None
+                        self._persist(removed_ids=removed_ids)
                     return None
             # For openai-codex: same race as xAI/nous — another Hermes process
             # may have consumed the refresh token between our proactive sync
@@ -1212,6 +1215,7 @@ class CredentialPool:
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )
+                    cleared = False
                     try:
                         with _auth_store_lock():
                             auth_store = _load_auth_store()
@@ -1235,21 +1239,23 @@ class CredentialPool:
                                         }
                                         _save_provider_state(auth_store, "openai-codex", state)
                                         _save_auth_store(auth_store)
+                            cleared = True
                     except Exception as clear_exc:
-                        logger.debug(
+                        logger.warning(
                             "Failed to clear terminal Codex OAuth state: %s", clear_exc
                         )
-                    removed_ids = [
-                        item.id for item in self._entries
-                        if item.source == "device_code"
-                    ]
-                    self._entries = [
-                        item for item in self._entries
-                        if item.source != "device_code"
-                    ]
-                    if self._current_id == entry.id:
-                        self._current_id = None
-                    self._persist(removed_ids=removed_ids)
+                    if cleared:
+                        removed_ids = [
+                            item.id for item in self._entries
+                            if item.source == "device_code"
+                        ]
+                        self._entries = [
+                            item for item in self._entries
+                            if item.source != "device_code"
+                        ]
+                        if self._current_id == entry.id:
+                            self._current_id = None
+                        self._persist(removed_ids=removed_ids)
                     return None
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
@@ -1273,6 +1279,7 @@ class CredentialPool:
                     return updated
                 if auth_mod._is_terminal_nous_refresh_error(exc):
                     logger.debug("Nous refresh token is terminally invalid; clearing local token state")
+                    cleared = False
                     try:
                         with _auth_store_lock():
                             auth_store = _load_auth_store()
@@ -1299,24 +1306,26 @@ class CredentialPool:
                                 )
                                 _save_provider_state(auth_store, "nous", state)
                                 _save_auth_store(auth_store)
+                            cleared = True
                     except Exception as clear_exc:
-                        logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
+                        logger.warning("Failed to clear terminal Nous OAuth state: %s", clear_exc)
 
-                    singleton_sources = {
-                        auth_mod.NOUS_DEVICE_CODE_SOURCE,
-                        f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}",
-                    }
-                    removed_ids = [
-                        item.id for item in self._entries
-                        if item.source in singleton_sources
-                    ]
-                    self._entries = [
-                        item for item in self._entries
-                        if item.source not in singleton_sources
-                    ]
-                    if self._current_id == entry.id:
-                        self._current_id = None
-                    self._persist(removed_ids=removed_ids)
+                    if cleared:
+                        singleton_sources = {
+                            auth_mod.NOUS_DEVICE_CODE_SOURCE,
+                            f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}",
+                        }
+                        removed_ids = [
+                            item.id for item in self._entries
+                            if item.source in singleton_sources
+                        ]
+                        self._entries = [
+                            item for item in self._entries
+                            if item.source not in singleton_sources
+                        ]
+                        if self._current_id == entry.id:
+                            self._current_id = None
+                        self._persist(removed_ids=removed_ids)
                     return None
             self._mark_exhausted(entry, None)
             return None

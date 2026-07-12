@@ -219,8 +219,11 @@ _IMAGE_TOO_LARGE_PATTERNS = [
 #
 # See: https://github.com/NousResearch/hermes-agent/issues/27344
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
-    # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
+    # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"`text` is not set"}}
+    # The actual API wraps the param name in backticks; the plain variant
+    # without backticks never substring-matches when backticks are present.
     "text is not set",
+    "`text` is not set",
     # Generic "tool message must be string" shapes
     "tool message content must be a string",
     "tool content must be a string",
@@ -528,11 +531,18 @@ def classify_api_error(
     # "context length exceeded") is only in the inner JSON.
     _raw_msg = str(error).lower()
     _body_msg = ""
+    _body_param = ""
     _metadata_msg = ""
+    _metadata_param = ""
     if isinstance(body, dict):
         _err_obj = body.get("error", {})
         if isinstance(_err_obj, dict):
             _body_msg = str(_err_obj.get("message") or "").lower()
+            # Extract the ``param`` field — some providers (e.g. Xiaomi MiMo)
+            # put the diagnostic detail there, not in ``message``:
+            #   {"error":{"code":"400","message":"Param Incorrect",
+            #    "param":"`text` is not set"}}
+            _body_param = str(_err_obj.get("param") or "").lower()
             # Parse metadata.raw for wrapped provider errors
             _metadata = _err_obj.get("metadata", {})
             if isinstance(_metadata, dict):
@@ -545,16 +555,22 @@ def classify_api_error(
                             _inner_err = _inner.get("error", {})
                             if isinstance(_inner_err, dict):
                                 _metadata_msg = str(_inner_err.get("message") or "").lower()
+                                _metadata_param = str(_inner_err.get("param") or "").lower()
                     except (json.JSONDecodeError, TypeError):
                         pass
         if not _body_msg:
             _body_msg = str(body.get("message") or "").lower()
+            _body_param = str(body.get("param") or "").lower()
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
         parts.append(_body_msg)
+    if _body_param and _body_param not in _raw_msg and _body_param not in _body_msg:
+        parts.append(_body_param)
     if _metadata_msg and _metadata_msg not in _raw_msg and _metadata_msg not in _body_msg:
         parts.append(_metadata_msg)
+    if _metadata_param and _metadata_param not in _raw_msg and _metadata_param not in _body_msg:
+        parts.append(_metadata_param)
     error_msg = " ".join(parts)
     provider_lower = (provider or "").strip().lower()
     model_lower = (model or "").strip().lower()

@@ -1776,6 +1776,90 @@ class TestMultimodalToolContentUnsupported:
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
 
 
+class TestMultimodalParamExtraction:
+    """Issue #37469 — Xiaomi MiMo puts the diagnostic in ``body.error.param``,
+    not in ``message``.  The classifier must extract ``param`` into the
+    pattern-matching string so ``_MULTIMODAL_TOOL_CONTENT_PATTERNS`` can
+    match it.  These tests use body dicts where the error *string* does NOT
+    contain the param value — only the structured body does — so they prove
+    the body-param extraction is doing the work, not the string match.
+    """
+
+    def test_mimo_param_in_body_not_in_message(self):
+        """Raw MiMo 400 where ``str(error)`` says only ``Param Incorrect``
+        but ``body.error.param`` holds ```` `text` is not set ````.
+        """
+        e = MockAPIError(
+            "Error code: 400 - {'message': 'Param Incorrect'}",
+            status_code=400,
+            body={
+                "error": {
+                    "code": "400",
+                    "message": "Param Incorrect",
+                    "param": "`text` is not set",
+                    "type": "",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_mimo_param_via_aggregator_metadata_raw(self):
+        """Same error but wrapped in aggregator ``metadata.raw``
+        (e.g. opencode-go → switchboard → MiMo).  The outer
+        ``message`` is ``Provider returned error``; the inner JSON's
+        ``param`` holds the diagnostic.
+        """
+        import json
+        inner = json.dumps({
+            "error": {
+                "code": "400",
+                "message": "Param Incorrect",
+                "param": "`text` is not set",
+                "type": "",
+            }
+        })
+        e = MockAPIError(
+            "Error code: 400 - {'message': 'Error from provider'}",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Error from provider: Provider returned error",
+                    "code": 400,
+                    "metadata": {
+                        "raw": inner,
+                        "provider_name": "Xiaomi",
+                        "is_byok": True,
+                    },
+                }
+            },
+        )
+        result = classify_api_error(e, provider="opencode-go", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_mimo_param_without_backticks_also_matches(self):
+        """If the API ever stops wrapping in backticks, the plain
+        pattern still catches it via body-param extraction.
+        """
+        e = MockAPIError(
+            "Error code: 400 - {'message': 'Param Incorrect'}",
+            status_code=400,
+            body={
+                "error": {
+                    "code": "400",
+                    "message": "Param Incorrect",
+                    "param": "text is not set",
+                    "type": "",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+
 class TestOpenRouterUpstreamRateLimit:
     """Distinguish upstream-provider 429 from account-level 429 on OpenRouter.
 

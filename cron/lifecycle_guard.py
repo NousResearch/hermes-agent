@@ -23,19 +23,22 @@ autoscaling and restart behavior") would produce a high false-positive
 rate without preventing the actual foot-gun, which requires a real
 command shape.
 
-This is a defence-in-depth layer.  ``tools/terminal_tool.py`` already
-blocks these commands at *execution* time when ``_HERMES_GATEWAY=1``, and
-``hermes gateway stop|restart`` refuse to self-target from inside the
-gateway.  Blocking at *creation* time as well means the agent gets an
-immediate, informative rejection instead of scheduling a job that will
-only fail (silently) when it fires.
+This is a defence-in-depth layer.  ``tools/terminal_tool.py`` blocks direct
+commands and shell scripts they reference when ``_HERMES_GATEWAY=1``. It also
+rejects ``launchctl submit`` in gateway sessions because launchd treats that
+primitive as a persistent KeepAlive job, not a one-shot task. ``hermes gateway
+stop|restart`` separately refuse to self-target from inside the gateway.
+Blocking cron specs at creation time as well means the agent gets an immediate,
+informative rejection instead of scheduling a job that will only fail
+(silently) when it fires.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 
 class GatewayLifecycleBlocked(ValueError):
@@ -71,6 +74,72 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     if not text:
         return False
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
+
+
+_SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+_LAUNCHCTL_SUBMIT_PATTERN = re.compile(r"(?i)\blaunchctl\s+submit\b")
+
+
+def contains_launchctl_submit_command(command: str) -> bool:
+    """Return True for launchd's persistent ``launchctl submit`` primitive."""
+    return bool(command and _LAUNCHCTL_SUBMIT_PATTERN.search(command))
+
+
+def _iter_referenced_shell_scripts(
+    command: str,
+    *,
+    cwd: Optional[str] = None,
+) -> Iterator[Path]:
+    """Yield script files passed to shell executables in *command*.
+
+    This covers direct execution (``bash script.sh``) and service-manager
+    wrappers such as ``launchctl submit ... -- /bin/bash script.sh``. Shell
+    ``-c`` payloads are already visible in the command text and are not paths.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return
+
+    for index, token in enumerate(tokens):
+        if Path(token).name not in _SHELL_EXECUTABLES:
+            continue
+
+        candidate: Optional[str] = None
+        for argument in tokens[index + 1 :]:
+            if argument == "--":
+                continue
+            if argument in {"-c", "--command"}:
+                break
+            if argument.startswith("-"):
+                continue
+            candidate = argument
+            break
+
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if not path.is_absolute():
+            path = Path(cwd or Path.cwd()) / path
+        yield path
+
+
+def contains_gateway_lifecycle_command_or_referenced_script(
+    command: str,
+    *,
+    cwd: Optional[str] = None,
+) -> bool:
+    """Detect direct lifecycle commands and shell scripts containing one."""
+    if contains_gateway_lifecycle_command(command):
+        return True
+    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+        try:
+            script_text = script_path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        if contains_gateway_lifecycle_command(script_text):
+            return True
+    return False
 
 
 def _resolve_script_path(script_path: str) -> Path:

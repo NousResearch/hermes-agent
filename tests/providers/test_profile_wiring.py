@@ -294,3 +294,44 @@ class TestRequestOverridesParity:
             request_overrides={"top_p": 0.9},
         )
         assert kw["top_p"] == 0.9
+
+
+class TestRequestOverridesInvalidKeys:
+    """Stray keys in request_overrides must NOT reach chat.completions.create()."""
+
+    def test_profile_path_drops_invalid_system_key(self, transport):
+        kw = transport.build_kwargs(
+            model="openrouter/auto", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+            request_overrides={"system": "ignored prompt"},
+        )
+        assert "system" not in kw
+        assert kw["messages"] == _msgs()
+
+    def test_legacy_path_drops_invalid_system_key(self, transport):
+        """Unregistered providers use the legacy build path and need the same guard."""
+        kw = transport.build_kwargs(
+            model="custom/unregistered", messages=_msgs(), tools=None,
+            request_overrides={"system": "ignored prompt"},
+        )
+        assert "system" not in kw
+        assert kw["messages"] == _msgs()
+
+    def test_extra_body_override_still_merges(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("openrouter"),
+            request_overrides={"extra_body": {"custom_key": "v"}, "bogus": 1},
+        )
+        assert kw["extra_body"]["custom_key"] == "v"
+        assert "bogus" not in kw
+
+    def test_gemini_path_drops_invalid_system_key(self, transport):
+        """Gemini (profile) build_kwargs path must also drop invalid keys."""
+        kw = transport.build_kwargs(
+            model="gemini-2.5-flash", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("gemini"),
+            request_overrides={"system": "ignored prompt"},
+        )
+        assert "system" not in kw
+        assert kw["messages"] == _msgs()

@@ -28,9 +28,14 @@ class MutationConflict(ValueError):
     """One client request identity was reused for different semantics."""
 
 
+class InvalidMutationRequestIdentity(ValueError):
+    """A client request identity is empty or exceeds the wire contract."""
+
+
 class MutationDisposition(str, Enum):
     EXECUTE = "execute"
     IN_PROGRESS = "in_progress"
+    RETRY = "retry"
     REPLAY = "replay"
     OUTCOME_UNKNOWN = "outcome_unknown"
 
@@ -80,51 +85,84 @@ class MobileMutationStore:
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._closed = False
-        self._conn = sqlite3.connect(
+        self._recycle_required = False
+        self._conn = self._open_connection(self._owner_instance_id)
+
+    def _open_connection(self, owner_instance_id: str) -> sqlite3.Connection:
+        connection = sqlite3.connect(
             self._path,
             check_same_thread=False,
             isolation_level=None,
             timeout=5.0,
         )
-        self._conn.execute("PRAGMA busy_timeout = 5000")
-        # Import lazily so loading the gateway does not freeze SessionDB's
-        # profile path before reload-style tests and embedded callers install
-        # their Hermes-home override. The receipt store itself is lazy too.
-        from hermes_state import apply_wal_with_fallback
+        try:
+            connection.execute("PRAGMA busy_timeout = 5000")
+            # Import lazily so loading the gateway does not freeze SessionDB's
+            # profile path before reload-style tests and embedded callers install
+            # their Hermes-home override. The receipt store itself is lazy too.
+            from hermes_state import apply_wal_with_fallback
 
-        apply_wal_with_fallback(
-            self._conn,
-            db_label=f"mobile mutations ({self._path.name})",
-        )
-        self._conn.execute("PRAGMA synchronous = FULL")
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS mobile_mutations (
-                principal_digest TEXT NOT NULL,
-                request_digest TEXT NOT NULL,
-                method TEXT NOT NULL,
-                fingerprint TEXT NOT NULL,
-                state TEXT NOT NULL,
-                owner_instance_id TEXT,
-                outcome_json TEXT,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                PRIMARY KEY (principal_digest, request_digest)
+            apply_wal_with_fallback(
+                connection,
+                db_label=f"mobile mutations ({self._path.name})",
             )
-            """
-        )
-        # A process that disappeared after reservation may already have caused
-        # side effects.  Preserve that uncertainty durably instead of making a
-        # new process guess that the request is safe to execute again.
-        now = time.time()
-        self._conn.execute(
-            """
-            UPDATE mobile_mutations
-            SET state = 'outcome_unknown', owner_instance_id = NULL, updated_at = ?
-            WHERE state = 'in_progress' AND owner_instance_id <> ?
-            """,
-            (now, self._owner_instance_id),
-        )
+            connection.execute("PRAGMA synchronous = FULL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mobile_mutations (
+                    principal_digest TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    owner_instance_id TEXT,
+                    outcome_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (principal_digest, request_digest)
+                )
+                """
+            )
+            # A process that disappeared after reservation may already have caused
+            # side effects. Preserve that uncertainty durably instead of making a
+            # new process guess that the request is safe to execute again.
+            connection.execute(
+                """
+                UPDATE mobile_mutations
+                SET state = 'outcome_unknown', owner_instance_id = NULL, updated_at = ?
+                WHERE state = 'in_progress' AND owner_instance_id <> ?
+                """,
+                (time.time(), owner_instance_id),
+            )
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    def _recycle_connection_locked(self) -> None:
+        if self._closed:
+            raise sqlite3.ProgrammingError("mobile mutation store is closed")
+        replacement_owner = str(uuid.uuid4())
+        replacement = self._open_connection(replacement_owner)
+        previous = self._conn
+        self._conn = replacement
+        self._owner_instance_id = replacement_owner
+        self._recycle_required = False
+        try:
+            previous.close()
+        except sqlite3.Error:
+            pass
+        self._changed.notify_all()
+
+    def _ensure_connection_locked(self) -> None:
+        if self._recycle_required:
+            self._recycle_connection_locked()
+
+    def recycle_after_storage_failure(self) -> None:
+        """Poison and replace the connection, terminalizing all open claims."""
+        with self._changed:
+            self._recycle_required = True
+            self._recycle_connection_locked()
 
     @staticmethod
     def _key(
@@ -135,7 +173,7 @@ class MobileMutationStore:
     ) -> tuple[str, str, str]:
         request_id = str(client_request_id or "").strip()
         if not request_id or len(request_id) > _MAX_REQUEST_ID_CHARS:
-            raise ValueError(
+            raise InvalidMutationRequestIdentity(
                 "client_request_id must contain 1 to 256 non-whitespace characters"
             )
         principal = [str(provider or ""), str(subject or "")]
@@ -179,6 +217,7 @@ class MobileMutationStore:
         now = time.time()
 
         with self._changed:
+            self._ensure_connection_locked()
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 row = self._conn.execute(
@@ -256,6 +295,7 @@ class MobileMutationStore:
             return False
         encoded = _canonical_json(outcome)
         with self._changed:
+            self._ensure_connection_locked()
             cursor = self._conn.execute(
                 """
                 UPDATE mobile_mutations
@@ -282,6 +322,7 @@ class MobileMutationStore:
         if claim.disposition is not MutationDisposition.EXECUTE:
             return False
         with self._changed:
+            self._ensure_connection_locked()
             cursor = self._conn.execute(
                 """
                 DELETE FROM mobile_mutations
@@ -303,6 +344,7 @@ class MobileMutationStore:
     def mark_outcome_unknown(self, claim: MutationClaim) -> bool:
         """Terminalize a reserved request after an unexpected execution failure."""
         with self._changed:
+            self._ensure_connection_locked()
             cursor = self._conn.execute(
                 """
                 UPDATE mobile_mutations
@@ -333,6 +375,7 @@ class MobileMutationStore:
         deadline = time.monotonic() + max(0.0, timeout)
         with self._changed:
             while True:
+                self._ensure_connection_locked()
                 row = self._conn.execute(
                     """
                     SELECT state, outcome_json
@@ -347,7 +390,14 @@ class MobileMutationStore:
                     ),
                 ).fetchone()
                 if row is None:
-                    return claim
+                    return MutationClaim(
+                        MutationDisposition.RETRY,
+                        None,
+                        claim._principal_digest,
+                        claim._request_digest,
+                        claim._fingerprint,
+                        claim._owner_instance_id,
+                    )
                 state, outcome_json = row
                 if state == "completed":
                     return MutationClaim(
@@ -385,6 +435,7 @@ class MobileMutationStore:
             client_request_id=client_request_id,
         )
         with self._lock:
+            self._ensure_connection_locked()
             row = self._conn.execute(
                 """
                 SELECT method, state, outcome_json

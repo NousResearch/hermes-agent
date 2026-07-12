@@ -30,6 +30,7 @@ from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.mobile_mutations import (
+    InvalidMutationRequestIdentity,
     MobileMutationStore,
     MutationClaim,
     MutationConflict,
@@ -1481,6 +1482,41 @@ def _mark_mobile_mutation_outcome_unknown(
     return changed
 
 
+def _recover_mobile_mutation_outcome_unknown(
+    store: MobileMutationStore,
+    claim: MutationClaim,
+    *,
+    context: str,
+) -> bool:
+    """Terminalize an uncertain claim, recycling a failed SQLite connection."""
+    if _mark_mobile_mutation_outcome_unknown(store, claim, context=context):
+        return True
+    try:
+        store.recycle_after_storage_failure()
+        recovered = store.wait_for_outcome(claim, timeout=0.0)
+    except (OSError, sqlite3.Error):
+        logger.warning(
+            "mobile mutation receipt recovery failed after %s",
+            context,
+            exc_info=True,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "unexpected mobile mutation receipt recovery failure after %s",
+            context,
+        )
+        return False
+    if recovered.disposition is MutationDisposition.OUTCOME_UNKNOWN:
+        return True
+    logger.error(
+        "mobile mutation receipt remained %s after recovery from %s",
+        recovered.disposition.value,
+        context,
+    )
+    return False
+
+
 def _dispatch_mobile_mutation(
     req: dict,
     *,
@@ -1512,46 +1548,50 @@ def _dispatch_mobile_mutation(
     if isinstance(resource, dict):
         return resource
     resource_id, semantic_parameters = resource
-    try:
-        store = _mobile_mutation_store()
-        claim = store.reserve(
-            provider=grant["provider"],
-            subject=grant["subject"],
-            client_request_id=client_request_id,
-            method=method,
-            resource_id=resource_id,
-            semantic_parameters=semantic_parameters,
-        )
-    except MutationConflict:
-        return _err(
-            rid,
-            4090,
-            "client_request_id was already used for different semantics",
-            data={"reason": "mutation_conflict"},
-        )
-    except ValueError as exc:
-        return _err(
-            rid,
-            -32602,
-            str(exc),
-            data={"reason": "invalid_client_request_id"},
-        )
-    except (OSError, sqlite3.Error):
-        logger.warning("mobile mutation receipt reservation failed", exc_info=True)
-        return _mobile_mutation_store_unavailable(rid)
-    except Exception:
-        logger.exception("unexpected mobile mutation receipt reservation failure")
-        return _mobile_mutation_store_unavailable(rid)
-
-    if claim.disposition is MutationDisposition.IN_PROGRESS:
+    while True:
         try:
-            claim = store.wait_for_outcome(claim, timeout=30.0)
-        except (OSError, sqlite3.Error):
-            logger.warning("mobile mutation receipt wait failed", exc_info=True)
+            store = _mobile_mutation_store()
+            claim = store.reserve(
+                provider=grant["provider"],
+                subject=grant["subject"],
+                client_request_id=client_request_id,
+                method=method,
+                resource_id=resource_id,
+                semantic_parameters=semantic_parameters,
+            )
+        except MutationConflict:
+            return _err(
+                rid,
+                4090,
+                "client_request_id was already used for different semantics",
+                data={"reason": "mutation_conflict"},
+            )
+        except InvalidMutationRequestIdentity as exc:
+            return _err(
+                rid,
+                -32602,
+                str(exc),
+                data={"reason": "invalid_client_request_id"},
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            logger.warning("mobile mutation receipt reservation failed", exc_info=True)
             return _mobile_mutation_store_unavailable(rid)
         except Exception:
-            logger.exception("unexpected mobile mutation receipt wait failure")
+            logger.exception("unexpected mobile mutation receipt reservation failure")
             return _mobile_mutation_store_unavailable(rid)
+
+        if claim.disposition is MutationDisposition.IN_PROGRESS:
+            try:
+                claim = store.wait_for_outcome(claim, timeout=30.0)
+            except (OSError, sqlite3.Error):
+                logger.warning("mobile mutation receipt wait failed", exc_info=True)
+                return _mobile_mutation_store_unavailable(rid)
+            except Exception:
+                logger.exception("unexpected mobile mutation receipt wait failure")
+                return _mobile_mutation_store_unavailable(rid)
+        if claim.disposition is not MutationDisposition.RETRY:
+            break
+
     if claim.disposition is MutationDisposition.REPLAY:
         return _mutation_response(
             rid,
@@ -1618,11 +1658,13 @@ def _dispatch_mobile_mutation(
             response = handle_request(req)
     except Exception:
         logger.exception("mobile mutation handler failed")
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="handler failure",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         return _err(
             rid,
             5037,
@@ -1630,11 +1672,13 @@ def _dispatch_mobile_mutation(
             data={"reason": "mutation_outcome_unknown"},
         )
     if response is None:
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="empty handler response",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         return _err(
             rid,
             5037,
@@ -1646,19 +1690,23 @@ def _dispatch_mobile_mutation(
         completed = store.complete(claim, outcome)
     except (OSError, sqlite3.Error):
         logger.warning("mobile mutation receipt completion failed", exc_info=True)
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="receipt completion failure",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         completed = False
     except Exception:
         logger.exception("unexpected mobile mutation receipt completion failure")
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="unexpected receipt completion failure",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         completed = False
     if not completed:
         return _err(
@@ -6663,6 +6711,13 @@ def _(rid, params: dict) -> dict:
             provider=grant["provider"],
             subject=grant["subject"],
             client_request_id=client_request_id,
+        )
+    except InvalidMutationRequestIdentity as exc:
+        return _err(
+            rid,
+            -32602,
+            str(exc),
+            data={"reason": "invalid_client_request_id"},
         )
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("mobile mutation status lookup failed", exc_info=True)

@@ -177,6 +177,102 @@ def test_transient_lineage_failure_releases_receipt_for_identical_retry(
     }
 
 
+def test_waiting_duplicate_re_reserves_after_preflight_release(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+):
+    from tui_gateway import server
+
+    first_preflight = threading.Event()
+    release_first_preflight = threading.Event()
+    duplicate_waiting = threading.Event()
+    preflight_calls = 0
+    preflight_lock = threading.Lock()
+
+    class Db:
+        @staticmethod
+        def get_compression_lineage(_session_id):
+            return ["conversation-root", "conversation-tip"]
+
+    @contextlib.contextmanager
+    def session_db(_session):
+        nonlocal preflight_calls
+        with preflight_lock:
+            preflight_calls += 1
+            call = preflight_calls
+        if call == 1:
+            first_preflight.set()
+            assert release_first_preflight.wait(timeout=2)
+            raise sqlite3.OperationalError("lineage store unavailable")
+        yield Db()
+
+    original_wait = _isolated_gateway_mutation_store.wait_for_outcome
+
+    def observed_wait(claim, *, timeout):
+        duplicate_waiting.set()
+        return original_wait(claim, timeout=timeout)
+
+    class Agent:
+        session_id = "conversation-tip"
+        interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+    agent = Agent()
+    monkeypatch.setattr(server, "_session_db", session_db)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "wait_for_outcome",
+        observed_wait,
+    )
+    server._sessions["live-1"] = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "session_key": "conversation-tip",
+    }
+    request = {
+        "jsonrpc": "2.0",
+        "method": "session.interrupt",
+        "params": {
+            "client_request_id": "waiter-after-release",
+            "expected_stored_session_id": "conversation-root",
+            "session_id": "live-1",
+        },
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+    responses = {}
+
+    def dispatch(name, correlation):
+        responses[name] = server.dispatch(
+            {**request, "id": correlation},
+            transport,
+        )
+
+    owner = threading.Thread(target=dispatch, args=("owner", "owner-request"))
+    duplicate = threading.Thread(
+        target=dispatch,
+        args=("duplicate", "duplicate-request"),
+    )
+    owner.start()
+    assert first_preflight.wait(timeout=2)
+    duplicate.start()
+    assert duplicate_waiting.wait(timeout=2)
+    release_first_preflight.set()
+    owner.join(timeout=2)
+    duplicate.join(timeout=2)
+
+    assert not owner.is_alive()
+    assert not duplicate.is_alive()
+    assert responses["owner"]["error"]["code"] == 5037
+    assert responses["duplicate"]["result"]["status"] == "interrupted"
+    assert responses["duplicate"]["result"]["mutation"]["deduplicated"] is False
+    assert agent.interrupt_calls == 1
+
+
 def test_completed_mutation_replays_exact_outcome_after_database_reopen(tmp_path):
     path = tmp_path / "mobile-mutations.sqlite3"
     first = MobileMutationStore(path, owner_instance_id="process-a")
@@ -200,6 +296,57 @@ def test_completed_mutation_replays_exact_outcome_after_database_reopen(tmp_path
         subject="mobile-user",
         client_request_id="request-1",
     )["state"] == "completed"
+
+
+def test_corrupt_completed_outcome_is_store_unavailable_not_invalid_request(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    from tui_gateway import server
+
+    path = tmp_path / "corrupt-mobile-mutations.sqlite3"
+    first = MobileMutationStore(path, owner_instance_id="process-a")
+    claim = first.reserve(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="corrupt-outcome-1",
+        method="session.interrupt",
+        resource_id="conversation-root",
+        semantic_parameters={},
+    )
+    assert first.complete(claim, {"result": {"status": "interrupted"}}) is True
+    first.close()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE mobile_mutations SET outcome_json = ?",
+            ("{not-json",),
+        )
+
+    reopened = MobileMutationStore(path, owner_instance_id="process-b")
+    monkeypatch.setattr(server, "_mobile_mutation_store", lambda: reopened)
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        response = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "corrupt-outcome-retry",
+                "method": "session.interrupt",
+                "params": {
+                    "client_request_id": "corrupt-outcome-1",
+                    "expected_stored_session_id": "conversation-root",
+                    "session_id": "no-live-session-needed-for-replay",
+                },
+            },
+            _MobileTransport("conversation.read", "conversation.control"),
+        )
+
+    assert response["error"] == {
+        "code": 5037,
+        "message": "durable mutation receipt is temporarily unavailable",
+        "data": {"reason": "mutation_store_unavailable"},
+    }
+    assert any(record.exc_info is not None for record in caplog.records)
+    reopened.close()
 
 
 def test_same_request_identity_with_different_semantics_conflicts(tmp_path):
@@ -550,6 +697,157 @@ def test_receipt_completion_failures_become_structured_unknown_outcomes(
 
     assert retry["error"]["code"] == 4091
     assert agent.interrupt_calls == 1
+
+
+def test_completion_and_terminalization_failures_recycle_to_unknown(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+    caplog,
+):
+    from tui_gateway import server
+
+    class Agent:
+        interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+    agent = Agent()
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    server._sessions["live-1"] = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "session_key": "conversation-root",
+    }
+
+    def fail_write(*_args, **_kwargs):
+        raise sqlite3.OperationalError("receipt connection unhealthy")
+
+    monkeypatch.setattr(_isolated_gateway_mutation_store, "complete", fail_write)
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "mark_outcome_unknown",
+        fail_write,
+    )
+    request = {
+        "jsonrpc": "2.0",
+        "id": "double-write-failure",
+        "method": "session.interrupt",
+        "params": {
+            "client_request_id": "double-write-failure-1",
+            "expected_stored_session_id": "conversation-root",
+            "session_id": "live-1",
+        },
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        response = server.dispatch(request, transport)
+
+    assert response["error"]["code"] == 5037
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="double-write-failure-1",
+    )["state"] == "outcome_unknown"
+    assert agent.interrupt_calls == 1
+    assert any(record.exc_info is not None for record in caplog.records)
+
+    request["id"] = "double-write-failure-retry"
+    retry = server.dispatch(request, transport)
+
+    assert retry["error"]["code"] == 4091
+    assert agent.interrupt_calls == 1
+
+
+def test_failed_recycle_is_retried_after_storage_recovers(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+):
+    from tui_gateway import server
+
+    class Agent:
+        interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+    agent = Agent()
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    server._sessions["live-1"] = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "session_key": "conversation-root",
+    }
+
+    def fail_write(*_args, **_kwargs):
+        raise sqlite3.OperationalError("receipt connection unhealthy")
+
+    original_open = _isolated_gateway_mutation_store._open_connection
+    recycle_attempts = 0
+
+    def fail_first_recycle(owner_instance_id):
+        nonlocal recycle_attempts
+        recycle_attempts += 1
+        if recycle_attempts == 1:
+            raise sqlite3.OperationalError("storage still unavailable")
+        return original_open(owner_instance_id)
+
+    original_wait = _isolated_gateway_mutation_store.wait_for_outcome
+
+    def no_slow_wait(claim, *, timeout):
+        assert timeout == 30.0
+        return original_wait(claim, timeout=0.0)
+
+    monkeypatch.setattr(_isolated_gateway_mutation_store, "complete", fail_write)
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "mark_outcome_unknown",
+        fail_write,
+    )
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "_open_connection",
+        fail_first_recycle,
+    )
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "wait_for_outcome",
+        no_slow_wait,
+    )
+    request = {
+        "jsonrpc": "2.0",
+        "id": "recycle-still-down",
+        "method": "session.interrupt",
+        "params": {
+            "client_request_id": "recycle-recovery-1",
+            "expected_stored_session_id": "conversation-root",
+            "session_id": "live-1",
+        },
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+
+    unavailable = server.dispatch(request, transport)
+
+    assert unavailable["error"]["code"] == 5037
+    assert recycle_attempts == 1
+    assert agent.interrupt_calls == 1
+
+    request["id"] = "recycle-storage-recovered"
+    retry = server.dispatch(request, transport)
+
+    assert retry["error"]["code"] == 4091
+    assert recycle_attempts == 2
+    assert agent.interrupt_calls == 1
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="recycle-recovery-1",
+    )["state"] == "outcome_unknown"
 
 
 def test_unexpected_handler_failure_returns_structured_unknown_outcome(

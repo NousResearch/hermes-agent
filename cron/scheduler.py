@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -2011,74 +2010,6 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-# Well-known Git for Windows install locations, looked up in this order.
-# The Git for Windows installer's default PATH option adds ``Git\cmd`` (which
-# ships ``git.exe``) but NOT ``Git\bin`` / ``Git\usr\bin`` (which ship
-# ``bash.exe``). When Windows' own WSL launcher stub — ``system32\bash.exe`` —
-# is also present and ``Git\usr\bin`` isn't on PATH, ``shutil.which("bash")``
-# silently resolves to the WSL stub, and ``.sh`` cron scripts fail with
-# ``WSL_E_DEFAULT_DISTRO_NOT_FOUND`` whenever WSL has no distributions
-# installed.  Probing these well-known paths before consulting ``which("bash")``
-# picks real Git Bash in the common "default install" configuration and avoids
-# the WSL-stub resolution entirely.
-_GIT_WIN_BASH_PATHS = (
-    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-    os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-    os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "usr", "bin", "bash.exe"),
-    os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "usr", "bin", "bash.exe"),
-)
-
-
-def _is_wsl_launcher(path: str) -> bool:
-    """Best-effort: True when ``path`` is the Windows WSL ``bash.exe`` stub.
-
-    ``shutil.which("bash")`` can hand us ``C:\\Windows\\System32\\bash.exe`` —
-    the WSL entrypoint — which exits non-zero with
-    ``WSL_E_DEFAULT_DISTRO_NOT_FOUND`` when WSL is enabled but unpopulated.
-    Treat any ``bash`` resolved under ``system32`` (or the WindowsApps WSL
-    alias dir) as the WSL stub so callers can prefer a real Git Bash instead.
-    """
-    if not path:
-        return False
-    norm = os.path.normcase(os.path.normpath(path))
-    parts = norm.split(os.sep)
-    return ("system32" in parts) or ("windowsapps" in parts)
-
-
-def _resolve_bash() -> "Optional[str]":
-    """Pick a bash interpreter for ``.sh``/``.bash`` cron scripts.
-
-    Order of preference:
-
-    1. On Windows, a real Git for Windows ``bash.exe`` at a well-known install
-       path — beats ``shutil.which("bash")`` so the WSL launcher stub under
-       ``system32`` never wins when WSL has no distributions installed.
-    2. ``shutil.which("bash")`` — the historical resolution, correct on
-       Linux/macOS and on Windows hosts that *did* add Git's ``bin``/``usr/bin``
-       to PATH — unless it resolves to the WSL stub (then keep looking).
-    3. ``/bin/bash`` — the POSIX fallback when nothing is on PATH.
-
-    Returns the bash path, or ``None`` if no usable bash was found (caller
-    emits a clear install-hint error in that case).
-    """
-    # 1. Windows: probe well-known Git for Windows locations first.
-    if sys.platform == "win32":
-        for cand in _GIT_WIN_BASH_PATHS:
-            if os.path.isfile(cand):
-                return cand
-
-    # 2. PATH lookup — but skip the WSL launcher stub on Windows.
-    which_hit = shutil.which("bash")
-    if which_hit and not _is_wsl_launcher(which_hit):
-        return which_hit
-
-    # 3. POSIX fallback (a no-op on Windows).
-    if os.path.isfile("/bin/bash"):
-        return "/bin/bash"
-
-    return None
-
-
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2089,9 +2020,16 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Supported interpreters (chosen by file extension):
 
-    * ``.sh`` / ``.bash`` — run with bash resolved via ``_resolve_bash()``
-      (Git for Windows location probe, then ``shutil.which("bash")`` minus
-      the WSL launcher stub, then ``/bin/bash``)
+    * ``.sh`` / ``.bash`` — run with bash resolved via
+      ``tools.environments.local._find_bash`` — the same resolver used by the
+      native terminal path, so cron never diverges from Hermes's supported
+      Windows bash discovery (``HERMES_GIT_BASH_PATH``, PortableGit under
+      ``%LOCALAPPDATA%\\hermes\\git``, ``ProgramFiles\\Git``, LocalAppData
+      Git installs, ``usr/bin`` fallbacks, and WSL-stub rejection).  Earlier
+      revisions of this code path used a parallel ``shutil.which("bash")``
+      lookup that resolved to the WSL launcher stub when WSL was enabled with
+      no distributions installed — see ``_find_bash`` in
+      ``tools/environments/local.py`` for the full chain and the regression.
     * anything else — run with the current Python interpreter
       (``sys.executable``), preserving the original behaviour for
       Python-based pre-check and data-collection scripts.
@@ -2145,15 +2083,21 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = _resolve_bash()
-        if _bash is None:
+        # Delegate to the shared bash resolver used by the native terminal
+        # path (tools.environments.local._find_bash) — same WSL-stub rejection,
+        # PortableGit probes, and Git for Windows well-known-path lookup the
+        # rest of Hermes relies on.  A parallel ``shutil.which("bash")`` here
+        # would re-introduce the WSL launcher stub bug (it resolves to
+        # ``C:\Windows\System32\bash.exe`` when WSL is enabled with no
+        # distributions installed and Git for Windows' default PATH option
+        # adds ``Git\cmd`` but not ``Git\bin``).
+        from tools.environments.local import _find_bash
+
+        try:
+            _bash = _find_bash()
+        except RuntimeError:
             return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )

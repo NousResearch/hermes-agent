@@ -731,16 +731,38 @@ class TestCodeExecutionTransportTcpFallback:
 
 class TestCronSchedulerBashResolution:
     """cron.scheduler must NOT hardcode /bin/bash — .sh scripts need a
-    dynamically-resolved bash so Windows (Git Bash) works."""
+    dynamically-resolved bash so Windows (Git Bash) works.
 
-    def test_source_uses_shutil_which_for_bash(self):
+    The original regression (hardcoded ``/bin/bash`` on Windows → ``[WinError 2]``)
+    was fixed by adding a ``shutil.which("bash")`` lookup. A later regression
+    (``shutil.which("bash")`` resolving to the WSL launcher stub on hosts with
+    WSL enabled but no distributions installed + Git for Windows installed
+    with its default PATH option) is fixed by delegating to the shared
+    ``tools/environments/local._find_bash`` resolver, which honours
+    ``HERMES_GIT_BASH_PATH``, the Hermes-bundled PortableGit under
+    ``%LOCALAPPDATA%\\hermes\\git``, the standard Git for Windows install
+    locations, the ``usr/bin`` MinGit fallback, and rejects the WSL stub.
+    The delegation keeps cron bash discovery byte-identical to the native
+    terminal path ("extend, don't duplicate" — see AGENTS.md).
+    """
+
+    def test_source_delegates_to_shared_find_bash(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
-        # The old hardcoded path should be gone as the sole bash source.
-        # It may still appear as a POSIX fallback after shutil.which(), so
-        # we check for the shutil.which call near the .sh/.bash branch.
-        assert 'shutil.which("bash")' in source, (
-            "cron.scheduler must resolve bash dynamically via shutil.which"
+        # The cron .sh/.bash branch must delegate to the shared resolver —
+        # NOT call shutil.which("bash") directly (which would re-introduce
+        # the WSL-stub silent-failure regression).
+        assert "from tools.environments.local import _find_bash" in source, (
+            "cron.scheduler .sh/.bash script execution must delegate to "
+            "tools.environments.local._find_bash (shared bash resolver) — "
+            "see PR #61629 / teknium1 review."
+        )
+        # And must NOT carry the old inline shutil.which("bash") fallback
+        # that resolved to the WSL launcher stub on Windows-with-no-WSL-distros.
+        assert 'shutil.which("bash") or ("/bin/bash"' not in source, (
+            "cron.scheduler must not short-circuit via shutil.which('bash')"
+            " — that path silently returns the WSL launcher stub on the "
+            "common Windows+WSL-no-distros configuration."
         )
 
     def test_error_message_when_bash_missing(self):

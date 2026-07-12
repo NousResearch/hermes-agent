@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -547,6 +547,30 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     return env
 
 
+def _is_wsl_launcher(path: str) -> bool:
+    """True when ``path`` is the Windows WSL launcher ``bash`` stub.
+
+    ``shutil.which("bash")`` on a Windows host where WSL is enabled but no
+    distributions are installed resolves to ``C:\\Windows\\System32\\bash.exe``
+    (or the ``%LOCALAPPDATA%\\Microsoft\\WindowsApps\\bash.exe`` alias) — the
+    WSL entry point, not Git Bash. Invoking it fails with
+    ``WSL_E_DEFAULT_DISTRO_NOT_FOUND``.
+
+    Use ``PureWindowsPath`` (not ``os.sep``) so the classifier is
+    host-independent: it splits Windows-style paths correctly on Linux / macOS
+    CI runners that audit Windows behaviour, not just on a real Windows host.
+    Returns False for empty input and for any POSIX path (``/bin/bash``,
+    ``/usr/bin/bash``) — those are never the WSL stub.
+    """
+    if not path:
+        return False
+    parts = PureWindowsPath(path).parts
+    return any(
+        p.lower() in {"system32", "windowsapps"}
+        for p in parts
+    )
+
+
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
@@ -594,9 +618,27 @@ def _find_bash() -> str:
         if candidate and os.path.isfile(candidate) and candidate not in candidates:
             candidates.append(candidate)
 
+    # Final PATH lookup — but skip the WSL launcher stub.  On machines where
+    # WSL is enabled with no distributions installed, ``which("bash")`` hands
+    # back ``C:\Windows\System32\bash.exe`` (or the ``WindowsApps`` alias),
+    # which exits non-zero with ``WSL_E_DEFAULT_DISTRO_NOT_FOUND``.  Returning
+    # it would silently break every caller of ``_find_bash`` (the native
+    # terminal path, cron ``.sh`` scripts, webhook route scripts).  Skip it
+    # and fall through to the actionable "install Git for Windows" error.
     found = shutil.which("bash")
-    if found and found not in candidates:
+    if found and not _is_wsl_launcher(found) and found not in candidates:
+        # Skip the WSL launcher stub (system32\bash.exe / WindowsApps alias) —
+        # on machines with WSL enabled but no distributions installed, it
+        # exits non-zero with WSL_E_DEFAULT_DISTRO_NOT_FOUND.  Upstream's
+        # _bash_starts() probe below would also reject it behaviourally, but
+        # filtering by path here (a) avoids a ~15ms subprocess spawn per
+        # candidate, (b) keeps the "skipped the WSL stub" signal obvious in
+        # any future debug log, and (c) is defense-in-depth for the case
+        # where WSL later gains a distro and the stub DOES start (we still
+        # want a real Git Bash for .sh cron scripts, not WSL bash).
         candidates.append(found)
+    elif found and _is_wsl_launcher(found):
+        logger.debug("Skipping WSL launcher stub from PATH: %s", found)
 
     # Prefer the first candidate that can actually start.  A stale
     # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install
@@ -616,6 +658,18 @@ def _find_bash() -> str:
         # Last resort: return the first path even if the probe failed, so the
         # caller still sees the real bash error instead of "not found".
         return candidates[0]
+
+    # If the only bash on PATH is the WSL stub, also check the ``usr/bin``
+    # layout of the standard Git installs above — MinGit and recent PortableGit
+    # releases put bash under ``usr/bin`` rather than ``bin``, which the
+    # earlier probe skipped.
+    for candidate in (
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "usr", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "usr", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "usr", "bin", "bash.exe"),
+    ):
+        if candidate and os.path.isfile(candidate):
+            return candidate
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

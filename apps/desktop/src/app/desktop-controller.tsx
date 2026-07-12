@@ -67,6 +67,7 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
@@ -749,6 +750,7 @@ export function DesktopController() {
       // The next message creates the backend session in $currentCwd, so seed
       // it (and the branch) from the workspace the user clicked the + on.
       setCurrentCwd(target)
+      setCurrentCwdExplicit(true)
       void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
         .then(info => {
           const resolved = info.cwd || target

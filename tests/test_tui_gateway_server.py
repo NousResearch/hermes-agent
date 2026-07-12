@@ -197,6 +197,60 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     assert server._completion_cwd({}) == str(stale)
 
 
+def test_completion_cwd_profile_overrides_desktop_app_global_workspace(monkeypatch, tmp_path):
+    """Issue #52589: a named profile's terminal.cwd wins over the desktop's
+    app-global workspace cwd when that workspace is just the launch profile's
+    configured directory (not an explicit per-session workspace pick)."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    profile_ws = tmp_path / "workspace" / "products"
+    profile_ws.mkdir()
+    profile_home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    # Launch profile is configured with launch_ws; the desktop ships it as the
+    # app-global workspace cwd for every new chat.
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_ws)}})
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+    # Client sends the launch profile's directory as the session cwd.
+    assert (
+        server._completion_cwd({"profile": "dev", "cwd": str(launch_ws)}) == str(profile_ws)
+    )
+
+
+def test_completion_cwd_explicit_workspace_still_honored_for_profile(monkeypatch, tmp_path):
+    """A deliberate workspace pick (different from the launch dir) must still
+    win for the named profile (#52589 regression guard)."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    profile_ws = tmp_path / "workspace" / "products"
+    profile_ws.mkdir()
+    explicit = tmp_path / "explicit-lane"
+    explicit.mkdir()
+    profile_home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_ws)}})
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+    # Client explicitly chose a workspace lane.
+    assert (
+        server._completion_cwd({"profile": "dev", "cwd": str(explicit), "cwd_explicit": True}) == str(explicit)
+    )
+
+
+def test_completion_cwd_explicit_launch_workspace_is_honored_for_profile(monkeypatch, tmp_path):
+    """An explicit selection equal to the launch workspace is not inherited (#52589)."""
+    launch_ws = tmp_path / "workspace"
+    launch_ws.mkdir()
+    profile_ws = tmp_path / "workspace" / "products"
+    profile_ws.mkdir()
+    profile_home = _write_profile_cfg(tmp_path / "home-dev", str(profile_ws))
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_ws)}})
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+    assert (
+        server._completion_cwd({"profile": "dev", "cwd": str(launch_ws), "cwd_explicit": True}) == str(launch_ws)
+    )
+
+
 def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_path):
     """Dashboard /chat's launch-profile in-memory gateway must honor config.
 
@@ -246,7 +300,7 @@ def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
     home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
 
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
-    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    result = server._completion_cwd({"cwd": str(explicit), "cwd_explicit": True, "profile": "ef-design"})
     assert result == str(explicit)
 
 

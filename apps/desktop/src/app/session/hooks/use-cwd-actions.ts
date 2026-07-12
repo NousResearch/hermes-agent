@@ -2,7 +2,7 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
-import { $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
+import { $currentCwd, setCurrentBranch, setCurrentCwd, setCurrentCwdExplicit } from '@/store/session'
 import type { SessionRuntimeInfo } from '@/types/hermes'
 
 interface CwdActionsOptions {
@@ -55,6 +55,7 @@ export function useCwdActions({
 
       if (!activeSessionId) {
         setCurrentCwd(trimmed)
+        setCurrentCwdExplicit(true)
 
         try {
           const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {

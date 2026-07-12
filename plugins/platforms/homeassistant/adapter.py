@@ -41,13 +41,13 @@ logger = logging.getLogger(__name__)
 
 def check_ha_requirements() -> bool:
     """Check if Home Assistant runtime dependencies are available."""
-    return bool(AIOHTTP_AVAILABLE)
+    return AIOHTTP_AVAILABLE
 
 
 def validate_ha_config(config: PlatformConfig) -> bool:
-    """Accept either a scoped config token or an env-provided HASS_TOKEN."""
-    token = getattr(config, "token", None) or os.getenv("HASS_TOKEN", "")
-    return bool(str(token or "").strip())
+    """Return True when Home Assistant has enough credential config to connect."""
+    token = (getattr(config, "token", None) or os.getenv("HASS_TOKEN", "")).strip()
+    return bool(token)
 
 
 class HomeAssistantAdapter(BasePlatformAdapter):

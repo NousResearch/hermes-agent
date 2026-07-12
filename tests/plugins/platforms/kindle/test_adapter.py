@@ -281,3 +281,57 @@ async def test_ingest_supports_creative_notebook_intent(
     assert "Do not force it into workpaper, task, or business structure" in text
     assert "Notebook tags: #draft, #story." in text
     assert text.endswith("\n\nTurn this sketch into a strange little opening scene.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "expected_name"),
+    [
+        ("ipados", "iPadOS notebook"),
+        ("android", "Android stylus notebook"),
+        ("boox", "BOOX notebook"),
+    ],
+)
+async def test_ingest_identifies_supported_stylus_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    expected_name: str,
+) -> None:
+    adapter = _adapter(monkeypatch)
+    dispatched = []
+
+    async def accept(event) -> None:
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", accept)
+    payload = {
+        **_payload(chat_id=f"{platform}-1"),
+        "client": {
+            "platform": platform,
+            "stylus": "test-pen",
+            "capabilities": ["pressure", "tilt", "bad capability!"],
+        },
+    }
+    async with _client(adapter) as client:
+        request = asyncio.create_task(
+            client.post("/ingest", json=payload, headers={"X-Notebook-Token": "test-token"})
+        )
+        await _wait_for_pending(adapter, f"{platform}-1")
+        await adapter.send(f"{platform}-1", "ok", metadata={"notify": True})
+        response = await request
+
+    assert response.status == 200
+    assert len(dispatched) == 1
+    assert expected_name in dispatched[0].text
+    assert "stylus=test-pen" in dispatched[0].text
+    assert "capabilities=pressure, tilt" in dispatched[0].text
+    assert dispatched[0].source.chat_name == expected_name
+
+
+def test_notebook_token_env_is_preferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NOTEBOOK_INGEST_TOKEN", "notebook-token")
+    monkeypatch.setenv("KINDLE_INGEST_TOKEN", "legacy-token")
+
+    adapter = KindleAdapter(PlatformConfig(enabled=True, token="", extra={}))
+
+    assert adapter._token == "notebook-token"

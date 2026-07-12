@@ -1,10 +1,10 @@
-# Kindle Scribe platform
+# Hermes Notebook platform
 
-The Kindle platform connects a handwriting-oriented web bridge to the normal
+The Notebook platform connects handwriting-oriented clients to the normal
 Hermes Gateway message pipeline:
 
 ```text
-Kindle browser -> diary/OCR bridge -> authenticated localhost ingest -> Hermes Gateway
+Kindle / iPad / Android / BOOX -> notebook bridge -> authenticated localhost ingest -> Hermes Gateway
 ```
 
 This adapter deliberately does not expose Hermes to the LAN or internet. It
@@ -13,6 +13,20 @@ listens on `127.0.0.1`, authenticates the companion bridge with
 each accepted note into a standard `MessageEvent`. Models, memory, sessions,
 skills, and `platform_toolsets.kindle` then work exactly as they do for other
 messaging platforms.
+
+The registered platform name remains `kindle` for configuration and session
+compatibility. Existing Kindle bridges continue to work unchanged.
+
+## Supported client families
+
+- Kindle Scribe browser clients.
+- iPadOS clients using Apple Pencil.
+- Android tablet clients using a stylus, including Samsung S Pen devices.
+- BOOX Android/e-ink tablets using pen input.
+
+New clients should send `X-Notebook-Token`; `X-Kindle-Token` remains supported.
+Set `NOTEBOOK_INGEST_TOKEN` for a shared notebook secret, or keep the existing
+`KINDLE_INGEST_TOKEN` variable during migration.
 
 ## Companion bridge
 
@@ -80,6 +94,12 @@ $env:KINDLE_REPLY_TIMEOUT = '360'
 The ingest body must include `text`, `user`, and `chat_id`. The companion bridge
 may also send optional metadata that this adapter converts into agent-visible
 context:
+
+- `client`: device metadata such as
+  `{"platform":"ipados","stylus":"apple-pencil","capabilities":["pressure","tilt"]}`.
+  Supported platform values are `kindle`, `ipados`, `android`, and `boox`.
+- `device_platform`, `stylus`, and `capabilities`: flat compatibility fields for
+  simpler clients.
 
 - `intent`: one of `summarize`, `tasks`, `creative`, `email`, or `workpaper`.
 - `tags`: an array or comma-separated list such as `["client", "todo"]`.

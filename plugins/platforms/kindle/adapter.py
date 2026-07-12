@@ -49,6 +49,16 @@ DEFAULT_INGEST_PORT = 8793
 DEFAULT_REPLY_TIMEOUT = 360
 MAX_KINDLE_LENGTH = 8000  # e-ink page; plenty for a notebook reply
 
+NOTEBOOK_CLIENTS = {
+    "kindle": "Kindle Scribe",
+    "scribe": "Kindle Scribe",
+    "ipados": "iPadOS notebook",
+    "ipad": "iPadOS notebook",
+    "ios": "iPadOS notebook",
+    "android": "Android stylus notebook",
+    "boox": "BOOX notebook",
+}
+
 KINDLE_HOST_CONTEXT = (
     "[Kindle host context: This Kindle is a remote interface to Hermes running on the "
     "gateway host. This is a tool-enabled Hermes platform, not a plain local notebook "
@@ -91,6 +101,21 @@ def _clean_tag(value: Any) -> str:
     return tag if all(ch.isalnum() or ch in "-_" for ch in tag) else ""
 
 
+def _notebook_client(body: Dict[str, Any]) -> tuple[str, str]:
+    """Return a stable client family and user-facing notebook name.
+
+    Existing bridges that omit client metadata remain Kindle Scribe. New
+    clients identify themselves with ``client.platform`` (preferred) or the
+    flat ``device_platform`` compatibility field.
+    """
+    client = body.get("client") if isinstance(body.get("client"), dict) else {}
+    raw_platform = client.get("platform") or body.get("device_platform") or "kindle"
+    platform = str(raw_platform).strip().lower()
+    if platform not in NOTEBOOK_CLIENTS:
+        platform = "kindle"
+    return platform, NOTEBOOK_CLIENTS[platform]
+
+
 def _bridge_context(body: Dict[str, Any]) -> str:
     """Convert optional companion-bridge metadata into model-visible context.
 
@@ -100,6 +125,22 @@ def _bridge_context(body: Dict[str, Any]) -> str:
     """
 
     lines: list[str] = []
+    platform, client_name = _notebook_client(body)
+    client = body.get("client") if isinstance(body.get("client"), dict) else {}
+    stylus = str(client.get("stylus") or body.get("stylus") or "").strip()
+    capabilities = client.get("capabilities") or body.get("capabilities") or []
+    if isinstance(capabilities, str):
+        capabilities = [item.strip() for item in capabilities.split(",")]
+    clean_capabilities = [
+        value for value in (_clean_tag(item) for item in capabilities)
+        if value
+    ][:12]
+    device_line = f"Notebook client: {client_name} (platform={platform})"
+    if stylus:
+        device_line += f", stylus={stylus[:64]}"
+    if clean_capabilities:
+        device_line += ", capabilities=" + ", ".join(clean_capabilities)
+    lines.append(device_line + ".")
     intent = str(body.get("intent") or "").strip().lower()
     if intent in KINDLE_INTENTS:
         lines.append(f"Intent: {intent}. {KINDLE_INTENTS[intent]}")
@@ -170,7 +211,9 @@ class KindleAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=platform)
         self._host: str = os.getenv("KINDLE_INGEST_HOST", DEFAULT_INGEST_HOST)
         self._port: int = int(os.getenv("KINDLE_INGEST_PORT", str(DEFAULT_INGEST_PORT)))
-        self._token: str = os.getenv("KINDLE_INGEST_TOKEN", "").strip()
+        self._token: str = (
+            os.getenv("NOTEBOOK_INGEST_TOKEN") or os.getenv("KINDLE_INGEST_TOKEN", "")
+        ).strip()
         self._insecure: bool = os.getenv("KINDLE_INSECURE", "").lower() == "true"
         self._reply_timeout: float = float(
             os.getenv("KINDLE_REPLY_TIMEOUT", str(DEFAULT_REPLY_TIMEOUT))
@@ -258,7 +301,10 @@ class KindleAdapter(BasePlatformAdapter):
         from aiohttp import web
 
         if not self._insecure:
-            if request.headers.get("X-Kindle-Token", "") != self._token:
+            supplied_token = request.headers.get("X-Notebook-Token", "") or request.headers.get(
+                "X-Kindle-Token", ""
+            )
+            if supplied_token != self._token:
                 return web.json_response({"error": "unauthorized"}, status=401)
 
         try:
@@ -291,9 +337,10 @@ class KindleAdapter(BasePlatformAdapter):
                 status=409,
             )
 
+        _platform, client_name = _notebook_client(body)
         source = self.build_source(
             chat_id=chat_id,
-            chat_name="Kindle Scribe",
+            chat_name=client_name,
             chat_type="dm",
             user_id=user_id,
             user_name=user_id,

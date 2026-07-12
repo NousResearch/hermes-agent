@@ -1,15 +1,19 @@
 name: kindle-platform
-label: Kindle Scribe
+label: Notebook (Kindle, iPad, Android, BOOX)
 kind: platform
-version: 1.0.0
+version: 1.1.0
 description: >
-  Kindle Scribe gateway adapter for Hermes Agent. Bridges the handwriting
-  notebook (the diary bridge) into the gateway as a platform, so handwritten
+  Stylus notebook gateway adapter for Hermes Agent. Bridges Kindle Scribe,
+  iPadOS, Android tablet, and BOOX notebook clients into the gateway, so handwritten
   notes reach the full agent (MoA + tools + memory) — like the Telegram/Discord
   bots. The adapter runs a localhost ingest server the diary POSTs to; the
   agent's reply is returned to the Kindle.
 author: Nous Research
 optional_env:
+  - name: NOTEBOOK_INGEST_TOKEN
+    description: "Shared secret for all notebook clients (preferred over KINDLE_INGEST_TOKEN)"
+    prompt: "Notebook ingest token"
+    password: true
   - name: KINDLE_INGEST_TOKEN
     description: "Shared secret the diary bridge must present (unless KINDLE_INSECURE)"
     prompt: "Kindle ingest token"

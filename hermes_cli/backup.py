@@ -807,9 +807,20 @@ def create_quick_snapshot(
     root = _quick_snapshot_root(home)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    snap_id = f"{ts}-{label}" if label else ts
-    snap_dir = root / snap_id
-    snap_dir.mkdir(parents=True, exist_ok=True)
+    base_id = f"{ts}-{label}" if label else ts
+    snap_id = base_id
+    counter = 1
+    while True:
+        snap_dir = root / snap_id
+        try:
+            # Snapshot IDs have second-level precision. Reserve the directory
+            # atomically so repeated or concurrent calls cannot overwrite an
+            # earlier snapshot created during the same second.
+            snap_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            snap_id = f"{base_id}-{counter}"
+            counter += 1
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
 

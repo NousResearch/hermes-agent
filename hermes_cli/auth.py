@@ -232,6 +232,34 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "claude-acp": ProviderConfig(
+        id="claude-acp",
+        name="Claude Code ACP",
+        auth_type="external_process",
+        inference_base_url="acp://claude",
+        base_url_env_var="CLAUDE_ACP_BASE_URL",
+    ),
+    "codex-acp": ProviderConfig(
+        id="codex-acp",
+        name="Codex CLI ACP",
+        auth_type="external_process",
+        inference_base_url="acp://codex",
+        base_url_env_var="CODEX_ACP_BASE_URL",
+    ),
+    "gemini-acp": ProviderConfig(
+        id="gemini-acp",
+        name="Gemini CLI ACP",
+        auth_type="external_process",
+        inference_base_url="acp://gemini",
+        base_url_env_var="GEMINI_ACP_BASE_URL",
+    ),
+    "qwen-acp": ProviderConfig(
+        id="qwen-acp",
+        name="Qwen Code ACP",
+        auth_type="external_process",
+        inference_base_url="acp://qwen",
+        base_url_env_var="QWEN_ACP_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -6423,7 +6451,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    _target_pconfig = PROVIDER_REGISTRY.get(target)
+    if _target_pconfig and _target_pconfig.auth_type == "external_process":
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -6606,25 +6635,30 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
+    from agent.acp_agent_registry import agent_install_hint, resolve_agent_launch
+    from agent.acp_client import extract_agent_from_url
+
+    agent_name = (
+        extract_agent_from_url(base_url)
+        or provider_id.removesuffix("-acp")
     )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    try:
+        command, args = resolve_agent_launch(agent_name)
+    except ValueError as exc:
+        raise AuthError(str(exc), provider=provider_id, code="unknown_acp_agent")
+
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the ACP command '{command}' for agent "
+            f"'{agent_name}'. {agent_install_hint(agent_name)}",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_acp_command",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": f"{agent_name}-acp",
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

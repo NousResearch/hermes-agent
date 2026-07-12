@@ -1879,10 +1879,11 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "copilot-acp":
+    _ext_pconfig = PROVIDER_REGISTRY.get(provider)
+    if _ext_pconfig and _ext_pconfig.auth_type == "external_process":
         creds = resolve_external_process_provider_credentials(provider)
         return {
-            "provider": "copilot-acp",
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

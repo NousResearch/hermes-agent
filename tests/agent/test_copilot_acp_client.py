@@ -209,11 +209,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             target = home / ".ssh" / "id_rsa"
             target.parent.mkdir(parents=True, exist_ok=True)
 
-            with patch(
-                "agent.copilot_acp_client.get_write_denied_error",
-                return_value="Write denied: protected",
-                create=True,
-            ):
+            with patch("agent.acp_client.is_write_denied", return_value=True, create=True):
                 response = self._dispatch(
                     {
                         "jsonrpc": "2.0",
@@ -252,7 +248,6 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
                 )
 
         self.assertIn("error", response)
-        self.assertIn("HERMES_WRITE_SAFE_ROOT", str(response["error"]))
         self.assertFalse(outside.exists())
 
 
@@ -296,8 +291,8 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     captured = {}
     client = _make_home_client(tmp_path)
 
-    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
-        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+    with _patch("agent.acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start GitHub Copilot ACP command"):
             client._run_prompt("hello", timeout_seconds=1)
 
     assert captured["kwargs"]["env"]["HOME"] == str(real_home)
@@ -311,8 +306,8 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
     captured = {}
     client = _make_home_client(tmp_path)
 
-    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
-        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+    with _patch("agent.acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start GitHub Copilot ACP command"):
             client._run_prompt("hello", timeout_seconds=1)
 
     assert "env" in captured["kwargs"]

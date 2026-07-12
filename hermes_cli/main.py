@@ -4869,6 +4869,51 @@ def _run_npm_install_deterministic(
 
 
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+    """Build the web UI frontend if npm is available, serializing across processes.
+
+    Concurrent dashboard boots (e.g. the desktop app's retry loop after a
+    readiness timeout) used to each spawn their own ``npm install`` +
+    ``vite build`` over the same tree; the parallel builds starved each
+    other, none finished, the dist sentinel never advanced, and every new
+    boot re-triggered the build. One process builds under an exclusive
+    flock; the rest serve the existing dist (stale is acceptable) or, when
+    no dist exists yet, block until the builder finishes.
+    """
+    if not (web_dir / "package.json").exists():
+        return True
+    if not _web_ui_build_needed(web_dir):
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        # Windows: no flock — fall through to the unserialized build.
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    dist_index = project_root / "hermes_cli" / "web_dist" / "index.html"
+    try:
+        lock_file = open(project_root / ".web_ui_build.lock", "a")
+    except OSError:
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    try:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if dist_index.exists():
+                # Another process is already building — serve the current
+                # dist instead of piling a second build onto the same tree.
+                return True
+            # No dist at all (first-ever build): wait for the builder.
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        # Re-check under the lock: the previous holder may have finished
+        # the build while this process was waiting or racing for it.
+        if not _web_ui_build_needed(web_dir):
+            return True
+        return _do_build_web_ui(web_dir, fatal=fatal)
+    finally:
+        lock_file.close()
+
+
+def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
     Args:

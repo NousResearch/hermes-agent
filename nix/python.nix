@@ -1,12 +1,13 @@
 # nix/python.nix — uv2nix virtual environment builder
 {
-  python311,
+  python312,
   lib,
   callPackage,
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
   stdenv,
+  dependency-groups ? [ "all" ],
 }:
 let
   workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./..; };
@@ -26,7 +27,8 @@ let
     dependency-groups = { };
   };
 
-  mkPrebuiltOverride = final: from: dependencies:
+  mkPrebuiltOverride =
+    final: from: dependencies:
     hacks.nixpkgsPrebuilt {
       inherit from;
       prev = {
@@ -35,49 +37,102 @@ let
       };
     };
 
-  pythonPackageOverrides = final: _prev:
-    if isAarch64Darwin then {
-      numpy = mkPrebuiltOverride final python311.pkgs.numpy { };
+  # Legacy alibabacloud packages ship only sdists with setup.py/setup.cfg
+  # and no pyproject.toml, so setuptools isn't declared as a build dep.
+  buildSystemOverrides =
+    final: prev:
+    builtins.mapAttrs
+      (
+        name: _:
+        prev.${name}.overrideAttrs (old: {
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ final.setuptools ];
+        })
+      )
+      (
+        lib.genAttrs [
+          "alibabacloud-credentials-api"
+          "alibabacloud-endpoint-util"
+          "alibabacloud-gateway-dingtalk"
+          "alibabacloud-gateway-spi"
+          "alibabacloud-tea"
+        ] (_: null)
+      );
 
-      av = mkPrebuiltOverride final python311.pkgs.av { };
+  pythonPackageOverrides =
+    final: _prev:
+    if isAarch64Darwin then
+      {
+        numpy = mkPrebuiltOverride final python312.pkgs.numpy { };
 
-      humanfriendly = mkPrebuiltOverride final python311.pkgs.humanfriendly { };
+        pyarrow = mkPrebuiltOverride final python312.pkgs.pyarrow { };
 
-      coloredlogs = mkPrebuiltOverride final python311.pkgs.coloredlogs {
-        humanfriendly = [ ];
-      };
+        av = mkPrebuiltOverride final python312.pkgs.av { };
 
-      onnxruntime = mkPrebuiltOverride final python311.pkgs.onnxruntime {
-        coloredlogs = [ ];
-        numpy = [ ];
-        packaging = [ ];
-      };
+        humanfriendly = mkPrebuiltOverride final python312.pkgs.humanfriendly { };
 
-      ctranslate2 = mkPrebuiltOverride final python311.pkgs.ctranslate2 {
-        numpy = [ ];
-        pyyaml = [ ];
-      };
+        coloredlogs = mkPrebuiltOverride final python312.pkgs.coloredlogs {
+          humanfriendly = [ ];
+        };
 
-      faster-whisper = mkPrebuiltOverride final python311.pkgs.faster-whisper {
-        av = [ ];
-        ctranslate2 = [ ];
-        huggingface-hub = [ ];
-        onnxruntime = [ ];
-        tokenizers = [ ];
-        tqdm = [ ];
-      };
-    } else {};
+        onnxruntime = mkPrebuiltOverride final python312.pkgs.onnxruntime {
+          coloredlogs = [ ];
+          numpy = [ ];
+          packaging = [ ];
+        };
+
+        ctranslate2 = mkPrebuiltOverride final python312.pkgs.ctranslate2 {
+          numpy = [ ];
+          pyyaml = [ ];
+        };
+
+        faster-whisper = mkPrebuiltOverride final python312.pkgs.faster-whisper {
+          av = [ ];
+          ctranslate2 = [ ];
+          huggingface-hub = [ ];
+          onnxruntime = [ ];
+          tokenizers = [ ];
+          tqdm = [ ];
+        };
+      }
+    else
+      { };
 
   pythonSet =
     (callPackage pyproject-nix.build.packages {
-      python = python311;
+      python = python312;
     }).overrideScope
-      (lib.composeManyExtensions [
-        pyproject-build-systems.overlays.default
-        overlay
-        pythonPackageOverrides
-      ]);
+      (
+        lib.composeManyExtensions [
+          pyproject-build-systems.overlays.default
+          overlay
+          buildSystemOverrides
+          pythonPackageOverrides
+        ]
+      );
+
+  editableOverlay = workspace.mkEditablePyprojectOverlay {
+    root = "$HERMES_PYTHON_SRC_ROOT"; # resolved at shellHook time
+  };
+
+  workspaceRoot = ./..;
+  editableSet = pythonSet.overrideScope (
+    lib.composeManyExtensions [
+      editableOverlay
+      (final: prev: {
+        hermes-agent = prev.hermes-agent.overrideAttrs (old: {
+          # point straight at the real source instead of the filtered nix store copy
+          src = workspaceRoot;
+          nativeBuildInputs = old.nativeBuildInputs ++ final.resolveBuildSystem { editables = [ ]; };
+        });
+      })
+    ]
+  );
 in
-pythonSet.mkVirtualEnv "hermes-agent-env" {
-  hermes-agent = [ "all" ];
+{
+  venv = pythonSet.mkVirtualEnv "hermes-agent-env" {
+    hermes-agent = dependency-groups;
+  };
+  editableVenv = editableSet.mkVirtualEnv "hermes-agent-editable-env" {
+    hermes-agent = dependency-groups;
+  };
 }

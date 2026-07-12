@@ -2,8 +2,7 @@
 
 import argparse
 import os
-from pathlib import Path
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 import pytest
 
@@ -39,8 +38,6 @@ class TestExplicitAllowlist:
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        "WANDB_API_KEY",
-        "TINKER_API_KEY",
         "HONCHO_API_KEY",
         "FIRECRAWL_API_KEY",
         "BROWSERBASE_API_KEY",
@@ -165,3 +162,142 @@ class TestFalsyValues:
         config_command(args)
         config = _read_config(_isolated_hermes_home)
         assert "model" in config
+
+
+# ---------------------------------------------------------------------------
+# List navigation — regression tests for #17876
+# ---------------------------------------------------------------------------
+
+class TestListNavigation:
+    """hermes config set must preserve YAML list fields when using numeric
+    indices.  Before #17876, _set_nested would silently replace the entire
+    list with a dict, destroying every sibling entry.
+    """
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_indexed_set_preserves_sibling_list_entries(self, _isolated_hermes_home):
+        """Setting custom_providers.0.api_key must not destroy entry 1."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+            "  api_key: old-a\n"
+            "  base_url: https://a.example.com\n"
+            "- name: provider-b\n"
+            "  api_key: old-b\n"
+            "  base_url: https://b.example.com\n"
+        ))
+
+        set_config_value("custom_providers.0.api_key", "new-a")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        # The list must still be a list
+        assert isinstance(reloaded["custom_providers"], list)
+        assert len(reloaded["custom_providers"]) == 2
+        # Entry 0 was updated
+        assert reloaded["custom_providers"][0]["api_key"] == "new-a"
+        assert reloaded["custom_providers"][0]["name"] == "provider-a"
+        assert reloaded["custom_providers"][0]["base_url"] == "https://a.example.com"
+        # Entry 1 is untouched
+        assert reloaded["custom_providers"][1]["name"] == "provider-b"
+        assert reloaded["custom_providers"][1]["api_key"] == "old-b"
+        assert reloaded["custom_providers"][1]["base_url"] == "https://b.example.com"
+
+    def test_indexed_set_preserves_non_targeted_fields(self, _isolated_hermes_home):
+        """Setting one field in a list entry must not drop other fields."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+            "  api_key: old\n"
+            "  base_url: https://a.example.com\n"
+            "  models:\n"
+            "    foo: {}\n"
+            "    bar: {}\n"
+        ))
+
+        set_config_value("custom_providers.0.api_key", "rotated")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        entry = reloaded["custom_providers"][0]
+        assert entry["api_key"] == "rotated"
+        assert entry["name"] == "provider-a"
+        assert entry["base_url"] == "https://a.example.com"
+        assert set(entry["models"].keys()) == {"foo", "bar"}
+
+    def test_deeper_nesting_through_list(self, _isolated_hermes_home):
+        """Navigation path mixing dict → list → dict → scalar."""
+        self._write_config(_isolated_hermes_home, (
+            "platforms:\n"
+            "  telegram:\n"
+            "    allowlist:\n"
+            "    - name: alice\n"
+            "      role: admin\n"
+            "    - name: bob\n"
+            "      role: user\n"
+        ))
+
+        set_config_value("platforms.telegram.allowlist.1.role", "admin")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        allowlist = reloaded["platforms"]["telegram"]["allowlist"]
+        assert isinstance(allowlist, list)
+        assert allowlist[0] == {"name": "alice", "role": "admin"}
+        assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction in display output (issue #50245)
+# ---------------------------------------------------------------------------
+
+class TestSecretRedactionInDisplay:
+    """`config set`/`config show` must not echo credential values in plaintext."""
+
+    def test_redact_config_value_masks_nested_api_key(self):
+        from hermes_cli.config import redact_config_value
+        secret = "cfut_SUPERSECRETTOKEN1234567890abcdef"
+        model = {"default": "@cf/foo", "provider": "custom", "api_key": secret}
+
+        out = redact_config_value(model)
+
+        assert out["api_key"] != secret
+        assert secret not in str(out)
+        # Non-secret fields pass through unchanged.
+        assert out["default"] == "@cf/foo"
+        assert out["provider"] == "custom"
+
+    def test_redact_config_value_walks_lists(self):
+        from hermes_cli.config import redact_config_value
+        secret = "sk-deadbeefdeadbeefdeadbeef"
+        cfg = {"custom_providers": [{"name": "p", "api_key": secret}]}
+
+        out = redact_config_value(cfg)
+
+        assert secret not in str(out)
+        assert out["custom_providers"][0]["name"] == "p"
+
+    def test_redact_config_value_ignores_benign_keys(self):
+        from hermes_cli.config import redact_config_value
+        cfg = {"token_count": 1234, "secret_santa": "alice", "max_turns": 90}
+
+        out = redact_config_value(cfg)
+
+        # Exact-match only — substrings like token_count must NOT be masked.
+        assert out == cfg
+
+    def test_set_echo_masks_secret_value(self, _isolated_hermes_home, capsys):
+        secret = "cfut_ANOTHERSECRET0987654321zyxwvu"
+        set_config_value("model.api_key", secret)
+
+        captured = capsys.readouterr()
+        assert secret not in captured.out
+        assert "Set model.api_key" in captured.out
+
+    def test_set_echo_keeps_nonsecret_value(self, _isolated_hermes_home, capsys):
+        set_config_value("model.reasoning_effort", "high")
+
+        captured = capsys.readouterr()
+        assert "Set model.reasoning_effort = high" in captured.out

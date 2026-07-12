@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from utils import base_url_host_matches
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
+_NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
@@ -41,6 +44,25 @@ class CanonicalUsage:
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
+
+    def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
+        """Sum two usage buckets (e.g. MoA advisor fan-out + aggregator).
+
+        ``raw_usage`` is dropped on the sum — it describes a single API
+        response and cannot be meaningfully merged. ``request_count`` adds so
+        callers can see how many underlying API calls a combined figure covers.
+        """
+        if not isinstance(other, CanonicalUsage):
+            return NotImplemented
+        return CanonicalUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            request_count=self.request_count + other.request_count,
+            raw_usage=None,
+        )
 
 
 @dataclass(frozen=True)
@@ -81,6 +103,197 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    # ── OpenAI GPT-5.6 series (Sol/Terra/Luna) ───────────────────────────
+    # Announced in limited preview 2026-06-26; GA 2026-07-09 at the same
+    # rates (Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M in/out). Cache
+    # writes are billed at 1.25x the uncached input rate; cache reads get the
+    # standard 90% discount (0.10x input, confirmed: Sol $0.50/M cached).
+    # Note: "Sol Fast mode" ($12.5/$75, up to 750 tok/s via Cerebras) is a
+    # separate serving tier, not covered by these entries. The "-pro"
+    # variants (high-effort modes, GA alongside base tiers) bill at the
+    # SAME per-token rates and are aliased onto these entries below the
+    # dict (they cost more per task by consuming more tokens, not by a
+    # higher rate — verified against OpenRouter's live pricing 2026-07-09).
+    # Source: https://openai.com/index/previewing-gpt-5-6-sol/
+    (
+        "openai",
+        "gpt-5.6-sol",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("30.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    (
+        "openai",
+        "gpt-5.6-terra",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        cache_write_cost_per_million=Decimal("3.125"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    (
+        "openai",
+        "gpt-5.6-luna",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("6.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
+        pricing_version="openai-gpt-5.6-2026-07",
+    ),
+    # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
+    # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
+    # model ID with 2x premium (vs the 6x premium on older Opus generations).
+    # Source: https://openrouter.ai/anthropic/claude-opus-4.8
+    (
+        "anthropic",
+        "claude-opus-4-8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-8-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("10.00"),
+        output_cost_per_million=Decimal("50.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        cache_write_cost_per_million=Decimal("12.50"),
+        source="official_docs_snapshot",
+        source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
+    # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
+    # tokens for the same text).
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-7-20250507",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.6 ─────────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-opus-4-6-20250414",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-6-20250414",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4.5 ─────────────────────────────────────────────
+    (
+        "anthropic",
+        "claude-opus-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    (
+        "anthropic",
+        "claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("5.00"),
+        cache_read_cost_per_million=Decimal("0.10"),
+        cache_write_cost_per_million=Decimal("1.25"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
+    ),
+    # ── Anthropic Claude 4 / 4.1 ─────────────────────────────────────────
     (
         "anthropic",
         "claude-opus-4-20250514",
@@ -90,8 +303,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("1.50"),
         cache_write_cost_per_million=Decimal("18.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -102,8 +315,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-prompt-caching-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     # OpenAI
     (
@@ -183,7 +396,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
-    # Anthropic older models (pre-4.6 generation)
+    # ── Anthropic older models (pre-4.5 generation) ────────────────────────
     (
         "anthropic",
         "claude-3-5-sonnet-20241022",
@@ -193,8 +406,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.30"),
         cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -205,8 +418,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.08"),
         cache_write_cost_per_million=Decimal("1.00"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -217,8 +430,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("1.50"),
         cache_write_cost_per_million=Decimal("18.75"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     (
         "anthropic",
@@ -229,8 +442,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.03"),
         cache_write_cost_per_million=Decimal("0.30"),
         source="official_docs_snapshot",
-        source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
-        pricing_version="anthropic-pricing-2026-03-16",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-05",
     ),
     # DeepSeek
     (
@@ -252,6 +465,17 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-03-16",
+    ),
+    (
+        "deepseek",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.74"),
+        output_cost_per_million=Decimal("3.48"),
+        cache_read_cost_per_million=Decimal("0.0145"),
+        source="official_docs_snapshot",
+        source_url="https://api-docs.deepseek.com/quick_start/pricing",
+        pricing_version="deepseek-pricing-2026-05-12",
     ),
     # Google Gemini
     (
@@ -284,7 +508,117 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-03-16",
     ),
+    # AWS Bedrock — pricing per the Bedrock pricing page.
+    # Bedrock charges the same per-token rates as the model provider but
+    # through AWS billing.  These are the on-demand prices (no commitment).
+    # Source: https://aws.amazon.com/bedrock/pricing/
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("15.00"),
+        output_cost_per_million=Decimal("75.00"),
+        cache_read_cost_per_million=Decimal("1.50"),
+        cache_write_cost_per_million=Decimal("18.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-haiku-4-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        cache_write_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.80"),
+        output_cost_per_million=Decimal("3.20"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.06"),
+        output_cost_per_million=Decimal("0.24"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    (
+        "bedrock",
+        "amazon.nova-micro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.035"),
+        output_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-04",
+    ),
+    # MiniMax
+    (
+        "minimax",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        pricing_version="minimax-pricing-2026-04",
+    ),
 }
+
+# GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
+# their base tiers (more tokens per task, not a higher rate). Alias them
+# onto the base entries so the snapshot stays single-source.
+for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-pro")] = _OFFICIAL_DOCS_PRICING[
+        ("openai", _base_56)
+    ]
+del _base_56
 
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
@@ -319,19 +653,89 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
-    if provider_name == "openrouter" or "openrouter.ai" in base:
+    if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
+    if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
+        return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name == "openai":
+    # "openai-api" is the picker/registry slug for direct api.openai.com; it
+    # bills identically to bare "openai", so normalize it here — otherwise the
+    # ("openai", <model>) _OFFICIAL_DOCS_PRICING keys are unreachable from the
+    # openai-api provider path.
+    if provider_name in {"openai", "openai-api"}:
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"minimax", "minimax-cn"}:
+        return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Vertex AI hosts the same Gemini models as Google AI Studio; price them
+    # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
+    # the OpenAI-compat endpoint requires so the pricing key matches.
+    if provider_name == "vertex" or base_url_host_matches(base_url or "", "aiplatform.googleapis.com"):
+        return BillingRoute(provider="gemini", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 
 
+def _normalize_bedrock_model_name(model: str) -> str:
+    """Normalize a Bedrock model id to its bare foundation-model form.
+
+    Bedrock cross-region inference profiles prefix the foundation model id
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``ap.`` / ``jp.``),
+    e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
+    bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
+    lookup or every cross-region session prices as unknown.  Mirrors the
+    prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
+    normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+    """
+    name = model.lower().strip()
+    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    return name
+
+
+def _normalize_anthropic_model_name(model: str) -> str:
+    """Normalize Anthropic model name variants to canonical form.
+
+    Handles:
+      - Dot notation: claude-opus-4.7 → claude-opus-4-7
+      - Short aliases: claude-opus-4.7 → claude-opus-4-7
+      - Strips anthropic/ prefix if present
+    """
+    name = model.lower().strip()
+    if name.startswith("anthropic/"):
+        name = name[len("anthropic/"):]
+    # Normalize dots to dashes in version numbers (e.g. 4.7 → 4-7, 4.6 → 4-6)
+    # But preserve the rest of the name structure
+    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    return name
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, route.model.lower()))
+    model = route.model.lower()
+    # Direct lookup first
+    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
+    if entry:
+        return entry
+    # Try normalized name for Anthropic (handles dot-notation like opus-4.7)
+    if route.provider == "anthropic":
+        normalized = _normalize_anthropic_model_name(model)
+        if normalized != model:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+    # Bedrock cross-region inference profiles carry a region prefix
+    # (us./global./eu./...) that the bare pricing keys don't have.
+    if route.provider == "bedrock":
+        normalized = _normalize_bedrock_model_name(model)
+        if normalized != model:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+    return None
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
@@ -458,16 +862,41 @@ def normalize_usage(
         prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
         details = getattr(response_usage, "prompt_tokens_details", None)
+        # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
+        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)
+        # expose when routing Claude models — without this
+        # fallback, cache writes are undercounted as 0 and cache reads can be
+        # missed when the proxy only surfaces them at the top level.
+        # Port of cline/cline#10266.
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        if not cache_read_tokens:
+            cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )
+        if not cache_write_tokens:
+            cache_write_tokens = _to_int(
+                getattr(response_usage, "cache_creation_input_tokens", 0)
+            )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
+    # Responses API shape: output_tokens_details.reasoning_tokens.
+    # Chat Completions shape (OpenAI, OpenRouter, DeepSeek, etc.):
+    # completion_tokens_details.reasoning_tokens. Reading only the former
+    # left reasoning_tokens=0 for every chat_completions reasoning model —
+    # hidden thinking was invisible in session accounting even though it
+    # dominates output spend on models like deepseek-v4-flash (measured:
+    # single calls burning 21K reasoning tokens to emit 500 visible tokens).
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    if not reasoning_tokens:
+        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        if completion_details:
+            reasoning_tokens = _to_int(
+                getattr(completion_details, "reasoning_tokens", 0)
+            )
 
     return CanonicalUsage(
         input_tokens=input_tokens,
@@ -574,25 +1003,6 @@ def has_known_pricing(
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     return entry is not None
 
-
-def get_pricing(
-    model_name: str,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> Dict[str, float]:
-    """Backward-compatible thin wrapper for legacy callers.
-
-    Returns only non-cache input/output fields when a pricing entry exists.
-    Unknown routes return zeroes.
-    """
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
-    if not entry:
-        return {"input": 0.0, "output": 0.0}
-    return {
-        "input": float(entry.input_cost_per_million or _ZERO),
-        "output": float(entry.output_cost_per_million or _ZERO),
-    }
 
 
 def format_duration_compact(seconds: float) -> str:

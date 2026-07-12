@@ -23,8 +23,15 @@ def _make_compressor():
     compressor.compression_count = 0
     compressor.last_prompt_tokens = 0
     compressor._previous_summary = None
+    compressor._ineffective_compression_count = 0
+    compressor._verify_compaction_cleared_threshold = False
     compressor._summary_failure_cooldown_until = 0.0
     compressor.summary_model = None
+    compressor.model = "test-model"
+    compressor.provider = "test"
+    compressor.base_url = "http://localhost"
+    compressor.api_key = "test-key"
+    compressor.api_mode = "chat_completions"
     return compressor
 
 
@@ -111,7 +118,7 @@ def test_compress_passes_focus_to_generate_summary():
 
 
 def test_compress_none_focus_by_default():
-    """compress() passes None focus_topic by default."""
+    """Auto compression derives focus_topic from recent user turns by default."""
     compressor = _make_compressor()
 
     received_kwargs = {}
@@ -136,4 +143,32 @@ def test_compress_none_focus_by_default():
 
     compressor.compress(messages, current_tokens=100000)
 
-    assert received_kwargs.get("focus_topic") is None
+    focus_topic = received_kwargs.get("focus_topic")
+    assert focus_topic.startswith("Recent user focus:")
+    assert "- second" in focus_topic
+    assert "- third" in focus_topic
+    assert "- fourth" in focus_topic
+
+
+def test_auto_focus_skips_context_summary_handoff():
+    """Persisted handoff messages should not become the inferred focus."""
+    compressor = _make_compressor()
+    messages = [
+        {"role": "system", "content": "System prompt"},
+        {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY] stale Bybit topic",
+        },
+        {"role": "assistant", "content": "handoff acknowledged"},
+        {"role": "user", "content": "Can OpenViking support sqlite backends?"},
+        {"role": "assistant", "content": "Let's inspect that."},
+        {"role": "user", "content": "Compare OpenViking postgres and sqlite options."},
+        {"role": "assistant", "content": "Working on it."},
+        {"role": "user", "content": "Now focus on OpenViking database support."},
+        {"role": "assistant", "content": "Latest tail response"},
+    ]
+
+    focus_topic = compressor._derive_auto_focus_topic(messages)
+
+    assert "OpenViking" in focus_topic
+    assert "Bybit" not in focus_topic

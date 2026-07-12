@@ -7067,8 +7067,8 @@ _SECURITY_COMMENT = """
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
 # mcp_stdio_command_allowlist_enabled is opt-in (default false): once on,
 # MCP stdio servers must launch through npx/uvx/python/python3/node/docker/
-# deno, or the connection is refused. Also settable via
-# HERMES_MCP_STDIO_COMMAND_ALLOWLIST_ENABLED.
+# deno, or the connection is refused. Config-only (no env var override) —
+# this is behavioral config, not a secret.
 #
 # security:
 #   redact_secrets: true

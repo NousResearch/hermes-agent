@@ -20,8 +20,9 @@ name: demo-bundle
 description: A multi-file test skill.
 ---
 # Demo
-Read [the guide](references/guide.md), use `templates/report.md`, and run
-`scripts/run.py`. The repository also contains assets/logo.txt.
+Read [the guide](references/guide.md#usage), use `templates/report.md?raw=1`, and run
+`scripts/run.py`. See `examples/endpoint-inventory.md`. The repository also
+contains assets/logo.png.
 """
 
 
@@ -35,17 +36,21 @@ def served_repo(tmp_path):
     repo = tmp_path / "upstream"
     repo.mkdir()
     (repo / "SKILL.md").write_text(SKILL_MD)
-    for rel, text in {
+    for rel, content in {
         "references/guide.md": "safe guide\n",
         "templates/report.md": "report\n",
         "scripts/run.py": "print('ok')\n",
-        "assets/logo.txt": "logo\n",
+        "assets/logo.png": b"\x89PNG\r\n\x1a\n\x00\xff",
+        "examples/endpoint-inventory.md": "example\n",
         "examples/not-installed.md": "must not be copied\n",
         "README.md": "must not be copied\n",
     }.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(
@@ -79,8 +84,11 @@ def test_url_source_fetches_only_referenced_allowed_support_directories(served_r
         "references/guide.md",
         "templates/report.md",
         "scripts/run.py",
-        "assets/logo.txt",
+        "assets/logo.png",
+        "examples/endpoint-inventory.md",
     }
+    assert bundle.files["assets/logo.png"] == b"\x89PNG\r\n\x1a\n\x00\xff"
+    assert "examples/not-installed.md" not in bundle.files
     assert bundle.metadata["source_url"] == url
 
 
@@ -104,6 +112,40 @@ def test_github_source_rejects_symlink_in_referenced_directory(monkeypatch):
     )
 
     assert source.fetch("owner/repo/skill") is None
+
+
+def test_github_source_fetches_only_exact_references_and_records_tree_revision(monkeypatch):
+    source = GitHubSource(GitHubAuth())
+    skill = "---\nname: demo\ndescription: demo\n---\n[guide](references/guide.md)\n"
+    fetched = []
+    monkeypatch.setattr(
+        source,
+        "_fetch_file_content",
+        lambda _repo, path: skill if path.endswith("SKILL.md") else None,
+    )
+
+    def _fetch_bytes(_repo, path):
+        fetched.append(path)
+        return b"guide"
+
+    monkeypatch.setattr(source, "_fetch_file_bytes", _fetch_bytes, raising=False)
+    source._tree_cache["owner/repo"] = (
+        "develop",
+        [
+            {"path": "skill/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/references/guide.md", "type": "blob", "mode": "100644"},
+            {"path": "skill/references/unreferenced.md", "type": "blob", "mode": "100644"},
+        ],
+    )
+    source._tree_revisions = {"owner/repo": "deadbeef"}
+
+    bundle = source.fetch("owner/repo/skill")
+
+    assert bundle is not None
+    assert fetched == ["skill/references/guide.md"]
+    assert bundle.files["references/guide.md"] == b"guide"
+    assert bundle.metadata["source_url"] == "https://github.com/owner/repo/tree/deadbeef/skill"
+    assert bundle.metadata["source_revision"] == "deadbeef"
 
 
 def test_scan_cache_records_full_provenance_and_hash_change_forces_rescan(tmp_path):
@@ -135,6 +177,24 @@ def test_scan_cache_records_full_provenance_and_hash_change_forces_rescan(tmp_pa
     assert isinstance(first_provenance["findings"], list)
     assert isinstance(first_provenance["rules"], list)
     assert first_provenance["scanned_at"]
+
+
+def test_scan_cache_never_reuses_provenance_across_sources(tmp_path):
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: skill\ndescription: test\n---\n")
+    cache = tmp_path / "scan-cache"
+
+    _first, first = scan_skill_cached(
+        skill, source="community", source_url="https://one.example/SKILL.md", cache_dir=cache
+    )
+    _second, second = scan_skill_cached(
+        skill, source="community", source_url="https://two.example/SKILL.md", cache_dir=cache
+    )
+
+    assert first["fresh"] is True
+    assert second["fresh"] is True
+    assert second["source_url"] == "https://two.example/SKILL.md"
 
 
 def test_lock_file_persists_scan_provenance(tmp_path):
@@ -175,8 +235,9 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     assert (installed / "references" / "guide.md").read_text() == "safe guide\n"
     assert (installed / "templates" / "report.md").is_file()
     assert (installed / "scripts" / "run.py").is_file()
-    assert (installed / "assets" / "logo.txt").is_file()
-    assert not (installed / "examples").exists()
+    assert (installed / "examples" / "endpoint-inventory.md").is_file()
+    assert not (installed / "examples" / "not-installed.md").exists()
+    assert (installed / "assets" / "logo.png").read_bytes() == b"\x89PNG\r\n\x1a\n\x00\xff"
     entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["demo-bundle"]
     assert entry["scan_provenance"]["source_url"] == url
     assert entry["scan_provenance"]["fresh"] is True

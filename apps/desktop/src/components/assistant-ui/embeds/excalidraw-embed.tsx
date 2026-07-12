@@ -11,18 +11,13 @@ import { cn } from '@/lib/utils'
 import type { RichFenceProps } from './types'
 import { useIsDark } from './use-is-dark'
 
-// Re-parses a fenced code block that should hold Excalidraw JSON. The block
-// may arrive as a bare JSON object or wrapped in ```excalidraw fences; the
-// preprocessor strips the fences, so we deal with the inner JSON here.
 function parseExcalidraw(code: string): {
-  appState?: Record<string, unknown>
   elements?: unknown[]
+  appState?: Record<string, unknown>
   files?: Record<string, unknown>
 } | null {
   const trimmed = code.trim()
-  if (!trimmed) {
-    return null
-  }
+  if (!trimmed) return null
   try {
     const parsed = JSON.parse(trimmed)
     if (parsed && typeof parsed === 'object' && Array.isArray(parsed.elements)) {
@@ -47,20 +42,16 @@ function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
   )
 }
 
-// Lazy chunk (pulls in @excalidraw/excalidraw). Renders ```excalidraw
-// fences as a static SVG (exportToSvg) — read-only preview, reuse the same
-// pan/zoom + copy-as-PNG affordance as mermaid. Shows the source while the
-// message streams (partial JSON throws) and falls back to source on parse/export
-// failure.
+// Lazy chunk (pulls in @excalidraw/excalidraw + DOMPurify). Renders ```excalidraw
+// fences as a static, sanitized SVG. Shows the source while the message streams
+// (partial JSON throws) and falls back to source on parse failure.
 export default function ExcalidrawRenderer({ code, streaming }: RichFenceProps) {
   const isDark = useIsDark()
   const [svg, setSvg] = useState('')
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    if (streaming) {
-      return
-    }
+    if (streaming) return
 
     const scene = parseExcalidraw(code)
     if (!scene) {
@@ -75,26 +66,19 @@ export default function ExcalidrawRenderer({ code, streaming }: RichFenceProps) 
     void (async () => {
       try {
         const node = await exportToSvg({
-          // exportToSvg wants the elements + a (partial) appState. We keep the
-          // author's appState when present so view defaults (background, etc.)
-          // survive; the export path only reads a safe subset.
           elements: scene.elements as never[],
           appState: {
             ...(scene.appState as Record<string, unknown>),
             exportBackground: true,
-            viewBackgroundColor: isDark ? '#1e1e1e' : '#ffffff',
+            viewBackgroundColor: isDark ? '#1e1e1e' : '#ffffff'
           } as never,
-          files: scene.files as Record<string, never> | undefined,
+          files: scene.files as Record<string, never> | undefined
         })
-
         const serialized = new XMLSerializer().serializeToString(node)
         const clean = DOMPurify.sanitize(serialized, {
-          USE_PROFILES: { svg: true, svgFilters: true },
+          USE_PROFILES: { svg: true, svgFilters: true }
         })
-
-        if (!cancelled) {
-          setSvg(clean)
-        }
+        if (!cancelled) setSvg(clean)
       } catch {
         if (!cancelled) {
           setFailed(true)
@@ -108,17 +92,9 @@ export default function ExcalidrawRenderer({ code, streaming }: RichFenceProps) 
     }
   }, [code, isDark, streaming])
 
-  if (streaming) {
-    return <SourcePreview code={code} muted />
-  }
-
-  if (failed) {
-    return <SourcePreview code={code} />
-  }
-
-  if (!svg) {
-    return <SourcePreview code={code} muted />
-  }
+  if (streaming) return <SourcePreview code={code} muted />
+  if (failed) return <SourcePreview code={code} />
+  if (!svg) return <SourcePreview code={code} muted />
 
   return (
     <Zoomable

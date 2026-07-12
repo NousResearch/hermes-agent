@@ -153,6 +153,10 @@ RELEASE_v*.md
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
 
+# Draw.io viewer — fetched at build time from diagrams.net CDN (~2.5MB).
+# Run `npm run fetch-drawio` from apps/desktop/ to regenerate.
+apps/desktop/public/drawio/
+
 # PR infographics are rendered locally and embedded in PR descriptions via the
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's

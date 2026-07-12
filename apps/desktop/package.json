@@ -47,7 +47,8 @@
     "test:desktop:platforms": "vitest run --project electron",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
-    "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build"
+    "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build",
+    "fetch-drawio": "node scripts/fetch-drawio.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.23",

@@ -1,64 +1,22 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { Zoomable } from '@/components/ui/zoomable'
-import { writeDesktopFileText } from '@/lib/desktop-fs'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Maximize, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import type { RichFenceProps } from './types'
 
-// Draw.io (.drawio / mxGraph XML) has no npm render lib and its SVG export
-// needs a real DOM (foreignObject for text). The official draw.io viewer
-// (MIT, vendored at assets/drawio/viewer.min.js) is a browser app, so we
-// render it inside a SANDBOXED webview — exactly the pattern the right-rail
-// preview pane uses (contextIsolation=yes, nodeIntegration=no, sandbox=yes).
-//
-// Offline note: the vendored viewer hardcodes window.*_PATH globals pointing
-// at viewer.diagrams.net (shapes/stencils/proxy). We null them before the
-// script runs so the page can't phone home. Diagrams whose shapes are EMBEDDED
-// in the XML (the common case for skill/MCP-generated diagrams) render fully
-// offline; diagrams referencing external stencils will show a degraded note.
-function wrapDrawioHtml(xml: string, viewerUrl: string): string {
-  // Embed the XML as a JS string literal; JSON-encode so any quotes/control
-  // chars can't break out of the script context.
-  const encoded = JSON.stringify(xml)
-  return `<!doctype html><html><head><meta charset="utf-8" />
-<style>html,body{margin:0;height:100%;background:transparent}</style>
-<script>
-  // Disable remote asset paths for offline + privacy before the viewer loads.
-  window.SHAPES_PATH='';window.STENCIL_PATH='';window.STYLE_PATH='';
-  window.PROXY_URL='';window.DRAW_MATH_URL='';window.GRAPH_IMAGE='';
-  window.drawioXml=${encoded};
-</script>
-<script src="${viewerUrl}"></script>
-<script>
-  function boot(){
-    if(typeof GraphViewer==='undefined'){setTimeout(boot,50);return;}
-    var div=document.createElement('div');
-    div.style.width='100%';div.style.height='100%';
-    document.body.appendChild(div);
-    try{
-      new GraphViewer(div,{xml:window.drawioXml,shadow:false,toolbar:'',
-        highlite:true,nav:false,resize:true,fit:true,center:true});
-    }catch(e){
-      document.body.innerHTML='<p style="font:13px sans-serif;padding:12px">'+
-        'Could not render this Draw.io diagram (it may need external stencils unavailable offline).</p>';
-    }
-  }
-  if(document.readyState!=='loading'){boot();}else{document.addEventListener('DOMContentLoaded',boot);}
-</script>
-</head><body></body></html>`
-}
+// Draw.io Renderer using the POSTMESSAGE pattern.
+// Instead of using srcdoc and trying to boot the viewer via a script tag
+// (which causes the XMLSerializer Node error), we load a real same-origin
+// render.html and send the XML as a message.
+let RENDER_URL = '/drawio/render.html'
+let RENDER_VERSION = '6' // Bumped to force cache clear
 
-// Small FNV-1a hash → stable cache filename without pulling a dep.
-function fnv1a(text: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
+export function setDrawioRenderUrl(url: string): void {
+  RENDER_URL = url
 }
 
 function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
@@ -74,101 +32,110 @@ function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
   )
 }
 
+// Lazy chunk. Renders ```drawio fences by loading the draw.io viewer in a
+// sandboxed iframe and sending the XML via postMessage. Shows the source while
+// the message streams (partial XML throws) and falls back to source on failure.
+//
+// Two iframe modes (controlled by the postMessage mode field):
+//   inline   — static diagram, no toolbar/nav/pan/zoom (in-chat display)
+//   expanded — toolbar, minimap, drag-pan, wheel-zoom (full-view dialog)
+//
+// Clicking the expand button opens a dialog with the interactive viewer,
+// matching the Excalidraw renderer's UX pattern.
 export default function DrawioRenderer({ code, streaming }: RichFenceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const [failed, setFailed] = useState(false)
-  const [src, setSrc] = useState('')
+  const [ready, setReady] = useState(false)
+  const [expanded, setExpanded] = useState(false)
 
+  // Create the inline iframe (static mode — no toolbar/nav/pan/zoom)
   useEffect(() => {
-    if (streaming) {
-      return
-    }
+    if (streaming) return
 
-    let cancelled = false
+    const host = hostRef.current
+    if (!host) return
+
     setFailed(false)
+    setReady(false)
+    setExpanded(false)
 
-    const viewerUrl = `${import.meta.env.BASE_URL}assets/drawio/viewer.min.js`.replace(
-      /([^:])\/\//,
-      '$1/'
-    )
+    const iframe = document.createElement('iframe')
+    iframe.className = 'h-full w-full border-0'
+    iframe.setAttribute('sandbox', 'allow-scripts')
 
-    void (async () => {
-      try {
-        // Stable per-content filename (FNV-1a) so repeated renders hit cache.
-        const hash = fnv1a(code)
-        const file = `drawio-cache/drawio-${hash.toString(36)}.html`
-        const html = wrapDrawioHtml(code, viewerUrl)
-        const result = await writeDesktopFileText(file, html)
-        if (!cancelled) {
-          setSrc(result.path)
-        }
-      } catch {
-        if (!cancelled) {
-          setFailed(true)
-          setSrc('')
-        }
-      }
-    })()
+    // Use a versioned URL to bypass browser cache for the render page
+    iframe.src = `${RENDER_URL}?v=${RENDER_VERSION}`
 
-    return () => {
-      cancelled = true
-    }
-  }, [code, streaming])
-
-  if (streaming) {
-    return <SourcePreview code={code} muted />
-  }
-
-  if (failed || !src) {
-    return <SourcePreview code={code} />
-  }
-
-  return (
-    <Zoomable label="Open diagram" className="my-2">
-      <div
-        ref={hostRef}
-        className="h-[33dvh] w-full overflow-hidden rounded-lg border border-border bg-muted/20"
-      >
-        {/* webview created imperatively so we control webPreferences (sandbox). */}
-        <DrawioWebview src={src} onFail={() => setFailed(true)} />
-      </div>
-    </Zoomable>
-  )
-}
-
-// Imperative <webview> (mirrors preview-pane.tsx): sandboxed, no node,
-// isolated context. The viewer's remote asset paths are already nulled in the
-// wrapper HTML, so this surface can only reach the local viewer script.
-function DrawioWebview({ src, onFail }: { src: string; onFail: () => void }) {
-  const ref = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    const host = ref.current
-    if (!host || typeof document === 'undefined') {
-      return
+    const handleLoad = () => {
+      setReady(true)
+      // Send the XML to the receiver page in inline mode (static)
+      iframe.contentWindow?.postMessage({ action: 'load', xml: code, mode: 'inline' }, '*')
     }
 
-    const webview = document.createElement('webview') as unknown as {
-      setAttribute: (k: string, v: string) => void
-      addEventListener: (t: string, cb: () => void) => void
-      remove: () => void
-      className: string
-    }
-    webview.className = 'h-full w-full'
-    webview.setAttribute('partition', 'persist:hermes-drawio')
-    webview.setAttribute('src', src)
-    webview.setAttribute(
-      'webpreferences',
-      'contextIsolation=yes,nodeIntegration=no,sandbox=yes'
-    )
-    webview.addEventListener('did-fail-load', onFail)
+    iframe.addEventListener('load', handleLoad)
+    iframe.addEventListener('error', () => setFailed(true))
 
-    host.replaceChildren(webview as unknown as Node)
-
+    host.replaceChildren(iframe)
     return () => {
       host.replaceChildren()
     }
-  }, [src, onFail])
+  }, [code, streaming])
 
-  return <div ref={ref} className="h-full w-full" />
+  const openExpanded = useCallback(() => setExpanded(true), [])
+  const closeExpanded = useCallback(() => setExpanded(false), [])
+
+  if (streaming) return <SourcePreview code={code} muted />
+  if (failed) return <SourcePreview code={code} />
+
+  return (
+    <>
+      <div className="group/zoomable relative">
+        <div
+          ref={hostRef}
+          className="h-[33dvh] w-full overflow-hidden rounded-lg border border-border bg-muted/30"
+        />
+        {!ready && <SourcePreview code={code} muted />}
+        {ready && (
+          <button
+            className="pointer-events-auto absolute right-2 top-2 grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/zoomable:opacity-100 hover:opacity-100"
+            onClick={openExpanded}
+            title="Open diagram"
+            type="button"
+          >
+            <Maximize className="size-4" />
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <Dialog onOpenChange={setExpanded} open={expanded}>
+          <DialogContent
+            className="flex h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
+            showCloseButton={false}
+          >
+            <div className="relative flex-1 overflow-hidden">
+              <iframe
+                className="h-full w-full border-0"
+                onLoad={e => {
+                  e.currentTarget.contentWindow?.postMessage(
+                    { action: 'load', xml: code, mode: 'expanded' },
+                    '*'
+                  )
+                }}
+                sandbox="allow-scripts"
+                src={`${RENDER_URL}?v=${RENDER_VERSION}`}
+              />
+              <button
+                className="absolute right-3 top-3 z-10 grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+                onClick={closeExpanded}
+                title="Close"
+                type="button"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  )
 }

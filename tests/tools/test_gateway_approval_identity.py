@@ -131,6 +131,444 @@ def test_targeted_resolution_is_out_of_order_and_duplicate_safe():
         approval.clear_session(session_key)
 
 
+def test_targeted_resolution_notifies_once_with_terminal_descriptor():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-notify"
+    terminal_descriptors: list[dict] = []
+    entry = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-notify",
+        timeout_seconds=30,
+    )
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+
+    try:
+        outcome = approval.resolve_gateway_approval_by_id(
+            session_key,
+            entry.approval_id,
+            "deny",
+            reason="not now",
+        )
+        duplicate = approval.resolve_gateway_approval_by_id(
+            session_key,
+            entry.approval_id,
+            "once",
+        )
+
+        assert outcome["outcome"] == "resolved"
+        assert terminal_descriptors == [outcome["approval"]]
+        assert duplicate["outcome"] == "already_resolved"
+        assert terminal_descriptors == [outcome["approval"]]
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_gateway_timeout_notifies_once_with_expired_descriptor(monkeypatch):
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-timeout"
+    requests: list[dict] = []
+    terminal_descriptors: list[dict] = []
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setattr(
+        approval,
+        "_get_approval_config",
+        lambda: {"gateway_timeout": 0},
+    )
+    approval.register_gateway_notify(session_key, requests.append)
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+
+    token = approval.set_current_session_key(session_key)
+    try:
+        result = approval.check_all_command_guards(
+            "rm -rf /tmp/hermes-approval-timeout",
+            "local",
+        )
+        assert result["approved"] is False
+        assert len(requests) == 1
+        assert terminal_descriptors[0]["approval_id"] == requests[0]["approval_id"]
+        assert terminal_descriptors[0]["state"] == "expired"
+        assert terminal_descriptors[0]["resolution"]["metadata"] == {
+            "source": "timeout"
+        }
+
+        late = approval.resolve_gateway_approval_by_id(
+            session_key,
+            requests[0]["approval_id"],
+            "once",
+        )
+        assert late == {
+            "outcome": "expired",
+            "approval": terminal_descriptors[0],
+        }
+        assert len(terminal_descriptors) == 1
+    finally:
+        approval.reset_current_session_key(token)
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_unregister_notifies_stale_once_and_clears_both_callbacks():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-unregister"
+    terminal_descriptors: list[dict] = []
+    approval.register_gateway_notify(session_key, lambda _: None)
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+    stale = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-stale",
+        timeout_seconds=30,
+    )
+
+    try:
+        approval.unregister_gateway_notify(session_key)
+
+        assert len(terminal_descriptors) == 1
+        assert terminal_descriptors[0]["approval_id"] == stale.approval_id
+        assert terminal_descriptors[0]["state"] == "stale"
+        assert terminal_descriptors[0]["resolution"]["metadata"] == {
+            "source": "callback_unregistered"
+        }
+
+        late = approval.resolve_gateway_approval_by_id(
+            session_key,
+            stale.approval_id,
+            "once",
+        )
+        assert late == {
+            "outcome": "stale",
+            "approval": terminal_descriptors[0],
+        }
+
+        after_unregister = _queue_entry(
+            approval,
+            session_key,
+            approval_id="approval-after-unregister",
+            timeout_seconds=30,
+        )
+        approval.resolve_gateway_approval_by_id(
+            session_key,
+            after_unregister.approval_id,
+            "deny",
+        )
+        assert len(terminal_descriptors) == 1
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_resolution_notification_failure_does_not_change_approval_outcome():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-callback-failure"
+    callback_calls = 0
+
+    def broken_callback(_: dict) -> None:
+        nonlocal callback_calls
+        callback_calls += 1
+        raise RuntimeError("terminal transport unavailable")
+
+    approval.register_gateway_resolution_notify(session_key, broken_callback)
+    entry = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-callback-failure",
+        timeout_seconds=30,
+    )
+
+    try:
+        outcome = approval.resolve_gateway_approval_by_id(
+            session_key,
+            entry.approval_id,
+            "once",
+        )
+        duplicate = approval.resolve_gateway_approval_by_id(
+            session_key,
+            entry.approval_id,
+            "once",
+        )
+
+        assert outcome["outcome"] == "resolved"
+        assert duplicate["outcome"] == "already_resolved"
+        assert callback_calls == 1
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_terminal_notification_happens_before_waiter_is_released():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-ordering"
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    outcome: dict = {}
+    entry = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-ordering",
+        timeout_seconds=30,
+    )
+
+    def blocking_callback(_: dict) -> None:
+        callback_started.set()
+        assert release_callback.wait(timeout=5)
+
+    approval.register_gateway_resolution_notify(session_key, blocking_callback)
+
+    def resolve() -> None:
+        outcome.update(
+            approval.resolve_gateway_approval_by_id(
+                session_key,
+                entry.approval_id,
+                "deny",
+            )
+        )
+
+    resolver = threading.Thread(target=resolve, daemon=True)
+    resolver.start()
+    try:
+        assert callback_started.wait(timeout=5)
+        assert entry.event.is_set() is False
+        assert resolver.is_alive()
+    finally:
+        release_callback.set()
+        resolver.join(timeout=5)
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+    assert resolver.is_alive() is False
+    assert entry.event.is_set()
+    assert outcome["outcome"] == "resolved"
+
+
+def test_legacy_fifo_resolution_notifies_in_queue_order():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-fifo"
+    terminal_descriptors: list[dict] = []
+    approval.register_gateway_notify(session_key, lambda _: None)
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+    first = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-fifo-first",
+        timeout_seconds=30,
+    )
+    second = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-fifo-second",
+        timeout_seconds=30,
+    )
+
+    try:
+        resolved = approval.resolve_gateway_approval(
+            session_key,
+            "deny",
+            resolve_all=True,
+        )
+
+        assert resolved == 2
+        assert [
+            descriptor["approval_id"] for descriptor in terminal_descriptors
+        ] == [first.approval_id, second.approval_id]
+        assert all(
+            descriptor["state"] == "resolved"
+            for descriptor in terminal_descriptors
+        )
+        assert all(
+            descriptor["resolution"]["metadata"] == {
+                "source": "legacy_fifo"
+            }
+            for descriptor in terminal_descriptors
+        )
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_pending_snapshot_notifies_when_it_expires_an_approval():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-snapshot-expiry"
+    terminal_descriptors: list[dict] = []
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+    entry = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-snapshot-expiry",
+        timeout_seconds=0,
+    )
+
+    try:
+        assert approval.list_pending_gateway_approvals(session_key) == []
+        assert len(terminal_descriptors) == 1
+        assert terminal_descriptors[0]["approval_id"] == entry.approval_id
+        assert terminal_descriptors[0]["state"] == "expired"
+
+        assert approval.list_pending_gateway_approvals(session_key) == []
+        assert len(terminal_descriptors) == 1
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_failed_request_notification_emits_stale_terminal_descriptor(monkeypatch):
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-request-failure"
+    terminal_descriptors: list[dict] = []
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setattr(
+        approval,
+        "_get_approval_config",
+        lambda: {"gateway_timeout": 30},
+    )
+
+    def broken_request_callback(_: dict) -> None:
+        raise RuntimeError("request transport unavailable")
+
+    approval.register_gateway_notify(session_key, broken_request_callback)
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+    token = approval.set_current_session_key(session_key)
+
+    try:
+        result = approval.check_all_command_guards(
+            "rm -rf /tmp/hermes-approval-request-failure",
+            "local",
+        )
+
+        assert result["approved"] is False
+        assert len(terminal_descriptors) == 1
+        descriptor = terminal_descriptors[0]
+        assert descriptor["state"] == "stale"
+        assert descriptor["resolution"]["metadata"] == {
+            "source": "notify_failed"
+        }
+
+        late = approval.resolve_gateway_approval_by_id(
+            session_key,
+            descriptor["approval_id"],
+            "once",
+        )
+        assert late == {"outcome": "stale", "approval": descriptor}
+        assert len(terminal_descriptors) == 1
+    finally:
+        approval.reset_current_session_key(token)
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_session_cleanup_notifies_resolved_denial_once():
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-session-cleanup"
+    terminal_descriptors: list[dict] = []
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+    entry = _queue_entry(
+        approval,
+        session_key,
+        approval_id="approval-terminal-session-cleanup",
+        timeout_seconds=30,
+    )
+
+    try:
+        approval.clear_session(session_key)
+
+        assert len(terminal_descriptors) == 1
+        descriptor = terminal_descriptors[0]
+        assert descriptor["approval_id"] == entry.approval_id
+        assert descriptor["state"] == "resolved"
+        assert descriptor["resolution"]["choice"] == "deny"
+        assert descriptor["resolution"]["metadata"] == {
+            "source": "session_cleanup"
+        }
+
+        late = approval.resolve_gateway_approval_by_id(
+            session_key,
+            entry.approval_id,
+            "once",
+        )
+        assert late == {"outcome": "already_resolved", "approval": descriptor}
+        assert len(terminal_descriptors) == 1
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
+def test_legacy_direct_request_callback_still_emits_terminal_descriptor(
+    monkeypatch,
+):
+    from tools import approval
+
+    session_key = "mobile-approval-terminal-legacy-direct"
+    terminal_descriptors: list[dict] = []
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+    monkeypatch.setattr(
+        approval,
+        "_get_approval_config",
+        lambda: {"gateway_timeout": 30},
+    )
+
+    def resolve_directly(_: dict) -> None:
+        entry = approval._gateway_queues[session_key][0]
+        entry.result = "once"
+        entry.event.set()
+
+    approval.register_gateway_notify(session_key, resolve_directly)
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
+    token = approval.set_current_session_key(session_key)
+
+    try:
+        result = approval.check_all_command_guards(
+            "rm -rf /tmp/hermes-approval-legacy-direct",
+            "local",
+        )
+
+        assert result["approved"] is True
+        assert len(terminal_descriptors) == 1
+        descriptor = terminal_descriptors[0]
+        assert descriptor["state"] == "resolved"
+        assert descriptor["resolution"]["choice"] == "once"
+        assert descriptor["resolution"]["metadata"] == {
+            "source": "legacy_direct_callback"
+        }
+    finally:
+        approval.reset_current_session_key(token)
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
+
+
 def test_late_expired_and_stale_resolutions_are_deterministic():
     from tools import approval
 
@@ -235,6 +673,11 @@ def test_concurrent_targeted_responses_resolve_exactly_once():
     from tools import approval
 
     session_key = "mobile-approval-concurrent"
+    terminal_descriptors: list[dict] = []
+    approval.register_gateway_resolution_notify(
+        session_key,
+        terminal_descriptors.append,
+    )
     entry = _queue_entry(
         approval,
         session_key,
@@ -258,18 +701,23 @@ def test_concurrent_targeted_responses_resolve_exactly_once():
         threading.Thread(target=resolve, args=(choice,))
         for choice in ("once", "deny")
     ]
-    for worker in workers:
-        worker.start()
-    barrier.wait()
-    for worker in workers:
-        worker.join(timeout=5)
+    try:
+        for worker in workers:
+            worker.start()
+        barrier.wait()
+        for worker in workers:
+            worker.join(timeout=5)
 
-    assert all(not worker.is_alive() for worker in workers)
-    assert sorted(item["outcome"] for item in outcomes) == [
-        "already_resolved",
-        "resolved",
-    ]
-    assert outcomes[0]["approval"] == outcomes[1]["approval"]
+        assert all(not worker.is_alive() for worker in workers)
+        assert sorted(item["outcome"] for item in outcomes) == [
+            "already_resolved",
+            "resolved",
+        ]
+        assert outcomes[0]["approval"] == outcomes[1]["approval"]
+        assert terminal_descriptors == [outcomes[0]["approval"]]
+    finally:
+        approval.unregister_gateway_notify(session_key)
+        approval.clear_session(session_key)
 
 
 def test_tombstones_are_short_lived(monkeypatch):

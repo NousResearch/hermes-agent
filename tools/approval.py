@@ -1544,8 +1544,10 @@ def _public_not_found_approval_id(approval_id: str) -> str:
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_resolution_notify_cbs: dict[str, object] = {}  # terminal descriptor cb
 _gateway_tombstones: dict[str, dict[str, _ApprovalEntry]] = {}
 _GATEWAY_APPROVAL_TOMBSTONE_TTL_SECONDS = 300.0
+_GatewayTerminalTransition = tuple[_ApprovalEntry, Optional[object], dict]
 
 
 def _prune_gateway_tombstones_locked(now_monotonic: Optional[float] = None) -> None:
@@ -1586,10 +1588,15 @@ def _finish_gateway_entry_locked(
     resolution_metadata: Optional[dict] = None,
     now_wall: Optional[float] = None,
     now_monotonic: Optional[float] = None,
-) -> bool:
-    """Atomically move one pending approval into a terminal tombstone."""
+) -> Optional[_GatewayTerminalTransition]:
+    """Move a pending approval to terminal state without releasing its waiter.
+
+    The caller must publish the returned transition after releasing ``_lock``.
+    Publication invokes the terminal callback before setting ``entry.event`` so
+    downstream turn/tool events cannot overtake the terminal descriptor.
+    """
     if entry.state != "pending":
-        return False
+        return None
     if now_wall is None:
         now_wall = time.time()
     if now_monotonic is None:
@@ -1609,8 +1616,21 @@ def _finish_gateway_entry_locked(
         float(now_monotonic) + _GATEWAY_APPROVAL_TOMBSTONE_TTL_SECONDS
     )
     _gateway_tombstones.setdefault(session_key, {})[entry.approval_id] = entry
-    entry.event.set()
-    return True
+    callback = _gateway_resolution_notify_cbs.get(session_key)
+    return entry, callback, entry.public_descriptor()
+
+
+def _dispatch_gateway_resolution_notification(notification) -> None:
+    if notification is None:
+        return
+    entry, callback, descriptor = notification
+    try:
+        if callback is not None:
+            callback(descriptor)
+    except Exception as exc:
+        logger.warning("Gateway approval resolution notify failed: %s", exc)
+    finally:
+        entry.event.set()
 
 
 def _expire_gateway_entry_locked(
@@ -1619,7 +1639,7 @@ def _expire_gateway_entry_locked(
     *,
     now_wall: Optional[float] = None,
     now_monotonic: Optional[float] = None,
-) -> bool:
+) -> Optional[_GatewayTerminalTransition]:
     return _finish_gateway_entry_locked(
         session_key,
         entry,
@@ -1635,16 +1655,20 @@ def _expire_gateway_entry_locked(
 def _expire_due_gateway_entries_locked(
     session_key: str,
     now_monotonic: Optional[float] = None,
-) -> None:
+) -> list[_GatewayTerminalTransition]:
     if now_monotonic is None:
         now_monotonic = time.monotonic()
+    notifications = []
     for entry in list(_gateway_queues.get(session_key, [])):
         if entry._deadline <= now_monotonic:
-            _expire_gateway_entry_locked(
+            notification = _expire_gateway_entry_locked(
                 session_key,
                 entry,
                 now_monotonic=now_monotonic,
             )
+            if notification is not None:
+                notifications.append(notification)
+    return notifications
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -1659,17 +1683,31 @@ def register_gateway_notify(session_key: str, cb) -> None:
         _gateway_notify_cbs[session_key] = cb
 
 
+def register_gateway_resolution_notify(session_key: str, cb) -> None:
+    """Register a per-session callback for terminal approval descriptors.
+
+    The callback signature is ``cb(approval_data: dict) -> None``. It runs at
+    most once for each approval that transitions to ``resolved``, ``expired``,
+    or ``stale``. Callback failures are logged and never change the approval
+    outcome or prevent a blocked waiter from being released.
+    """
+    with _lock:
+        _gateway_resolution_notify_cbs[session_key] = cb
+
+
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the per-session gateway approval callback.
+    """Unregister both per-session gateway approval callbacks.
 
     Signals ALL blocked threads for this session so they don't hang forever
-    (e.g. when the agent run finishes or is interrupted).
+    (e.g. when the agent run finishes or is interrupted). Pending approvals
+    first emit a final ``stale`` descriptor through the terminal callback.
     """
+    notifications = []
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = list(_gateway_queues.get(session_key, []))
         for entry in entries:
-            _finish_gateway_entry_locked(
+            notification = _finish_gateway_entry_locked(
                 session_key,
                 entry,
                 state="stale",
@@ -1677,6 +1715,11 @@ def unregister_gateway_notify(session_key: str) -> None:
                 reason="approval callback is no longer available",
                 resolution_metadata={"source": "callback_unregistered"},
             )
+            if notification is not None:
+                notifications.append(notification)
+        _gateway_resolution_notify_cbs.pop(session_key, None)
+    for notification in notifications:
+        _dispatch_gateway_resolution_notification(notification)
 
 
 def resolve_gateway_approval_by_id(
@@ -1701,6 +1744,8 @@ def resolve_gateway_approval_by_id(
             "outcome": "invalid_choice",
             "approval_id": _public_not_found_approval_id(approval_id),
         }
+    result = None
+    resolution_notification = None
     with _lock:
         now_monotonic = time.monotonic()
         _prune_gateway_tombstones_locked(now_monotonic)
@@ -1715,41 +1760,46 @@ def resolve_gateway_approval_by_id(
         )
         if entry is not None:
             if entry._deadline <= now_monotonic:
-                _expire_gateway_entry_locked(
+                resolution_notification = _expire_gateway_entry_locked(
                     session_key,
                     entry,
                     now_monotonic=now_monotonic,
                 )
-                return {
+                result = {
                     "outcome": "expired",
                     "approval": entry.public_descriptor(),
                 }
-            _finish_gateway_entry_locked(
-                session_key,
-                entry,
-                state="resolved",
-                choice=choice,
-                reason=reason,
-                resolution_metadata=resolution_metadata,
-                now_monotonic=now_monotonic,
-            )
-            return {
-                "outcome": "resolved",
-                "approval": entry.public_descriptor(),
-            }
+            else:
+                resolution_notification = _finish_gateway_entry_locked(
+                    session_key,
+                    entry,
+                    state="resolved",
+                    choice=choice,
+                    reason=reason,
+                    resolution_metadata=resolution_metadata,
+                    now_monotonic=now_monotonic,
+                )
+                result = {
+                    "outcome": "resolved",
+                    "approval": entry.public_descriptor(),
+                }
 
         tombstone = _gateway_tombstones.get(session_key, {}).get(approval_id)
-        if tombstone is not None:
+        if result is None and tombstone is not None:
             outcome = {
                 "resolved": "already_resolved",
                 "expired": "expired",
                 "stale": "stale",
             }.get(tombstone.state, "stale")
-            return {
+            result = {
                 "outcome": outcome,
                 "approval": tombstone.public_descriptor(),
             }
 
+    if resolution_notification is not None:
+        _dispatch_gateway_resolution_notification(resolution_notification)
+    if result is not None:
+        return result
     return {
         "outcome": "not_found",
         "approval_id": _public_not_found_approval_id(approval_id),
@@ -1786,19 +1836,22 @@ def resolve_gateway_approval(session_key: str, choice: str,
         )
         return 1 if result["outcome"] == "resolved" else 0
 
+    notifications = []
     with _lock:
         now_monotonic = time.monotonic()
         _prune_gateway_tombstones_locked(now_monotonic)
-        _expire_due_gateway_entries_locked(session_key, now_monotonic)
+        notifications.extend(
+            _expire_due_gateway_entries_locked(session_key, now_monotonic)
+        )
         queue = _gateway_queues.get(session_key)
         if not queue:
-            return 0
-        if resolve_all:
+            targets = []
+        elif resolve_all:
             targets = list(queue)
         else:
             targets = [queue[0]]
         for entry in targets:
-            _finish_gateway_entry_locked(
+            notification = _finish_gateway_entry_locked(
                 session_key,
                 entry,
                 state="resolved",
@@ -1807,32 +1860,45 @@ def resolve_gateway_approval(session_key: str, choice: str,
                 resolution_metadata={"source": "legacy_fifo"},
                 now_monotonic=now_monotonic,
             )
+            if notification is not None:
+                notifications.append(notification)
+    for notification in notifications:
+        _dispatch_gateway_resolution_notification(notification)
     return len(targets)
 
 
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
-        _expire_due_gateway_entries_locked(session_key)
-        return bool(_gateway_queues.get(session_key))
+        notifications = _expire_due_gateway_entries_locked(session_key)
+        has_pending = bool(_gateway_queues.get(session_key))
+    for notification in notifications:
+        _dispatch_gateway_resolution_notification(notification)
+    return has_pending
 
 
 def pending_approval_count(session_key: str) -> int:
     """Return the number of unexpired approvals waiting for *session_key*."""
     with _lock:
-        _expire_due_gateway_entries_locked(session_key)
-        return len(_gateway_queues.get(session_key, []))
+        notifications = _expire_due_gateway_entries_locked(session_key)
+        count = len(_gateway_queues.get(session_key, []))
+    for notification in notifications:
+        _dispatch_gateway_resolution_notification(notification)
+    return count
 
 
 def list_pending_gateway_approvals(session_key: str) -> list[dict]:
     """Return authoritative public descriptors for pending approvals."""
     with _lock:
         _prune_gateway_tombstones_locked()
-        _expire_due_gateway_entries_locked(session_key)
-        return [
+        notifications = _expire_due_gateway_entries_locked(session_key)
+        descriptors = [
             entry.public_descriptor()
             for entry in _gateway_queues.get(session_key, [])
         ]
+    for notification in notifications:
+        _dispatch_gateway_resolution_notification(notification)
+    return descriptors
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -1867,6 +1933,7 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    notifications = []
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
@@ -1875,7 +1942,7 @@ def clear_session(session_key: str) -> None:
         for entry in entries:
             # Session-boundary cleanup should cancel blocked waits immediately
             # while retaining a short explanation for a late phone response.
-            _finish_gateway_entry_locked(
+            notification = _finish_gateway_entry_locked(
                 session_key,
                 entry,
                 state="resolved",
@@ -1883,6 +1950,10 @@ def clear_session(session_key: str) -> None:
                 reason="approval session ended",
                 resolution_metadata={"source": "session_cleanup"},
             )
+            if notification is not None:
+                notifications.append(notification)
+    for notification in notifications:
+        _dispatch_gateway_resolution_notification(notification)
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -2801,7 +2872,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         with _lock:
-            _finish_gateway_entry_locked(
+            resolution_notification = _finish_gateway_entry_locked(
                 session_key,
                 entry,
                 state="stale",
@@ -2809,6 +2880,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 reason="approval notification failed",
                 resolution_metadata={"source": "notify_failed"},
             )
+        _dispatch_gateway_resolution_notification(resolution_notification)
         return {"resolved": False, "choice": None, "notify_failed": True}
 
     # Block until the user responds or timeout (default 5 min). Poll in short
@@ -2847,7 +2919,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         _remaining = _deadline - time.monotonic()
         if _remaining <= 0:
             with _lock:
-                _expire_gateway_entry_locked(session_key, entry)
+                resolution_notification = _expire_gateway_entry_locked(
+                    session_key,
+                    entry,
+                )
+            _dispatch_gateway_resolution_notification(resolution_notification)
             break
         if entry.event.wait(timeout=min(1.0, _remaining)):
             break
@@ -2856,13 +2932,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Backward compatibility for older in-process callbacks that set the
     # entry result/event directly instead of calling the public resolver.
+    resolution_notification = None
     with _lock:
         if (
             entry.state == "pending"
             and entry.event.is_set()
             and entry.result in _GATEWAY_APPROVAL_CHOICES
         ):
-            _finish_gateway_entry_locked(
+            resolution_notification = _finish_gateway_entry_locked(
                 session_key,
                 entry,
                 state="resolved",
@@ -2871,7 +2948,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 resolution_metadata={"source": "legacy_direct_callback"},
             )
         elif entry.state == "pending" and entry.event.is_set():
-            _finish_gateway_entry_locked(
+            resolution_notification = _finish_gateway_entry_locked(
                 session_key,
                 entry,
                 state="stale",
@@ -2882,6 +2959,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         resolved = entry.state == "resolved"
         choice = entry.result
         reason = entry.reason if resolved else None
+    _dispatch_gateway_resolution_notification(resolution_notification)
     # Normalize outcome for the post hook. Unresolved (timeout) and None both
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.

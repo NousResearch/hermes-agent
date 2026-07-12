@@ -4578,13 +4578,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
-
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
 
@@ -4596,16 +4589,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._approval_counter = itertools.count(1)
             approval_id = next(self._approval_counter)
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
-                ],
-                [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
-                ],
-            ])
+            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+
+            if len(command) > 3800:
+                # Command too long for Telegram — hide approval buttons for security
+                text = (
+                    f"⚠️ <b>Command Too Long for Telegram Approval</b>\n\n"
+                    f"⚠️ This command ({len(command)} chars) exceeds Telegram's display limit.\n"
+                    f"Approval buttons are hidden to prevent authorization of unseen code.\n\n"
+                    f"<b>Visible preview:</b>\n"
+                    f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                    f"<b>Reason:</b> {_html.escape(description)}\n\n"
+                    f"<b>Workarounds:</b>\n"
+                    f"• Stage the full command as a temporary file and request approval for a short invocation\n"
+                    f"• Use the <code>/approve</code> slash command with the complete command"
+                )
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}")],
+                ])
+            else:
+                text = (
+                    f"⚠️ <b>Command Approval Required</b>\n\n"
+                    f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                    f"Reason: {_html.escape(description)}"
+                )
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
+                        InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
+                        InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    ],
+                ])
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),

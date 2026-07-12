@@ -174,6 +174,15 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_claude_sonnet_5_uses_1m_context(self):
+        """Sonnet 5 must not fall through to the generic Claude 200K cap."""
+        assert DEFAULT_CONTEXT_LENGTHS["claude-sonnet-5"] == 1_000_000
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            assert get_model_context_length("claude-sonnet-5") == 1_000_000
+            assert get_model_context_length("anthropic/claude-sonnet-5") == 1_000_000
+
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.

@@ -531,6 +531,24 @@ def is_uv_tool_install() -> bool:
     return False
 
 
+def is_user_site_install(project_root: Optional[Path] = None) -> bool:
+    """Return True when the running Hermes package lives in Python's user site.
+
+    A user-site install (typically ``pip install --user``) must be upgraded with
+    the running interpreter and ``--user``. ``uv pip install --system`` targets
+    a different environment and can either fail on permissions or upgrade an
+    unrelated interpreter when ``VIRTUAL_ENV`` is inherited from the caller.
+    """
+    try:
+        import site
+
+        root = (project_root or get_project_root()).resolve()
+        user_site = Path(site.getusersitepackages()).resolve()
+        return root == user_site or user_site in root.parents
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
 def recommended_update_command_for_method(method: str) -> str:
     """Return the update command or guidance for a given install method."""
     if method == "nixos":
@@ -542,6 +560,8 @@ def recommended_update_command_for_method(method: str) -> str:
     if method == "pip":
         if is_uv_tool_install():
             return "uv tool upgrade hermes-agent"
+        if is_user_site_install():
+            return f"{sys.executable} -m pip install --user --upgrade hermes-agent"
         import shutil
         if shutil.which("uv"):
             return "uv pip install --upgrade hermes-agent"

@@ -63,47 +63,29 @@ class TestHandleUpdateCommand:
         mock_popen.assert_not_called()  # must return before reaching Popen
 
     @pytest.mark.asyncio
-    async def test_no_git_directory(self, tmp_path):
-        """Returns an error when .git does not exist."""
+    async def test_no_git_directory_delegates_to_cli_for_package_installs(self, tmp_path):
+        """A packaged install without .git still starts ``hermes update``.
+
+        The CLI owns install-method detection and knows how to update pip/uv,
+        Homebrew, Docker, and git layouts. The gateway must not reject valid
+        packaged installs before the CLI can choose the correct path.
+        """
         runner = _make_runner()
         event = _make_event()
-        # Point _hermes_home to tmp_path and project_root to a dir without .git
-        fake_root = tmp_path / "project"
-        fake_root.mkdir()
-        with patch("gateway.run._hermes_home", tmp_path), \
-             patch("gateway.run.Path") as MockPath:
-            # Path(__file__).parent.parent.resolve() -> fake_root
-            MockPath.return_value = MagicMock()
-            MockPath.__truediv__ = Path.__truediv__
-            # Easier: just patch the __file__ resolution in the method
-            pass
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
 
-        # Simpler approach — mock at method level using a wrapper
-        runner = _make_runner()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run._resolve_hermes_bin", return_value=["/usr/bin/hermes"]), \
+             patch("shutil.which", return_value="/usr/bin/setsid"), \
+             patch("subprocess.Popen") as mock_popen:
+            result = await runner._handle_update_command(event)
 
-        with patch("gateway.run._hermes_home", tmp_path):
-            # The handler does Path(__file__).parent.parent.resolve()
-            # We need to make project_root / '.git' not exist.
-            # Since Path(__file__) resolves to the real gateway/run.py,
-            # project_root will be the real hermes-agent dir (which HAS .git).
-            # Patch Path to control this.
-            original_path = Path
-
-            class FakePath(type(Path())):
-                pass
-
-            # Actually, simplest: just patch the specific file attr.
-            # The _handle_update_command handler lives in gateway/slash_commands.py
-            # (extracted from run.py in the god-file decomposition); it resolves
-            # project_root via Path(__file__).parent.parent, so fake that file.
-            fake_file = str(fake_root / "gateway" / "slash_commands.py")
-            (fake_root / "gateway").mkdir(parents=True)
-            (fake_root / "gateway" / "slash_commands.py").touch()
-
-            with patch("gateway.slash_commands.__file__", fake_file):
-                result = await runner._handle_update_command(event)
-
-        assert "Not a git repository" in result
+        assert "Starting Hermes update" in result
+        mock_popen.assert_called_once()
+        spawned = mock_popen.call_args[0][0]
+        assert spawned[:2] == ["/usr/bin/setsid", "bash"]
+        assert "hermes update --gateway" in spawned[-1]
 
     @pytest.mark.asyncio
     async def test_no_hermes_binary(self, tmp_path):

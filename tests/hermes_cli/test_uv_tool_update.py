@@ -192,11 +192,14 @@ class TestCmdUpdatePipUsesUvTool:
         assert mock_run.call_args[0][0] == ["/usr/local/bin/uv", "tool", "upgrade", "hermes-agent"]
 
     @patch("subprocess.run")
-    def test_runs_uv_pip_install_when_not_uv_tool(self, mock_run):
-        """Existing behavior preserved when uv is present but Hermes isn't a tool install."""
+    def test_runs_uv_pip_install_when_not_uv_tool(self, mock_run, monkeypatch):
+        """Existing venv behavior is preserved for non-tool uv installs."""
+        from hermes_cli import main as hm
         from hermes_cli.main import _cmd_update_pip
 
         mock_run.return_value = subprocess.CompletedProcess(["uv"], 0, stdout="", stderr="")
+        monkeypatch.setattr(hm.sys, "prefix", "/home/u/venv")
+        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
         with patch("shutil.which", return_value="/usr/local/bin/uv"), \
              patch("hermes_cli.config.is_uv_tool_install", return_value=False):
             _cmd_update_pip(SimpleNamespace())
@@ -340,3 +343,59 @@ class TestCmdUpdatePipInstallLayouts:
         assert "--system" not in cmd
         assert cmd == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
         assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/home/u/.hermes/hermes-agent/venv"
+
+    @patch("subprocess.run")
+    def test_user_site_install_uses_running_python_and_clears_foreign_virtualenv(
+        self, mock_run, monkeypatch
+    ):
+        """``pip --user`` upgrades its own interpreter, not inherited VIRTUAL_ENV."""
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        monkeypatch.setattr(hm.sys, "executable", "/usr/local/bin/python3.12")
+        monkeypatch.setenv("VIRTUAL_ENV", "/opt/unrelated")
+
+        with patch("hermes_cli.config.is_user_site_install", return_value=True), \
+             patch("hermes_cli.config.is_uv_tool_install", return_value=False), \
+             patch("hermes_cli.managed_uv.update_managed_uv") as mock_update_uv, \
+             patch("hermes_cli.managed_uv.ensure_uv") as mock_ensure_uv:
+            hm._cmd_update_pip(SimpleNamespace())
+
+        assert mock_run.call_args[0][0] == [
+            "/usr/local/bin/python3.12",
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--upgrade",
+            "hermes-agent",
+        ]
+        assert "VIRTUAL_ENV" not in mock_run.call_args.kwargs["env"]
+        mock_update_uv.assert_not_called()
+        mock_ensure_uv.assert_not_called()
+
+
+class TestCmdUpdateImplPackageRouting:
+    def test_windows_no_git_pip_install_uses_pip_not_zip(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        args = SimpleNamespace(
+            yes=True,
+            backup=False,
+            force=True,
+            force_venv=True,
+            branch=None,
+        )
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm.sys, "platform", "win32")
+
+        with patch.object(hm, "_is_windows", return_value=False), \
+             patch.object(hm, "_run_pre_update_backup"), \
+             patch.object(hm, "_pause_windows_gateways_for_update", return_value=None), \
+             patch.object(hm, "_cmd_update_pip") as update_pip, \
+             patch.object(hm, "_update_via_zip") as update_zip, \
+             patch("hermes_cli.config.detect_install_method", return_value="pip"):
+            hm._cmd_update_impl(args, gateway_mode=True)
+
+        update_pip.assert_called_once_with(args)
+        update_zip.assert_not_called()

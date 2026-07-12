@@ -776,15 +776,20 @@ def content_hash(skill_path: Path) -> str:
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
-            if f.is_file():
-                try:
-                    rel = f.relative_to(skill_path).as_posix()
-                    h.update(rel.encode("utf-8"))
-                    h.update(b"\x00")
-                    h.update(f.read_bytes())
-                except OSError:
-                    continue
+        # Sort by relative POSIX path string — not by the Path objects
+        # directly — so the iteration order is identical across every OS and
+        # filesystem. Two skills with byte-identical contents must hash the
+        # same regardless of where the file lives on disk.
+        files = (f for f in skill_path.rglob("*") if f.is_file())
+        files = sorted(files, key=lambda f: f.relative_to(skill_path).as_posix())
+        for f in files:
+            try:
+                rel = f.relative_to(skill_path).as_posix()
+                h.update(rel.encode("utf-8"))
+                h.update(b"\x00")
+                h.update(f.read_bytes())
+            except OSError:
+                continue
     elif skill_path.is_file():
         h.update(skill_path.read_bytes())
     return f"sha256:{h.hexdigest()[:16]}"

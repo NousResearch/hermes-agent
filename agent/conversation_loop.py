@@ -279,6 +279,45 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _build_mailbox_block(agent) -> str:
+    """Build a mailbox context block from unread agent messages."""
+    import json as _json
+    import time as _time
+
+    session_id = getattr(agent, "session_id", None)
+    session_db = getattr(agent, "_session_db", None)
+    if not session_id or not session_db:
+        return ""
+
+    agent_id = f"session:{session_id}"
+    try:
+        messages = session_db.read_agent_mailbox(agent_id)
+    except Exception:
+        return ""
+
+    if not messages:
+        return ""
+
+    now = _time.time()
+    block = [f"[AGENT MAILBOX — {len(messages)} unread message(s)]"]
+    block.append("─" * 50)
+
+    for msg in messages:
+        age_sec = int(now - msg.get("at", now))
+        age_str = f"{age_sec}s ago" if age_sec < 120 else f"{age_sec // 60}m ago"
+        block.append(f"From: {msg['from']:24s}  Type: {msg['type']:12s}  {age_str}")
+        payload = msg.get("payload", {})
+        if isinstance(payload, dict):
+            for k, v in payload.items():
+                val_str = str(v)
+                if len(val_str) > 120:
+                    val_str = val_str[:117] + "..."
+                block.append(f"  {k}: {val_str}")
+        block.append("─" * 50)
+
+    return "\n".join(block)
+
+
 def _build_task_resume_block(checkpoint: dict) -> str:
     """Build a structured resume prompt from a task checkpoint.
 
@@ -428,6 +467,25 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                         agent.session_id,
                         len(cp.get("completed_tool_calls", [])),
                     )
+    except Exception:
+        pass  # Best-effort — never block session start
+
+    # ── Agent mailbox: inject unread messages ─────────────────────────
+    # Part of the multi-agent collaboration protocol.  Agents receive
+    # messages from other agents (delegate_task children, cron workers,
+    # broadcasts) as context injected into the system prompt.
+    try:
+        _mailbox_block = _build_mailbox_block(agent)
+        if _mailbox_block:
+            agent._cached_system_prompt = (
+                (agent._cached_system_prompt or "")
+                + "\n\n"
+                + _mailbox_block
+            )
+            logger.info(
+                "Injected agent mailbox block for session=%s",
+                agent.session_id,
+            )
     except Exception:
         pass  # Best-effort — never block session start
 

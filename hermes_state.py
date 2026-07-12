@@ -848,6 +848,17 @@ CREATE TABLE IF NOT EXISTS task_checkpoints (
     snapshot_at REAL NOT NULL,
     resume_count INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    to_id       TEXT NOT NULL,            -- recipient agent id or '*' for broadcast
+    from_id     TEXT NOT NULL,            -- sender agent id
+    msg_type    TEXT NOT NULL DEFAULT 'instruction',  -- instruction|result|handoff|ping|broadcast
+    payload     TEXT NOT NULL DEFAULT '{}',  -- JSON blob with type-specific content
+    created_at  REAL NOT NULL,
+    read_at     REAL DEFAULT NULL,        -- NULL until acknowledged
+    ttl         INTEGER DEFAULT 0         -- auto-purge after N seconds (0 = permanent)
+);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -865,6 +876,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints_session
+    ON task_checkpoints(session_id, snapshot_at);
 """
 
 FTS_SQL = """
@@ -6801,6 +6814,110 @@ class SessionDB:
                 (session_id,),
             )
         self._execute_write(_do)
+
+    # ── Agent mailbox (multi-agent messaging) ──────────────────────────
+    # Persists inter-agent messages so agents can communicate across
+    # session/cron boundaries.  Part of the multi-agent collaboration protocol.
+
+    def send_agent_message(
+        self,
+        *,
+        to_id: str,
+        from_id: str,
+        msg_type: str = "instruction",
+        payload: Dict[str, Any] | None = None,
+        ttl: int = 0,
+    ) -> int:
+        """Send a message to another agent's mailbox. Returns message id."""
+        import json as _json
+        import time as _time
+
+        def _do(conn):
+            now = _time.time()
+            cursor = conn.execute(
+                "INSERT INTO agent_messages "
+                "(to_id, from_id, msg_type, payload, created_at, ttl) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    to_id,
+                    from_id,
+                    msg_type,
+                    _json.dumps(payload or {}),
+                    now,
+                    ttl,
+                ),
+            )
+            return cursor.lastrowid
+        return self._execute_write(_do)
+
+    def read_agent_mailbox(
+        self,
+        agent_id: str,
+        *,
+        mark_read: bool = True,
+        include_broadcast: bool = True,
+    ) -> list:
+        """Read unread messages for *agent_id*.
+
+        If *mark_read* is True (default), messages are marked as read.
+        Messages with expired TTL are auto-purged before reading.
+        """
+        import json as _json
+        import time as _time
+
+        def _do(conn):
+            now = _time.time()
+
+            # Purge expired messages (ttl > 0 AND time exceeded)
+            conn.execute(
+                "DELETE FROM agent_messages "
+                "WHERE ttl > 0 AND (created_at + ttl) < ?",
+                (now,),
+            )
+
+            # Build query
+            if include_broadcast:
+                query = (
+                    "SELECT id, to_id, from_id, msg_type, payload, created_at "
+                    "FROM agent_messages "
+                    "WHERE read_at IS NULL AND (to_id = ? OR to_id = '*') "
+                    "ORDER BY created_at ASC"
+                )
+            else:
+                query = (
+                    "SELECT id, to_id, from_id, msg_type, payload, created_at "
+                    "FROM agent_messages "
+                    "WHERE read_at IS NULL AND to_id = ? "
+                    "ORDER BY created_at ASC"
+                )
+
+            rows = conn.execute(query, (agent_id,)).fetchall()
+
+            if mark_read and rows:
+                ids = [row[0] for row in rows]
+                conn.executemany(
+                    "UPDATE agent_messages SET read_at = ? WHERE id = ?",
+                    [(now, mid) for mid in ids],
+                )
+
+            messages = []
+            for row in rows:
+                msg_id, to_id, from_id, msg_type, payload_str, created_at = row
+                try:
+                    payload = _json.loads(payload_str) if payload_str else {}
+                except (_json.JSONDecodeError, TypeError):
+                    payload = {"raw": payload_str}
+                messages.append({
+                    "id": msg_id,
+                    "to": to_id,
+                    "from": from_id,
+                    "type": msg_type,
+                    "payload": payload,
+                    "at": created_at,
+                })
+            return messages
+
+        return self._execute_write(_do)
 
 
 class AsyncSessionDB:

@@ -1406,15 +1406,50 @@ def handle_function_call(
 # progress to state.db so a restarted session can resume where it left off.
 # Skips read-only tools (NO_EFFECT_TOOL_NAMES) — only checkpoint mutations.
 
+def _persist_agent_message(function_args: dict, result: Any, task_id: str) -> None:
+    """Write a send_agent_message call to the agent_messages table."""
+    import json as _json
+
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        from_id = f"session:{task_id}"
+
+        to_id = function_args.get("to", "")
+        msg_type = function_args.get("msg_type", "instruction")
+        payload = function_args.get("payload", {})
+        ttl = function_args.get("ttl", 0)
+
+        db.send_agent_message(
+            to_id=to_id,
+            from_id=from_id,
+            msg_type=msg_type,
+            payload=payload,
+            ttl=ttl,
+        )
+    except Exception:
+        pass  # Best-effort — never disrupt the main loop
+
+
 def _save_tool_progress(
     function_name: str,
     function_args: dict,
     result: Any,
     task_id: str,
 ) -> None:
-    """Best-effort: persist tool progress to the session's task checkpoint."""
+    """Best-effort: persist tool progress to the session's task checkpoint.
+
+    Also intercepts send_agent_message calls to persist them to state.db.
+    """
     try:
         from agent.tool_result_classification import NO_EFFECT_TOOL_NAMES
+
+        # ── Agent messaging persistence ──────────────────────────────
+        if function_name == "send_agent_message":
+            _persist_agent_message(function_args, result, task_id)
+            return
+
         if function_name in NO_EFFECT_TOOL_NAMES:
             return  # Read-only tools don't need checkpointing
 

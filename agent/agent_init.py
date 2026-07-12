@@ -417,7 +417,19 @@ def init_agent(
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-    agent.provider = provider_name or ""
+    if provider_name is not None:
+        agent.provider = provider_name
+    elif (
+        agent._base_url_hostname == "chatgpt.com"
+        and "/backend-api/codex" in agent._base_url_lower
+    ):
+        agent.provider = "openai-codex"
+    elif agent._base_url_hostname == "api.x.ai":
+        agent.provider = "xai"
+    elif agent._base_url_hostname == "api.anthropic.com":
+        agent.provider = "anthropic"
+    else:
+        agent.provider = ""
     if credential_pool is not None:
         try:
             from agent.credential_pool import credential_pool_matches_provider
@@ -439,18 +451,8 @@ def init_agent(
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
-    elif (provider_name is None) and (
-        agent._base_url_hostname == "chatgpt.com"
-        and "/backend-api/codex" in agent._base_url_lower
-    ):
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-    elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
-        agent.api_mode = "codex_responses"
-        agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
+    elif agent.provider == "anthropic":
         agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
     elif agent._base_url_lower.rstrip("/").endswith("/anthropic"):
         # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
         # use a URL convention ending in /anthropic. Auto-detect these so the

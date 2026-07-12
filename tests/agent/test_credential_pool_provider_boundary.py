@@ -3,8 +3,11 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.credential_pool import credential_pool_matches_provider
 from hermes_cli import runtime_provider as rp
+from run_agent import AIAgent
 
 
 def test_provider_match_requires_exact_non_custom_identity():
@@ -62,3 +65,80 @@ def test_runtime_ignores_pool_loaded_for_different_provider(monkeypatch):
     assert resolved["provider"] == "deepseek"
     assert resolved["api_key"] == "deepseek-key"
     assert resolved["base_url"] == "https://api.deepseek.com/v1"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "pool_provider", "expected_provider", "expected_api_mode"),
+    [
+        (
+            "https://chatgpt.com/backend-api/codex",
+            "openai-codex",
+            "openai-codex",
+            "codex_responses",
+        ),
+        ("https://api.x.ai/v1", "xai", "xai", "codex_responses"),
+        (
+            "https://api.anthropic.com",
+            "anthropic",
+            "anthropic",
+            "anthropic_messages",
+        ),
+    ],
+)
+def test_url_inferred_provider_keeps_matching_credential_pool(
+    base_url, pool_provider, expected_provider, expected_api_mode
+):
+    pool = SimpleNamespace(provider=pool_provider)
+
+    agent = AIAgent(
+        provider=None,
+        base_url=base_url,
+        api_key="test-key",
+        model="test-model",
+        credential_pool=pool,
+        skip_context_files=True,
+        skip_memory=True,
+        quiet_mode=True,
+    )
+
+    assert agent.provider == expected_provider
+    assert agent.api_mode == expected_api_mode
+    assert agent._credential_pool is pool
+
+
+def test_provider_inference_is_independent_of_explicit_api_mode():
+    pool = SimpleNamespace(provider="anthropic")
+
+    agent = AIAgent(
+        provider=None,
+        base_url="https://api.anthropic.com",
+        api_mode="chat_completions",
+        api_key="test-key",
+        model="test-model",
+        credential_pool=pool,
+        skip_context_files=True,
+        skip_memory=True,
+        quiet_mode=True,
+    )
+
+    assert agent.provider == "anthropic"
+    assert agent.api_mode == "chat_completions"
+    assert agent._credential_pool is pool
+
+
+def test_url_inference_still_rejects_mismatched_credential_pool():
+    pool = SimpleNamespace(provider="openai-codex")
+
+    agent = AIAgent(
+        provider=None,
+        base_url="https://api.anthropic.com",
+        api_key="test-key",
+        model="test-model",
+        credential_pool=pool,
+        skip_context_files=True,
+        skip_memory=True,
+        quiet_mode=True,
+    )
+
+    assert agent.provider == "anthropic"
+    assert agent._credential_pool is None

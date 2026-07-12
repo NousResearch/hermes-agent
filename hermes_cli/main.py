@@ -3821,27 +3821,50 @@ def _save_custom_provider(
 
 
 def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
+    """Let the user remove a saved custom provider from config.yaml.
+
+    Supports both legacy ``custom_providers`` list and migrated ``providers`` dict.
+    """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list) or not providers:
+
+    legacy = cfg.get("custom_providers") or []
+    if not isinstance(legacy, list):
+        legacy = []
+
+    migrated = cfg.get("providers") or {}
+    if not isinstance(migrated, dict):
+        migrated = {}
+
+    # Entries: (source, key/index, display)
+    entries = []
+
+    for i, entry in enumerate(legacy):
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "unnamed")
+        url = entry.get("base_url", "")
+        short_url = str(url).replace("https://", "").replace("http://", "").rstrip("/")
+        entries.append(("custom_providers", i, f"{name} ({short_url})"))
+
+    for key, entry in migrated.items():
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("api", "")
+        if not url:
+            continue
+        name = entry.get("name") or key or "unnamed"
+        short_url = str(url).replace("https://", "").replace("http://", "").rstrip("/")
+        entries.append(("providers", key, f"{name} ({short_url})"))
+
+    if not entries:
         print("No custom providers configured.")
         return
 
     print("Remove a custom provider:\n")
 
-    choices = []
-    for entry in providers:
-        if isinstance(entry, dict):
-            name = entry.get("name", "unnamed")
-            url = entry.get("base_url", "")
-            short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
-            choices.append(f"{name} ({short_url})")
-        else:
-            choices.append(str(entry))
-    choices.append("Cancel")
+    choices = [d for _, _, d in entries] + ["Cancel"]
 
     try:
         from hermes_cli.curses_ui import curses_radiolist
@@ -3865,17 +3888,45 @@ def _remove_custom_provider(config):
         except (ValueError, KeyboardInterrupt, EOFError):
             idx = None
 
-    if idx is None or idx >= len(providers):
+    if idx is None or idx >= len(entries):
         print("No change.")
         return
 
-    removed = providers.pop(idx)
-    cfg["custom_providers"] = providers
-    save_config(cfg)
-    removed_name = (
-        removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    )
-    print(f'✅ Removed "{removed_name}" from custom providers.')
+    source, key, display = entries[idx]
+
+    if source == "custom_providers":
+        try:
+            removed = legacy.pop(int(key))
+            cfg["custom_providers"] = legacy
+        except Exception:
+            print("No change.")
+            return
+        removed_name = (
+            removed.get("name", "unnamed")
+            if isinstance(removed, dict)
+            else str(removed)
+        )
+        save_config(cfg)
+        print(f'✅ Removed "{removed_name}" from custom providers.')
+        return
+
+    if source == "providers":
+        if key not in migrated:
+            print("No change.")
+            return
+        removed = migrated.pop(key)
+        cfg["providers"] = migrated
+        save_config(cfg)
+        removed_name = (
+            removed.get("name")
+            if isinstance(removed, dict) and removed.get("name")
+            else str(key)
+        )
+        print(f'✅ Removed "{removed_name}" from providers.')
+        return
+
+    print("No change.")
+    return
 
 
 

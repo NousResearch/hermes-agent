@@ -37,7 +37,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
     composerRefs,
     composerState,
     gw,
-    maybeGoodVibes,
     setLastUserMsg,
     slashRef,
     submitRef,
@@ -87,14 +86,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
           enqueue: composerActions.enqueue,
           expand,
           gw,
-          maybeGoodVibes,
           setLastUserMsg,
           sys
         },
         showUserMessage
       )
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, gw, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -362,7 +360,6 @@ export interface UseSubmissionOptions {
   composerRefs: ComposerRefs
   composerState: ComposerState
   gw: GatewayClient
-  maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
   submitRef: MutableRefObject<(value: string) => void>

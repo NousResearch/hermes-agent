@@ -900,6 +900,81 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
+    """The dispatch chokepoint must sanitize after every mutable layer."""
+    agent = _build_copilot_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+
+    def _message_item(item_id, *, text, phase, status):
+        return {
+            "type": "message",
+            "role": "assistant",
+            "status": status,
+            "content": [{"type": "output_text", "text": text}],
+            "id": item_id,
+            "phase": phase,
+        }
+
+    def _request_middleware(request, **_context):
+        replacement = dict(request)
+        replacement["input"] = [
+            _message_item(
+                "request_middleware_id",
+                text="request-layer",
+                phase="commentary",
+                status="completed",
+            )
+        ]
+        return SimpleNamespace(
+            payload=replacement,
+            original_payload=request,
+            changed=True,
+            trace=[],
+        )
+
+    def _execution_middleware(request, next_call, **_context):
+        # Request middleware runs after the initial preflight, so its ID is
+        # still present here. The dispatch chokepoint must remove the ID that
+        # this execution middleware introduces immediately before the API call.
+        assert request["input"][0]["id"] == "request_middleware_id"
+        replacement = dict(request)
+        replacement["input"] = [
+            _message_item(
+                "execution_middleware_id",
+                text="execution-layer",
+                phase="final_answer",
+                status="in_progress",
+            )
+        ]
+        return next_call(replacement)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_llm_request_middleware",
+        _request_middleware,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    message_item = captured["input"][0]
+    assert "id" not in message_item
+    assert message_item["status"] == "in_progress"
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [
+        {"type": "output_text", "text": "execution-layer"}
+    ]
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

@@ -2,6 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { setGatewayState } from '@/store/session'
 
@@ -23,6 +24,7 @@ import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 
 function resetStores() {
   setGatewayState('idle')
+  $gatewaySwitching.set(false)
   $desktopBoot.set({
     error: null,
     fakeMode: false,
@@ -125,6 +127,35 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(false)
   })
 
+  it('soft gateway switch keeps the shell — no fullscreen CONNECTING', () => {
+    setGatewayState('open')
+    const { rerender } = render(
+      <>
+        <GatewayConnectingOverlay />
+        <BootFailureOverlay />
+      </>
+    )
+
+    $gatewaySwitching.set(true)
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      running: true,
+      visible: true,
+      progress: 4,
+      error: null
+    })
+    setGatewayState('closed')
+    rerender(
+      <>
+        <GatewayConnectingOverlay />
+        <BootFailureOverlay />
+      </>
+    )
+
+    expect(isConnectingShown()).toBe(false)
+    expect(isRecoveryShown()).toBe(false)
+  })
+
   it('FIX: once the prolonged reconnect raises a recoverable boot error, the recovery overlay takes over', () => {
     // Mirrors what useGatewayBoot.scheduleReconnect() now does after ~45s of
     // failed post-boot reconnects: it calls failDesktopBoot(), flipping the UI
@@ -146,7 +177,7 @@ describe('connecting overlay vs recovery surface', () => {
 
     // Escape hatch is now reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
-    expect(screen.getByText(/use local gateway/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
 })

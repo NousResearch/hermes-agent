@@ -85,7 +85,7 @@ def _clear_cache():
 class TestGetCopilotModelContext:
     """Tests for get_copilot_model_context()."""
 
-    @patch("urllib.request.urlopen")
+    @patch("hermes_cli.models.open_credentialed_url")
     def test_authenticated_catalog_fetch_never_falls_back_to_anonymous(self, urlopen):
         from hermes_cli.models import fetch_github_model_catalog
 
@@ -102,7 +102,7 @@ class TestGetCopilotModelContext:
         request = urlopen.call_args.args[0]
         assert request.get_header("Authorization") == "Bearer account-a-secret"
 
-    @patch("urllib.request.urlopen")
+    @patch("hermes_cli.models.open_credentialed_url")
     def test_anonymous_catalog_fetch_stays_anonymous(self, urlopen):
         from hermes_cli.models import fetch_github_model_catalog
 

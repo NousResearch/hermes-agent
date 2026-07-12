@@ -32,22 +32,27 @@ class CopilotProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning and model:
             try:
-                supported_efforts = supported_reasoning_efforts or []
+                from hermes_cli.models import github_model_reasoning_efforts
+
+                supported_efforts = github_model_reasoning_efforts(model)
+                if not supported_efforts:
+                    # Fall back to the caller-provided list for models
+                    # not in the static Copilot catalog.
+                    supported_efforts = supported_reasoning_efforts or []
                 if not supported_efforts:
                     return extra_body, {}
+
                 if reasoning_config and reasoning_config.get("enabled") is False:
                     return extra_body, {}
 
-                effort = (
-                    reasoning_config.get("effort", "medium")
-                    if reasoning_config
-                    else "medium"
-                )
+                effort = reasoning_config.get("effort", "medium") if reasoning_config else "medium"
                 if effort == "minimal" and "low" in supported_efforts:
                     effort = "low"
                 projected = project_reasoning_effort(effort, supported_efforts)
                 if projected is not None:
                     extra_body["reasoning"] = {"effort": projected}
+                else:
+                    extra_body["reasoning"] = {"effort": "medium"}
             except Exception:
                 pass
         return extra_body, {}

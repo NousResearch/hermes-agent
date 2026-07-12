@@ -3070,9 +3070,11 @@ class BasePlatformAdapter(ABC):
     def _attach_agent_id(self, event: "MessageEvent") -> None:
         """Resolve and stamp ``event.source.agent_id`` for downstream dispatch.
 
-        Resolution order: declarative routes → ``select_agent`` plugin
-        hook → ``default_agent_id`` → "main".  Idempotent: if a route or
-        plugin upstream already set ``agent_id`` it is left untouched.
+        Precedence (highest first): the ``select_agent`` plugin hook —
+        which is handed the route match and may override it — then the
+        declarative ``routes`` table, then ``default_agent_id``, then
+        "main" (``hook_pick or route_match or default``).  Idempotent: if
+        ``agent_id`` was already set upstream it is left untouched.
 
         Imported lazily so single-agent installs that never call
         ``set_routing_context`` avoid loading the resolver / plugin

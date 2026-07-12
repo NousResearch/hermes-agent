@@ -1242,7 +1242,11 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
     """
     for line in output.splitlines():
         stripped = line.strip()
-        if stripped.startswith('"PID"') or stripped.startswith("PID"):
+        if (
+            stripped.startswith('"PID"')
+            or stripped.startswith("PID")
+            or stripped.startswith("pid")
+        ):
             parts = stripped.split("=", 1)
             if len(parts) == 2:
                 val = parts[1].strip().rstrip(";").strip('"')
@@ -1257,25 +1261,43 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
 def _probe_launchd_service_running() -> bool:
     """Return True when launchd is actively supervising the gateway process.
 
-    ``launchctl list <label>`` returns exit 0 whenever the service definition is
+    ``launchctl list <label>`` returns exit 0 whenever a user LaunchAgent is
     registered with launchd — even when ``state = not running`` (macOS 26+).
     We additionally require a PID in the output to confirm launchd is actually
     managing a live process, not just holding a static definition.
+
+    Also recognize the system LaunchDaemon layout used by always-on macOS hosts
+    (``/Library/LaunchDaemons/com.nousresearch.hermes-gateway*.plist``), where
+    the reliable probe is ``launchctl print system/<label>``.
     """
-    if not get_launchd_plist_path().exists():
-        return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    if result.returncode != 0:
-        return False
-    return _parse_launchd_pid_from_list_output(result.stdout) is not None
+    if get_launchd_plist_path().exists():
+        try:
+            result = subprocess.run(
+                ["launchctl", "list", get_launchd_label()],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            if _parse_launchd_pid_from_list_output(result.stdout) is not None:
+                return True
+
+    if get_launchd_system_plist_path().exists():
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"system/{get_launchd_system_label()}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            return _parse_launchd_pid_from_list_output(result.stdout) is not None
+
+    return False
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -1340,7 +1362,7 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
     if is_macos():
         return GatewayRuntimeSnapshot(
             manager="launchd",
-            service_installed=get_launchd_plist_path().exists(),
+            service_installed=_launchd_service_definition_exists(),
             service_running=_probe_launchd_service_running(),
             gateway_pids=gateway_pids,
             service_scope="launchd",
@@ -2467,6 +2489,28 @@ def get_launchd_plist_path() -> Path:
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
     return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
+
+
+def get_launchd_system_label() -> str:
+    """Return the macOS system LaunchDaemon label, scoped per profile.
+
+    ``hermes gateway install`` historically installs a per-user LaunchAgent on
+    macOS, but some always-on hosts intentionally run the gateway as a system
+    LaunchDaemon so it starts at boot before any GUI login. Detect that layout
+    too so ``hermes gateway status`` does not misreport the process as manual.
+    """
+    suffix = _profile_suffix()
+    return f"com.nousresearch.hermes-gateway-{suffix}" if suffix else "com.nousresearch.hermes-gateway"
+
+
+def get_launchd_system_plist_path() -> Path:
+    """Return the macOS system LaunchDaemon plist path for the active profile."""
+    return Path("/Library/LaunchDaemons") / f"{get_launchd_system_label()}.plist"
+
+
+def _launchd_service_definition_exists() -> bool:
+    """True when either the user LaunchAgent or system LaunchDaemon exists."""
+    return get_launchd_plist_path().exists() or get_launchd_system_plist_path().exists()
 
 
 def _detect_venv_dir() -> Path | None:
@@ -4391,6 +4435,55 @@ def launchd_restart():
 
 
 def launchd_status(deep: bool = False):
+    system_plist_path = get_launchd_system_plist_path()
+    if system_plist_path.exists():
+        label = get_launchd_system_label()
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"system/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            service_listed = result.returncode == 0
+            list_output = result.stdout
+        except subprocess.TimeoutExpired:
+            service_listed = False
+            list_output = ""
+
+        launchd_pid = _parse_launchd_pid_from_list_output(list_output) if service_listed else None
+
+        from gateway.status import get_running_pid
+        fallback_pid = get_running_pid(cleanup_stale=False)
+        if launchd_pid is not None and fallback_pid == launchd_pid:
+            fallback_pid = None
+
+        print(f"Launchd plist: {system_plist_path}")
+        print("✓ System LaunchDaemon definition exists")
+        if service_listed:
+            if launchd_pid is not None:
+                print(f"✓ Gateway is supervised by system launchd (PID {launchd_pid})")
+                print("  Auto-start at boot and auto-restart on crash are available.")
+            else:
+                print("✓ Gateway system service is registered with launchd")
+                print(list_output)
+                if fallback_pid:
+                    print(f"  Detached gateway process is running (PID {fallback_pid})")
+        else:
+            print("✗ Gateway system service is not loaded")
+            print("  Service definition exists locally but launchd has not loaded it.")
+            print(f"  Run: sudo launchctl bootstrap system {system_plist_path}")
+            if fallback_pid:
+                print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
+
+        if deep:
+            log_file = get_hermes_home() / "logs" / "gateway.log"
+            if log_file.exists():
+                print()
+                print("Recent logs:")
+                subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+        return
+
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
     try:
@@ -5456,7 +5549,7 @@ def _is_service_installed() -> bool:
             or get_systemd_unit_path(system=True).exists()
         )
     elif is_macos():
-        return get_launchd_plist_path().exists()
+        return _launchd_service_definition_exists()
     elif is_windows():
         from hermes_cli import gateway_windows
 
@@ -5499,17 +5592,8 @@ def _is_service_running() -> bool:
                 pass
 
         return False
-    elif is_macos() and get_launchd_plist_path().exists():
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
+    elif is_macos():
+        return _probe_launchd_service_running()
     elif is_windows():
         from hermes_cli import gateway_windows
 
@@ -7041,7 +7125,7 @@ def _gateway_command_inner(args):
         ):
             systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
-        elif is_macos() and get_launchd_plist_path().exists():
+        elif is_macos() and _launchd_service_definition_exists():
             launchd_status(deep)
             _print_gateway_process_mismatch(snapshot)
         elif _windows_service_installed:

@@ -958,6 +958,11 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_plist_path",
+            lambda: tmp_path / "missing-system-daemon.plist",
+        )
+        monkeypatch.setattr(
             gateway_cli.subprocess,
             "run",
             lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout="", stderr="Could not find service"),
@@ -1213,6 +1218,16 @@ class TestLaunchdServiceRecovery:
         output = "{\n    PID = 99999;\n}"
         assert gateway_cli._parse_launchd_pid_from_list_output(output) == 99999
 
+    def test_parse_launchd_pid_from_launchctl_print_output_lowercase_pid(self):
+        """`launchctl print system/<label>` emits lowercase pid fields."""
+        output = """
+system/com.nousresearch.hermes-gateway = {
+    state = running
+    pid = 48417
+}
+"""
+        assert gateway_cli._parse_launchd_pid_from_list_output(output) == 48417
+
     def test_parse_launchd_pid_from_list_output_negative_pid_returns_none(self):
         """PID = -1 (recently-crashed service sentinel) must return None."""
         output = '{\n    "PID" = -1;\n    "Label" = "ai.hermes.gateway";\n}'
@@ -1252,6 +1267,47 @@ class TestLaunchdServiceRecovery:
         )
         assert gateway_cli._probe_launchd_service_running() is True
 
+    def test_probe_launchd_service_running_true_for_system_launchdaemon(
+        self, tmp_path, monkeypatch
+    ):
+        """System LaunchDaemons are probed via `launchctl print system/<label>`."""
+        system_plist_path = tmp_path / "com.nousresearch.hermes-gateway.plist"
+        system_plist_path.write_text("<plist/>", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: tmp_path / "missing-user-agent.plist",
+        )
+        monkeypatch.setattr(
+            gateway_cli, "get_launchd_system_plist_path", lambda: system_plist_path
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_label",
+            lambda: "com.nousresearch.hermes-gateway",
+        )
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "print", "system/com.nousresearch.hermes-gateway"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="""
+system/com.nousresearch.hermes-gateway = {
+    state = running
+    pid = 48417
+}
+""",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._probe_launchd_service_running() is True
+        assert calls == [["launchctl", "print", "system/com.nousresearch.hermes-gateway"]]
+
     # ── Unsupport marker lifecycle ───────────────────────────────────────
 
     def test_launchd_unsupported_marker_write_and_clear(self, tmp_path, monkeypatch):
@@ -1290,6 +1346,11 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_plist_path",
+            lambda: tmp_path / "missing-system-daemon.plist",
+        )
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
             if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
@@ -1310,11 +1371,57 @@ class TestLaunchdServiceRecovery:
         assert "supervised by launchd" in out
         assert "Auto-start at login" in out
 
+    def test_launchd_status_reports_system_launchdaemon(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Status should not call a running system LaunchDaemon a manual process."""
+        system_plist_path = tmp_path / "com.nousresearch.hermes-gateway.plist"
+        system_plist_path.write_text("<plist/>", encoding="utf-8")
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_plist_path",
+            lambda: system_plist_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_label",
+            lambda: "com.nousresearch.hermes-gateway",
+        )
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            if cmd == ["launchctl", "print", "system/com.nousresearch.hermes-gateway"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="""
+system/com.nousresearch.hermes-gateway = {
+    state = running
+    pid = 48417
+}
+""",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 48417)
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "System LaunchDaemon definition exists" in out
+        assert "Gateway is supervised by system launchd (PID 48417)" in out
+        assert "Auto-start at boot" in out
+
     def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
         """When the unsupported marker exists and a fallback PID is running."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_plist_path",
+            lambda: tmp_path / "missing-system-daemon.plist",
+        )
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
             if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
@@ -1343,6 +1450,11 @@ class TestLaunchdServiceRecovery:
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_system_plist_path",
+            lambda: tmp_path / "missing-system-daemon.plist",
+        )
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
             if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:

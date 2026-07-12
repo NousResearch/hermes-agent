@@ -188,7 +188,10 @@ def _check_fn_cached(fn: Callable) -> bool:
 
         # No recent success (or grace expired) — honor the failure. Log it so
         # silent tool loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # Use DEBUG for steady-state "returned False" (tool simply not configured)
+        # to avoid spamming errors.log; keep WARNING for raised (unexpected).
+        _log = logger.warning if raised else logger.debug
+        _log(
             "check_fn %s %s; dependent tools will be unavailable this turn",
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",

@@ -33,7 +33,7 @@ Tailscale on BOOX, join the operator-approved tailnet, and use the private
 2. Wait for **Saved offline**.
 3. Add the typed note `Reply with the device and handwriting you received.`
 4. Tap **Send**.
-5. The first send may download the English handwriting model (about 20 MB).
+5. The first send downloads the English handwriting model (about 20 MB) and waits for it before recognition.
 6. Confirm a Hermes reply appears and contains the recognized handwriting.
 7. Close the app, reopen it, and confirm the page returns.
 

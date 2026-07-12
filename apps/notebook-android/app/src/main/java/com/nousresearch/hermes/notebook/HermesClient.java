@@ -15,10 +15,9 @@ import org.json.JSONObject;
 final class HermesClient {
     static String send(String endpoint, String token, String chatId, String text, List<InkStroke> strokes) throws Exception {
         if (!endpoint.startsWith("https://")) throw new IllegalArgumentException("Hermes endpoint must use HTTPS");
-        JSONArray ink = new JSONArray(); for (InkStroke stroke : strokes) ink.put(stroke.toJson());
         JSONObject payload = new JSONObject().put("user", "notebook-user").put("chat_id", chatId)
             .put("message_id", java.util.UUID.randomUUID().toString()).put("text", text)
-            .put("source", "notebook").put("ink", ink)
+            .put("source", "notebook").put("stroke_count", strokes.size())
             .put("client", new JSONObject().put("platform", isBoox() ? "boox" : "android")
                 .put("stylus", "android-stylus").put("capabilities", new JSONArray().put("pressure").put("tilt").put("eraser").put("offline")));
         HttpURLConnection connection = (HttpURLConnection) new URL(trimSlash(endpoint) + "/ingest").openConnection();

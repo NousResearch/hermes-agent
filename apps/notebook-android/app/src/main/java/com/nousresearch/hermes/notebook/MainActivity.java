@@ -44,9 +44,12 @@ public final class MainActivity extends Activity {
     private void send() {
         SharedPreferences prefs = getSharedPreferences("notebook", MODE_PRIVATE); String endpoint = prefs.getString("endpoint", ""); String token = prefs.getString("token", "");
         if (endpoint.isEmpty() || token.isEmpty()) { startActivity(new Intent(this, SettingsActivity.class)); return; }
-        String note = prompt.getText().toString().trim(); if (note.isEmpty()) note = "Please interpret the attached handwritten notebook page.";
+        String note = prompt.getText().toString().trim();
         String typedNote = note; var ink = canvas.snapshot(); status.setText("Reading handwriting…");
         transcriber.recognize(ink, canvas.getWidth(), canvas.getHeight(), (handwriting, recognitionError) -> {
+            if (recognitionError != null && typedNote.isEmpty()) {
+                status.setText("Handwriting model unavailable; connect to Wi-Fi and retry"); return;
+            }
             String finalNote = typedNote;
             if (!handwriting.isEmpty()) finalNote = typedNote.isEmpty() ? handwriting : typedNote + "\n\nHandwriting:\n" + handwriting;
             if (finalNote.isEmpty()) { status.setText("Could not read handwriting; add a short note and retry"); return; }

@@ -101,12 +101,11 @@ _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
-# Backwards-compatible module-level paths.
-# Tests monkeypatch these; production code should use _get_cron_dir().
-HERMES_DIR = get_hermes_home().resolve()
-CRON_DIR = HERMES_DIR / "cron"
-JOBS_FILE = CRON_DIR / "jobs.json"
-OUTPUT_DIR = CRON_DIR / "output"
+# Frozen snapshot of CRON_DIR's import-time default. Used to detect a test
+# monkeypatch of the module-level CRON_DIR *without* re-evaluating the now
+# profile-dynamic get_hermes_home() — that live comparison would mistake any
+# active-profile / HERMES_HOME change for a monkeypatch and leak a stale path.
+_CRON_DIR_IMPORT_DEFAULT = CRON_DIR
 
 
 def _get_cron_dir() -> Path:
@@ -114,13 +113,11 @@ def _get_cron_dir() -> Path:
     ContextVar overrides are honoured.
 
     Falls back to the module-level CRON_DIR constant when it has been
-    monkey-patched by tests (detected by mismatch with the default).
+    monkey-patched by tests — detected by mismatch with its frozen import-time
+    default (``_CRON_DIR_IMPORT_DEFAULT``), never a live get_hermes_home() re-eval.
     """
-    try:
-        if CRON_DIR != get_hermes_home() / "cron":
-            return CRON_DIR
-    except Exception:
-        pass
+    if CRON_DIR != _CRON_DIR_IMPORT_DEFAULT:
+        return CRON_DIR
     return get_hermes_home() / "cron"
 
 

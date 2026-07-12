@@ -66,6 +66,23 @@ def test_skill_node_timestamp_uses_iso_usage_activity(tmp_path, monkeypatch):
     assert nodes["iso-skill"].timestamp == 1_777_550_400
 
 
+def test_skill_nodes_exclude_archives_and_development_worktrees(tmp_path, monkeypatch):
+    skills_root = tmp_path / "skills"
+    paths = {
+        "active": skills_root / "active" / "SKILL.md",
+        "archived": skills_root / ".archive" / "old" / "SKILL.md",
+        "worktree": skills_root / ".worktrees" / "task-12" / "copy" / "SKILL.md",
+    }
+    for name, path in paths.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    monkeypatch.setattr(learning_graph, "_load_usage", lambda: {})
+
+    nodes = learning_graph.build_skill_nodes([("profile", skills_root)])
+
+    assert set(nodes) == {"active"}
+
+
 def test_memory_is_cards_split_on_separator(tmp_path):
     home = tmp_path / ".hermes"
     (home / "memories").mkdir(parents=True)

@@ -12759,6 +12759,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
     number of skills newly disabled.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from agent.skill_utils import is_excluded_skill_path
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
     keep_set = {s.strip() for s in keep if s and s.strip()}
@@ -12769,7 +12770,8 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
         skills_root = profile_dir / "skills"
         if skills_root.is_dir():
             for md in skills_root.rglob("SKILL.md"):
-                installed.append(md.parent.name)
+                if not is_excluded_skill_path(md):
+                    installed.append(md.parent.name)
         cfg = load_config()
         disabled = get_disabled_skills(cfg)
         for name in installed:

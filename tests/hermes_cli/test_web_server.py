@@ -20,6 +20,27 @@ from hermes_cli.config import (
 )
 
 
+def test_profile_skill_selection_excludes_archives_and_worktree_copies(tmp_path):
+    from hermes_cli.web_server import _disable_unselected_skills
+
+    profile_dir = tmp_path / "profile"
+    skills_root = profile_dir / "skills"
+    for relative in (
+        Path("active") / "SKILL.md",
+        Path(".archive") / "old" / "SKILL.md",
+        Path(".worktrees") / "task-12" / "copy" / "SKILL.md",
+    ):
+        path = skills_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\nname: {path.parent.name}\n---\n", encoding="utf-8")
+
+    disabled_count = _disable_unselected_skills(profile_dir, keep=[])
+
+    assert disabled_count == 1
+    config = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert config["skills"]["disabled"] == ["active"]
+
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

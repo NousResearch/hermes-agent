@@ -218,6 +218,21 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_excludes_development_worktrees_and_archives(tmp_path):
+    active = tmp_path / "active" / "SKILL.md"
+    archived = tmp_path / ".archive" / "old" / "SKILL.md"
+    worktree = tmp_path / ".worktrees" / "plan001" / "duplicate" / "SKILL.md"
+    for path in (active, archived, worktree):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\nname: fixture\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [active]
+    assert is_excluded_skill_path(archived) is True
+    assert is_excluded_skill_path(worktree) is True
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

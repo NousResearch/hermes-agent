@@ -54,6 +54,9 @@ interface GatewayBootOptions {
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
+  /** Rehydrate the active transcript after a successful reconnect so deltas
+   *  emitted while the WebSocket was down don't require an app restart. */
+  refreshActiveSession?: () => Promise<void>
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
 }
@@ -62,6 +65,7 @@ export function useGatewayBoot({
   handleGatewayEvent,
   onConnectionReady,
   onGatewayReady,
+  refreshActiveSession,
   refreshHermesConfig,
   refreshSessions
 }: GatewayBootOptions) {
@@ -69,6 +73,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    refreshActiveSession,
     refreshHermesConfig,
     refreshSessions
   })
@@ -77,6 +82,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    refreshActiveSession,
     refreshHermesConfig,
     refreshSessions
   }
@@ -168,8 +174,12 @@ export function useGatewayBoot({
 
         reconnectAttempt = 0
         // Resync state that may have moved on the backend while we were asleep.
+        // In addition to the sidebar/config, rehydrate the active transcript:
+        // any deltas/completion events emitted while the WebSocket was down are
+        // otherwise missing from the renderer until a full app restart.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
+        await callbacksRef.current.refreshActiveSession?.().catch(() => undefined)
       } catch (err) {
         // OAuth session expired mid-reconnect: surface the actionable "sign in
         // again" message once instead of silently looping the backoff against a

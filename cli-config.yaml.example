@@ -494,6 +494,12 @@ browser:
   extension_control:
     enabled: false
 
+  # Maximum characters of snapshot content before truncate-and-store.
+  # Increase for long pages (for example, documentation or financial reports),
+  # or decrease to reduce context usage. Minimum: 1000; default: 15000
+  # (same per-page budget as web_extract).
+  # snapshot_threshold: 15000
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

@@ -282,11 +282,17 @@ DEFAULT_COMMAND_TIMEOUT = 30
 MIN_OPEN_TIMEOUT = 60
 MIN_FIRST_OPEN_TIMEOUT = 120
 
-# Max chars for snapshot content before truncation/summarization. Aligned
-# with web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
+# Default max chars for snapshot content before truncation. Aligned with
+# web_tools.DEFAULT_EXTRACT_CHAR_LIMIT (15000) — the snapshot and
 # web_extract paths share the same truncate-and-store pattern, so the model
-# gets the same per-page budget from both.
-SNAPSHOT_SUMMARIZE_THRESHOLD = 15000
+# gets the same per-page budget from both. Configurable via
+# ``browser.snapshot_threshold`` in config.yaml.
+DEFAULT_SNAPSHOT_THRESHOLD = 15000
+MIN_SNAPSHOT_THRESHOLD = 1000
+
+# Backwards-compatible import surface. Runtime call sites use
+# ``get_browser_snapshot_threshold()`` so config overrides take effect.
+SNAPSHOT_SUMMARIZE_THRESHOLD = DEFAULT_SNAPSHOT_THRESHOLD
 
 # Hard ceiling on the full-snapshot file written to cache/web when a snapshot
 # is truncated. Mirrors web_tools.MAX_STORED_TEXT_CHARS —
@@ -299,6 +305,8 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_cached_snapshot_threshold: Optional[int] = None
+_snapshot_threshold_resolved = False
 
 
 def _sanitize_url_for_logs(value: object) -> str:
@@ -351,6 +359,33 @@ def _safe_command_timeout() -> int:
     """
     val = _get_command_timeout()
     return val if val is not None else DEFAULT_COMMAND_TIMEOUT
+
+
+def get_browser_snapshot_threshold() -> int:
+    """Return the configured maximum browser snapshot size in characters.
+
+    Reads the raw profile-aware config so tool JSON output is not affected by
+    config-loader warnings. The value is cached for the browser lifecycle and
+    reset by :func:`cleanup_all_browsers`.
+    """
+    global _cached_snapshot_threshold, _snapshot_threshold_resolved
+    if _snapshot_threshold_resolved and _cached_snapshot_threshold is not None:
+        return _cached_snapshot_threshold
+
+    result = DEFAULT_SNAPSHOT_THRESHOLD
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "snapshot_threshold")
+        if val is not None:
+            result = max(int(val), MIN_SNAPSHOT_THRESHOLD)
+    except Exception as exc:
+        logger.debug("Could not read browser.snapshot_threshold: %s", exc)
+
+    # Preserve the same race-safety invariant as the command-timeout cache.
+    _cached_snapshot_threshold = result
+    _snapshot_threshold_resolved = True
+    return result
 
 
 def _get_open_command_timeout(*, first_open: bool = False) -> int:
@@ -3167,7 +3202,7 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
         return None
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_THRESHOLD) -> str:
+def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never
@@ -3178,11 +3213,15 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = SNAPSHOT_SUMMARIZE_T
 
     Args:
         snapshot_text: The snapshot text to truncate
-        max_chars: Maximum characters to keep
+        max_chars: Maximum characters to keep. Defaults to the configured
+            ``browser.snapshot_threshold`` (see
+            :func:`get_browser_snapshot_threshold`).
 
     Returns:
         Truncated text with a stored-full-text pointer if truncated
     """
+    if max_chars is None:
+        max_chars = get_browser_snapshot_threshold()
     if len(snapshot_text) <= max_chars:
         return snapshot_text
 
@@ -3477,8 +3516,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
-                if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-                    snapshot_text = _truncate_snapshot(snapshot_text)
+                threshold = get_browser_snapshot_threshold()
+                if len(snapshot_text) > threshold:
+                    snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
                 response["snapshot"] = _redact_browser_output(snapshot_text)
                 response["element_count"] = len(refs) if refs else 0
                 if snap_result.get("fallback_warning") and not response.get("fallback_warning"):
@@ -3563,9 +3603,11 @@ def browser_snapshot(
         # Oversized snapshots truncate at line boundaries; the full
         # accessibility tree is stored to cache/web and the appended note
         # tells the agent how to page through it with read_file (same
-        # pattern as web_extract — no LLM summarization).
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-            snapshot_text = _truncate_snapshot(snapshot_text)
+        # pattern as web_extract — no LLM summarization). Threshold is
+        # configurable via browser.snapshot_threshold.
+        threshold = get_browser_snapshot_threshold()
+        if len(snapshot_text) > threshold:
+            snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
 
         response = {
             "success": True,
@@ -5028,6 +5070,7 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
+    global _cached_snapshot_threshold, _snapshot_threshold_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
@@ -5037,6 +5080,8 @@ def cleanup_all_browsers() -> None:
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
     _command_timeout_resolved = False
     _cached_command_timeout = None
+    _snapshot_threshold_resolved = False
+    _cached_snapshot_threshold = None
     _cached_chromium_installed = None
     global _chromium_autoinstall_attempted
     _chromium_autoinstall_attempted = False

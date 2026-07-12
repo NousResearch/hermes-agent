@@ -154,9 +154,18 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
 def test_verify_on_stop_emits_interim_response_to_ui(agent, monkeypatch):
     """The full assistant response must reach the UI when verification stop
     triggers — not just the terse post-verification reply. (#62657)
+
+    When the response was already streamed (Desktop gateway), the callback
+    must still send it as a standalone commentary bubble (force_display=True)
+    so it survives the subsequent verification messages.
     """
     emitted = []
-    agent.interim_assistant_callback = lambda text, **kw: emitted.append(text)
+    call_kwargs = []
+    def _capture(text, **kw):
+        emitted.append(text)
+        call_kwargs.append(kw)
+
+    agent.interim_assistant_callback = _capture
 
     def model_call(_api_kwargs):
         agent._turn_file_mutation_paths = {"changed.py"}
@@ -175,6 +184,12 @@ def test_verify_on_stop_emits_interim_response_to_ui(agent, monkeypatch):
     # The full response was emitted to the UI callback.
     assert any("full detailed report" in e for e in emitted), (
         f"expected full response in emitted messages, got: {emitted}"
+    )
+    # force_display=True → already_streamed=False so the gateway calls
+    # on_commentary() (standalone bubble), not on_segment_break() (which
+    # just finalizes the streaming buffer and gets overwritten).
+    assert any(kw.get("already_streamed") is False for kw in call_kwargs), (
+        f"expected already_streamed=False in at least one call, got: {call_kwargs}"
     )
     # The response was also persisted to the in-memory message list without
     # the synthetic flag.

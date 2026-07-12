@@ -5493,7 +5493,9 @@ def run_conversation(
                     # repaired at API-call time by ``repair_message_sequence``
                     # (Pass 0: consecutive-assistant merge). (#55733, #62657)
                     messages.append(final_msg)
-                    agent._emit_interim_assistant_message(final_msg)
+                    agent._emit_interim_assistant_message(
+                        final_msg, force_display=True
+                    )
                     try:
                         agent._flush_messages_to_session_db(
                             messages, conversation_history
@@ -5560,7 +5562,9 @@ def run_conversation(
                     # above: the attempted answer is persisted and emitted to
                     # the UI, while only the nudge stays synthetic. (#62657)
                     messages.append(final_msg)
-                    agent._emit_interim_assistant_message(final_msg)
+                    agent._emit_interim_assistant_message(
+                        final_msg, force_display=True
+                    )
                     try:
                         agent._flush_messages_to_session_db(
                             messages, conversation_history

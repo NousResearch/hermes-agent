@@ -4865,8 +4865,18 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer."""
+    def _emit_interim_assistant_message(
+        self, assistant_msg: Dict[str, Any], *, force_display: bool = False
+    ) -> None:
+        """Surface a real mid-turn assistant commentary message to the UI layer.
+
+        When ``force_display`` is True the message is sent as a standalone
+        commentary bubble even if the text was already streamed via
+        ``stream_delta_callback``.  This is needed for the verify-on-stop
+        path: the streamed text lives in the streaming buffer and is
+        overwritten by subsequent verification messages, so without a
+        forced commentary bubble the user never sees the full answer.
+        """
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return
@@ -4894,7 +4904,10 @@ class AIAgent:
             or self._interim_text_was_delivered(visible)
         ):
             return
-        already_streamed = self._interim_content_was_streamed(visible)
+        already_streamed = (
+            False if force_display
+            else self._interim_content_was_streamed(visible)
+        )
         try:
             cb(visible, already_streamed=already_streamed)
             if undelivered_parts:

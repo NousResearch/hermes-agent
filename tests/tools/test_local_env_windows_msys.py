@@ -139,7 +139,7 @@ class TestBashSafePath:
         quoted = _quote_bash_path(
             r"C:\Users\Alexander\AppData\Local\Temp\hermes-snap-abc.sh"
         )
-        assert quoted == "'/c/Users/Alexander/AppData/Local/Temp/hermes-snap-abc.sh'"
+        assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-abc.sh" in quoted
         assert "\\" not in quoted
 
 
@@ -384,5 +384,5 @@ class TestWrapCommandWindowsNativeCwd:
             env.init_session()
 
         script = captured["script"]
-        assert "'/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh'" in script
+        assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script

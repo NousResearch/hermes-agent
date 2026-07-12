@@ -967,9 +967,9 @@ class ShellFileOperations(FileOperations):
         ops and the terminal ``cd`` agree on the path form. No-op off Windows and
         for non-drive-qualified paths.
         """
-        from tools.environments.local import _windows_to_msys_path
+        from tools.environments.local import _bash_safe_path
 
-        arg = _windows_to_msys_path(arg)
+        arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 

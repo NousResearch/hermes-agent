@@ -367,15 +367,14 @@ class BaseEnvironment(ABC):
         # Without this the snapshot bootstrap ``cd`` below fails on Windows and
         # ``pwd -P`` captures the login shell's directory, not ``terminal.cwd``.
         _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
-        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
-        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
-        # tripping on drive letters.  On POSIX this is a no-op (no colons /
-        # special chars in a /tmp path).  Previously unquoted interpolation
-        # caused ``C:/Users/.../hermes-snap-*.sh: No such file or directory``
-        # errors on Windows, leaking via stderr (merged into stdout on Linux
-        # backends) into every terminal-tool response.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Quote snapshot/cwd-file paths for Git Bash.  On Windows native
+        # ``C:\...`` temp paths must be rewritten to ``/c/...`` before
+        # quoting — bare backslashes in the bootstrap script trigger the
+        # "Directory \drivers\etc does not exist" failure (#63113 follow-up).
+        from tools.environments.local import _quote_bash_path
+
+        _quoted_snap = _quote_bash_path(self._snapshot_path)
+        _quoted_cwd_file = _quote_bash_path(self._cwd_file)
         # Use atomic file replacement: assemble the snapshot in a temp file,
         # then mv it over the final path.  This prevents concurrent source()
         # calls from reading a half-written snapshot when another terminal
@@ -393,7 +392,7 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = _quote_bash_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
             f"export -p > {_snap_tmp}\n"
@@ -466,12 +465,11 @@ class BaseEnvironment(ABC):
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
-        # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
-        # ``C:/Users/...``-shaped paths without glob-splitting the colon or
-        # tripping on drive letters.  POSIX paths are unaffected.  See
-        # :meth:`init_session` for the same fix on the bootstrap block.
-        _quoted_snap = shlex.quote(self._snapshot_path)
-        _quoted_cwd_file = shlex.quote(self._cwd_file)
+        from tools.environments.local import _quote_bash_path
+
+        # Quote snapshot/cwd-file paths for Git Bash (see init_session).
+        _quoted_snap = _quote_bash_path(self._snapshot_path)
+        _quoted_cwd_file = _quote_bash_path(self._cwd_file)
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
@@ -479,7 +477,7 @@ class BaseEnvironment(ABC):
         # subshell PID — unique per concurrent ``&``-launched writer — so two
         # writers never share a temp name and clobber each other before the mv.
         # Static path shlex-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        _snap_tmp = _quote_bash_path(self._snapshot_path + ".tmp.") + "$BASHPID"
 
         parts = []
 

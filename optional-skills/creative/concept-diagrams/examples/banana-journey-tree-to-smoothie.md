@@ -100,9 +100,9 @@ A narrative journey diagram following a single banana across 3,000 miles and 3 w
 ### Winding Journey Path
 ```xml
 <path class="journey-path" d="
-  M 80 100 
-  L 200 100 
-  Q 280 100 280 150 
+  M 80 100
+  L 200 100
+  Q 280 100 280 150
   L 280 180
   Q 280 220 320 220
   L 520 220

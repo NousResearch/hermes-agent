@@ -27,7 +27,7 @@ A physical/structural diagram showing an aircraft side profile using appropriate
     Q 580 180 560 180
     Z
   "/>
-  
+
   <!-- Nose cone -->
   <path class="fuselage" d="
     M 80 180
@@ -50,11 +50,11 @@ A physical/structural diagram showing an aircraft side profile using appropriate
   <!-- First class -->
   <rect class="first-class" x="85" y="183" width="50" height="34" rx="2"/>
   <text class="tl" x="110" y="203" text-anchor="middle">First</text>
-  
+
   <!-- Business class -->
   <rect class="business-class" x="140" y="183" width="80" height="34" rx="2"/>
   <text class="tl" x="180" y="203" text-anchor="middle">Business</text>
-  
+
   <!-- Economy class -->
   <rect class="economy-class" x="225" y="183" width="200" height="34" rx="2"/>
   <text class="tl" x="325" y="203" text-anchor="middle">Economy</text>
@@ -72,7 +72,7 @@ A physical/structural diagram showing an aircraft side profile using appropriate
     340,235
     340,220
   "/>
-  
+
   <!-- Wing fuel tank (dashed interior) -->
   <polygon class="fuel-tank" points="
     210,225
@@ -110,7 +110,7 @@ A physical/structural diagram showing an aircraft side profile using appropriate
   "/>
   <text class="tl" x="565" y="150" text-anchor="middle">Vertical</text>
   <text class="tl" x="565" y="162" text-anchor="middle">stabilizer</text>
-  
+
   <!-- Rudder -->
   <polygon points="575,105 590,105 590,178 580,178" fill="none" stroke="#185FA5" stroke-width="0.5" stroke-dasharray="3 2"/>
   <text class="tl" x="595" y="145" opacity=".6">Rudder</text>
@@ -125,7 +125,7 @@ A physical/structural diagram showing an aircraft side profile using appropriate
     520,195
   "/>
   <text class="tl" x="510" y="166">Horizontal stabilizer</text>
-  
+
   <!-- Elevator -->
   <polygon points="462,174 450,168 455,163 467,169" fill="none" stroke="#185FA5" stroke-width="0.5" stroke-dasharray="3 2"/>
   <text class="tl" x="440" y="158" opacity=".6">Elevator</text>

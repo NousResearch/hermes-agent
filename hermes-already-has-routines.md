@@ -99,7 +99,7 @@ One automation, any destination:
 
 ```bash
 --deliver telegram                      # Telegram home channel
---deliver discord                       # Discord home channel  
+--deliver discord                       # Discord home channel
 --deliver slack                         # Slack channel
 --deliver sms:+15551234567              # Text message
 --deliver telegram:-1001234567890:42    # Specific Telegram forum topic

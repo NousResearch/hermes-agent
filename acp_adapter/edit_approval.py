@@ -42,7 +42,32 @@ _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar(
 _PERMISSION_REQUEST_IDS = count(1)
 
 
-SENSITIVE_AUTO_APPROVE_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+SENSITIVE_AUTO_APPROVE_NAMES = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    "id_rsa",
+    "id_ed25519",
+    # Shell startup / login files: writing these runs arbitrary code at the
+    # next shell or login.
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    # Tool config files that can execute commands or redirect trust.
+    ".gitconfig",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+    ".envrc",
+}
+# Path components that indicate credentials, VCS internals, or persistence
+# locations. Any edit whose path contains one of these must always prompt.
+SENSITIVE_AUTO_APPROVE_DIR_PARTS = {".git", ".ssh", "autostart", "systemd"}
 AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
@@ -190,11 +215,22 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
-    parts = Path(path).expanduser().parts
-    lowered = {part.lower() for part in parts}
-    if ".git" in lowered or ".ssh" in lowered:
+    expanded = Path(path).expanduser()
+    lowered = {part.lower() for part in expanded.parts}
+    if lowered & SENSITIVE_AUTO_APPROVE_DIR_PARTS:
         return True
-    return Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    if expanded.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES:
+        return True
+    # Any dotfile directly in the user's home directory is treated as sensitive.
+    # This catches shell and tool rc/config files (arbitrary code execution or
+    # trust redirection) that are not individually enumerated above.
+    try:
+        resolved = expanded.resolve(strict=False)
+        if resolved.name.startswith(".") and resolved.parent == Path.home().resolve(strict=False):
+            return True
+    except (OSError, RuntimeError):
+        pass
+    return False
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:

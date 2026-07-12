@@ -62,6 +62,7 @@ def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
                     "authorization.error": 1,
                     "session.synchronization": 1,
                     "session.event": 1,
+                    "mutation.receipt": 1,
                 },
                 "capabilities": {
                     "auth.ws_scopes": {"version": 1},
@@ -72,6 +73,15 @@ def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
                             "max_events": 512,
                             "max_bytes": 1048576,
                         },
+                    },
+                    "mutation.idempotency": {
+                        "version": 1,
+                        "methods": [
+                            "prompt.submit",
+                            "session.interrupt",
+                            "session.delete",
+                        ],
+                        "status_method": "mutation.status",
                     },
                 },
                 "authorization": {

@@ -29,6 +29,11 @@ from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.mobile_sync import SessionEventStream
+from tui_gateway.mobile_mutations import (
+    MobileMutationStore,
+    MutationConflict,
+    MutationDisposition,
+)
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -870,6 +875,32 @@ except (TypeError, ValueError):
 _SESSION_TTL_S = max(0.0, _SESSION_TTL_S)
 _REAPER_SCAN_S = 300.0
 
+_mobile_mutation_store_instance: MobileMutationStore | None = None
+_mobile_mutation_store_lock = threading.Lock()
+
+
+def _mobile_mutation_store() -> MobileMutationStore:
+    """Return the gateway-profile receipt store, opening it only when needed."""
+    global _mobile_mutation_store_instance
+    with _mobile_mutation_store_lock:
+        if _mobile_mutation_store_instance is None:
+            _mobile_mutation_store_instance = MobileMutationStore(
+                Path(_hermes_home) / "state" / "mobile_mutations.sqlite3"
+            )
+        return _mobile_mutation_store_instance
+
+
+def _close_mobile_mutation_store() -> None:
+    global _mobile_mutation_store_instance
+    with _mobile_mutation_store_lock:
+        store = _mobile_mutation_store_instance
+        _mobile_mutation_store_instance = None
+    if store is not None:
+        store.close()
+
+
+atexit.register(_close_mobile_mutation_store)
+
 
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-WS-disconnect drop sentinel; a session
@@ -1418,6 +1449,258 @@ def handle_request(req: dict) -> dict | None:
     return fn(rid, params)
 
 
+_MOBILE_MUTATION_METHODS = frozenset(
+    {"prompt.submit", "session.interrupt", "session.delete"}
+)
+_NOT_A_MOBILE_MUTATION = object()
+
+
+def _mobile_mutation_resource(
+    method: str,
+    params: dict,
+    rid: Any,
+) -> tuple[str, dict[str, Any]] | dict:
+    """Resolve client-supplied durable semantics without consulting live state."""
+    if method in {"prompt.submit", "session.interrupt"}:
+        expected = str(params.get("expected_stored_session_id") or "").strip()
+        if not expected:
+            return _err(
+                rid,
+                -32602,
+                "expected_stored_session_id is required for mobile mutation",
+                data={
+                    "method": method,
+                    "reason": "durable_resource_id_required",
+                },
+            )
+        semantics = {"text": params.get("text")} if method == "prompt.submit" else {}
+        # Cuttle keeps this server-issued Conversation identity stable while the
+        # process-local live session id and compression tip can rotate. Binding
+        # the receipt to the live id would turn a valid reconnect retry into a
+        # different mutation. The execute path validates this identity against
+        # current Hermes state before the handler can mutate anything.
+        return expected, semantics
+
+    target = str(params.get("session_id") or "").strip()
+    if not target:
+        return _err(rid, -32602, "session_id is required")
+    # A stored session id is itself the durable resource being deleted. Do not
+    # normalize it through a compression lineage: after successful deletion
+    # that lineage is intentionally gone, while a retry must still fingerprint
+    # to the same tombstoned target and replay the original outcome.
+    return target, {}
+
+
+def _mobile_mutation_preflight(method: str, params: dict, rid: Any) -> dict | None:
+    """Validate live routing only for a newly reserved mutation, not a replay."""
+    if method not in {"prompt.submit", "session.interrupt"}:
+        return None
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+
+    expected = str(params.get("expected_stored_session_id") or "").strip()
+    runtime_id = str(params.get("session_id") or "").strip()
+    current_ids = {
+        str(session.get("session_key") or "").strip(),
+        str(session.get("resume_session_id") or "").strip(),
+        _session_lookup_key(session, fallback=runtime_id).strip(),
+    }
+    current_ids.discard("")
+    if expected in current_ids:
+        return None
+
+    lazy_watch = bool(session.get("lazy") and session.get("agent") is None)
+    if not lazy_watch:
+        try:
+            with _session_db(session) as db:
+                lineage = getattr(db, "get_compression_lineage", None)
+                if callable(lineage):
+                    expected_lineage = lineage(expected)
+                    expected_root = str(expected_lineage[0]) if expected_lineage else ""
+                    for current in current_ids:
+                        current_lineage = lineage(current)
+                        if (
+                            expected_root
+                            and current_lineage
+                            and str(current_lineage[0]) == expected_root
+                        ):
+                            return None
+        except Exception:
+            logger.debug(
+                "failed to validate mobile mutation conversation identity",
+                exc_info=True,
+            )
+
+    live = ", ".join(sorted(current_ids)) or "unknown"
+    return _err(
+        rid,
+        4019,
+        f"stored session mismatch: expected {expected!r}; live session is {live}",
+    )
+
+
+def _mutation_outcome(response: dict) -> dict[str, Any]:
+    if "result" in response:
+        return {"result": copy.deepcopy(response["result"])}
+    return {"error": copy.deepcopy(response.get("error") or {})}
+
+
+def _mutation_response(
+    rid: Any,
+    outcome: dict[str, Any],
+    *,
+    client_request_id: str,
+    deduplicated: bool,
+) -> dict:
+    receipt = {
+        "client_request_id": client_request_id,
+        "deduplicated": deduplicated,
+        "state": "completed",
+    }
+    if "result" in outcome:
+        result = copy.deepcopy(outcome["result"])
+        if not isinstance(result, dict):
+            result = {"value": result}
+        result["mutation"] = receipt
+        return _ok(rid, result)
+
+    error = copy.deepcopy(outcome.get("error") or {})
+    data = error.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    data["mutation"] = receipt
+    error["data"] = data
+    return {"jsonrpc": "2.0", "id": rid, "error": error}
+
+
+def _dispatch_mobile_mutation(
+    req: dict,
+    *,
+    rid: Any,
+    method: str,
+    params: dict,
+    transport: Transport,
+) -> object:
+    from tui_gateway.mobile_contract import (
+        MOBILE_AUDIENCE,
+        effective_authorization,
+    )
+
+    grant = effective_authorization(getattr(transport, "authorization", None))
+    if grant["audience"] != MOBILE_AUDIENCE or method not in _MOBILE_MUTATION_METHODS:
+        return _NOT_A_MOBILE_MUTATION
+
+    client_request_id = str(params.get("client_request_id") or "").strip()
+    if not client_request_id:
+        return _err(
+            rid,
+            -32602,
+            "client_request_id is required for mobile mutation",
+            data={"method": method, "reason": "client_request_id_required"},
+        )
+
+    resource = _mobile_mutation_resource(method, params, rid)
+    if isinstance(resource, dict):
+        return resource
+    resource_id, semantic_parameters = resource
+    try:
+        store = _mobile_mutation_store()
+        claim = store.reserve(
+            provider=grant["provider"],
+            subject=grant["subject"],
+            client_request_id=client_request_id,
+            method=method,
+            resource_id=resource_id,
+            semantic_parameters=semantic_parameters,
+        )
+    except MutationConflict:
+        return _err(
+            rid,
+            4090,
+            "client_request_id was already used for different semantics",
+            data={"reason": "mutation_conflict"},
+        )
+    except ValueError as exc:
+        return _err(
+            rid,
+            -32602,
+            str(exc),
+            data={"reason": "invalid_client_request_id"},
+        )
+    except (OSError, sqlite3.Error):
+        logger.warning("mobile mutation receipt reservation failed", exc_info=True)
+        return _err(
+            rid,
+            5037,
+            "durable mutation receipt is temporarily unavailable",
+            data={"reason": "mutation_store_unavailable"},
+        )
+
+    if claim.disposition is MutationDisposition.IN_PROGRESS:
+        claim = store.wait_for_outcome(claim, timeout=30.0)
+    if claim.disposition is MutationDisposition.REPLAY:
+        return _mutation_response(
+            rid,
+            claim.outcome or {},
+            client_request_id=client_request_id,
+            deduplicated=True,
+        )
+    if claim.disposition is MutationDisposition.OUTCOME_UNKNOWN:
+        return _err(
+            rid,
+            4091,
+            "the prior mutation outcome is unknown and will not be re-executed",
+            data={
+                "client_request_id": client_request_id,
+                "reason": "mutation_outcome_unknown",
+                "state": "outcome_unknown",
+            },
+        )
+    if claim.disposition is MutationDisposition.IN_PROGRESS:
+        return _err(
+            rid,
+            4092,
+            "the mutation is still in progress",
+            data={
+                "client_request_id": client_request_id,
+                "reason": "mutation_in_progress",
+                "state": "in_progress",
+            },
+        )
+
+    try:
+        response = _mobile_mutation_preflight(method, params, rid)
+        if response is None:
+            response = handle_request(req)
+    except Exception:
+        store.mark_outcome_unknown(claim)
+        raise
+    if response is None:
+        store.mark_outcome_unknown(claim)
+        return _err(
+            rid,
+            5037,
+            "mutation handler did not produce a durable outcome",
+            data={"reason": "mutation_outcome_unknown"},
+        )
+    outcome = _mutation_outcome(response)
+    if not store.complete(claim, outcome):
+        return _err(
+            rid,
+            5037,
+            "mutation outcome could not be recorded durably",
+            data={"reason": "mutation_outcome_unknown"},
+        )
+    return _mutation_response(
+        rid,
+        outcome,
+        client_request_id=client_request_id,
+        deduplicated=False,
+    )
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
@@ -1452,6 +1735,15 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
                 "insufficient authorization scope",
                 data=denial,
             )
+        mutation_response = _dispatch_mobile_mutation(
+            req,
+            rid=_rid,
+            method=method,
+            params=_params,
+            transport=t,
+        )
+        if mutation_response is not _NOT_A_MOBILE_MUTATION:
+            return mutation_response
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 
@@ -6670,6 +6962,40 @@ def _(rid, params: dict) -> dict:
     if not deleted:
         return _err(rid, 4007, "session not found")
     return _ok(rid, {"deleted": target})
+
+
+@method("mutation.status")
+def _(rid, params: dict) -> dict:
+    """Return the authenticated principal's durable mutation outcome."""
+    from tui_gateway.mobile_contract import effective_authorization
+
+    client_request_id = str(params.get("client_request_id") or "").strip()
+    if not client_request_id:
+        return _err(rid, -32602, "client_request_id is required")
+    transport = current_transport()
+    grant = effective_authorization(getattr(transport, "authorization", None))
+    try:
+        status = _mobile_mutation_store().status(
+            provider=grant["provider"],
+            subject=grant["subject"],
+            client_request_id=client_request_id,
+        )
+    except (OSError, sqlite3.Error, ValueError):
+        logger.warning("mobile mutation status lookup failed", exc_info=True)
+        return _err(
+            rid,
+            5037,
+            "durable mutation receipt is temporarily unavailable",
+            data={"reason": "mutation_store_unavailable"},
+        )
+    if status is None:
+        return _err(
+            rid,
+            4040,
+            "mutation receipt not found",
+            data={"reason": "mutation_not_found"},
+        )
+    return _ok(rid, status)
 
 
 @method("session.title")

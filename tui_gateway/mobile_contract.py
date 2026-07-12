@@ -31,22 +31,23 @@ SERVER_RELEASE_DATE = __release_date__
 # durable deployment identity remains outside this first contract slice.
 SERVER_INSTANCE_ID = str(uuid.uuid4())
 
-# Advertise only schemas implemented by the stacked contract slices. Mutation
-# idempotency and recoverable approvals still land later and must not be
-# inferred from Mobile Client Contract v1 alone.
+# Advertise only schemas implemented by the stacked contract slices.
+# Recoverable approvals still land later and must not be inferred from Mobile
+# Client Contract v1 alone.
 CLIENT_SCHEMA_MAJORS = {
     "gateway.ready": 1,
     "authorization.grant": 1,
     "authorization.error": 1,
     "session.synchronization": 1,
     "session.event": 1,
+    "mutation.receipt": 1,
 }
 
 CONVERSATION_READ_SCOPE = "conversation.read"
 CONVERSATION_WRITE_SCOPE = "conversation.write"
-# This scope is an authorization boundary only.  It does not claim durable
-# mutation idempotency; clients must wait for that separately advertised
-# capability before treating retries as safe.
+# This scope is an authorization boundary only. Clients must still intersect it
+# with the separately advertised mutation capability before treating retries as
+# safe.
 CONVERSATION_CONTROL_SCOPE = "conversation.control"
 CONVERSATION_DELETE_SCOPE = "conversation.delete"
 # Error-only marker for a method or parameter that has no grantable mobile
@@ -59,6 +60,7 @@ SUPPORTED_MOBILE_SCOPES = frozenset(
         CONVERSATION_READ_SCOPE,
         CONVERSATION_WRITE_SCOPE,
         CONVERSATION_CONTROL_SCOPE,
+        CONVERSATION_DELETE_SCOPE,
     }
 )
 
@@ -102,11 +104,32 @@ MOBILE_METHOD_POLICIES = {
     ),
     "prompt.submit": MobileMethodPolicy(
         (CONVERSATION_WRITE_SCOPE,),
-        frozenset({"session_id", "text"}),
+        frozenset(
+            {
+                "client_request_id",
+                "expected_stored_session_id",
+                "session_id",
+                "text",
+            }
+        ),
     ),
     "session.interrupt": MobileMethodPolicy(
         (CONVERSATION_CONTROL_SCOPE,),
-        frozenset({"session_id"}),
+        frozenset(
+            {
+                "client_request_id",
+                "expected_stored_session_id",
+                "session_id",
+            }
+        ),
+    ),
+    "session.delete": MobileMethodPolicy(
+        (CONVERSATION_DELETE_SCOPE,),
+        frozenset({"client_request_id", "session_id"}),
+    ),
+    "mutation.status": MobileMethodPolicy(
+        (CONVERSATION_READ_SCOPE,),
+        frozenset({"client_request_id"}),
     ),
 }
 
@@ -167,6 +190,15 @@ def gateway_ready_payload(*, skin: str, authorization: dict | None = None) -> di
                     "max_events": DEFAULT_REPLAY_MAX_EVENTS,
                     "max_bytes": DEFAULT_REPLAY_MAX_BYTES,
                 },
+            },
+            "mutation.idempotency": {
+                "version": 1,
+                "methods": [
+                    "prompt.submit",
+                    "session.interrupt",
+                    "session.delete",
+                ],
+                "status_method": "mutation.status",
             },
         },
         "authorization": effective_authorization(authorization),

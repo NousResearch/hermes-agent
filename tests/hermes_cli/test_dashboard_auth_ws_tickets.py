@@ -64,6 +64,18 @@ class TestMintAndConsume:
         assert info["audience"] == "hermes.mobile"
         assert info["scopes"] == ("conversation.read", "conversation.write")
 
+    def test_scoped_ticket_can_explicitly_grant_conversation_deletion(self):
+        ticket = mint_ticket(
+            user_id="u1",
+            provider="nous",
+            audience="hermes.mobile",
+            scopes=("conversation.read", "conversation.delete"),
+        )
+
+        info = consume_ticket(ticket)
+
+        assert info["scopes"] == ("conversation.read", "conversation.delete")
+
     def test_ticket_store_rejects_unknown_audiences(self):
         with pytest.raises(ValueError, match="unsupported WebSocket audience"):
             mint_ticket(

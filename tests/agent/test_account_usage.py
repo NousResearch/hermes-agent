@@ -1,3 +1,6 @@
+import base64
+import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -76,6 +79,60 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
+
+
+def _codex_access_token(account_id):
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": account_id,
+                }
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.signature"
+
+
+def test_codex_usage_explicit_token_account_id_beats_singleton(monkeypatch, codex_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_read_codex_tokens",
+        lambda: {"tokens": {"account_id": "singleton-account"}},
+    )
+
+    account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key=_codex_access_token("active-account"),
+    )
+
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "active-account"
+
+
+def test_codex_usage_malformed_explicit_token_omits_account_id(monkeypatch, codex_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="not-a-jwt",
+    )
+
+    assert snapshot is not None
+    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
 def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usage_payload):
@@ -192,6 +249,38 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert calls[0]["headers"]["Authorization"] == "Bearer singleton-token"
     # account_id read failed → header omitted, but the singleton token is kept.
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+
+
+def test_credential_rotation_updates_identity_with_runtime_credential():
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent.api_mode = "chat_completions"
+    agent.api_key = "old-token"
+    agent.base_url = "https://old.example/v1"
+    agent.credential_id = "old-id"
+    agent.credential_label = "old-label"
+    agent._client_lock = threading.RLock()
+    agent._client_kwargs = {}
+    agent._apply_client_headers_for_base_url = lambda _base_url: None
+    agent._replace_primary_openai_client = lambda **_kwargs: None
+    entry = SimpleNamespace(
+        runtime_api_key="new-token",
+        runtime_base_url="https://new.example/v1/",
+        id="new-id",
+        label="new-label",
+    )
+
+    agent._swap_credential(entry)
+
+    assert agent.api_key == "new-token"
+    assert agent.base_url == "https://new.example/v1"
+    assert agent.credential_id == "new-id"
+    assert agent.credential_label == "new-label"
+    assert agent._client_kwargs == {
+        "api_key": "new-token",
+        "base_url": "https://new.example/v1",
+    }
 
 
 def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch):

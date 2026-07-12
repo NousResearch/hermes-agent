@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -436,6 +438,32 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
+def _codex_account_id_from_access_token(access_token: str) -> Optional[str]:
+    """Best-effort account ID from the already-selected Codex access token."""
+    if not isinstance(access_token, str):
+        return None
+    parts = access_token.strip().split(".")
+    if len(parts) != 3 or not all(parts):
+        return None
+    try:
+        header_part, payload_part, _signature = parts
+        header = json.loads(
+            base64.urlsafe_b64decode(header_part + "=" * (-len(header_part) % 4))
+        )
+        payload = json.loads(
+            base64.urlsafe_b64decode(payload_part + "=" * (-len(payload_part) % 4))
+        )
+        if not isinstance(header, dict) or not isinstance(payload, dict):
+            return None
+        auth_claims = payload.get("https://api.openai.com/auth")
+        if not isinstance(auth_claims, dict):
+            return None
+        account_id = auth_claims.get("chatgpt_account_id")
+        return str(account_id).strip() if isinstance(account_id, str) and account_id.strip() else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
 def _resolve_codex_usage_credentials(
     base_url: Optional[str],
     api_key: Optional[str],
@@ -449,7 +477,11 @@ def _resolve_codex_usage_credentials(
     """
     explicit_key = str(api_key or "").strip()
     if explicit_key:
-        return explicit_key, str(base_url or "").strip(), None
+        return (
+            explicit_key,
+            str(base_url or "").strip(),
+            _codex_account_id_from_access_token(explicit_key),
+        )
 
     # Tier 2: the native runtime resolver. It ALREADY falls back to the
     # credential pool when the singleton is empty (see

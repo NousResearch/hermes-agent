@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -678,3 +679,116 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+
+
+class TestCLIAccountLimitBackgroundCache:
+    @staticmethod
+    def _cli():
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-test"),
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            api_calls=1,
+            context_tokens=120,
+            context_length=10_000,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.api_key = "dummy-a"
+        cli_obj.agent._credential_pool = SimpleNamespace(
+            current=lambda: SimpleNamespace(label="main", access_token="dummy-a"),
+            peek=lambda: SimpleNamespace(label="wrong", access_token="dummy-other"),
+        )
+        cli_obj._invalidate = lambda: None
+        return cli_obj
+
+    def test_cold_miss_is_nonblocking_single_flight_and_snapshot_is_immutable(self):
+        cli_obj = self._cli()
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+        snapshot = SimpleNamespace(
+            provider="openai-codex",
+            windows=(SimpleNamespace(label="Session", used_percent=2),),
+        )
+
+        def fake_fetch(provider, *, base_url=None, api_key=None):
+            calls.append((provider, base_url, api_key))
+            started.set()
+            assert release.wait(2)
+            return snapshot
+
+        original = cli_obj._refresh_account_limit_status
+
+        def tracked(request):
+            try:
+                original(request)
+            finally:
+                finished.set()
+
+        cli_obj._refresh_account_limit_status = tracked
+        with patch("agent.account_usage.fetch_account_usage", side_effect=fake_fetch):
+            assert cli_obj._get_account_limit_status_for_status_bar(cli_obj.agent) is None
+            assert started.wait(2)
+            assert cli_obj._get_account_limit_status_for_status_bar(cli_obj.agent) is None
+            assert len(calls) == 1
+            cli_obj.agent.api_key = "dummy-b"
+            release.set()
+            assert finished.wait(2)
+
+        assert calls == [("openai-codex", "", "dummy-a")]
+        assert "dummy-a" not in repr(cli_obj._account_limit_status_cache)
+
+    def test_cached_limits_render_wide_but_not_as_partial_narrow_fragment(self):
+        cli_obj = self._cli()
+        cli_obj._ensure_account_limit_status_state()
+        key = cli_obj._account_limit_status_cache_key(cli_obj.agent)
+        cli_obj._account_limit_status_cache[key] = {
+            "payload": {"text": "Codex main 5h 98% • weekly 43%", "level": "ok"},
+            "fresh_until": time.monotonic() + 100,
+            "retry_after": time.monotonic() + 100,
+        }
+
+        assert "Codex main 5h 98% • weekly 43%" in cli_obj._build_status_bar_text(width=180)
+        assert "Codex" not in cli_obj._build_status_bar_text(width=60)
+
+    def test_label_requires_exact_runtime_token_match(self):
+        cli_obj = self._cli()
+        assert cli_obj._account_limit_credential_label(cli_obj.agent) == "main"
+        cli_obj.agent.credential_label = "stale-metadata"
+        cli_obj.agent._credential_pool = SimpleNamespace(
+            current=lambda: SimpleNamespace(label="wrong", access_token="dummy-other"),
+            peek=lambda: None,
+        )
+        assert cli_obj._account_limit_credential_label(cli_obj.agent) == ""
+        cli_obj.agent._credential_pool = SimpleNamespace(
+            current=lambda: SimpleNamespace(label="current", access_token="dummy-a"),
+            peek=lambda: None,
+        )
+        assert cli_obj._account_limit_credential_label(cli_obj.agent) == "current"
+
+    def test_stale_failure_preserves_payload_and_uses_short_retry(self):
+        cli_obj = self._cli()
+        cli_obj._ensure_account_limit_status_state()
+        cli_obj._account_limit_status_ttl = 300.0
+        cli_obj._account_limit_status_retry = 7.0
+        key = cli_obj._account_limit_status_cache_key(cli_obj.agent)
+        stale = {"text": "Codex main 5h 50%", "level": "ok"}
+        cli_obj._account_limit_status_cache[key] = {
+            "payload": stale,
+            "fresh_until": 1.0,
+            "retry_after": 1.0,
+        }
+        request = cli_obj._account_limit_status_request_snapshot(cli_obj.agent)
+        with patch("agent.account_usage.fetch_account_usage", return_value=None), patch.object(
+            cli_mod.time, "monotonic", return_value=100.0
+        ):
+            cli_obj._account_limit_status_refreshing.add(key)
+            cli_obj._refresh_account_limit_status(request)
+
+        entry = cli_obj._account_limit_status_cache[key]
+        assert entry["payload"] == stale
+        assert entry["fresh_until"] == 1.0
+        assert entry["retry_after"] == 107.0
+        assert key not in cli_obj._account_limit_status_refreshing

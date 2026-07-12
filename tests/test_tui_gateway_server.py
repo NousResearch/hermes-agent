@@ -17,6 +17,24 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+def _limit_agent(api_key="dummy-a", *, label=None):
+    return types.SimpleNamespace(
+        provider="openai-codex",
+        base_url="https://example.invalid/api/",
+        api_key=api_key,
+        credential_label=label,
+        tools=[],
+        model="gpt-test",
+    )
+
+
+def _limit_snapshot(used=20):
+    return types.SimpleNamespace(
+        provider="openai-codex",
+        windows=(types.SimpleNamespace(label="Session", used_percent=used, reset_at=None),),
+    )
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -8912,3 +8930,206 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+class TestAccountLimitBackgroundCache:
+    def setup_method(self):
+        server._ACCOUNT_LIMIT_CACHE.clear()
+        server._ACCOUNT_LIMIT_REFRESHING.clear()
+
+    def teardown_method(self):
+        server._ACCOUNT_LIMIT_CACHE.clear()
+        server._ACCOUNT_LIMIT_REFRESHING.clear()
+
+    def test_cold_miss_is_nonblocking_single_flight_and_uses_immutable_snapshot(self, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+
+        def fake_fetch(provider, *, base_url=None, api_key=None):
+            calls.append((provider, base_url, api_key))
+            started.set()
+            assert release.wait(2)
+            return _limit_snapshot()
+
+        original = server._refresh_account_limit_status
+
+        def tracked(request):
+            try:
+                original(request)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", fake_fetch)
+        monkeypatch.setattr(server, "_refresh_account_limit_status", tracked)
+        agent = _limit_agent("dummy-a", label="main")
+
+        assert server._get_account_limit_status(agent) is None
+        assert started.wait(2)
+        assert server._get_account_limit_status(agent) is None
+        assert len(calls) == 1
+        agent.api_key = "dummy-b"
+        release.set()
+        assert finished.wait(2)
+        assert calls == [("openai-codex", "https://example.invalid/api", "dummy-a")]
+        assert "dummy-a" not in repr(server._ACCOUNT_LIMIT_CACHE)
+
+    def test_fresh_hit_does_not_refresh(self, monkeypatch):
+        agent = _limit_agent()
+        key = server._account_limit_cache_key(agent)
+        payload = {"label": "Codex", "windows": []}
+        server._ACCOUNT_LIMIT_CACHE[key] = {
+            "payload": payload,
+            "fresh_until": time.monotonic() + 100,
+            "retry_after": time.monotonic() + 100,
+        }
+        monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: pytest.fail("refresh started"))
+        assert server._get_account_limit_status(agent) == payload
+
+    def test_stale_hit_returns_immediately_and_refreshes(self, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        agent = _limit_agent()
+        key = server._account_limit_cache_key(agent)
+        stale = {"label": "stale", "windows": []}
+        server._ACCOUNT_LIMIT_CACHE[key] = {"payload": stale, "fresh_until": 0.0, "retry_after": 0.0}
+
+        def fake_fetch(*args, **kwargs):
+            started.set()
+            assert release.wait(2)
+            return _limit_snapshot(10)
+
+        original = server._refresh_account_limit_status
+
+        def tracked(request):
+            try:
+                original(request)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", fake_fetch)
+        monkeypatch.setattr(server, "_refresh_account_limit_status", tracked)
+        assert server._get_account_limit_status(agent) == stale
+        assert started.wait(2)
+        assert server._get_account_limit_status(agent) == stale
+        release.set()
+        assert finished.wait(2)
+
+    def test_failure_preserves_stale_with_short_retry_and_clears_inflight(self, monkeypatch):
+        now = [1000.0]
+        finished = threading.Event()
+        agent = _limit_agent()
+        key = server._account_limit_cache_key(agent)
+        stale = {"label": "stale", "windows": []}
+        server._ACCOUNT_LIMIT_CACHE[key] = {"payload": stale, "fresh_until": 900.0, "retry_after": 900.0}
+        monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **k: None)
+        original = server._refresh_account_limit_status
+
+        def tracked(request):
+            try:
+                original(request)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(server, "_refresh_account_limit_status", tracked)
+        assert server._get_account_limit_status(agent) == stale
+        assert finished.wait(2)
+        entry = server._ACCOUNT_LIMIT_CACHE[key]
+        assert entry["payload"] == stale
+        assert entry["fresh_until"] == 900.0
+        assert entry["retry_after"] == now[0] + server._ACCOUNT_LIMIT_CACHE_RETRY_SECONDS
+        assert key not in server._ACCOUNT_LIMIT_REFRESHING
+
+    def test_thread_start_failure_clears_inflight(self, monkeypatch):
+        agent = _limit_agent()
+        key = server._account_limit_cache_key(agent)
+
+        class BrokenThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("start failed")
+
+        monkeypatch.setattr(server.threading, "Thread", BrokenThread)
+        assert server._get_account_limit_status(agent) is None
+        assert key not in server._ACCOUNT_LIMIT_REFRESHING
+
+    def test_credential_change_uses_distinct_key_without_stale_leak(self, monkeypatch):
+        agent = _limit_agent("dummy-a")
+        old_key = server._account_limit_cache_key(agent)
+        server._ACCOUNT_LIMIT_CACHE[old_key] = {
+            "payload": {"credential_label": "old", "windows": []},
+            "fresh_until": time.monotonic() + 100,
+            "retry_after": time.monotonic() + 100,
+        }
+
+        class DormantThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(server.threading, "Thread", DormantThread)
+        agent.api_key = "dummy-b"
+        new_key = server._account_limit_cache_key(agent)
+        assert new_key != old_key
+        assert server._get_account_limit_status(agent) is None
+
+    def test_label_requires_exact_runtime_token_match(self):
+        agent = _limit_agent("dummy-a", label="stale-metadata")
+        agent._credential_pool = types.SimpleNamespace(
+            current=lambda: types.SimpleNamespace(label="wrong", access_token="dummy-other"),
+            peek=lambda: None,
+        )
+        assert server._active_credential_label(agent) is None
+
+        agent._credential_pool = types.SimpleNamespace(
+            current=lambda: types.SimpleNamespace(label="current", access_token="dummy-a"),
+            peek=lambda: None,
+        )
+        assert server._active_credential_label(agent) == "current"
+
+    def test_session_info_and_message_complete_use_cached_accessor_only(self, monkeypatch):
+        payload = {"label": "Codex", "windows": []}
+        monkeypatch.setattr(server, "_get_account_limit_status", lambda _agent: payload)
+        monkeypatch.setattr(
+            "agent.account_usage.fetch_account_usage",
+            lambda *a, **k: pytest.fail("hot path fetched provider usage"),
+        )
+        agent = _limit_agent()
+        assert server._session_info(agent)["account_limits"] == payload
+
+        class Agent:
+            def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+                return {"final_response": "reply", "messages": []}
+
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), daemon=None, **kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                self.target(*self.args)
+
+        emits = []
+        server._sessions["limit-sid"] = _session(agent=Agent())
+        try:
+            monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
+            monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+            monkeypatch.setattr(server, "render_message", lambda *_args: "")
+            monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+            response = server.handle_request({
+                "id": "limits",
+                "method": "prompt.submit",
+                "params": {"session_id": "limit-sid", "text": "hi"},
+            })
+            assert "result" in response
+            complete = next(args[2] for args in emits if args[0] == "message.complete")
+            assert complete["account_limits"] == payload
+        finally:
+            server._sessions.pop("limit-sid", None)

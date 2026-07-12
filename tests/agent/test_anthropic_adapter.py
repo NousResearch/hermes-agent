@@ -2444,3 +2444,91 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+class TestBlankTextBlockFiltering:
+    """Regression tests for blank text block filtering in _convert_assistant_message.
+
+    Bedrock and strict Anthropic-compatible endpoints reject text blocks where
+    "text" is empty or whitespace-only with HTTP 400. Both the normal list-
+    content path and the ordered-replay fast path must drop such blocks while
+    preserving tool_use and other block types.
+    """
+
+    def _convert(self, message):
+        from agent.anthropic_adapter import _convert_assistant_message
+        return _convert_assistant_message(message)
+
+    def test_normal_path_filters_empty_text_block_alongside_tool_calls(self):
+        """Content list with empty text + tool_calls: empty text must be dropped."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "call_1", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Empty text block not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1
+
+    def test_normal_path_filters_whitespace_only_text_block(self):
+        """Whitespace-only text (spaces, newlines) must also be filtered."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "   \n  "},
+                {"type": "tool_use", "id": "call_2", "name": "terminal",
+                 "input": {"command": "ls"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 0, f"Whitespace text block not filtered: {text_blocks}"
+
+    def test_normal_path_preserves_non_empty_text_block(self):
+        """Non-empty text blocks must NOT be filtered."""
+        msg = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will search for that."},
+                {"type": "tool_use", "id": "call_3", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+        }
+        result = self._convert(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0]["text"] == "I will search for that."
+
+    def test_replay_path_filters_empty_text_block(self):
+        """Ordered-replay path (anthropic_content_blocks) must also drop blank text."""
+        from agent.anthropic_adapter import _convert_assistant_message
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "text", "text": ""},
+                {"type": "tool_use", "id": "call_4", "name": "web_search",
+                 "input": {"query": "test"}},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call_4",
+                    "function": {"name": "web_search",
+                                 "arguments": '{"query": "test"}'},
+                }
+            ],
+        }
+        result = _convert_assistant_message(msg)
+        blocks = result["content"]
+        text_blocks = [b for b in blocks if b.get("type") == "text"]
+        tool_blocks = [b for b in blocks if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 0, f"Empty text in replay not filtered: {text_blocks}"
+        assert len(tool_blocks) == 1

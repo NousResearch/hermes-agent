@@ -1869,7 +1869,13 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     btype = b.get("type")
     if btype == "text":
-        out: Dict[str, Any] = {"type": "text", "text": b.get("text", "")}
+        text_val = b.get("text", "")
+        # Bedrock and strict Anthropic-compatible endpoints reject text blocks
+        # where "text" is empty or whitespace-only (issue fixed in normal path
+        # too; both paths must share the same invariant).
+        if not isinstance(text_val, str) or not text_val.strip():
+            return None
+        out: Dict[str, Any] = {"type": "text", "text": text_val}
         # citations is input-valid ONLY when it's a non-empty list; the SDK
         # emits citations=None on responses, which the input schema rejects.
         cits = b.get("citations")
@@ -1980,7 +1986,18 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(content, list):
             converted_content = _convert_content_to_anthropic(content)
             if isinstance(converted_content, list):
-                blocks.extend(converted_content)
+                # Filter out empty/whitespace-only text blocks -- Bedrock and
+                # strict Anthropic-compatible endpoints reject text blocks where
+                # "text" is empty or whitespace-only. The ordered-replay path
+                # enforces the same invariant via _sanitize_replay_block().
+                for blk in converted_content:
+                    if (
+                        isinstance(blk, dict)
+                        and blk.get("type") == "text"
+                        and not blk.get("text", "").strip()
+                    ):
+                        continue
+                    blocks.append(blk)
         else:
             blocks.append({"type": "text", "text": str(content)})
     for tc in m.get("tool_calls", []):

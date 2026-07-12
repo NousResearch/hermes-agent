@@ -745,6 +745,77 @@ class TestPluginHooks:
                                   user_message="hi", assistant_response="bye", model="test")
         assert results == []
 
+    def test_async_hook_awaits_without_running_loop(self):
+        """Async hook callbacks are resolved when no event loop is running."""
+        mgr = PluginManager()
+
+        async def async_hook(**kwargs):
+            return {"context": "from-async", "schema": kwargs.get("telemetry_schema_version")}
+
+        mgr._hooks.setdefault("pre_llm_call", []).append(async_hook)
+
+        results = mgr.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            user_message="hi",
+            conversation_history=[],
+            is_first_turn=True,
+            model="test",
+        )
+        assert results == [{"context": "from-async", "schema": "hermes.observer.v1"}]
+
+    def test_async_hook_awaits_with_running_loop(self, monkeypatch):
+        """Async hooks must resolve even when called under an active event loop.
+
+        Gateway paths (e.g. gateway/run.py) call PluginManager.invoke_hook from
+        async handlers, so bare asyncio.run(ret) would raise RuntimeError.
+        """
+
+        class _Loop:
+            pass
+
+        mgr = PluginManager()
+
+        async def async_hook(**kwargs):
+            return {"context": "from-async-loop"}
+
+        mgr._hooks.setdefault("pre_llm_call", []).append(async_hook)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop()
+        )
+
+        results = mgr.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            user_message="hi",
+            conversation_history=[],
+            is_first_turn=True,
+            model="test",
+        )
+        assert results == [{"context": "from-async-loop"}]
+
+    def test_sync_hook_return_untouched_alongside_async(self):
+        """Synchronous hook results stay concrete values when mixed with async."""
+        mgr = PluginManager()
+
+        def sync_hook(**kwargs):
+            return {"context": "sync"}
+
+        async def async_hook(**kwargs):
+            return {"context": "async"}
+
+        mgr._hooks.setdefault("pre_llm_call", []).extend([sync_hook, async_hook])
+
+        results = mgr.invoke_hook(
+            "pre_llm_call",
+            session_id="s1",
+            user_message="hi",
+            conversation_history=[],
+            is_first_turn=True,
+            model="test",
+        )
+        assert results == [{"context": "sync"}, {"context": "async"}]
+
     def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(

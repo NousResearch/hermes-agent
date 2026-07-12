@@ -1913,6 +1913,12 @@ class PluginManager:
         for cb in callbacks:
             try:
                 ret = cb(**kwargs)
+                # Plugin hooks may be async def (or otherwise return awaitables).
+                # Resolve them loop-safely so CLI (no loop) and gateway pathway
+                # (running loop at gateway/run.py) both work — never bare
+                # asyncio.run() here, which raises when a loop is already active.
+                if inspect.isawaitable(ret):
+                    ret = resolve_plugin_command_result(ret)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:

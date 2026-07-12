@@ -29,10 +29,34 @@ Usage (gateway side):
 """
 
 import logging
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _isolated_os_environ() -> Iterator[None]:
+    """Snapshot and restore ``os.environ`` around a deferred platform import.
+
+    Some third-party SDKs (notably ``microsoft-teams-apps``) call
+    ``load_dotenv(find_dotenv(usecwd=True))`` at module import time. That
+    walks up from the process cwd and mutates the process-global environ —
+    leaking root-profile secrets into secondary profiles and bypassing
+    Hermes's own dotenv / secret-scope rules (#62935).
+
+    Deferred loaders are import-and-register only; any environ mutation they
+    cause is treated as an unwanted side effect and discarded.
+    """
+    saved = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
 
 
 @dataclass
@@ -205,7 +229,10 @@ class PlatformRegistry:
         if loader is None:
             return
         try:
-            loader()
+            # Isolate environ so import-time dotenv / env mutation cannot leak
+            # across profiles or override explicit YAML disables (#62935).
+            with _isolated_os_environ():
+                loader()
         except Exception as e:
             logger.warning(
                 "Deferred load of platform '%s' failed: %s",

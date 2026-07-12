@@ -983,3 +983,41 @@ class TestPluginEnablementGate:
                 )
         finally:
             _reg.unregister("myrejectedplat")
+
+
+
+class TestDeferredLoadEnvironIsolation:
+    """Deferred platform imports must not leak os.environ mutations (#62935)."""
+
+    def test_deferred_loader_environ_mutations_are_discarded(self, monkeypatch):
+        monkeypatch.delenv("API_SERVER_ENABLED", raising=False)
+        monkeypatch.delenv("LEAKED_FROM_IMPORT", raising=False)
+        assert "API_SERVER_ENABLED" not in os.environ
+
+        reg = PlatformRegistry()
+
+        def _polluting_loader():
+            os.environ["API_SERVER_ENABLED"] = "true"
+            os.environ["LEAKED_FROM_IMPORT"] = "1"
+            entry, _ = TestPlatformRegistry()._make_entry("polluter")
+            reg.register(entry)
+
+        reg.register_deferred("polluter", _polluting_loader)
+        assert reg.get("polluter") is not None
+        assert "API_SERVER_ENABLED" not in os.environ
+        assert "LEAKED_FROM_IMPORT" not in os.environ
+
+    def test_deferred_loader_preserves_preexisting_environ(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KEEP", "alive")
+        reg = PlatformRegistry()
+
+        def _loader():
+            os.environ["HERMES_KEEP"] = "clobbered"
+            os.environ["TEMP_LEAK"] = "1"
+            entry, _ = TestPlatformRegistry()._make_entry("keeper")
+            reg.register(entry)
+
+        reg.register_deferred("keeper", _loader)
+        assert reg.get("keeper") is not None
+        assert os.environ.get("HERMES_KEEP") == "alive"
+        assert "TEMP_LEAK" not in os.environ

@@ -1761,7 +1761,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if api_server_enabled or api_server_key:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
-        config.platforms[Platform.API_SERVER].enabled = True
+        api_server_config = config.platforms[Platform.API_SERVER]
+        # Honor explicit YAML/gateway.json ``enabled: false`` the same way
+        # ``_enable_from_env`` does for other platforms. Third-party import
+        # side effects (or a root-profile .env leak) must not force-enable a
+        # platform the user explicitly disabled (#62935).
+        enabled_was_explicit = bool(api_server_config.extra.get("_enabled_explicit", False))
+        if not api_server_config.enabled and not enabled_was_explicit:
+            api_server_config.enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
         if api_server_cors_origins:

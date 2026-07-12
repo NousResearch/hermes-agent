@@ -2290,14 +2290,59 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None or not entry.resume_pending:
                 return False
-            entry.resume_pending = False
-            entry.resume_reason = None
-            entry.resume_kind = None
-            entry.resume_handoff = None
-            entry.resume_request_id = None
-            entry.last_resume_marked_at = None
+            self._clear_resume_pending_entry(entry)
             self._save()
             return True
+
+    @staticmethod
+    def _clear_resume_pending_entry(entry: SessionEntry) -> None:
+        """Clear all durable recovery-marker fields on one entry."""
+        entry.resume_pending = False
+        entry.resume_reason = None
+        entry.resume_kind = None
+        entry.resume_handoff = None
+        entry.resume_request_id = None
+        entry.last_resume_marked_at = None
+
+    def clear_stale_resume_pending(self, max_age_seconds: float) -> int:
+        """Clear stale recovery markers without dropping session entries.
+
+        The newest of normal session activity and the resume-mark timestamp
+        drives age. Suspended sessions are explicit user pauses and remain
+        untouched. The post-clear index is persisted before returning.
+        """
+        if max_age_seconds is None or max_age_seconds <= 0:
+            return 0
+
+        now = _now()
+        cutoff = now - timedelta(seconds=max_age_seconds)
+        cleared: list[tuple[str, float]] = []
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.resume_pending or entry.suspended:
+                    continue
+                newest_activity = entry.updated_at
+                if (
+                    entry.last_resume_marked_at is not None
+                    and entry.last_resume_marked_at > newest_activity
+                ):
+                    newest_activity = entry.last_resume_marked_at
+                if newest_activity >= cutoff:
+                    continue
+                age_seconds = max(0.0, (now - newest_activity).total_seconds())
+                self._clear_resume_pending_entry(entry)
+                cleared.append((entry.session_key, age_seconds))
+            if cleared:
+                self._save()
+
+        for session_key, age_seconds in cleared:
+            logger.info(
+                "Cleared stale resume_pending: session_key=%s age_seconds=%.0f",
+                session_key,
+                age_seconds,
+            )
+        return len(cleared)
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.

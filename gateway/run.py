@@ -866,6 +866,23 @@ def _auto_continue_freshness_window() -> float:
     return auto_continue_freshness_window()
 
 
+_RESUME_FLAG_STALE_CLEAR_MIN_SECONDS = 24 * 60 * 60
+_RESUME_FLAG_STALE_CLEAR_FRESHNESS_MULTIPLIER = 6
+
+
+async def _clear_stale_resume_pending_flags(async_session_store: Any) -> int:
+    """Clear dead resume markers during hourly session maintenance."""
+    enabled = os.environ.get("HERMES_RESUME_FLAG_STALE_CLEAR", "true")
+    if str(enabled).strip().lower() in {"false", "0", "no", "off"}:
+        return 0
+    freshness = max(0.0, _auto_continue_freshness_window())
+    stale_after = max(
+        float(_RESUME_FLAG_STALE_CLEAR_MIN_SECONDS),
+        _RESUME_FLAG_STALE_CLEAR_FRESHNESS_MULTIPLIER * freshness,
+    )
+    return await async_session_store.clear_stale_resume_pending(stale_after)
+
+
 def _resume_interrupted_turns_mode() -> str:
     """Resolve the startup-captured enum, failing closed to prompt."""
     raw = os.environ.get("HERMES_RESUME_INTERRUPTED_TURNS", "prompt")
@@ -985,6 +1002,7 @@ _AGENT_CONFIG_ENV_BRIDGE: dict[str, str] = {
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
+    "resume_flag_stale_clear": "HERMES_RESUME_FLAG_STALE_CLEAR",
     "resume_interrupted_turns": "HERMES_RESUME_INTERRUPTED_TURNS",
     "gateway_startup_restore_drain_timeout": "HERMES_STARTUP_RESTORE_DRAIN_TIMEOUT",
     "restart_loop_threshold": "HERMES_RESTART_LOOP_THRESHOLD",
@@ -10276,6 +10294,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_prune_ts = getattr(self, "_last_session_store_prune_ts", 0.0)
                 _prune_interval = 3600.0  # once per hour
                 if time.time() - _last_prune_ts > _prune_interval:
+                    try:
+                        await _clear_stale_resume_pending_flags(
+                            self.async_session_store
+                        )
+                    except Exception as _e:
+                        logger.debug(
+                            "Stale resume_pending clear failed: %s", _e
+                        )
                     try:
                         _max_age = int(
                             getattr(self.config, "session_store_max_age_days", 0) or 0

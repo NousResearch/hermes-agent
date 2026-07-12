@@ -809,8 +809,20 @@ class MatrixAdapter(BasePlatformAdapter):
         self._device_id_unverified: bool = False
 
         self._client: Any = None  # mautrix.client.Client
+        self._client_ready = asyncio.Event()
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._sync_task: Optional[asyncio.Task] = None
+        self._sync_reconnect_task: Optional[asyncio.Task] = None
+        self._reconnect_retry_delays: tuple[float, ...] = (
+            0.0,
+            1.0,
+            2.0,
+            5.0,
+            10.0,
+            20.0,
+            30.0,
+        )
+        self._reconnect_attempt_timeout: float = 30.0
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
@@ -1152,6 +1164,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
+        self._client_ready.clear()
         self._device_id_unverified = False
         if self._client is not None:
             try:
@@ -1523,18 +1536,131 @@ class MatrixAdapter(BasePlatformAdapter):
         # Share keys after initial sync if E2EE is enabled.
         if self._encryption and getattr(client, "crypto", None):
             try:
-                await client.crypto.share_keys()
+                await self._share_keys_with_timeout(client.crypto)
             except Exception as exc:
                 logger.warning("Matrix: initial key share failed: %s", exc)
 
         # Start the sync loop.
-        self._sync_task = asyncio.create_task(self._sync_loop())
+        self._start_sync_task()
         self._mark_connected()
+        self._client_ready.set()
         return True
 
-    async def disconnect(self) -> None:
+    async def _share_keys_with_timeout(self, crypto: Any) -> None:
+        """Share E2EE keys without blocking Matrix reconnect indefinitely."""
+        try:
+            await asyncio.wait_for(
+                crypto.share_keys(),
+                timeout=self._reconnect_attempt_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Matrix: E2EE key sharing timed out after %.1fs; continuing",
+                self._reconnect_attempt_timeout,
+            )
+
+    def _start_sync_task(self) -> asyncio.Task:
+        """Start Matrix sync and surface terminal exits to the gateway."""
+        task = asyncio.create_task(self._sync_loop())
+        self._sync_task = task
+        task.add_done_callback(self._handle_sync_task_done)
+        return task
+
+    def _handle_sync_task_done(self, task: asyncio.Task) -> None:
+        """Recover Matrix in place when the sync task exits unexpectedly."""
+        if self._closing or task.cancelled():
+            return
+        if self._sync_task is not task:
+            return
+
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+
+        if self.has_fatal_error:
+            message = self.fatal_error_message or "Matrix sync stopped"
+            logger.error("Matrix: %s", message, exc_info=exc if exc else False)
+            self._schedule_fatal_notification()
+            return
+
+        if exc is None:
+            message = "Matrix sync task exited without an exception"
+            self._set_fatal_error("matrix_sync_task_exited", message, retryable=True)
+            logger.error("Matrix: %s", message)
+            self._schedule_fatal_notification()
+            return
+
+        logger.error("Matrix: sync task exited: %s — reconnecting in place", exc, exc_info=True)
+        self._schedule_sync_reconnect(exc)
+
+    def _schedule_fatal_notification(self) -> None:
+        async def _notify() -> None:
+            try:
+                await self._notify_fatal_error()
+            except Exception as notify_exc:
+                logger.warning(
+                    "Matrix: failed to notify gateway supervisor about sync exit: %s",
+                    notify_exc,
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_notify())
+
+    def _schedule_sync_reconnect(self, reason: BaseException) -> None:
+        if self._sync_reconnect_task and not self._sync_reconnect_task.done():
+            return
+        self._sync_reconnect_task = asyncio.create_task(
+            self._reconnect_sync_in_place(reason)
+        )
+
+    async def _reconnect_sync_in_place(self, reason: BaseException) -> None:
+        """Replace only the Matrix client, preserving this adapter and its tasks."""
+        retry_delays = self._reconnect_retry_delays
+        try:
+            await self.disconnect(for_reconnect=True)
+            for attempt, delay in enumerate(retry_delays, start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                if self._closing:
+                    return
+                try:
+                    if await asyncio.wait_for(
+                        self.connect(is_reconnect=True),
+                        timeout=self._reconnect_attempt_timeout,
+                    ):
+                        logger.info(
+                            "Matrix: reconnected in place after sync failure "
+                            "(attempt %d)",
+                            attempt,
+                        )
+                        return
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Matrix: in-place reconnect attempt %d timed out after %.1fs",
+                        attempt,
+                        self._reconnect_attempt_timeout,
+                    )
+                except Exception as reconnect_exc:
+                    logger.warning(
+                        "Matrix: in-place reconnect attempt %d failed: %s",
+                        attempt,
+                        reconnect_exc,
+                    )
+                await self.disconnect(for_reconnect=True)
+            raise RuntimeError("Matrix reconnect attempts exhausted")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message = f"Matrix in-place reconnect failed after {reason}: {exc}"
+            self._set_fatal_error("matrix_sync_reconnect_failed", message, retryable=True)
+            logger.error("Matrix: %s", message, exc_info=True)
+            await self._notify_fatal_error()
+
+    async def disconnect(self, *, for_reconnect: bool = False) -> None:
         """Disconnect from Matrix."""
-        self._closing = True
+        self._closing = not for_reconnect
+        self._client_ready.clear()
 
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1587,6 +1713,26 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
 
+        client = self._client
+        if client is None:
+            if self._closing:
+                return SendResult(success=False, error="Matrix adapter is shutting down")
+            try:
+                await asyncio.wait_for(self._client_ready.wait(), timeout=90)
+            except asyncio.TimeoutError:
+                return SendResult(
+                    success=False,
+                    error="Matrix client did not become ready during reconnect",
+                    retryable=True,
+                )
+            client = self._client
+            if client is None:
+                return SendResult(
+                    success=False,
+                    error="Matrix client unavailable after reconnect",
+                    retryable=True,
+                )
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
@@ -1598,7 +1744,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
             try:
                 event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
+                    client.send_message_event(
                         RoomID(chat_id),
                         EventType.ROOM_MESSAGE,
                         msg_content,
@@ -1608,12 +1754,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 last_event_id = str(event_id)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
+                # If reconnect replaced or cleared this client, let the base
+                # delivery retry re-enter send() and wait for the new client.
+                if client is not self._client or not self._client_ready.is_set():
+                    return SendResult(success=False, error=str(exc), retryable=True)
                 # On E2EE errors, retry after sharing keys.
-                if self._encryption and getattr(self._client, "crypto", None):
+                if self._encryption and getattr(client, "crypto", None):
                     try:
-                        await self._client.crypto.share_keys()
+                        await client.crypto.share_keys()
                         event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
+                            client.send_message_event(
                                 RoomID(chat_id),
                                 EventType.ROOM_MESSAGE,
                                 msg_content,
@@ -2289,6 +2439,11 @@ class MatrixAdapter(BasePlatformAdapter):
                             "Matrix: permanent auth error from sync: %s — stopping",
                             _sync_msg,
                         )
+                        self._set_fatal_error(
+                            "matrix_sync_auth",
+                            _sync_msg,
+                            retryable=False,
+                        )
                         return
 
                 if isinstance(sync_data, dict):
@@ -2334,9 +2489,14 @@ class MatrixAdapter(BasePlatformAdapter):
                     logger.error(
                         "Matrix: permanent auth error: %s — stopping sync", exc
                     )
+                    self._set_fatal_error(
+                        "matrix_sync_auth",
+                        str(exc),
+                        retryable=False,
+                    )
                     return
-                logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
-                await asyncio.sleep(5)
+                logger.error("Matrix: sync error: %s — stopping for reconnect", exc)
+                raise
 
     # ------------------------------------------------------------------
     # Event callbacks

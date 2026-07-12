@@ -29,6 +29,7 @@ def _build_agent_with_db(
     db: SessionDB,
     session_id: str,
     platform: str = "telegram",
+    user_id: str = None,
     chat_id: str = None,
     chat_type: str = None,
     thread_id: str = None,
@@ -47,6 +48,7 @@ def _build_agent_with_db(
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
+            user_id=user_id,
             chat_id=chat_id,
             chat_type=chat_type,
             thread_id=thread_id,
@@ -269,6 +271,7 @@ class TestRoutingColumnsPersistOnRotation:
         db.create_session(
             parent,
             source="telegram",
+            user_id="170829464",
             chat_id="170829464",
             chat_type="dm",
             thread_id="544520",
@@ -278,6 +281,7 @@ class TestRoutingColumnsPersistOnRotation:
             db,
             parent,
             platform="telegram",
+            user_id="170829464",
             chat_id="170829464",
             chat_type="dm",
             thread_id="544520",
@@ -290,13 +294,14 @@ class TestRoutingColumnsPersistOnRotation:
 
         row = db.get_session(child)
         assert row is not None, "child session row must exist immediately after rotation"
+        assert row["user_id"] == "170829464"
         assert row["chat_id"] == "170829464"
         assert row["chat_type"] == "dm"
         assert row["thread_id"] == "544520"
         assert row["session_key"] == "agent:main:telegram:dm:170829464:544520"
 
     def test_no_routing_context_is_a_harmless_noop(self, tmp_path: Path):
-        """CLI/non-gateway sessions have no chat_id/thread_id/session_key at
+        """CLI/non-gateway sessions have no user_id/chat_id/thread_id/session_key at
         all — the fix must not require them or break sessions that never had
         routing metadata in the first place."""
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -310,6 +315,7 @@ class TestRoutingColumnsPersistOnRotation:
 
         row = db.get_session(child)
         assert row is not None
+        assert row["user_id"] is None
         assert row["chat_id"] is None
         assert row["chat_type"] is None
         assert row["thread_id"] is None

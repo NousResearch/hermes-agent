@@ -899,26 +899,27 @@ def compress_context(
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,
-                            # Gateway routing columns (#NNNNN): forward the SAME
-                            # chat_id/chat_type/thread_id/session_key the parent
-                            # session already carries, at CREATE time rather than
-                            # leaving them to a later backfill. Previously these
-                            # were only written by the gateway's post-turn
-                            # _record_gateway_session_peer() call, AFTER this
-                            # function returns and the agent result unwinds back
+                            # Gateway routing columns — forward ALL of them at CREATE
+                            # time rather than leaving them to a later backfill.
+                            # Previously only chat_id/chat_type/thread_id/session_key
+                            # were forwarded here, and written by the gateway's
+                            # post-turn _record_gateway_session_peer() call, AFTER
+                            # this function returns and the agent result unwinds back
                             # to the event loop. A crash/kill landing in that gap
                             # left the child row permanently unroutable — NULL
                             # chat_id/thread_id survive forever, since nothing
                             # ever revisits an already-created row to backfill
                             # them, and find_latest_gateway_session_for_peer's
                             # WHERE clause can never match a NULL-routing row.
-                            # The parent conversation becomes an orphan and the
-                            # next inbound message on that chat/thread spawns a
-                            # brand-new, empty session instead of resuming.
-                            # CLI/non-gateway sessions have none of these
-                            # attributes set (all None) — passing None through
-                            # is a harmless no-op, matching the pre-existing
-                            # column defaults.
+                            # user_id is critical for the fallback lookup path
+                            # (hermes_state.py:1994-2009) that searches by the
+                            # complete peer tuple when session_key doesn't match.
+                            # Without user_id, the fallback can never find the row,
+                            # and /resume's IDOR guard rejects the session.
+                            # CLI/non-gateway sessions have none of these attributes
+                            # set (all None) — passing None through is a harmless
+                            # no-op, matching the pre-existing column defaults.
+                            user_id=getattr(agent, "_user_id", None),
                             chat_id=getattr(agent, "_chat_id", None),
                             chat_type=getattr(agent, "_chat_type", None),
                             thread_id=getattr(agent, "_thread_id", None),

@@ -9,8 +9,10 @@ Tests cover:
 
 import json
 import os
+import signal
 import sys
 import textwrap
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -194,6 +196,49 @@ class TestRunJobScript:
         success, output = _run_job_script(str(script))
         assert success is False
         assert "timed out" in output.lower()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Process groups require POSIX")
+    @pytest.mark.live_system_guard_bypass
+    def test_script_timeout_terminates_descendants(self, cron_env, monkeypatch):
+        """A timed-out script must not leave its child process running."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 1)
+        pid_file = cron_env / "child.pid"
+        script = cron_env / "scripts" / "spawns_child.py"
+        script.write_text(textwrap.dedent(f"""\
+            import subprocess
+            import sys
+            import time
+
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            {str(pid_file)!r} and open({str(pid_file)!r}, "w").write(str(child.pid))
+            time.sleep(60)
+        """))
+
+        child_pid = None
+        try:
+            success, output = _run_job_script(str(script))
+            assert success is False
+            assert "timed out" in output.lower()
+            child_pid = int(pid_file.read_text())
+
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail("timed-out script left its child process running")
+        finally:
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""

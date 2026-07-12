@@ -13,6 +13,29 @@ extracted helper directly.
 import cron.scheduler as s
 
 
+def test_script_timeout_delivery_is_not_mislabeled_as_provider_timeout():
+    """no_agent script failures never imply provider fallback exhaustion."""
+    message = s._summarize_cron_failure_for_delivery(
+        {"id": "j-script", "name": "watchdog", "no_agent": True},
+        "Script timed out after 7200s: /tmp/watchdog.py",
+    )
+
+    assert "script timeout" in message.lower()
+    assert "provider timeout" not in message.lower()
+    assert "fallback chain" not in message.lower()
+
+
+def test_agent_timeout_delivery_keeps_provider_timeout_summary():
+    """Provider failures for agent jobs retain the concise fallback summary."""
+    message = s._summarize_cron_failure_for_delivery(
+        {"id": "j-agent", "name": "briefing"},
+        "ReadTimeout: provider request timed out",
+    )
+
+    assert "provider timeout" in message.lower()
+    assert "fallback chain was exhausted or unavailable" in message.lower()
+
+
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
                     error=None, silent_marker_in=None):
     """Patch the job pipeline primitives and record the call order."""

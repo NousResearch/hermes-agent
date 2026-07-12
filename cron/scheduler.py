@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -58,6 +59,20 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     job_name = job.get("name") or job.get("id") or "cron job"
     text = (error or "unknown error").strip()
     lower = text.lower()
+
+    # Script execution failures never involve provider fallback. Check these
+    # before generic provider wording because a no-agent script can emit text
+    # such as "timeout" or "rate limit" itself.
+    if "script timed out" in lower:
+        return (
+            f"⚠️ Cron '{job_name}' failed: script timeout. "
+            "Full details saved in cron output."
+        )
+    if job.get("no_agent"):
+        return (
+            f"⚠️ Cron '{job_name}' failed: script execution failed. "
+            "Full details saved in cron output."
+        )
 
     # Provider/API failures are the common noisy path. Keep these short.
     if "429" in text or "rate limit" in lower or "usage limit" in lower:
@@ -2097,17 +2112,44 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
+        if os.name == "posix":
+            # Give the script and every descendant a dedicated process group so
+            # timeout cleanup cannot leave data collectors running in the
+            # background after their direct parent is killed.
+            popen_kwargs["start_new_session"] = True
+        process = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            stdout, stderr = process.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate()
+            else:
+                # Keep Windows on the existing direct-child cleanup behavior.
+                process.kill()
+                process.communicate()
+            return False, f"Script timed out after {script_timeout}s: {path}"
+
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2119,8 +2161,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if process.returncode != 0:
+            parts = [f"Script exited with code {process.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:

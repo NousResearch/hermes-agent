@@ -1163,6 +1163,58 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
+    """slash.exec expands any custom bundle through command.dispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "slash_worker": worker,
+    }
+    fake_bundles = {
+        "/analysis-pack": {
+            "name": "analysis-pack",
+            "skills": ["source-check", "claim-audit"],
+        }
+    }
+    fake_msg = (
+        '[IMPORTANT: The user has invoked the "analysis-pack" skill bundle.]\n\n'
+        "User instruction: compare vector databases"
+    )
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch(
+             "agent.skill_bundles.build_bundle_invocation_message",
+             return_value=(fake_msg, ["source-check", "claim-audit"], []),
+         ):
+        resp = server.handle_request({
+            "id": "r-bundle-slash",
+            "method": "slash.exec",
+            "params": {
+                "command": "analysis-pack compare vector databases",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": fake_msg,
+        "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
+    }
+    assert worker.calls == []
+
+
 def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
     """Plugin slash commands return normal slash.exec output without using the worker."""
     sid = "test-session"
@@ -1313,6 +1365,37 @@ def test_command_dispatch_queue_sends_message(server):
     result = resp["result"]
     assert result["type"] == "send"
     assert result["message"] == "tell me about quantum computing"
+
+
+def test_command_dispatch_builtin_queue_wins_over_colliding_bundle(server):
+    """A custom /queue bundle must not shadow the built-in /queue command."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    fake_bundles = {
+        "/queue": {
+            "name": "queue",
+            "skills": ["source-check", "claim-audit"],
+        }
+    }
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch("agent.skill_bundles.build_bundle_invocation_message") as build_bundle:
+        resp = server.handle_request({
+            "id": "r-queue-collision",
+            "method": "command.dispatch",
+            "params": {
+                "name": "queue",
+                "arg": "tell me about quantum computing",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": "tell me about quantum computing",
+    }
+    build_bundle.assert_not_called()
 
 
 def test_command_dispatch_queue_requires_arg(server):
@@ -1514,6 +1597,54 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["type"] == "skill"
     assert result["message"] == fake_msg
     assert result["name"] == "hermes-agent-dev"
+
+
+def test_command_dispatch_returns_custom_bundle_payload(server):
+    """command.dispatch preserves bundle arguments in a sendable agent turn."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    fake_bundles = {
+        "/review-suite": {
+            "name": "review-suite",
+            "skills": ["source-check", "claim-audit", "enough-research"],
+        }
+    }
+    arg = "audit the migration plan"
+    fake_msg = (
+        '[IMPORTANT: The user has invoked the "review-suite" skill bundle.]\n\n'
+        f"User instruction: {arg}"
+    )
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch(
+             "agent.skill_bundles.build_bundle_invocation_message",
+             return_value=(
+                 fake_msg,
+                 ["source-check", "claim-audit", "enough-research"],
+                 [],
+             ),
+         ) as build_bundle, \
+         patch("agent.skill_commands.build_skill_invocation_message") as build_skill, \
+         patch.object(server, "_resolve_session_platform", return_value="tui"):
+        resp = server.handle_request({
+            "id": "r-bundle-dispatch",
+            "method": "command.dispatch",
+            "params": {"name": "review-suite", "arg": arg, "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": fake_msg,
+        "notice": "⚡ Loading bundle: review-suite (3 skills)",
+    }
+    build_bundle.assert_called_once_with(
+        "/review-suite",
+        arg,
+        task_id=sid,
+        platform="tui",
+    )
+    build_skill.assert_not_called()
 
 
 def test_command_dispatch_awaits_async_plugin_handler(server):

@@ -2678,9 +2678,9 @@ def check_all_command_guards(command: str, env_type: str,
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
-            # Auto-approve and grant session-level approval for these patterns
-            for key, _, _ in warnings:
-                approve_session(session_key, key)
+            # Approve this command only. Pattern-level persistence would let one
+            # benign command suppress review of later commands that happen to
+            # match the same broad detector category.
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
             return {"approved": True, "message": None,

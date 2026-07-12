@@ -1,6 +1,6 @@
 type Method = string
 import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -8288,6 +8288,51 @@ function terminalChannel(id, suffix) {
   return `hermes:terminal:${id}:${suffix}`
 }
 
+// Best-effort read of a live PTY child's current working directory so a
+// reopened tab can restart the shell where the user last `cd`'d, instead of the
+// tab's original launch dir. Shell-agnostic (no prompt/OSC config needed) on
+// POSIX; Windows has no cheap per-process cwd query without a native module, so
+// it returns null and the caller falls back to the launch cwd.
+function readProcessCwd(pid) {
+  return new Promise(resolve => {
+    if (!Number.isInteger(pid) || pid <= 0) {
+      resolve(null)
+
+      return
+    }
+
+    if (process.platform === 'linux') {
+      fs.promises
+        .readlink(`/proc/${pid}/cwd`)
+        .then(target => resolve(target || null))
+        .catch(() => resolve(null))
+
+      return
+    }
+
+    if (process.platform === 'darwin') {
+      // lsof ships with macOS; -Fn emits the cwd fd's path on an `n<path>` line.
+      execFile('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 2000 }, (err, stdout) => {
+        if (err) {
+          resolve(null)
+
+          return
+        }
+
+        const line = String(stdout || '')
+          .split('\n')
+          .find(entry => entry.startsWith('n'))
+
+        resolve(line ? line.slice(1) : null)
+      })
+
+      return
+    }
+
+    resolve(null)
+  })
+}
+
 function disposeTerminalSession(id) {
   const sessionInfo = terminalSessions.get(id)
 
@@ -8526,6 +8571,16 @@ ipcMain.handle('hermes:terminal:resize', (_event, id, size = {}) => {
 
   return true
 })
+ipcMain.handle('hermes:terminal:cwd', async (_event, id) => {
+  const sessionInfo = terminalSessions.get(String(id || ''))
+
+  if (!sessionInfo) {
+    return null
+  }
+
+  return readProcessCwd(sessionInfo.pty.pid)
+})
+
 ipcMain.handle('hermes:terminal:dispose', (_event, id) => disposeTerminalSession(String(id || '')))
 
 ipcMain.handle('hermes:updates:check', async () =>

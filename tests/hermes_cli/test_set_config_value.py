@@ -301,3 +301,61 @@ class TestSecretRedactionInDisplay:
 
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Comment / formatting preservation — regression tests for #63039
+# ---------------------------------------------------------------------------
+
+class TestCommentPreservation:
+    """set_config_value must preserve YAML comments and key ordering (#63039)."""
+
+    def test_top_level_comment_preserved(self, _isolated_hermes_home):
+        """A comment on a key that is NOT modified must survive the write."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "# My model configuration\n"
+            "model: gpt-4o\n"
+            "# Terminal settings\n"
+            "terminal:\n"
+            "  backend: local\n"
+        )
+        set_config_value("verbose", "true")
+        config_text = _read_config(_isolated_hermes_home)
+        assert "# My model configuration" in config_text
+        assert "# Terminal settings" in config_text
+
+    def test_inline_comment_preserved_on_unchanged_key(self, _isolated_hermes_home):
+        """Inline comment on an unmodified sibling key must survive."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "model: gpt-4o  # primary model\n"
+            "terminal:\n"
+            "  backend: local\n"
+        )
+        set_config_value("verbose", "true")
+        config_text = _read_config(_isolated_hermes_home)
+        assert "# primary model" in config_text
+
+    def test_key_order_preserved(self, _isolated_hermes_home):
+        """Keys should retain their original order, not be re-sorted."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "zebra: first\n"
+            "alpha: second\n"
+            "middle: third\n"
+        )
+        set_config_value("verbose", "true")
+        config_text = _read_config(_isolated_hermes_home)
+        lines = [l.strip() for l in config_text.splitlines() if l.strip() and not l.strip().startswith("#")]
+        keys = [l.split(":")[0] for l in lines if ":" in l]
+        assert keys.index("zebra") < keys.index("alpha") < keys.index("middle")
+
+    def test_blank_lines_preserved(self, _isolated_hermes_home):
+        """Blank lines between sections should be kept."""
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "model: gpt-4o\n"
+            "\n"
+            "terminal:\n"
+            "  backend: local\n"
+        )
+        set_config_value("verbose", "true")
+        config_text = _read_config(_isolated_hermes_home)
+        assert "\n\n" in config_text

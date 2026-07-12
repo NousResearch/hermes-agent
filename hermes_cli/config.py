@@ -8138,16 +8138,29 @@ def set_config_value(key: str, value: str):
     
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
+    # dumping all default values back to the file.
+    # Use ruamel.yaml round-trip mode so comments, blank lines, key ordering,
+    # quoting, and Unicode are preserved through the write (issue #63039).
+    # ``_set_nested`` works on the resulting CommentedMap because it subclasses
+    # dict and CommentedSeq subclasses list.
     config_path = get_config_path()
     require_readable_config_before_write(config_path)
-    user_config = {}
+    from ruamel.yaml import YAML as _RuamelYAML
+    from ruamel.yaml.comments import CommentedMap as _CM
+    _yaml_rt = _RuamelYAML(typ="rt")
+    _yaml_rt.preserve_quotes = True
+    _yaml_rt.allow_unicode = True
+    _yaml_rt.default_flow_style = False
+    _yaml_rt.indent(mapping=2, sequence=4, offset=2)
+    user_config = _CM()
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
+                _loaded = _yaml_rt.load(f)
+                if _loaded is not None:
+                    user_config = _loaded if isinstance(_loaded, _CM) else _CM(_loaded)
         except Exception:
-            user_config = {}
+            user_config = _CM()
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -8171,13 +8184,33 @@ def set_config_value(key: str, value: str):
     # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
     _alias_norm = key.strip().lower()
     if _alias_norm in ("model.api_base", "api_base"):
-        user_config = _normalize_root_model_keys(user_config)
+        # _normalize_root_model_keys returns a plain dict, which drops comments.
+        # Wrap the result back into CommentedMap so the round-trip write below
+        # still preserves top-level formatting as much as possible.
+        _normed = _normalize_root_model_keys(user_config)
+        user_config = _CM(_normed)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
+    # Write only user config back (not the full merged defaults), preserving
+    # comments and formatting via ruamel.yaml round-trip (issue #63039).
     ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    import tempfile
+    from utils import atomic_replace
+    _fd, _tmp = tempfile.mkstemp(
+        dir=str(config_path.parent), prefix=f".{config_path.stem}_", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(_fd, "w", encoding="utf-8") as f:
+            _yaml_rt.dump(user_config, f)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(_tmp, config_path)
+    except BaseException:
+        try:
+            os.unlink(_tmp)
+        except OSError:
+            pass
+        raise
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

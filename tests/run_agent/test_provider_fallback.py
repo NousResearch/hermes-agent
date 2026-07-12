@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -210,6 +211,120 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
+
+
+class TestExplicitFallbackPolicy:
+    def test_cached_agent_refreshes_policy_without_recreation(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openrouter", "model": "remote"}]
+        )
+        original_chain = list(agent._fallback_chain)
+        agent._fallback_terminal_status_emitted = True
+        agent._pending_fallback_notice = "stale"
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "local-only"},
+        ):
+            assert agent._refresh_fallback_policy() == "local-only"
+
+        assert agent._fallback_policy == "local-only"
+        assert agent._fallback_chain == original_chain
+        assert agent._fallback_terminal_status_emitted is False
+        assert agent._pending_fallback_notice is None
+
+    def test_off_never_resolves_or_switches_and_fails_loudly(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openrouter", "model": "remote"}]
+        )
+        primary_provider = agent.provider
+        agent._fallback_policy = "off"
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, text))
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+            assert agent._try_activate_fallback(FailoverReason.server_error) is False
+
+        resolve.assert_not_called()
+        assert agent.provider == primary_provider
+        assert statuses and statuses[-1][0] == "fallback"
+        assert "policy off" in statuses[-1][1]
+        assert "No provider switch was attempted" in statuses[-1][1]
+
+    def test_local_only_rejects_remote_metadata_before_resolution(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "anthropic", "model": "claude"}]
+        )
+        agent._fallback_policy = "local-only"
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, text))
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+            assert agent._try_activate_fallback(FailoverReason.timeout) is False
+
+        resolve.assert_not_called()
+        assert "no eligible local fallback remained" in statuses[-1][1]
+        assert "Remote and unknown-endpoint fallbacks were not used" in statuses[-1][1]
+
+    def test_local_only_switch_status_precedes_runtime_mutation(self):
+        local = {
+            "provider": "custom",
+            "model": "local-model",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        agent = _make_agent(fallback_model=[local])
+        agent._fallback_policy = "local-only"
+        primary_identity = (agent.model, agent.provider)
+        observed = []
+
+        def status(kind, text):
+            observed.append((kind, text, agent.model, agent.provider))
+
+        agent.status_callback = status
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(local["base_url"]), "local-model"),
+        ):
+            assert agent._try_activate_fallback(FailoverReason.server_error) is True
+
+        decision = next(item for item in observed if item[0] == "fallback")
+        assert decision[2:4] == primary_identity
+        assert "reason: server error" in decision[1]
+        assert "switching to local-model via custom" in decision[1]
+        assert agent.model == "local-model"
+        assert agent.provider == "custom"
+
+    def test_local_only_rechecks_resolved_endpoint_before_switch(self):
+        local = {
+            "provider": "custom",
+            "model": "local-model",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        agent = _make_agent(fallback_model=[local])
+        agent._fallback_policy = "local-only"
+        remote_client = _mock_client("https://remote.example/v1")
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(remote_client, "local-model"),
+        ):
+            assert agent._try_activate_fallback() is False
+
+        remote_client.close.assert_called_once()
+        assert agent.model != "local-model"
+
+    def test_terminal_policy_status_is_emitted_once(self):
+        agent = _make_agent(fallback_model=[])
+        agent._fallback_policy = "any"
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, text))
+
+        assert agent._try_activate_fallback(FailoverReason.timeout) is False
+        assert agent._try_activate_fallback(FailoverReason.timeout) is False
+
+        fallback_statuses = [item for item in statuses if item[0] == "fallback"]
+        assert len(fallback_statuses) == 1
+        assert "policy any" in fallback_statuses[0][1]
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

@@ -5,6 +5,7 @@ import type { GatewayEventPayload } from '@/lib/chat-messages'
 import {
   completionErrorText,
   delegateTaskPayloads,
+  fallbackStatusText,
   hasSessionInfoStatePatch,
   sessionInfoStatePatch,
   toTodoPayload
@@ -19,6 +20,16 @@ describe('completionErrorText', () => {
     expect(completionErrorText('Gateway error: nope')).toMatch(/^Gateway error/)
     expect(completionErrorText('here is your answer')).toBeNull()
     expect(completionErrorText('   ')).toBeNull()
+  })
+})
+
+describe('fallbackStatusText', () => {
+  it('returns only non-empty structured fallback status text', () => {
+    expect(fallbackStatusText(payload({ kind: 'fallback', text: '  switching locally  ' }))).toBe(
+      'switching locally'
+    )
+    expect(fallbackStatusText(payload({ kind: 'lifecycle', text: 'ignore' }))).toBeNull()
+    expect(fallbackStatusText(payload({ kind: 'fallback', text: '   ' }))).toBeNull()
   })
 })
 

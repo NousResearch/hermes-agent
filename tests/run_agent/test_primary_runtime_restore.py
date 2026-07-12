@@ -121,6 +121,16 @@ class TestRestorePrimaryRuntime:
         assert agent._fallback_activated is False
         assert agent._restore_primary_runtime() is False
 
+    def test_restore_clears_pending_notice_without_changing_policy(self):
+        agent = _make_agent()
+        agent._fallback_policy = "local-only"
+        agent._pending_fallback_notice = "stale switch"
+
+        assert agent._restore_primary_runtime() is False
+
+        assert agent._pending_fallback_notice is None
+        assert agent._fallback_policy == "local-only"
+
     def test_restores_model_and_provider(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},

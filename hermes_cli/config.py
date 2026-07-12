@@ -976,6 +976,9 @@ def _ensure_hermes_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    # Cross-provider fallback safety boundary. Compatibility default is
+    # ``any``; supported values are exactly: off | local-only | any.
+    "fallback_policy": "any",
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -5212,7 +5215,8 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_policy", "fallback_providers", "fallback_promotions",
+    "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
@@ -5301,6 +5305,15 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         f"custom_providers[{i}] is missing 'base_url' field",
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
+
+    # ── fallback_policy: exact failover boundary ─────────────────────────
+    fallback_policy = config.get("fallback_policy", "any")
+    if fallback_policy not in {"off", "local-only", "any"}:
+        issues.append(ConfigIssue(
+            "error",
+            "fallback_policy must be exactly one of: off, local-only, any",
+            "Set the top-level field, e.g. `fallback_policy: local-only`",
+        ))
 
     # ── fallback_model: single dict OR list of dicts (chain) ─────────────
     fb = config.get("fallback_model")

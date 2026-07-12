@@ -1718,6 +1718,33 @@ def test_load_fallback_model_merges_chain_providers_first(monkeypatch):
     ]
 
 
+def test_effective_fallback_model_applies_local_only_policy(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "fallback_policy": "local-only",
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "remote"},
+                {
+                    "provider": "custom",
+                    "model": "local",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                },
+            ],
+        },
+    )
+
+    assert server._load_fallback_model()[0]["provider"] == "openrouter"
+    assert server._load_effective_fallback_model() == [
+        {
+            "provider": "custom",
+            "model": "local",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+    ]
+
+
 def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     captured = {}
     fallback_chain = [
@@ -4821,6 +4848,19 @@ def test_session_info_includes_mcp_servers(monkeypatch):
 
     assert info["provider"] == "openai-codex"
     assert info["mcp_servers"] == fake_status
+
+
+def test_session_info_includes_active_fallback_policy():
+    info = server._session_info(
+        types.SimpleNamespace(
+            tools=[],
+            model="local-model",
+            provider="custom",
+            _fallback_policy="local-only",
+        )
+    )
+
+    assert info["fallback_policy"] == "local-only"
 
 
 def test_session_info_includes_session_title(monkeypatch):

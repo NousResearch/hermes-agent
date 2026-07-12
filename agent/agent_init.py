@@ -1150,11 +1150,22 @@ def init_agent(
         agent._fallback_chain = [fallback_model]
     else:
         agent._fallback_chain = []
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import get_fallback_policy
+
+        agent._fallback_policy = get_fallback_policy(load_config_readonly())
+    except Exception:
+        # Config read failures must never widen provider routing.
+        agent._fallback_policy = "off"
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    agent._fallback_terminal_status_emitted = False
+    agent._pending_fallback_notice = None
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     if agent._fallback_chain and not agent.quiet_mode:
+        print(f"🛡️  Fallback policy: {agent._fallback_policy}")
         if len(agent._fallback_chain) == 1:
             fb = agent._fallback_chain[0]
             print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")

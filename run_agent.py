@@ -894,6 +894,21 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
+    def _emit_fallback_status(self, message: str) -> None:
+        """Emit an immediate, structured fallback decision/status message."""
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback("fallback", message)
+            except Exception:
+                logger.debug(
+                    "status_callback error in _emit_fallback_status",
+                    exc_info=True,
+                )
+
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.
 
@@ -4780,10 +4795,34 @@ class AIAgent:
         from agent.chat_completion_helpers import interruptible_streaming_api_call
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
-    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
+    def _try_activate_fallback(
+        self, reason: "FailoverReason | str | None" = None,
+    ) -> bool:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
         from agent.chat_completion_helpers import try_activate_fallback
         return try_activate_fallback(self, reason)
+
+    def _emit_fallback_policy_terminal_status(
+        self, reason: "FailoverReason | str | None" = None,
+    ) -> None:
+        """Forwarder for the policy-aware terminal fallback status."""
+        from agent.chat_completion_helpers import emit_fallback_policy_terminal_status
+
+        emit_fallback_policy_terminal_status(self, reason)
+
+    def _refresh_fallback_policy(self) -> str:
+        """Refresh the policy for cached agents at the start of every turn."""
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.fallback_config import get_fallback_policy
+
+            policy = get_fallback_policy(load_config_readonly())
+        except Exception:
+            policy = "off"
+        self._fallback_policy = policy
+        self._fallback_terminal_status_emitted = False
+        self._pending_fallback_notice = None
+        return policy
 
     def _has_pending_fallback(self) -> bool:
         """Whether a fallback provider is actually available to switch to.
@@ -4793,6 +4832,8 @@ class AIAgent:
         fallback chain configured).  Mirrors the early-return guard in
         ``try_activate_fallback`` (#35314, #17446).
         """
+        if getattr(self, "_fallback_policy", "any") == "off":
+            return False
         chain = getattr(self, "_fallback_chain", None) or []
         index = getattr(self, "_fallback_index", 0)
         return index < len(chain)

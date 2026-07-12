@@ -1065,9 +1065,11 @@ class TestInit:
 
 class TestInterrupt:
     def test_interrupt_sets_flag(self, agent):
+        agent._pending_fallback_notice = "about to switch"
         with patch("run_agent._set_interrupt"):
             agent.interrupt()
             assert agent._interrupt_requested is True
+            assert agent._pending_fallback_notice is None
 
     def test_interrupt_with_message(self, agent):
         with patch("run_agent._set_interrupt"):
@@ -1077,9 +1079,11 @@ class TestInterrupt:
     def test_clear_interrupt(self, agent):
         with patch("run_agent._set_interrupt"):
             agent.interrupt("msg")
+            agent._pending_fallback_notice = "stale"
             agent.clear_interrupt()
             assert agent._interrupt_requested is False
             assert agent._interrupt_message is None
+            assert agent._pending_fallback_notice is None
 
     def test_is_interrupted_property(self, agent):
         assert agent.is_interrupted is False

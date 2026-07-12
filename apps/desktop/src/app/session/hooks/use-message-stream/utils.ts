@@ -81,6 +81,15 @@ export function completionErrorText(finalText: string): string | null {
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
 }
 
+export function fallbackStatusText(payload: GatewayEventPayload | undefined): string | null {
+  if (payload?.kind !== 'fallback' || typeof payload.text !== 'string') {
+    return null
+  }
+
+  const text = payload.text.trim()
+  return text || null
+}
+
 export const SUBAGENT_EVENT_TYPES = new Set([
   'subagent.spawn_requested',
   'subagent.start',

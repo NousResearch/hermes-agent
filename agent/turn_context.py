@@ -151,7 +151,22 @@ def build_turn_context(
     # null; rebuilding from scratch" warning and a needless first-turn prefix
     # cache miss. (Issue #45499.)
 
-    # Tell auxiliary_client what the live main provider/model are for this turn.
+    # Tag log records on this thread with the session ID for ``hermes logs``.
+    set_session_context(agent.session_id)
+
+    # Bind the skill write-origin ContextVar for this thread.
+    set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
+
+    # Cached gateway/desktop agents survive config edits. Refresh the exact
+    # fallback boundary before any restore or provider selection this turn.
+    agent._refresh_fallback_policy()
+
+    # Restore the primary runtime if the previous turn activated fallback.
+    agent._restore_primary_runtime()
+
+    # Tell auxiliary_client what the restored live main provider/model are for
+    # this turn. Doing this before restoration leaked the previous turn's
+    # fallback route into auxiliary selection on cached agents.
     try:
         from agent.auxiliary_client import set_runtime_main
         set_runtime_main(
@@ -163,15 +178,6 @@ def build_turn_context(
         )
     except Exception:
         pass
-
-    # Tag log records on this thread with the session ID for ``hermes logs``.
-    set_session_context(agent.session_id)
-
-    # Bind the skill write-origin ContextVar for this thread.
-    set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
-
-    # Restore the primary runtime if the previous turn activated fallback.
-    agent._restore_primary_runtime()
 
     # Between-turns MCP refresh: an MCP server that finished connecting since
     # the previous turn (slow HTTP/OAuth servers routinely take 2-6s on a cold

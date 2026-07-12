@@ -3368,6 +3368,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     info: dict = {
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
+        "fallback_policy": getattr(agent, "_fallback_policy", "any"),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -4139,15 +4140,35 @@ def _parse_tui_skills_env() -> list[str]:
 def _load_fallback_model():
     """Return the configured fallback chain for TUI-created agents.
 
-    Delegates to the shared ``get_fallback_chain`` helper so the TUI path
+    Delegates to the shared configured-chain helper so the TUI path
     stays in parity with ``HermesCLI.__init__`` and ``gateway/run.py``:
     ``fallback_providers`` is the primary source of truth and keeps its
     order, with legacy ``fallback_model`` entries merged in afterwards
     (deduped on provider/model/base_url).
     """
-    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.fallback_config import get_configured_fallback_chain
 
-    return get_fallback_chain(_load_cfg())
+    return get_configured_fallback_chain(_load_cfg())
+
+
+def _load_effective_fallback_model():
+    """Return only routes eligible under the active fallback policy."""
+    from hermes_cli.fallback_config import (
+        fallback_entry_is_local,
+        get_fallback_policy,
+    )
+
+    cfg = _load_cfg()
+    policy = get_fallback_policy(cfg)
+    if policy == "off":
+        return []
+    chain = _load_fallback_model() or []
+    if policy == "local-only":
+        return [
+            entry for entry in chain
+            if isinstance(entry, dict) and fallback_entry_is_local(entry, cfg)
+        ]
+    return chain
 
 
 def _agent_fallback_model(agent):
@@ -4455,7 +4476,7 @@ def _resolve_runtime_with_fallback(
     try:
         return resolve_runtime_provider(**kwargs)
     except AuthError as primary_exc:
-        fb_chain = _load_fallback_model() or []
+        fb_chain = _load_effective_fallback_model() or []
         for entry in fb_chain:
             if not isinstance(entry, dict):
                 continue

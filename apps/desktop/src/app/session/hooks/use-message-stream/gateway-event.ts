@@ -46,7 +46,13 @@ import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
-import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
+import {
+  fallbackStatusText,
+  hasSessionInfoStatePatch,
+  sessionInfoStatePatch,
+  SUBAGENT_EVENT_TYPES,
+  toTodoPayload
+} from './utils'
 
 interface GatewayEventDeps {
   activeSessionIdRef: MutableRefObject<string | null>
@@ -561,7 +567,34 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
       } else if (event.type === 'status.update') {
-        if (sessionId && payload?.kind === 'compacting') {
+        const fallbackText = fallbackStatusText(payload)
+
+        if (sessionId && fallbackText) {
+          flushQueuedDeltas(sessionId)
+          updateSessionState(sessionId, state => {
+            const notice = {
+              id: `fallback-status-${Date.now()}`,
+              role: 'system' as const,
+              parts: [textPart(fallbackText)],
+              timestamp: Math.floor(Date.now() / 1000)
+            }
+            const streamIndex = state.streamId
+              ? state.messages.findIndex(message => message.id === state.streamId)
+              : -1
+            const messages = [...state.messages]
+
+            // Keep the decision before the response produced by the selected
+            // fallback, even when an empty pending assistant bubble already
+            // exists for this turn.
+            if (streamIndex >= 0) {
+              messages.splice(streamIndex, 0, notice)
+            } else {
+              messages.push(notice)
+            }
+
+            return { ...state, messages }
+          })
+        } else if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
         } else if (sessionId && payload?.kind === 'process') {

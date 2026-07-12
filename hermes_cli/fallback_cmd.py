@@ -11,6 +11,7 @@ Subcommands:
                            then append the selection to the chain
   hermes fallback remove   Pick an entry to delete from the chain
   hermes fallback clear    Remove all fallback entries
+  hermes fallback policy   Show or set off | local-only | any
 
 Storage: ``fallback_providers`` in ``~/.hermes/config.yaml`` (top-level, list of
 ``{provider, model, base_url?, api_mode?}`` dicts).  The legacy single-dict
@@ -21,7 +22,12 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import (
+    FALLBACK_POLICIES,
+    fallback_entry_is_local,
+    get_configured_fallback_chain,
+    get_fallback_policy,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +42,7 @@ def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     merged with ``fallback_providers`` entries kept first. The returned list is
     always a fresh copy — callers can mutate without touching the config dict.
     """
-    return get_fallback_chain(config)
+    return get_configured_fallback_chain(config)
 
 
 def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
@@ -110,7 +116,20 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
 
     config = load_config()
     chain = _read_chain(config)
+    policy = get_fallback_policy(config)
 
+    print()
+    print(f"  Policy:    {policy}")
+    if policy == "off":
+        print("             Fallback is disabled; primary failures stop loudly.")
+    elif policy == "local-only":
+        eligible = sum(fallback_entry_is_local(entry, config) for entry in chain)
+        print(
+            "             Only endpoint-verified local routes are eligible "
+            f"({eligible}/{len(chain)} configured)."
+        )
+    else:
+        print("             Configured routes may be local or remote, in listed order.")
     print()
     if not chain:
         print("  No fallback providers configured.")
@@ -130,6 +149,24 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
     print("  Tried in order when the primary fails (rate-limit, 5xx, connection errors).")
     print("  Docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers")
     print()
+
+
+def cmd_fallback_policy(args) -> None:
+    """Show or safely persist the exact fallback policy."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    requested = getattr(args, "fallback_policy", None)
+    if requested is None:
+        print(get_fallback_policy(config))
+        return
+    if requested not in FALLBACK_POLICIES:
+        print("fallback policy must be exactly one of: off, local-only, any")
+        raise SystemExit(2)
+
+    config["fallback_policy"] = requested
+    save_config(config)
+    print(f"Fallback policy set to: {requested}")
 
 
 def _describe_primary(config: Dict[str, Any]) -> Optional[str]:
@@ -348,7 +385,9 @@ def cmd_fallback(args) -> None:
         cmd_fallback_remove(args)
     elif sub == "clear":
         cmd_fallback_clear(args)
+    elif sub == "policy":
+        cmd_fallback_policy(args)
     else:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, remove, clear, policy")
         raise SystemExit(2)

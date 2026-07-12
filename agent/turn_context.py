@@ -116,6 +116,39 @@ class TurnContext:
     ext_prefetch_cache: str = ""
 
 
+def _compose_pre_persist_returns(user_message, results):
+    """Compose pre_persist_user_message plugin returns into user_message. Pure.
+
+    Order: (1) winning ``user_message`` replace — highest ``data.priority``,
+    ties → first (stable) — sets the body; (2) ``{"context"}`` dicts and bare
+    strings appended raw at the tail (back-compat, unwrapped). A return of
+    ``None`` is ignored.
+    """
+    replaces, raw_tail = [], []
+    for r in results:
+        if isinstance(r, str):
+            if r.strip():
+                raw_tail.append(r)
+            continue
+        if not isinstance(r, dict):
+            continue
+        if r.get("context"):
+            raw_tail.append(str(r["context"]))
+        if r.get("user_message") is not None:
+            replaces.append((int((r.get("data") or {}).get("priority", 0)),
+                             str(r["user_message"])))
+    if replaces:
+        if len(replaces) > 1:
+            logger.warning("pre_persist_user_message: %d user_message "
+                           "replacements; highest priority (ties->first) wins",
+                           len(replaces))
+        replaces.sort(key=lambda t: -t[0])  # stable: ties keep original order
+        user_message = replaces[0][1]
+    if raw_tail:
+        user_message = user_message + "\n\n" + "\n\n".join(raw_tail)
+    return user_message
+
+
 def build_turn_context(
     agent,
     user_message: Any,
@@ -349,6 +382,43 @@ def build_turn_context(
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             should_review_memory = True
             agent._turns_since_memory = 0
+
+    # Plugin hook: pre_persist_user_message — agent-path ingress. Fragments
+    # returned here are folded into user_message BEFORE the turn's
+    # crash-resilience persist and the API call, so they land on the wire
+    # — the agent-path analogue of the gateway's pre_gateway_dispatch
+    # event.text mutation. Runs after the CLI-staged handoff match and the
+    # original_user_message capture above, both of which must see the raw
+    # (pre-hook) text; user_msg is already in `messages`, so the composed
+    # body is written back into the dict in place.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _pp = _invoke_hook(
+            "pre_persist_user_message",
+            session_id=agent.session_id or "",
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            conversation_history=messages[:current_turn_user_idx],
+            platform=getattr(agent, "platform", None) or "",
+            sender_id=getattr(agent, "_user_id", None) or "",
+        )
+        user_message = _compose_pre_persist_returns(user_message, _pp)
+        # Returns are 'pre_persist' by contract — they must reach the persisted
+        # DB row, not only this turn's wire. The gateway may set a persist
+        # override to the pre-hook message (agent._persist_user_message_override,
+        # consumed by _apply_persist_user_message_override); the session flush
+        # writes THAT to the DB row. Without re-composing the returns onto it,
+        # an injected block reaches the API the turn it fires, then vanishes
+        # from replayed history next turn (the row held the raw body). Skip
+        # multimodal (list) content, mirroring the override applier. Guarded on
+        # `is not None` so it is a no-op when no override was set.
+        _ov = getattr(agent, "_persist_user_message_override", None)
+        if _pp and _ov is not None and not isinstance(_ov, list):
+            agent._persist_user_message_override = _compose_pre_persist_returns(_ov, _pp)
+    except Exception as exc:
+        logger.warning("pre_persist_user_message hook failed: %s", exc)
+    user_msg["content"] = user_message
 
     # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
     # and notify the host so it can play hearts. Token-free, never touches the

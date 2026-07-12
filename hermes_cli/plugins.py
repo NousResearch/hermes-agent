@@ -171,6 +171,14 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Agent-path ingress hook. Fired once per user turn in build_turn_context,
+    # BEFORE the inbound user message is appended and persisted (unlike
+    # pre_llm_call, which fires after the crash-resilience persist and whose
+    # context is ephemeral). Plugins return {"context": "..."} or a str; the
+    # host joins all non-None returns and appends them to user_message so they
+    # persist to the session DB (and thus onto the wire). Kwargs: session_id,
+    # task_id, turn_id, user_message, conversation_history, platform, sender_id.
+    "pre_persist_user_message",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

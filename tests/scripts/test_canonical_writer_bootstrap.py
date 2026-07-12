@@ -233,6 +233,7 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
     assert len({config.writer_gid, config.socket_gid, config.projector_gid}) == 3
     assert config.projector_gid != config.writer_gid
     assert config.database.credential.path == tmp_path / "database-password"
+    assert config.database.credential.allowed_modes == frozenset({0o400})
     assert config.database.host == "10.0.0.8"
     assert config.database.tls_server_name == "db.internal"
     assert not hasattr(config.database, "password")
@@ -264,6 +265,21 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
         )
     )
     assert config.discord_edge_authority.request_timeout_seconds == 15
+
+
+def test_loaded_runtime_config_rejects_writer_writable_database_credential(tmp_path):
+    value = _config_value(tmp_path)
+    credential = Path(value["database"]["credential_file"])
+    credential.write_text("not-a-real-secret", encoding="utf-8")
+    credential.chmod(0o600)
+    config = _load(_write_config(tmp_path, value))
+
+    assert config.database.credential.allowed_modes == frozenset({0o400})
+    with pytest.raises(
+        writer_db.CredentialSecurityError,
+        match="credential_mode_not_allowed",
+    ):
+        writer_db._read_credential(config.database.credential)
 
 
 @pytest.mark.parametrize("mode", [0o600, 0o640, 0o644, 0o660])

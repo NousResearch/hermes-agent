@@ -14,6 +14,37 @@ import pytest
 from gateway import canonical_writer_activation as activation
 
 
+def _collector_bound_native_plan():
+    ca = b"trusted-ca"
+    return activation.NativeObservationPlan(
+        value={
+            "boot_id_sha256": "1" * 64,
+            "host_identity_sha256": "2" * 64,
+            "revision": "a" * 40,
+            "artifact_sha256": "3" * 64,
+            "release_manifest_file_sha256": "4" * 64,
+            "config_collector_receipt_sha256": "5" * 64,
+            "writer_config": {"sha256": "6" * 64},
+            "gateway_config": {"sha256": "7" * 64},
+            "database": {
+                "ip_network": "10.91.0.3/32",
+                "tls_server_name": (
+                    "14-11111111-1111-4111-8111-111111111111."
+                    "europe-west3.sql.goog"
+                ),
+                "ca_path": "/etc/muncho/trust/cloudsql-server-ca.pem",
+                "ca_sha256": activation.hashlib.sha256(ca).hexdigest(),
+            },
+            "discord": {
+                "config_path": "/etc/muncho/discord-edge.json",
+                "token_path": "/etc/muncho/discord-edge-credentials/bot-token",
+                "socket_path": "/run/muncho-discord-egress/edge.sock",
+            },
+            "legacy_helper_path": "/run/muncho/legacy-helper.sock",
+        }
+    )
+
+
 def _owner_approval(scope: str, plan_sha256: str):
     now = int(time.time())
     receipt = activation.OwnerApprovalReceipt.from_mapping({
@@ -80,6 +111,8 @@ def test_external_iam_loader_enforces_minimum_remaining_lifetime(monkeypatch):
     calls = []
 
     class Receipt:
+        value = {"source_approval_sha256": "b" * 64}
+
         def require_fresh(self, now, *, minimum_remaining_seconds=0):
             calls.append((now, minimum_remaining_seconds))
 
@@ -98,9 +131,277 @@ def test_external_iam_loader_enforces_minimum_remaining_lifetime(monkeypatch):
         path_value=activation.DEFAULT_EXTERNAL_IAM_LIVE_PATH,
         now_unix=123,
         minimum_remaining_seconds=720,
+        expected_source_approval_sha256="b" * 64,
     )
 
     assert calls == [(123, 720)]
+
+    with pytest.raises(ValueError, match="another approval"):
+        activation.load_external_iam_receipt(
+            plan,
+            path_value=activation.DEFAULT_EXTERNAL_IAM_LIVE_PATH,
+            now_unix=123,
+            expected_source_approval_sha256="c" * 64,
+        )
+
+
+def test_external_iam_install_requires_exact_owner_approval_chain(monkeypatch):
+    policy_sha256 = "b" * 64
+    plan = activation.NativeObservationPlan(
+        value={"external_iam_policy_sha256": policy_sha256}
+    )
+    plan_sha256 = plan.sha256
+    owner = _owner_approval("native_observation", plan_sha256)
+    archived = []
+    replaced = []
+
+    class Receipt:
+        sha256 = "c" * 64
+
+        def __init__(self, source_approval_sha256):
+            self.policy_sha256 = policy_sha256
+            self.value = {
+                "source_approval_sha256": source_approval_sha256,
+            }
+
+        def require_fresh(self, _now):
+            return None
+
+        def to_mapping(self):
+            return dict(self.value)
+
+    current = Receipt(owner.sha256)
+    monkeypatch.setattr(activation, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        activation.NativeObservationPlan,
+        "from_mapping",
+        lambda _value: plan,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_read_trusted_file",
+        lambda *_args, **_kwargs: activation._canonical_bytes(
+            current.to_mapping()
+        ),
+    )
+    monkeypatch.setattr(
+        activation.ExternalIAMReceipt,
+        "from_mapping",
+        lambda _value: current,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_archive_external_iam_at",
+        lambda receipt, path: archived.append((receipt, path)) or {"path": str(path)},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_external_iam_archive_path",
+        lambda _receipt: Path("/archive/iam.json"),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_replace_live_external_iam",
+        lambda receipt: replaced.append(receipt) or True,
+    )
+
+    observed, _archive, changed = activation.install_staged_external_iam_receipt(
+        activation.DEFAULT_STAGED_EXTERNAL_IAM_PATH,
+        authorized_plan=plan,
+        owner_approval_receipt=owner,
+    )
+
+    assert observed is current
+    assert changed is True
+    assert archived and replaced == [current]
+
+    current.value["source_approval_sha256"] = "d" * 64
+    with pytest.raises(PermissionError, match="not bound to owner approval"):
+        activation.install_staged_external_iam_receipt(
+            activation.DEFAULT_STAGED_EXTERNAL_IAM_PATH,
+            authorized_plan=plan,
+            owner_approval_receipt=owner,
+        )
+
+
+def test_final_cli_installs_iam_only_through_exact_plan_approval_chain(
+    monkeypatch,
+    capsys,
+):
+    plan = SimpleNamespace(
+        sha256="a" * 64,
+        digests=SimpleNamespace(external_iam_policy_sha256="b" * 64),
+    )
+    owner = _owner_approval("activation", plan.sha256)
+    iam = SimpleNamespace(
+        value={"schema": "external-iam.v1"},
+        sha256="c" * 64,
+        policy_sha256=plan.digests.external_iam_policy_sha256,
+    )
+    calls = []
+    monkeypatch.setattr(
+        activation,
+        "load_activation_plan",
+        lambda path: calls.append(("plan", path)) or plan,
+    )
+    monkeypatch.setattr(
+        activation,
+        "load_owner_approval_receipt",
+        lambda path, **kwargs: calls.append(("approval", path, kwargs)) or owner,
+    )
+    monkeypatch.setattr(
+        activation,
+        "install_staged_external_iam_receipt",
+        lambda path, **kwargs: calls.append(("install", path, kwargs))
+        or (iam, {"path": "/archive/iam.json"}, True),
+    )
+
+    result = activation.main([
+        "install-external-iam",
+        "--plan",
+        str(activation.DEFAULT_PLAN_PATH),
+        "--staged-receipt",
+        str(activation.DEFAULT_STAGED_EXTERNAL_IAM_PATH),
+        "--approved-plan-sha256",
+        plan.sha256,
+        "--owner-approval-receipt",
+        "/approval.json",
+        "--external-iam-policy-sha256",
+        plan.digests.external_iam_policy_sha256,
+    ])
+
+    assert result == 0
+    assert calls == [
+        ("plan", activation.DEFAULT_PLAN_PATH),
+        (
+            "approval",
+            "/approval.json",
+            {"scope": "activation", "plan_sha256": plan.sha256},
+        ),
+        (
+            "install",
+            str(activation.DEFAULT_STAGED_EXTERNAL_IAM_PATH),
+            {"authorized_plan": plan, "owner_approval_receipt": owner},
+        ),
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert output["scope"] == "activation"
+    assert output["plan_sha256"] == plan.sha256
+    assert output["owner_approval_receipt_sha256"] == owner.sha256
+
+
+def test_final_cli_preflight_requires_and_passes_exact_owner_approval(
+    monkeypatch,
+    capsys,
+):
+    plan = SimpleNamespace(sha256="a" * 64)
+    owner = _owner_approval("activation", plan.sha256)
+    calls = []
+    monkeypatch.setattr(
+        activation,
+        "load_activation_plan",
+        lambda path: calls.append(("plan", path)) or plan,
+    )
+    monkeypatch.setattr(
+        activation,
+        "load_owner_approval_receipt",
+        lambda path, **kwargs: calls.append(("approval", path, kwargs)) or owner,
+    )
+    monkeypatch.setattr(
+        activation,
+        "activation_read_only_preflight",
+        lambda observed_plan, **kwargs: calls.append(
+            ("preflight", observed_plan, kwargs)
+        )
+        or ({"ok": True}, None, object()),
+    )
+
+    result = activation.main([
+        "validate-plan",
+        "--plan",
+        str(activation.DEFAULT_PLAN_PATH),
+        "--approved-plan-sha256",
+        plan.sha256,
+        "--owner-approval-receipt",
+        "/approval.json",
+    ])
+
+    assert result == 0
+    assert calls == [
+        ("plan", str(activation.DEFAULT_PLAN_PATH)),
+        (
+            "approval",
+            "/approval.json",
+            {"scope": "activation", "plan_sha256": plan.sha256},
+        ),
+        (
+            "preflight",
+            plan,
+            {"owner_approval_receipt": owner},
+        ),
+    ]
+    assert json.loads(capsys.readouterr().out) == {"ok": True}
+
+
+def test_durable_native_chain_rereads_exact_approval_and_archived_iam(monkeypatch):
+    policy_sha256 = "b" * 64
+    plan = activation.NativeObservationPlan(
+        value={
+            "revision": "a" * 40,
+            "external_iam_policy_sha256": policy_sha256,
+        }
+    )
+    owner = _owner_approval("native_observation", plan.sha256)
+    iam_sha256 = "c" * 64
+    receipt = activation.NativeObservationReceipt(
+        value={
+            "owner_approval_receipt_sha256": owner.sha256,
+            "external_iam_receipt_sha256": iam_sha256,
+        }
+    )
+    iam = SimpleNamespace(
+        sha256=iam_sha256,
+        policy_sha256=policy_sha256,
+        value={"source_approval_sha256": owner.sha256},
+    )
+    owner_path = activation.owner_approval_receipt_path(owner)
+    iam_path = (
+        activation.DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT
+        / plan.value["revision"]
+        / plan.sha256
+        / "external-iam"
+        / f"{iam_sha256}.json"
+    )
+    reads = []
+
+    def read(path, **_kwargs):
+        reads.append(Path(path))
+        if Path(path) == owner_path:
+            return activation._canonical_bytes(owner.to_mapping())
+        if Path(path) == iam_path:
+            return b'{"archived":true}'
+        raise AssertionError(path)
+
+    monkeypatch.setattr(activation, "_read_trusted_file", read)
+    monkeypatch.setattr(
+        activation.ExternalIAMReceipt,
+        "from_mapping",
+        lambda _value: iam,
+    )
+
+    loaded_owner, loaded_iam, evidence = (
+        activation._load_durable_native_authority_chain(plan, receipt)
+    )
+
+    assert loaded_owner.sha256 == owner.sha256
+    assert loaded_iam is iam
+    assert reads == [owner_path, iam_path]
+    assert evidence["path"] == str(iam_path)
+    assert evidence["sha256"] == iam_sha256
+
+    iam.value["source_approval_sha256"] = "d" * 64
+    with pytest.raises(RuntimeError, match="IAM approval chain drifted"):
+        activation._load_durable_native_authority_chain(plan, receipt)
 
 
 def test_preflight_archive_distinguishes_report_and_file_digests(monkeypatch):
@@ -459,6 +760,359 @@ def test_direct_apply_requires_matching_owner_approval_before_any_mutation(
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("expire_on_require", "expected_started", "expected_sealed"),
+    (
+        (3, [], False),  # before the first mutation is safely retryable
+        (4, [], True),  # after permanent artifact installation
+        (5, [], True),  # after the temporary projection exporter
+        (6, [activation.WRITER_UNIT], True),  # gateway withheld, writer stopped
+    ),
+)
+def test_final_activation_rechecks_owner_freshness_before_each_dangerous_step(
+    tmp_path,
+    monkeypatch,
+    expire_on_require,
+    expected_started,
+    expected_sealed,
+):
+    commands = []
+    lifecycle = []
+    invalidations = []
+    seals = []
+    paths = SimpleNamespace(
+        quarantine_path=tmp_path / "quarantine.json",
+        root_receipt_path=tmp_path / "root.json",
+        evidence_root=tmp_path / "evidence",
+        external_iam_receipt_path=tmp_path / "iam.json",
+    )
+    plan = SimpleNamespace(
+        sha256="a" * 64,
+        revision="b" * 40,
+        paths=paths,
+        native_observation_receipt={"plan": {}},
+        digests=SimpleNamespace(
+            native_observation_plan_sha256="c" * 64,
+            native_observation_receipt_sha256="d" * 64,
+        ),
+    )
+    owner = _owner_approval("activation", plan.sha256)
+    real_require = activation.OwnerApprovalReceipt.require
+    require_calls = 0
+
+    def expiring_require(self, *, scope, plan_sha256, now_unix):
+        nonlocal require_calls
+        require_calls += 1
+        if require_calls == expire_on_require:
+            raise PermissionError("owner approval does not authorize this exact action")
+        return real_require(
+            self,
+            scope=scope,
+            plan_sha256=plan_sha256,
+            now_unix=now_unix,
+        )
+
+    def runner(command):
+        commands.append(command.argv)
+        return subprocess.CompletedProcess(command.argv, 0, b"", b"")
+
+    executor = activation.ActivationExecutor(plan, runner=runner)
+    monkeypatch.setattr(activation.OwnerApprovalReceipt, "require", expiring_require)
+    monkeypatch.setattr(activation, "_host_activation_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        activation,
+        "activation_read_only_preflight",
+        lambda *_args, **_kwargs: (
+            {"ok": True},
+            None,
+            SimpleNamespace(value={"source_approval_sha256": owner.sha256}),
+        ),
+    )
+    monkeypatch.setattr(
+        activation.NativeObservationPlan,
+        "from_mapping",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_archive_plan_external_iam",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_load_lifecycle_external_iam",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(activation, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(activation, "_verify_release_tree", lambda _plan: None)
+    monkeypatch.setattr(
+        activation,
+        "_install_plan_artifacts",
+        lambda _plan: lifecycle.append("install") or (),
+    )
+    monkeypatch.setattr(executor, "_verify_installed", lambda: None)
+    monkeypatch.setattr(
+        executor,
+        "_run_projection_export",
+        lambda: lifecycle.append("export") or {},
+    )
+    monkeypatch.setattr(
+        executor,
+        "_invalidate_root_receipt",
+        lambda: invalidations.append(True),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_active",
+        lambda unit, **_kwargs: 111 if unit == activation.WRITER_UNIT else 222,
+    )
+    monkeypatch.setattr(
+        activation, "_require_off_disabled", lambda *_args, **_kwargs: None
+    )
+
+    def sealed(*_args, **_kwargs):
+        seals.append(True)
+        raise RuntimeError("sealed after expired approval")
+
+    monkeypatch.setattr(activation, "_seal_activation_failure", sealed)
+
+    expected_error = (
+        "sealed after expired approval"
+        if expected_sealed
+        else "safely stopped before mutation"
+    )
+    with pytest.raises(RuntimeError, match=expected_error):
+        executor.apply(
+            approved_plan_sha256=plan.sha256,
+            owner_approval_receipt=owner,
+        )
+
+    started = [
+        argv[2]
+        for argv in commands
+        if argv[:2] == (activation.SYSTEMCTL, "start")
+    ]
+    assert started == expected_started
+    assert activation.GATEWAY_UNIT not in started
+    assert bool(seals) is expected_sealed
+    if expire_on_require <= 3:
+        assert lifecycle == []
+        assert invalidations == []
+    elif expire_on_require == 4:
+        assert lifecycle == ["install"]
+    else:
+        assert lifecycle == ["install", "export"]
+
+
+def test_native_expired_approval_before_host_mutation_is_retryable_not_forensic(
+    tmp_path,
+    monkeypatch,
+):
+    plan = activation.NativeObservationPlan(value={
+        "revision": "b" * 40,
+        "external_iam_policy_sha256": "c" * 64,
+    })
+    owner = _owner_approval("native_observation", plan.sha256)
+    real_require = activation.OwnerApprovalReceipt.require
+    require_calls = 0
+    calls = []
+
+    def expiring_require(self, *, scope, plan_sha256, now_unix):
+        nonlocal require_calls
+        require_calls += 1
+        if require_calls == 3:
+            raise PermissionError("owner approval does not authorize this exact action")
+        return real_require(
+            self,
+            scope=scope,
+            plan_sha256=plan_sha256,
+            now_unix=now_unix,
+        )
+
+    executor = activation.NativeObservationExecutor(
+        plan,
+        runner=lambda command: calls.append(command.argv)
+        or subprocess.CompletedProcess(command.argv, 0, b"", b""),
+    )
+    monkeypatch.setattr(activation.OwnerApprovalReceipt, "require", expiring_require)
+    monkeypatch.setattr(activation, "_host_activation_lock", lambda: nullcontext())
+    monkeypatch.setattr(activation, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        activation,
+        "DEFAULT_QUARANTINE_PATH",
+        tmp_path / "quarantine.json",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_native_receipt_path",
+        lambda _plan: tmp_path / "native-receipt.json",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_native_stage_path",
+        lambda _plan: tmp_path / "native-stage.json",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_load_lifecycle_external_iam",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_verify_native_preflight_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_archive_plan_external_iam",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_host_identity_snapshot",
+        lambda: pytest.fail("host mutation boundary must not be entered"),
+    )
+    monkeypatch.setattr(
+        activation, "_require_off_or_absent", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        activation, "_require_off_disabled", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        activation,
+        "_native_failure_path",
+        lambda _plan: pytest.fail("retryable expiry must not create failure evidence"),
+    )
+
+    with pytest.raises(RuntimeError, match="safely stopped before mutation"):
+        executor.observe(
+            approved_plan_sha256=plan.sha256,
+            owner_approval_receipt=owner,
+            external_iam_receipt_path=activation.DEFAULT_EXTERNAL_IAM_LIVE_PATH,
+        )
+
+    assert not [
+        argv for argv in calls if argv[:2] == (activation.SYSTEMCTL, "start")
+    ]
+
+
+def test_native_expired_approval_after_host_mutation_is_forensic(
+    tmp_path,
+    monkeypatch,
+):
+    plan = activation.NativeObservationPlan(value={
+        "revision": "b" * 40,
+        "external_iam_policy_sha256": "c" * 64,
+    })
+    owner = _owner_approval("native_observation", plan.sha256)
+    real_require = activation.OwnerApprovalReceipt.require
+    require_calls = 0
+    commands = []
+    writes = []
+
+    def expiring_require(self, *, scope, plan_sha256, now_unix):
+        nonlocal require_calls
+        require_calls += 1
+        if require_calls == 4:
+            raise PermissionError("owner approval does not authorize this exact action")
+        return real_require(
+            self,
+            scope=scope,
+            plan_sha256=plan_sha256,
+            now_unix=now_unix,
+        )
+
+    executor = activation.NativeObservationExecutor(
+        plan,
+        runner=lambda command: commands.append(command.argv)
+        or subprocess.CompletedProcess(command.argv, 0, b"", b""),
+    )
+    quarantine = tmp_path / "quarantine.json"
+    failure = tmp_path / "failure.json"
+    monkeypatch.setattr(activation.OwnerApprovalReceipt, "require", expiring_require)
+    monkeypatch.setattr(activation, "_host_activation_lock", lambda: nullcontext())
+    monkeypatch.setattr(activation, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(activation, "DEFAULT_QUARANTINE_PATH", quarantine)
+    monkeypatch.setattr(
+        activation,
+        "_native_receipt_path",
+        lambda _plan: tmp_path / "native-receipt.json",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_native_stage_path",
+        lambda _plan: tmp_path / "native-stage.json",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_load_lifecycle_external_iam",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_verify_native_preflight_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_archive_plan_external_iam",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_host_identity_snapshot",
+        lambda: {"state": "before"},
+    )
+    monkeypatch.setattr(
+        activation,
+        "prepare_canary_host_identities",
+        lambda *_args, **_kwargs: {
+            "changed": True,
+            "before": {"state": "before"},
+            "after": {"state": "after"},
+        },
+    )
+    monkeypatch.setattr(
+        activation,
+        "_record_host_preparation",
+        lambda *_args, **_kwargs: {
+            "receipt_path": str(tmp_path / "host.json"),
+            "receipt_sha256": "d" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        activation,
+        "_install_native_observation_artifacts",
+        lambda _plan: pytest.fail("expired approval must block artifact install"),
+    )
+    monkeypatch.setattr(
+        activation, "_require_off_or_absent", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        activation, "_require_off_disabled", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(activation, "_native_failure_path", lambda _plan: failure)
+    monkeypatch.setattr(activation, "_ensure_root_directory", lambda *_args: None)
+    monkeypatch.setattr(
+        activation,
+        "_write_root_receipt",
+        lambda path, value: writes.append((path, value)),
+    )
+
+    with pytest.raises(RuntimeError, match="failed closed"):
+        executor.observe(
+            approved_plan_sha256=plan.sha256,
+            owner_approval_receipt=owner,
+            external_iam_receipt_path=activation.DEFAULT_EXTERNAL_IAM_LIVE_PATH,
+        )
+
+    assert [path for path, _value in writes] == [failure, quarantine]
+    assert all(value["quarantined"] is True for _path, value in writes)
+    assert not [
+        argv for argv in commands if argv[:2] == (activation.SYSTEMCTL, "start")
+    ]
+
+
 def test_systemd_bundle_rejects_installable_temporary_exporter():
     value = {
         "schema": activation.SYSTEMD_BUNDLE_SCHEMA,
@@ -595,11 +1249,18 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
         return subprocess.CompletedProcess(command.argv, returncode, b"", b"")
 
     executor = activation.ActivationExecutor(plan, runner=runner)
+    owner_approval = _owner_approval("activation", "a" * 64)
     monkeypatch.setattr(activation, "_host_activation_lock", lambda: nullcontext())
     monkeypatch.setattr(
         activation,
         "activation_read_only_preflight",
-        lambda *_args, **_kwargs: ({"ok": True}, None, object()),
+        lambda *_args, **_kwargs: (
+            {"ok": True},
+            None,
+            SimpleNamespace(
+                value={"source_approval_sha256": owner_approval.sha256}
+            ),
+        ),
     )
     monkeypatch.setattr(
         activation.NativeObservationPlan,
@@ -647,7 +1308,7 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
     with pytest.raises(RuntimeError, match="failed closed"):
         executor.apply(
             approved_plan_sha256="a" * 64,
-            owner_approval_receipt=_owner_approval("activation", "a" * 64),
+            owner_approval_receipt=owner_approval,
         )
 
     assert (activation.SYSTEMCTL, "stop", activation.GATEWAY_UNIT) in commands
@@ -660,4 +1321,226 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
     assert [path for path, _value in receipts] == [
         failure_path,
         paths.quarantine_path,
+    ]
+
+
+def test_packaged_preflight_cross_binds_exact_collector_receipt(monkeypatch):
+    plan = _collector_bound_native_plan()
+    calls = []
+
+    class Receipt:
+        def require_bindings(self, **kwargs):
+            calls.append(("bindings", kwargs))
+
+    receipt = Receipt()
+
+    def load(**kwargs):
+        calls.append(("load", kwargs))
+        return receipt
+
+    monkeypatch.setattr(activation, "load_config_collector_receipt", load)
+    assert (
+        activation._load_bound_config_collector_receipt(
+            plan,
+            require_fresh=True,
+        )
+        is receipt
+    )
+
+    assert calls == [
+        (
+            "load",
+            {
+                "revision": "a" * 40,
+                "receipt_sha256": "5" * 64,
+                "require_fresh": True,
+            },
+        ),
+        (
+            "bindings",
+            {
+                "revision": "a" * 40,
+                "release_artifact_sha256": "3" * 64,
+                "release_manifest_file_sha256": "4" * 64,
+                "writer_config_sha256": "6" * 64,
+                "gateway_config_sha256": "7" * 64,
+                "database_ca_sha256": activation.hashlib.sha256(
+                    b"trusted-ca"
+                ).hexdigest(),
+                "sql_private_ip": "10.91.0.3",
+                "sql_tls_server_name": (
+                    "14-11111111-1111-4111-8111-111111111111."
+                    "europe-west3.sql.goog"
+                ),
+            },
+        ),
+    ]
+
+
+def test_public_durable_native_receipt_loader_is_fail_closed(monkeypatch):
+    plan = _collector_bound_native_plan()
+    receipt = object()
+    calls = []
+    monkeypatch.setattr(
+        activation,
+        "_load_existing_native_receipt",
+        lambda observed_plan, *, runner: (
+            calls.append((observed_plan, runner)) or receipt
+        ),
+    )
+
+    assert activation.load_durable_native_observation_receipt(plan) is receipt
+    assert calls == [(plan, activation._runner)]
+
+    monkeypatch.setattr(
+        activation,
+        "_load_existing_native_receipt",
+        lambda _plan, *, runner: None,
+    )
+    with pytest.raises(FileNotFoundError):
+        activation.load_durable_native_observation_receipt(plan)
+
+
+@pytest.mark.parametrize(
+    ("require_installed", "expected_events"),
+    (
+        (
+            False,
+            ("collector:True", "release", "database", "collector:True"),
+        ),
+        (
+            True,
+            ("release", "database", "collector:False", "collector:False"),
+        ),
+    ),
+)
+def test_packaged_preflight_requires_fresh_initial_collector_but_attests_db_before_expired_replay(
+    monkeypatch,
+    require_installed,
+    expected_events,
+):
+    plan = _collector_bound_native_plan()
+    events = []
+    trusted_reads = []
+
+    class Receipt:
+        def to_mapping(self):
+            return {"receipt_sha256": "5" * 64}
+
+    def load_bound(_plan, *, require_fresh):
+        events.append(f"collector:{require_fresh}")
+        return Receipt()
+
+    monkeypatch.setattr(
+        activation,
+        "_load_bound_config_collector_receipt",
+        load_bound,
+    )
+    monkeypatch.setattr(
+        activation,
+        "current_host_identity_sha256",
+        lambda: "2" * 64,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_verify_native_release",
+        lambda _plan: events.append("release"),
+    )
+    monkeypatch.setattr(activation, "_native_artifact_contract", lambda _plan: {})
+    def read_trusted(path, **kwargs):
+        trusted_reads.append((path, kwargs))
+        return b"trusted-ca"
+
+    monkeypatch.setattr(activation, "_read_trusted_file", read_trusted)
+    monkeypatch.setattr(
+        activation,
+        "_verify_database_read_only",
+        lambda **_kwargs: events.append("database"),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_disabled",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_or_absent",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(activation.os.path, "lexists", lambda _path: False)
+
+    activation._verify_native_preflight_inputs(
+        plan,
+        runner=lambda _command: None,
+        require_installed=require_installed,
+        require_original_boot=False,
+    )
+
+    assert tuple(events) == expected_events
+    assert trusted_reads == [
+        (
+            Path("/etc/muncho/trust/cloudsql-server-ca.pem"),
+            {
+                "expected_uid": 0,
+                "expected_gid": activation.CANARY_WRITER_GID,
+                "allowed_modes": frozenset({0o400, 0o440, 0o444}),
+                "maximum": activation._MAX_CONFIG_BYTES,
+            },
+        )
+    ]
+
+
+def test_final_preflight_reads_database_ca_with_writer_group(monkeypatch):
+    ca = b"trusted-ca"
+    reads = []
+    plan = SimpleNamespace(
+        install_artifacts={},
+        paths=SimpleNamespace(
+            database_ca_path=Path(
+                "/etc/muncho/trust/cloudsql-server-ca.pem"
+            ),
+            writer_config_path=Path("/etc/muncho-canonical-writer/writer.json"),
+        ),
+        digests=SimpleNamespace(
+            database_ca_sha256=activation.hashlib.sha256(ca).hexdigest(),
+        ),
+        deployment_manifest={
+            "snapshot_template": {
+                "database": {
+                    "connection": {
+                        "host": "10.91.0.3",
+                        "tls_server_name": (
+                            "14-11111111-1111-4111-8111-111111111111."
+                            "europe-west3.sql.goog"
+                        ),
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(activation, "_verify_release_tree", lambda _plan: None)
+
+    def read_trusted(path, **kwargs):
+        reads.append((path, kwargs))
+        return ca
+
+    monkeypatch.setattr(activation, "_read_trusted_file", read_trusted)
+    monkeypatch.setattr(
+        activation,
+        "_verify_database_read_only",
+        lambda **_kwargs: None,
+    )
+
+    activation._verify_final_artifacts(plan)
+
+    assert reads == [
+        (
+            plan.paths.database_ca_path,
+            {
+                "expected_uid": 0,
+                "expected_gid": activation.CANARY_WRITER_GID,
+                "allowed_modes": frozenset({0o400, 0o440, 0o444}),
+                "maximum": activation._MAX_CONFIG_BYTES,
+            },
+        )
     ]

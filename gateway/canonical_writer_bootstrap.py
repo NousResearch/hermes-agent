@@ -880,6 +880,7 @@ def load_service_config(
             path=credential_path,
             expected_uid=writer_uid,
             expected_gid=writer_gid,
+            allowed_modes=frozenset({0o400}),
         ),
         connect_timeout_seconds=_number(
             database.get("connect_timeout_seconds", 5.0),

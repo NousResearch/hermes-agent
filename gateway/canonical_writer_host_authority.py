@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-NATIVE_OBSERVATION_PLAN_SCHEMA = "muncho-writer-native-observation-plan.v1"
+NATIVE_OBSERVATION_PLAN_SCHEMA = "muncho-writer-native-observation-plan.v2"
 NATIVE_OBSERVATION_RECEIPT_SCHEMA = "muncho-writer-native-observation.v1"
 NATIVE_OBSERVATION_STAGE_SCHEMA = "muncho-writer-native-observation-stage.v1"
 OWNER_APPROVAL_RECEIPT_SCHEMA = "muncho-writer-owner-approval.v1"
@@ -60,9 +60,6 @@ DEFAULT_EXTERNAL_IAM_RECEIPT_ROOT = Path(
 )
 DEFAULT_EXTERNAL_IAM_LIVE_PATH = Path(
     "/run/muncho-canonical-preflight/external-iam-receipt.json"
-)
-DEFAULT_EXTERNAL_IAM_ARCHIVE_ROOT = Path(
-    "/var/lib/muncho-writer-canary-evidence/external-iam"
 )
 
 _SYSTEMCTL = "/usr/bin/systemctl"
@@ -378,6 +375,7 @@ _NATIVE_PLAN_KEYS = frozenset(
         "artifact_root",
         "artifact_sha256",
         "release_manifest_file_sha256",
+        "config_collector_receipt_sha256",
         "gateway_unit",
         "writer_unit",
         "gateway_argv",
@@ -425,6 +423,7 @@ class NativeObservationPlan:
         for name in (
             "artifact_sha256",
             "release_manifest_file_sha256",
+            "config_collector_receipt_sha256",
             "external_iam_policy_sha256",
         ):
             _digest(value.get(name), f"native plan {name}")
@@ -3431,107 +3430,6 @@ def owner_approval_receipt_path(receipt: OwnerApprovalReceipt) -> Path:
         / str(receipt.value["plan_sha256"])
         / f"{receipt.sha256}.json"
     )
-
-
-def write_external_iam_receipt(
-    path_value: str | os.PathLike[str],
-    receipt: ExternalIAMReceipt,
-) -> None:
-    _require_root_linux()
-    if not isinstance(receipt, ExternalIAMReceipt):
-        raise TypeError("external IAM receipt is required")
-    path = Path(_absolute_path(os.fspath(path_value), "external IAM receipt path"))
-    if path != DEFAULT_EXTERNAL_IAM_LIVE_PATH:
-        raise ValueError("external IAM live receipt path is not pinned")
-    refresh_external_iam_receipt(receipt, live_path=path)
-
-
-def _external_iam_archive_path(receipt: ExternalIAMReceipt) -> Path:
-    return (
-        DEFAULT_EXTERNAL_IAM_ARCHIVE_ROOT
-        / receipt.policy_sha256
-        / f"{receipt.sha256}.json"
-    )
-
-
-def _archive_external_iam_receipt(receipt: ExternalIAMReceipt) -> Path:
-    archive = _external_iam_archive_path(receipt)
-    try:
-        _write_append_only_root_mapping(archive, receipt.to_mapping())
-    except FileExistsError:
-        existing = ExternalIAMReceipt.from_mapping(_read_root_mapping(archive))
-        if existing.sha256 != receipt.sha256:
-            raise RuntimeError("external IAM archive identity collided")
-    return archive
-
-
-def _replace_ephemeral_root_mapping(
-    path: Path,
-    value: Mapping[str, Any],
-) -> None:
-    raw = _root_mapping_bytes(value)
-    _validate_root_parent_chain(path.parent.parent)
-    parent = os.lstat(path.parent)
-    if (
-        stat.S_ISLNK(parent.st_mode)
-        or not stat.S_ISDIR(parent.st_mode)
-        or parent.st_uid != 0
-        or parent.st_gid != 0
-        or stat.S_IMODE(parent.st_mode) != 0o700
-    ):
-        raise PermissionError("external IAM live directory is not root-only")
-    temporary = path.parent / f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(temporary, flags, 0o600)
-    try:
-        os.fchown(descriptor, 0, 0)
-        offset = 0
-        while offset < len(raw):
-            written = os.write(descriptor, raw[offset:])
-            if written <= 0:
-                raise OSError("external IAM live write made no progress")
-            offset += written
-        os.fchmod(descriptor, 0o400)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    try:
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def refresh_external_iam_receipt(
-    receipt: ExternalIAMReceipt,
-    *,
-    live_path: Path = DEFAULT_EXTERNAL_IAM_LIVE_PATH,
-) -> Path:
-    """Archive old/new evidence append-only, then replace only the /run copy."""
-
-    _require_root_linux()
-    if not isinstance(receipt, ExternalIAMReceipt):
-        raise TypeError("external IAM receipt is required")
-    if live_path != DEFAULT_EXTERNAL_IAM_LIVE_PATH:
-        raise ValueError("external IAM live path is not pinned")
-    if os.path.lexists(live_path):
-        old = ExternalIAMReceipt.from_mapping(_read_root_mapping(live_path))
-        _archive_external_iam_receipt(old)
-    archive = _archive_external_iam_receipt(receipt)
-    _replace_ephemeral_root_mapping(live_path, receipt.to_mapping())
-    loaded = ExternalIAMReceipt.from_mapping(_read_root_mapping(live_path))
-    if loaded.sha256 != receipt.sha256:
-        raise RuntimeError("external IAM live receipt changed during refresh")
-    return archive
 
 
 def load_external_iam_receipt(

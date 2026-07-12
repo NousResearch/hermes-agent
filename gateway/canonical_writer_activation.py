@@ -18,6 +18,7 @@ import json
 import os
 import grp
 import pwd
+import ipaddress
 import re
 import stat
 import subprocess
@@ -32,6 +33,10 @@ from typing import Any, Callable, Mapping, Sequence
 from gateway.canonical_writer_root_collector import (
     DEFAULT_ROOT_EVIDENCE_ROOT,
     TrustedDeploymentManifest,
+)
+from gateway.canonical_writer_config_collector import (
+    ConfigCollectorReceipt,
+    load_config_collector_receipt,
 )
 from gateway.canonical_writer_host_authority import (
     DEFAULT_EXTERNAL_IAM_RECEIPT_ROOT,
@@ -1376,6 +1381,7 @@ def load_external_iam_receipt(
     path_value: str | os.PathLike[str],
     now_unix: int | None = None,
     minimum_remaining_seconds: int = 0,
+    expected_source_approval_sha256: str | None = None,
 ) -> ExternalIAMReceipt:
     if not isinstance(plan, NativeObservationPlan):
         raise TypeError("native observation plan is required for IAM evidence")
@@ -1393,6 +1399,14 @@ def load_external_iam_receipt(
         current,
         minimum_remaining_seconds=minimum_remaining_seconds,
     )
+    if expected_source_approval_sha256 is not None and (
+        receipt.value.get("source_approval_sha256")
+        != _digest(
+            expected_source_approval_sha256,
+            "external IAM source approval digest",
+        )
+    ):
+        raise ValueError("external IAM receipt is bound to another approval")
     return receipt
 
 
@@ -1400,17 +1414,41 @@ class RetryableExternalIAMRefreshRequired(RuntimeError):
     pass
 
 
+class RetryableOwnerApprovalRefreshRequired(RuntimeError):
+    pass
+
+
+def _require_lifecycle_owner_approval(
+    receipt: OwnerApprovalReceipt,
+    *,
+    scope: str,
+    plan_sha256: str,
+) -> None:
+    try:
+        receipt.require(
+            scope=scope,
+            plan_sha256=plan_sha256,
+            now_unix=int(time.time()),
+        )
+    except PermissionError as exc:
+        raise RetryableOwnerApprovalRefreshRequired(
+            "fresh owner approval is required before service mutation"
+        ) from exc
+
+
 def _load_lifecycle_external_iam(
     plan: NativeObservationPlan,
     *,
     path_value: str | os.PathLike[str],
     minimum_remaining_seconds: int,
+    expected_source_approval_sha256: str | None = None,
 ) -> ExternalIAMReceipt:
     try:
         return load_external_iam_receipt(
             plan,
             path_value=path_value,
             minimum_remaining_seconds=minimum_remaining_seconds,
+            expected_source_approval_sha256=expected_source_approval_sha256,
         )
     except ValueError as exc:
         raise RetryableExternalIAMRefreshRequired(
@@ -2197,12 +2235,38 @@ def _replace_live_external_iam(receipt: ExternalIAMReceipt) -> bool:
 def install_staged_external_iam_receipt(
     path_value: str | os.PathLike[str],
     *,
-    expected_policy_sha256: str,
+    authorized_plan: NativeObservationPlan | ActivationPlan,
+    owner_approval_receipt: OwnerApprovalReceipt,
 ) -> tuple[ExternalIAMReceipt, Mapping[str, Any], bool]:
-    """Seal a reviewed staged IAM receipt and atomically renew its live copy."""
+    """Seal only IAM evidence cross-bound to this exact owner-approved plan."""
 
     _require_root_linux()
+    if isinstance(authorized_plan, NativeObservationPlan):
+        authorized_plan = NativeObservationPlan.from_mapping(
+            authorized_plan.to_mapping()
+        )
+        scope = "native_observation"
+        approved_plan_sha256 = authorized_plan.sha256
+        expected_policy_sha256 = authorized_plan.value[
+            "external_iam_policy_sha256"
+        ]
+    elif isinstance(authorized_plan, ActivationPlan):
+        authorized_plan = ActivationPlan.from_mapping(authorized_plan.to_mapping())
+        scope = "activation"
+        approved_plan_sha256 = authorized_plan.sha256
+        expected_policy_sha256 = (
+            authorized_plan.digests.external_iam_policy_sha256
+        )
+    else:
+        raise TypeError("external IAM requires a validated native or final plan")
     _digest(expected_policy_sha256, "external IAM expected policy digest")
+    if not isinstance(owner_approval_receipt, OwnerApprovalReceipt):
+        raise PermissionError("external IAM owner approval receipt is required")
+    owner_approval_receipt.require(
+        scope=scope,
+        plan_sha256=approved_plan_sha256,
+        now_unix=int(time.time()),
+    )
     source = _absolute_path(os.fspath(path_value), "staged external IAM path")
     if source != DEFAULT_STAGED_EXTERNAL_IAM_PATH:
         raise ValueError("staged external IAM path is not production-pinned")
@@ -2219,6 +2283,13 @@ def install_staged_external_iam_receipt(
     receipt.require_fresh(int(time.time()))
     if receipt.policy_sha256 != expected_policy_sha256:
         raise ValueError("staged external IAM policy does not match approval")
+    if (
+        receipt.value.get("source_approval_sha256")
+        != owner_approval_receipt.sha256
+    ):
+        raise PermissionError(
+            "staged external IAM evidence is not bound to owner approval"
+        )
     canonical = _canonical_bytes(receipt.to_mapping())
     if raw not in {canonical, canonical + b"\n"}:
         raise ValueError("staged external IAM receipt changed during validation")
@@ -2513,6 +2584,35 @@ def _verify_native_release(plan: NativeObservationPlan) -> None:
         raise RuntimeError("native release manifest digest drifted")
 
 
+def _load_bound_config_collector_receipt(
+    plan: NativeObservationPlan,
+    *,
+    require_fresh: bool,
+) -> ConfigCollectorReceipt:
+    database = plan.value["database"]
+    sql_private_ip = str(
+        ipaddress.ip_network(database["ip_network"], strict=True).network_address
+    )
+    receipt = load_config_collector_receipt(
+        revision=plan.value["revision"],
+        receipt_sha256=plan.value["config_collector_receipt_sha256"],
+        require_fresh=require_fresh,
+    )
+    receipt.require_bindings(
+        revision=plan.value["revision"],
+        release_artifact_sha256=plan.value["artifact_sha256"],
+        release_manifest_file_sha256=(
+            plan.value["release_manifest_file_sha256"]
+        ),
+        writer_config_sha256=plan.value["writer_config"]["sha256"],
+        gateway_config_sha256=plan.value["gateway_config"]["sha256"],
+        database_ca_sha256=database["ca_sha256"],
+        sql_private_ip=sql_private_ip,
+        sql_tls_server_name=database["tls_server_name"],
+    )
+    return receipt
+
+
 def _verify_native_preflight_inputs(
     plan: NativeObservationPlan,
     *,
@@ -2529,6 +2629,12 @@ def _verify_native_preflight_inputs(
         raise RuntimeError("native observation boot identity drifted")
     if current_host_identity_sha256() != plan.value["host_identity_sha256"]:
         raise RuntimeError("native observation host identity drifted")
+    collector_receipt = None
+    if not require_installed:
+        collector_receipt = _load_bound_config_collector_receipt(
+            plan,
+            require_fresh=True,
+        )
     _verify_native_release(plan)
     artifacts = _native_artifact_contract(plan)
     for name, artifact in artifacts.items():
@@ -2562,7 +2668,7 @@ def _verify_native_preflight_inputs(
     ca = _read_trusted_file(
         ca_path,
         expected_uid=0,
-        expected_gid=0,
+        expected_gid=CANARY_WRITER_GID,
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
         maximum=_MAX_CONFIG_BYTES,
     )
@@ -2572,6 +2678,11 @@ def _verify_native_preflight_inputs(
         config_path=DEFAULT_WRITER_CONFIG_SOURCE_PATH,
         expected_database=database,
     )
+    if require_installed:
+        collector_receipt = _load_bound_config_collector_receipt(
+            plan,
+            require_fresh=False,
+        )
     for unit in (WRITER_UNIT, GATEWAY_UNIT):
         if require_installed:
             _require_off_disabled(unit, runner=runner)
@@ -2586,6 +2697,16 @@ def _verify_native_preflight_inputs(
     helper = Path(plan.value["legacy_helper_path"])
     if os.path.lexists(helper) or os.path.lexists(helper.parent):
         raise RuntimeError("native legacy helper authority must remain absent")
+    final_collector_receipt = _load_bound_config_collector_receipt(
+        plan,
+        require_fresh=not require_installed,
+    )
+    if (
+        collector_receipt is None
+        or final_collector_receipt.to_mapping()
+        != collector_receipt.to_mapping()
+    ):
+        raise RuntimeError("config collector receipt rotated during preflight")
 
 
 def _verify_database_read_only(
@@ -2634,6 +2755,84 @@ def _verify_database_read_only(
         privilege_policy=config.privileges,
         statements=PRODUCTION_STATEMENT_CATALOG,
     ).startup_attest()
+
+
+def _load_durable_native_authority_chain(
+    plan: NativeObservationPlan,
+    receipt: NativeObservationReceipt,
+) -> tuple[OwnerApprovalReceipt, ExternalIAMReceipt, Mapping[str, Any]]:
+    """Re-read the exact historical approval and IAM evidence for a receipt."""
+
+    if not isinstance(plan, NativeObservationPlan) or not isinstance(
+        receipt,
+        NativeObservationReceipt,
+    ):
+        raise TypeError("durable native plan and receipt are required")
+    owner_sha256 = _digest(
+        receipt.value.get("owner_approval_receipt_sha256"),
+        "durable native owner approval receipt",
+    )
+    owner_path = (
+        DEFAULT_OWNER_APPROVAL_ROOT
+        / "native_observation"
+        / plan.sha256
+        / f"{owner_sha256}.json"
+    )
+    owner_raw = _read_trusted_file(
+        owner_path,
+        expected_uid=0,
+        expected_gid=0,
+        allowed_modes=frozenset({0o400}),
+        maximum=64 * 1024,
+    )
+    owner = OwnerApprovalReceipt.from_mapping(
+        _decode_strict_json(owner_raw, label="durable native owner approval")
+    )
+    owner.require(
+        scope="native_observation",
+        plan_sha256=plan.sha256,
+        now_unix=owner.value["approved_at_unix"],
+    )
+    if owner.sha256 != owner_sha256 or owner_approval_receipt_path(owner) != owner_path:
+        raise RuntimeError("durable native owner approval chain drifted")
+
+    iam_sha256 = _digest(
+        receipt.value.get("external_iam_receipt_sha256"),
+        "durable native external IAM receipt",
+    )
+    iam_path = (
+        DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT
+        / plan.value["revision"]
+        / plan.sha256
+        / "external-iam"
+        / f"{iam_sha256}.json"
+    )
+    iam_raw = _read_trusted_file(
+        iam_path,
+        expected_uid=0,
+        expected_gid=0,
+        allowed_modes=frozenset({0o400}),
+        maximum=64 * 1024,
+    )
+    iam = ExternalIAMReceipt.from_mapping(
+        _decode_strict_json(iam_raw, label="durable native archived IAM receipt")
+    )
+    if (
+        iam.sha256 != iam_sha256
+        or iam.policy_sha256 != plan.value["external_iam_policy_sha256"]
+        or iam.value.get("source_approval_sha256") != owner.sha256
+    ):
+        raise RuntimeError("durable native IAM approval chain drifted")
+    evidence = {
+        "path": str(iam_path),
+        "sha256": iam.sha256,
+        "policy_sha256": iam.policy_sha256,
+        "mode": "0400",
+        "owner_uid": 0,
+        "group_gid": 0,
+        "live_path": str(DEFAULT_EXTERNAL_IAM_LIVE_PATH),
+    }
+    return owner, iam, evidence
 
 
 def _load_existing_native_receipt(
@@ -2695,6 +2894,7 @@ def _load_existing_native_receipt(
         != receipt.value["external_iam_receipt_sha256"]
     ):
         raise RuntimeError("native receipt and append-only stage drifted")
+    _load_durable_native_authority_chain(plan, receipt)
     host_preparation = _load_host_preparation_receipt(plan)
     if (
         host_preparation.get("owner_approval_receipt_sha256")
@@ -2716,6 +2916,19 @@ def _load_existing_native_receipt(
     )
     if not _host_identities_are_exact(_host_identity_snapshot()):
         raise RuntimeError("native receipt host identities drifted")
+    return receipt
+
+
+def load_durable_native_observation_receipt(
+    plan: NativeObservationPlan,
+) -> NativeObservationReceipt:
+    """Load and fully re-attest one already-installed native receipt."""
+
+    if not isinstance(plan, NativeObservationPlan):
+        raise TypeError("native observation plan is required")
+    receipt = _load_existing_native_receipt(plan, runner=_runner)
+    if receipt is None:
+        raise FileNotFoundError(_native_receipt_path(plan))
     return receipt
 
 
@@ -3231,6 +3444,8 @@ def _load_existing_success_receipt(
         plan,
         value["external_iam_evidence"],
     )
+    if external.value.get("source_approval_sha256") != approval.sha256:
+        raise RuntimeError("existing activation IAM approval chain drifted")
     preflight = value["read_only_preflight"]
     if (
         not isinstance(preflight, Mapping)
@@ -3534,6 +3749,7 @@ class NativeObservationExecutor:
         self.stage = "loaded"
         self.host_preparation_receipt: Mapping[str, Any] = {}
         self.external_iam_evidence: Mapping[str, Any] = {}
+        self.idempotent = False
 
     def _command(
         self,
@@ -3570,6 +3786,7 @@ class NativeObservationExecutor:
             plan_sha256=self.plan.sha256,
             now_unix=int(time.time()),
         )
+        self.idempotent = False
         with _host_activation_lock():
             return self._observe_locked(
                 approved_plan_sha256=approved_plan_sha256,
@@ -3607,6 +3824,7 @@ class NativeObservationExecutor:
         permanent_units_installed = False
         daemon_reloaded = False
         lifecycle_start_attempted = False
+        host_mutation_attempted = False
         stage_written = False
         host_receipt: Mapping[str, Any] = {}
         receipt: NativeObservationReceipt | None = None
@@ -3619,6 +3837,7 @@ class NativeObservationExecutor:
                 self.plan,
                 path_value=external_iam_receipt_path,
                 minimum_remaining_seconds=720,
+                expected_source_approval_sha256=owner_approval_receipt.sha256,
             )
             self.stage = "read_only_preflight"
             if os.path.lexists(_native_receipt_path(self.plan)):
@@ -3647,10 +3866,24 @@ class NativeObservationExecutor:
                 self.host_preparation_receipt = _load_host_preparation_receipt(
                     self.plan
                 )
+                _owner, _historical_iam, historical_evidence = (
+                    _load_durable_native_authority_chain(
+                        self.plan,
+                        existing_receipt,
+                    )
+                )
+                self.external_iam_evidence = historical_evidence
                 receipt = existing_receipt
                 idempotent = True
+                self.idempotent = True
             else:
                 self.stage = "prepare_host_identities"
+                _require_lifecycle_owner_approval(
+                    owner_approval_receipt,
+                    scope="native_observation",
+                    plan_sha256=self.plan.sha256,
+                )
+                host_mutation_attempted = True
                 host_before = _host_identity_snapshot()
                 try:
                     host_receipt = prepare_canary_host_identities(
@@ -3690,6 +3923,11 @@ class NativeObservationExecutor:
                     owner_approval_receipt=owner_approval_receipt,
                 )
                 self.stage = "install"
+                _require_lifecycle_owner_approval(
+                    owner_approval_receipt,
+                    scope="native_observation",
+                    plan_sha256=self.plan.sha256,
+                )
                 _install_native_observation_artifacts(self.plan)
                 permanent_units_installed = True
                 _prepare_native_runtime_directories()
@@ -3713,6 +3951,9 @@ class NativeObservationExecutor:
                     self.plan,
                     path_value=external_iam_receipt_path,
                     minimum_remaining_seconds=360,
+                    expected_source_approval_sha256=(
+                        owner_approval_receipt.sha256
+                    ),
                 )
                 self.external_iam_evidence = _archive_plan_external_iam(
                     self.plan,
@@ -3720,12 +3961,22 @@ class NativeObservationExecutor:
                     live_path=external_iam_receipt_path,
                 )
                 self.stage = "start_writer"
+                _require_lifecycle_owner_approval(
+                    owner_approval_receipt,
+                    scope="native_observation",
+                    plan_sha256=self.plan.sha256,
+                )
                 lifecycle_start_attempted = True
                 self._command(
                     (SYSTEMCTL, "start", WRITER_UNIT), "native start writer", timeout=90
                 )
                 _require_active(WRITER_UNIT, runner=self.runner)
                 self.stage = "start_gateway"
+                _require_lifecycle_owner_approval(
+                    owner_approval_receipt,
+                    scope="native_observation",
+                    plan_sha256=self.plan.sha256,
+                )
                 self._command(
                     (SYSTEMCTL, "start", GATEWAY_UNIT),
                     "native start gateway",
@@ -3800,6 +4051,16 @@ class NativeObservationExecutor:
         ):
             raise RuntimeError(
                 "native observation safely stopped before start; renew IAM and retry"
+            ) from primary
+        if (
+            isinstance(primary, RetryableOwnerApprovalRefreshRequired)
+            and not host_mutation_attempted
+            and not permanent_units_installed
+            and not lifecycle_start_attempted
+        ):
+            raise RuntimeError(
+                "native observation safely stopped before mutation; renew owner "
+                "approval and retry"
             ) from primary
         if primary is not None or receipt is None:
             error = primary or RuntimeError("native observation produced no receipt")
@@ -4002,34 +4263,6 @@ def _verify_final_native_host(plan: ActivationPlan, *, runner: Runner) -> None:
     ):
         raise RuntimeError("durable native observation receipt drifted")
     _rehash_native_receipt_external_mappings(receipt)
-    iam_sha256 = _digest(
-        receipt.value["external_iam_receipt_sha256"],
-        "native external IAM receipt sha256",
-    )
-    iam_path = (
-        DEFAULT_NATIVE_OBSERVATION_EVIDENCE_ROOT
-        / native_plan.value["revision"]
-        / native_plan.sha256
-        / "external-iam"
-        / f"{iam_sha256}.json"
-    )
-    archived_iam = ExternalIAMReceipt.from_mapping(
-        _decode_strict_json(
-            _read_trusted_file(
-                iam_path,
-                expected_uid=0,
-                expected_gid=0,
-                allowed_modes=frozenset({0o400}),
-                maximum=64 * 1024,
-            ),
-            label="native archived external IAM receipt",
-        )
-    )
-    if (
-        archived_iam.sha256 != iam_sha256
-        or archived_iam.policy_sha256 != native_plan.value["external_iam_policy_sha256"]
-    ):
-        raise RuntimeError("native archived external IAM receipt drifted")
 
 
 def _verify_final_artifacts(plan: ActivationPlan) -> None:
@@ -4064,7 +4297,7 @@ def _verify_final_artifacts(plan: ActivationPlan) -> None:
     ca = _read_trusted_file(
         plan.paths.database_ca_path,
         expected_uid=0,
-        expected_gid=0,
+        expected_gid=CANARY_WRITER_GID,
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
         maximum=_MAX_CONFIG_BYTES,
     )
@@ -4104,10 +4337,18 @@ def _verify_final_stopped_boundary(plan: ActivationPlan, *, runner: Runner) -> N
 def activation_read_only_preflight(
     plan: ActivationPlan,
     *,
+    owner_approval_receipt: OwnerApprovalReceipt,
     runner: Runner = _runner,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any] | None, ExternalIAMReceipt | None]:
     """Validate the complete current host without mutating it."""
 
+    if not isinstance(owner_approval_receipt, OwnerApprovalReceipt):
+        raise PermissionError("activation preflight owner approval is required")
+    owner_approval_receipt.require(
+        scope="activation",
+        plan_sha256=plan.sha256,
+        now_unix=int(time.time()),
+    )
     _require_root_linux()
     existing: Mapping[str, Any] | None = None
     iam_receipt: ExternalIAMReceipt | None = None
@@ -4127,6 +4368,7 @@ def activation_read_only_preflight(
                 native_plan,
                 path_value=plan.paths.external_iam_receipt_path,
                 minimum_remaining_seconds=720,
+                expected_source_approval_sha256=owner_approval_receipt.sha256,
             )
 
     try:
@@ -4379,12 +4621,20 @@ class ActivationExecutor:
         self.stage = "read_only_preflight"
         _preflight, existing, iam_receipt = activation_read_only_preflight(
             self.plan,
+            owner_approval_receipt=owner_approval_receipt,
             runner=self.runner,
         )
         if existing is not None:
             return existing
         if iam_receipt is None:
             raise RuntimeError("activation preflight produced no fresh IAM receipt")
+        if (
+            iam_receipt.value.get("source_approval_sha256")
+            != owner_approval_receipt.sha256
+        ):
+            raise RetryableExternalIAMRefreshRequired(
+                "external IAM evidence must be refreshed for this approval"
+            )
         native_plan = NativeObservationPlan.from_mapping(
             self.plan.native_observation_receipt["plan"]
         )
@@ -4396,16 +4646,28 @@ class ActivationExecutor:
         projection: Mapping[str, Any] = {}
         live: Mapping[str, Any] = {}
         permanent_units_installed = False
+        activation_mutation_attempted = False
         service_start_attempted = False
         primary: BaseException | None = None
         failed_stage = ""
         try:
             self.stage = "install"
             _verify_release_tree(self.plan)
+            _require_lifecycle_owner_approval(
+                owner_approval_receipt,
+                scope="activation",
+                plan_sha256=self.plan.sha256,
+            )
+            activation_mutation_attempted = True
             _install_plan_artifacts(self.plan)
             permanent_units_installed = True
             self._verify_installed()
             self.stage = "projection_export"
+            _require_lifecycle_owner_approval(
+                owner_approval_receipt,
+                scope="activation",
+                plan_sha256=self.plan.sha256,
+            )
             projection = self._run_projection_export()
             self.stage = "invalidate_old_receipt"
             self._invalidate_root_receipt()
@@ -4414,6 +4676,7 @@ class ActivationExecutor:
                 native_plan,
                 path_value=self.plan.paths.external_iam_receipt_path,
                 minimum_remaining_seconds=480,
+                expected_source_approval_sha256=owner_approval_receipt.sha256,
             )
             external_iam_evidence = _archive_plan_external_iam(
                 self.plan,
@@ -4421,10 +4684,20 @@ class ActivationExecutor:
                 live_path=self.plan.paths.external_iam_receipt_path,
             )
             self.stage = "start_writer"
+            _require_lifecycle_owner_approval(
+                owner_approval_receipt,
+                scope="activation",
+                plan_sha256=self.plan.sha256,
+            )
             service_start_attempted = True
             self._command((SYSTEMCTL, "start", WRITER_UNIT), "start writer", timeout=90)
             writer_pid = _require_active(WRITER_UNIT, runner=self.runner)
             self.stage = "start_gateway"
+            _require_lifecycle_owner_approval(
+                owner_approval_receipt,
+                scope="activation",
+                plan_sha256=self.plan.sha256,
+            )
             self._command(
                 (SYSTEMCTL, "start", GATEWAY_UNIT), "start gateway", timeout=90
             )
@@ -4462,10 +4735,14 @@ class ActivationExecutor:
                     self._stop(WRITER_UNIT)
                 except BaseException as exc:
                     cleanup.append(exc)
-            try:
-                self._invalidate_root_receipt()
-            except BaseException as exc:
-                cleanup.append(exc)
+            if not (
+                isinstance(primary, RetryableOwnerApprovalRefreshRequired)
+                and not activation_mutation_attempted
+            ):
+                try:
+                    self._invalidate_root_receipt()
+                except BaseException as exc:
+                    cleanup.append(exc)
             try:
                 _require_off_disabled(GATEWAY_UNIT, runner=self.runner)
                 _require_off_disabled(WRITER_UNIT, runner=self.runner)
@@ -4485,6 +4762,15 @@ class ActivationExecutor:
         ):
             raise RuntimeError(
                 "activation safely stopped before service start; renew IAM and retry"
+            ) from primary
+        if (
+            isinstance(primary, RetryableOwnerApprovalRefreshRequired)
+            and not activation_mutation_attempted
+            and not service_start_attempted
+        ):
+            raise RuntimeError(
+                "activation safely stopped before mutation; renew owner approval "
+                "and retry"
             ) from primary
         if primary is not None:
             _seal_activation_failure(
@@ -4578,16 +4864,57 @@ def main(argv: Sequence[str] | None = None) -> int:
             "installed_path": str(target),
         }
     elif arguments.action == "install-external-iam":
+        plan_path = _absolute_path(
+            required(arguments.plan, "--plan"),
+            "external IAM approval plan path",
+        )
+        if plan_path == DEFAULT_NATIVE_PLAN_PATH:
+            authorized_plan = load_native_observation_plan(plan_path)
+            approval_scope = "native_observation"
+            authorized_plan_sha256 = authorized_plan.sha256
+            authorized_policy_sha256 = authorized_plan.value[
+                "external_iam_policy_sha256"
+            ]
+        elif plan_path == DEFAULT_PLAN_PATH:
+            authorized_plan = load_activation_plan(plan_path)
+            approval_scope = "activation"
+            authorized_plan_sha256 = authorized_plan.sha256
+            authorized_policy_sha256 = (
+                authorized_plan.digests.external_iam_policy_sha256
+            )
+        else:
+            raise ValueError("external IAM approval plan path is not pinned")
+        if arguments.approved_plan_sha256 != authorized_plan_sha256:
+            raise PermissionError(
+                "external IAM requires the exact owner-approved plan digest"
+            )
+        requested_policy_sha256 = required(
+            arguments.external_iam_policy_sha256,
+            "--external-iam-policy-sha256",
+        )
+        if requested_policy_sha256 != authorized_policy_sha256:
+            raise PermissionError(
+                "external IAM policy does not match the approved plan"
+            )
+        owner_approval = load_owner_approval_receipt(
+            required(
+                arguments.owner_approval_receipt,
+                "--owner-approval-receipt",
+            ),
+            scope=approval_scope,
+            plan_sha256=authorized_plan_sha256,
+        )
         iam, archive, replaced = install_staged_external_iam_receipt(
             required(arguments.staged_receipt, "--staged-receipt"),
-            expected_policy_sha256=required(
-                arguments.external_iam_policy_sha256,
-                "--external-iam-policy-sha256",
-            ),
+            authorized_plan=authorized_plan,
+            owner_approval_receipt=owner_approval,
         )
         result = {
             "ok": True,
             "schema": iam.value["schema"],
+            "scope": approval_scope,
+            "plan_sha256": authorized_plan_sha256,
+            "owner_approval_receipt_sha256": owner_approval.sha256,
             "external_iam_receipt_sha256": iam.sha256,
             "external_iam_policy_sha256": iam.policy_sha256,
             "archive": dict(archive),
@@ -4632,6 +4959,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "revision": native_plan.value["revision"],
             "native_observation_plan_sha256": native_plan.sha256,
             "native_observation_receipt_sha256": native_receipt.sha256,
+            "idempotent": native_executor.idempotent,
             "host_preparation_receipt_path": native_executor.host_preparation_receipt[
                 "receipt_path"
             ],
@@ -4652,8 +4980,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif arguments.action in {"apply", "validate-plan"}:
         plan = load_activation_plan(required(arguments.plan, "--plan"))
     if arguments.action == "validate-plan":
+        if arguments.approved_plan_sha256 != plan.sha256:
+            raise PermissionError(
+                "activation preflight requires exact owner-approved plan digest"
+            )
+        if not arguments.owner_approval_receipt:
+            raise PermissionError(
+                "activation preflight owner approval receipt is required"
+            )
+        owner_approval = load_owner_approval_receipt(
+            arguments.owner_approval_receipt,
+            scope="activation",
+            plan_sha256=plan.sha256,
+        )
         try:
-            preflight, _existing, _iam = activation_read_only_preflight(plan)
+            preflight, _existing, _iam = activation_read_only_preflight(
+                plan,
+                owner_approval_receipt=owner_approval,
+            )
         except ActivationReadOnlyPreflightError as exc:
             print(
                 json.dumps(
@@ -4713,6 +5057,7 @@ __all__ = [
     "SystemdBundle",
     "WRITER_UNIT",
     "load_activation_plan",
+    "load_durable_native_observation_receipt",
     "load_external_iam_receipt",
     "load_native_observation_plan",
     "load_owner_approval_receipt",

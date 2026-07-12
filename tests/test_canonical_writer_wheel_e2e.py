@@ -26,10 +26,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGED_MODULES = {
     "gateway/canonical_writer_activation.py",
     "gateway/canonical_writer_bootstrap.py",
+    "gateway/canonical_writer_config_collector.py",
     "gateway/canonical_writer_deployment_preflight.py",
     "gateway/canonical_writer_gateway_bootstrap.py",
     "gateway/canonical_writer_host_authority.py",
+    "gateway/canonical_writer_planner.py",
     "gateway/canonical_writer_readiness.py",
+    "gateway/canonical_writer_release_contract.py",
     "gateway/canonical_writer_root_collector.py",
     "gateway/canonical_writer_service.py",
 }
@@ -46,29 +49,9 @@ _FORBIDDEN_SCRIPT_MODULES = {
 )
 def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     fixture = runpy.run_path(
-        str(REPO_ROOT / "tests/scripts/canary/test_writer_activation.py")
+        str(REPO_ROOT / "tests/gateway/test_canonical_writer_planner.py")
     )
-    source_release = fixture["_release"]()
-    source_unit_spec = fixture["_unit_spec"]()
-    source_digests = fixture["_digests"](source_release, source_unit_spec)
-    source_plan = fixture["writer_activation"].build_activation_plan(
-        source_release,
-        source_unit_spec,
-        fixture["_canary_writer_config"](),
-        fixture["_canary_identities"](),
-        fixture["_stopped_native_receipt"](),
-        writer_config_sha256=source_digests.writer_config_sha256,
-        gateway_config_sha256=source_digests.gateway_config_sha256,
-        release_manifest_file_sha256="d" * 64,
-        database_ca_sha256="e" * 64,
-        external_iam_policy_sha256="f" * 64,
-        external_iam_receipt_path=(
-            "/run/muncho-canonical-preflight/external-iam-receipt.json"
-        ),
-        sql_private_ip=fixture["SQL_PRIVATE_IP"],
-        sql_tls_server_name=fixture["SQL_TLS_SERVER_NAME"],
-        paths=fixture["PackagedActivationPaths"](),
-    )
+    source_plan = fixture["_final_plan"]()
     source_plan_path = tmp_path / "source-activation-plan.json"
     source_plan_path.write_text(
         json.dumps(
@@ -157,13 +140,18 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         """
         import json
         import os
+        import io
+        from contextlib import redirect_stdout
         from pathlib import Path
         from types import SimpleNamespace
 
         import gateway.canonical_writer_bootstrap as bootstrap_module
         import gateway.canonical_writer_activation as activation_module
+        import gateway.canonical_writer_config_collector as config_collector_module
         import gateway.canonical_writer_gateway_bootstrap as gateway_bootstrap_module
         import gateway.canonical_writer_host_authority as host_authority_module
+        import gateway.canonical_writer_planner as planner_module
+        import gateway.canonical_writer_release_contract as release_contract_module
         import gateway.canonical_writer_service as service_module
         from gateway.canonical_writer_db import QueryResult
         from gateway.canonical_writer_postgres_backend import (
@@ -240,6 +228,45 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert packaged_plan.sha256 == packaged_plan_raw[
             "activation_plan_sha256"
         ]
+        native_result = {
+            "artifact_sha256": "1" * 64,
+            "native_observation_plan_sha256": "2" * 64,
+        }
+        planner_module.build_and_stage_native_observation_plan = (
+            lambda **_arguments: native_result
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            assert planner_module.main([
+                "build-native-plan",
+                "--revision",
+                "a" * 40,
+                "--external-iam-policy-sha256",
+                "3" * 64,
+                "--config-collector-receipt-sha256",
+                "4" * 64,
+            ]) == 0
+        assert json.loads(stdout.getvalue()) == native_result
+        final_result = {
+            "activation_plan_sha256": "5" * 64,
+            "native_observation_receipt_sha256": "6" * 64,
+        }
+        planner_module.build_and_stage_final_activation_plan = (
+            lambda **_arguments: final_result
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            assert planner_module.main([
+                "build-final-plan",
+                "--native-observation-receipt-sha256",
+                "6" * 64,
+            ]) == 0
+        assert json.loads(stdout.getvalue()) == final_result
+        assert all(
+            key.endswith("_sha256")
+            for result in (native_result, final_result)
+            for key in result
+        )
         assert "/site-packages/gateway/canonical_writer_bootstrap.py" in (
             bootstrap_module.__file__.replace("\\\\", "/")
         )
@@ -252,8 +279,17 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert "/site-packages/gateway/canonical_writer_activation.py" in (
             activation_module.__file__.replace("\\\\", "/")
         )
+        assert "/site-packages/gateway/canonical_writer_config_collector.py" in (
+            config_collector_module.__file__.replace("\\\\", "/")
+        )
         assert "/site-packages/gateway/canonical_writer_host_authority.py" in (
             host_authority_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/canonical_writer_planner.py" in (
+            planner_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/canonical_writer_release_contract.py" in (
+            release_contract_module.__file__.replace("\\\\", "/")
         )
         forbidden = (
             "agent",
@@ -313,3 +349,37 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     assert "install-external-iam" in help_run.stdout
     assert "observe-native" in help_run.stdout
     assert "validate-plan" in help_run.stdout
+    config_help_run = subprocess.run(
+        [
+            str(interpreter),
+            "-I",
+            "-m",
+            "gateway.canonical_writer_config_collector",
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert config_help_run.returncode == 0, config_help_run.stderr
+    assert "--release-manifest-file-sha256" in config_help_run.stdout
+    assert "--owner-discord-user-id" in config_help_run.stdout
+    planner_help_run = subprocess.run(
+        [
+            str(interpreter),
+            "-I",
+            "-m",
+            "gateway.canonical_writer_planner",
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert planner_help_run.returncode == 0, planner_help_run.stderr
+    assert "build-native-plan" in planner_help_run.stdout
+    assert "build-final-plan" in planner_help_run.stdout

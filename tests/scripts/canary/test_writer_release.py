@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
+import stat
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -141,6 +143,83 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
         for command in commands
         for name in command.environment()
     )
+
+
+def _allow_local_materialization_owner(monkeypatch) -> None:
+    monkeypatch.setattr(writer_release, "_BUILD_OWNER_UID", os.geteuid())
+    monkeypatch.setattr(writer_release, "_BUILD_OWNER_GID", os.getegid())
+
+
+def test_materializes_exact_managed_python_symlink_as_independent_copy(
+    tmp_path,
+    monkeypatch,
+):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"exact-managed-python\n")
+    managed.chmod(0o555)
+    spec.interpreter.parent.mkdir(parents=True)
+    spec.interpreter.symlink_to(managed)
+
+    digest = writer_release._materialize_copied_interpreter(spec, managed)
+
+    source_stat = os.lstat(managed)
+    copied_stat = os.lstat(spec.interpreter)
+    assert not spec.interpreter.is_symlink()
+    assert stat.S_ISREG(copied_stat.st_mode)
+    assert copied_stat.st_nlink == 1
+    assert (copied_stat.st_dev, copied_stat.st_ino) != (
+        source_stat.st_dev,
+        source_stat.st_ino,
+    )
+    assert spec.interpreter.read_bytes() == managed.read_bytes()
+    assert digest == hashlib.sha256(managed.read_bytes()).hexdigest()
+    assert writer_release._materialize_copied_interpreter(spec, managed) == digest
+
+
+def test_interpreter_materialization_rejects_wrong_target_and_collision(
+    tmp_path,
+    monkeypatch,
+):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"exact-managed-python\n")
+    managed.chmod(0o555)
+    spec.interpreter.parent.mkdir(parents=True)
+    wrong = tmp_path / "wrong-python"
+    wrong.write_bytes(managed.read_bytes())
+    wrong.chmod(0o555)
+    spec.interpreter.symlink_to(wrong)
+
+    with pytest.raises(RuntimeError, match="symlink target"):
+        writer_release._materialize_copied_interpreter(spec, managed)
+    assert spec.interpreter.is_symlink()
+    assert spec.interpreter.readlink() == wrong
+
+    spec.interpreter.unlink()
+    spec.interpreter.write_bytes(b"collision")
+    spec.interpreter.chmod(0o555)
+    with pytest.raises(RuntimeError, match="content is not managed Python"):
+        writer_release._materialize_copied_interpreter(spec, managed)
+    assert spec.interpreter.read_bytes() == b"collision"
+
+
+def test_interpreter_materialization_rejects_hardlink(tmp_path, monkeypatch):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"exact-managed-python\n")
+    managed.chmod(0o555)
+    spec.interpreter.parent.mkdir(parents=True)
+    os.link(managed, spec.interpreter)
+
+    with pytest.raises(RuntimeError, match="independent root-owned executable"):
+        writer_release._materialize_copied_interpreter(spec, managed)
 
 
 def test_snapshot_and_install_paths_cannot_alias_source_release_or_cache(tmp_path):

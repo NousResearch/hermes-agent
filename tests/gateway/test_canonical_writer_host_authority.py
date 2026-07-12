@@ -33,6 +33,7 @@ def _plan_mapping():
         "artifact_root": root,
         "artifact_sha256": "1" * 64,
         "release_manifest_file_sha256": "2" * 64,
+        "config_collector_receipt_sha256": "9" * 64,
         "gateway_unit": {
             "name": "hermes-cloud-gateway.service",
             "path": "/etc/systemd/system/hermes-cloud-gateway.service",

@@ -8,7 +8,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, CopyIcon, FolderOpen, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -319,21 +319,18 @@ export function useStatusbarItems({
         menuItems: currentCwd
           ? [
               {
-                icon: <CopyIcon className="size-4" />,
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
                 onSelect: () => void copyFilePath(currentCwd),
                 title: currentCwd
               },
               {
-                icon: <FolderOpen className="size-4" />,
                 id: 'reveal-workspace-finder',
                 label: fileMenu.revealFileManager,
                 onSelect: () => void revealFile(currentCwd),
                 title: currentCwd
               },
               {
-                icon: <Codicon name="go-to-file" size="1rem" />,
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
                 onSelect: () => revealFileInTree(currentCwd),

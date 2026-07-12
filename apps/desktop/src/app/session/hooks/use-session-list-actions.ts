@@ -4,7 +4,6 @@ import { getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
-  MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
@@ -31,12 +30,10 @@ import {
 
 import { sameCronSignature } from '../../desktop-controller-utils'
 
-// The recents list is local-only: cron rows have their own section, and each
-// messaging platform (telegram, discord, …) is fetched separately into its own
-// self-managed sidebar section (refreshMessagingSessions). Excluding both here
-// keeps "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+// Keep gateway conversations in the main session list as well as the
+// platform-specific messaging section. This makes profile-scoped Discord
+// sessions visible even when the messaging section is collapsed or unavailable.
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool']
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -99,7 +96,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
 
@@ -114,7 +113,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
@@ -123,7 +122,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
+    const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
       source: platform
     })
 
@@ -136,7 +137,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     const total = result.total ?? incoming.length
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+  }, [profileScope])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right

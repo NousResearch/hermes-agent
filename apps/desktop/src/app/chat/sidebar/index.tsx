@@ -809,13 +809,17 @@ export function ChatSidebar({
   // within a platform by recency. Per-platform totals (when a "load more" has
   // resolved them) drive the count + whether more remain on disk.
   const messagingGroups = useMemo<MessagingSection[]>(() => {
-    if (!messagingSessions.length) {
+    const scopedMessagingSessions = profileScope === ALL_PROFILES
+      ? messagingSessions
+      : messagingSessions.filter(session => normalizeProfileKey(session.profile) === normalizeProfileKey(profileScope))
+
+    if (!scopedMessagingSessions.length) {
       return []
     }
 
     const bySource = new Map<string, SessionInfo[]>()
 
-    for (const session of messagingSessions) {
+    for (const session of scopedMessagingSessions) {
       const sourceId = normalizeSessionSource(session.source)
 
       if (!sourceId) {
@@ -845,7 +849,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, profileScope])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

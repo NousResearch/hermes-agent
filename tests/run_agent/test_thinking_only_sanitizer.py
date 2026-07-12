@@ -177,7 +177,9 @@ class TestDropThinkingOnlyAndMergeUsers:
         out = AIAgent._drop_thinking_only_and_merge_users(msgs)
         assert len(out) == 1
         assert out[0]["role"] == "user"
-        assert out[0]["content"] == "help me with X\n\nok continue"
+        assert out[0]["content"] == (
+            "help me with X\n\n[Next user message]\n\nok continue"
+        )
 
     def test_preserves_alternation_after_drop(self):
         msgs = [
@@ -189,7 +191,7 @@ class TestDropThinkingOnlyAndMergeUsers:
         out = AIAgent._drop_thinking_only_and_merge_users(msgs)
         roles = [m["role"] for m in out]
         assert roles == ["user", "assistant"]
-        assert out[0]["content"] == "u1\n\nu2"
+        assert out[0]["content"] == "u1\n\n[Next user message]\n\nu2"
         assert out[1]["content"] == "real reply"
 
     def test_does_not_merge_when_drop_leaves_non_adjacent_users(self):
@@ -212,7 +214,7 @@ class TestDropThinkingOnlyAndMergeUsers:
         ]
         out = AIAgent._drop_thinking_only_and_merge_users(msgs)
         assert len(out) == 1
-        assert out[0]["content"] == "u1\n\nu2"
+        assert out[0]["content"] == "u1\n\n[Next user message]\n\nu2"
 
     def test_does_not_touch_stored_messages_original_list_unmutated(self):
         original_first_user = {"role": "user", "content": "u1"}
@@ -251,6 +253,7 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert len(out) == 1
         assert out[0]["content"] == [
             {"type": "text", "text": "first"},
+            {"type": "text", "text": "[Next user message]"},
             {"type": "text", "text": "second"},
         ]
 
@@ -264,6 +267,7 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert len(out) == 1
         assert out[0]["content"] == [
             {"type": "text", "text": "plain text"},
+            {"type": "text", "text": "[Next user message]"},
             {"type": "text", "text": "block text"},
         ]
 
@@ -278,4 +282,4 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert len(out) == 2
         assert out[0]["role"] == "system"
         assert out[1]["role"] == "user"
-        assert out[1]["content"] == "u1\n\nu2"
+        assert out[1]["content"] == "u1\n\n[Next user message]\n\nu2"

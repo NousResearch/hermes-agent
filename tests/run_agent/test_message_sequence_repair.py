@@ -109,7 +109,14 @@ def test_canonical_repair_preserves_adjacent_user_source_boundaries():
     wire_messages = AIAgent._drop_thinking_only_and_merge_users(wire_messages)
 
     assert wire_messages == [
-        {"role": "user", "content": "interrupted turn tail\n\nfirst queued prompt"}
+        {
+            "role": "user",
+            "content": (
+                "interrupted turn tail\n\n"
+                "[Next user message]\n\n"
+                "first queued prompt"
+            ),
+        }
     ]
     assert messages == original
     assert messages[0] is first

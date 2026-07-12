@@ -1259,7 +1259,11 @@ def drop_thinking_only_and_merge_users(
     if dropped == 0 and not has_adjacent_users:
         return messages
 
-    # Pass 2: merge any newly-adjacent user messages.
+    # Pass 2: merge adjacent source turns for provider compatibility while
+    # retaining an explicit semantic boundary in the transient wire content.
+    # This marker never reaches canonical history or SessionDB.
+    boundary_text = "[Next user message]"
+    boundary_block = {"type": "text", "text": boundary_text}
     merged: List[Dict[str, Any]] = []
     merges = 0
     for m in kept:
@@ -1280,13 +1284,20 @@ def drop_thinking_only_and_merge_users(
             # purposes. If either side is a list (multimodal), append as a
             # separate block rather than collapsing.
             if isinstance(prev_content, str) and isinstance(cur_content, str):
-                sep = "\n\n" if prev_content and cur_content else ""
+                sep = (
+                    f"\n\n{boundary_text}\n\n"
+                    if prev_content and cur_content
+                    else ""
+                )
                 prev_copy["content"] = prev_content + sep + cur_content
             elif isinstance(prev_content, list) and isinstance(cur_content, list):
-                prev_copy["content"] = list(prev_content) + list(cur_content)
+                prev_copy["content"] = (
+                    list(prev_content) + [dict(boundary_block)] + list(cur_content)
+                )
             elif isinstance(prev_content, list) and isinstance(cur_content, str):
                 if cur_content:
                     prev_copy["content"] = list(prev_content) + [
+                        dict(boundary_block),
                         {"type": "text", "text": cur_content}
                     ]
                 else:
@@ -1295,6 +1306,7 @@ def drop_thinking_only_and_merge_users(
                 new_blocks: List[Dict[str, Any]] = []
                 if prev_content:
                     new_blocks.append({"type": "text", "text": prev_content})
+                    new_blocks.append(dict(boundary_block))
                 new_blocks.extend(cur_content)
                 prev_copy["content"] = new_blocks
             else:

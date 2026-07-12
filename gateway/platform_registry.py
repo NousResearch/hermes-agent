@@ -129,6 +129,10 @@ def core_ships_platform(name: str) -> bool:
     return value in {Platform[member].value for member in Platform._member_names_} or (
         value in Platform._scan_bundled_plugin_platforms()[0])
 
+    # Return True when this PlatformConfig binds a local TCP listener. Used by
+    # profile multiplexing to reject only modes that would collide.
+    is_port_binding_fn: Optional[Callable[[Any], bool]] = None
+
 
 class PlatformRegistry:
     """Central registry of platform adapters. Registrations are serialized; concurrent

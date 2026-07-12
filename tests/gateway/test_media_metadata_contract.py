@@ -35,6 +35,7 @@ def _accepts_metadata(method) -> bool:
     [
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
         ("plugins.platforms.email.adapter", "EmailAdapter"),
+        ("plugins.platforms.webex.adapter", "WebexAdapter"),
     ],
 )
 def test_send_image_accepts_metadata(module_name, class_name):

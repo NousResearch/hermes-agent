@@ -131,6 +131,7 @@ class TestEditMessageFinalizeSignature:
             ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
             ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
             ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
+            ("plugins.platforms.webex.adapter", "WebexAdapter"),
         ],
     )
     def test_edit_message_accepts_finalize(self, module_path, class_name):
@@ -1593,4 +1594,3 @@ class TestFlushPendingSync:
 
         consumer.finish()
         await task
-

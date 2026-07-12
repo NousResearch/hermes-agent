@@ -170,6 +170,30 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_api_preserves_hermes_web_source_and_allows_source_correction(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-source-session", "source": "hermes_web", "title": "Hermes Web source"},
+        )
+        assert created.status == 201, await created.text()
+        created_payload = await created.json()
+        assert created_payload["session"]["source"] == "hermes_web"
+
+        legacy_id = session_db.create_session("hermes-web-legacy-source", "api_server")
+        corrected = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "hermes_web"},
+        )
+        assert corrected.status == 200, await corrected.text()
+        corrected_payload = await corrected.json()
+
+    assert corrected_payload["session"]["source"] == "hermes_web"
+    assert session_db.get_session("hermes-web-legacy-source")["source"] == "hermes_web"
+
+
+@pytest.mark.asyncio
 async def test_session_messages_follow_compression_tip(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server")
     session_db.append_message(source_id, "user", "before compression")

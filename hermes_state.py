@@ -1754,6 +1754,17 @@ class SessionDB:
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
 
+    def set_session_source(self, session_id: str, source: str) -> bool:
+        """Update the client-facing source label for an existing session."""
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET source = ? WHERE id = ?",
+                (source, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
     def record_gateway_session_peer(
         self,
         session_id: str,

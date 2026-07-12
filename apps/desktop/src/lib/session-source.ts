@@ -2,6 +2,8 @@ import { normalize } from '@/lib/text'
 
 const SOURCE_LABELS: Record<string, string> = {
   api_server: 'API',
+  hermes_browser: 'Hermes Browser Extension',
+  hermes_web: 'Hermes Web',
   bluebubbles: 'iMessage',
   cli: 'CLI',
   codex: 'Codex',
@@ -60,6 +62,8 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'sms',
   'webhook',
   'api_server',
+  'hermes_browser',
+  'hermes_web',
   'weixin',
   'wecom',
   'qqbot',

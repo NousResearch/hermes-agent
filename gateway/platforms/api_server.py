@@ -1694,6 +1694,16 @@ class APIServerAdapter(BasePlatformAdapter):
         return payload
 
     @staticmethod
+    def _normalize_session_source(value: Any, *, default: str = "api_server") -> Optional[str]:
+        """Accept the small public source taxonomy used by first-party clients."""
+        if value is None:
+            return default
+        source = str(value).strip().lower()
+        if source in {"api_server", "hermes_browser", "hermes_web"}:
+            return source
+        return None
+
+    @staticmethod
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
@@ -1782,11 +1792,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if db.get_session(session_id):
             return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
 
+        source = self._normalize_session_source(body.get("source"))
+        if source is None:
+            return web.json_response(
+                _openai_error("Invalid session source", code="invalid_session_source"),
+                status=400,
+            )
         model = body.get("model") or self._model_name
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
-        db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        db.create_session(session_id, source, model=str(model) if model else None, system_prompt=system_prompt)
         title = body.get("title")
         if title is not None:
             try:
@@ -1794,7 +1810,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except ValueError as exc:
                 db.delete_session(session_id)
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
-        session = db.get_session(session_id) or {"id": session_id, "source": "api_server", "model": model, "title": title}
+        session = db.get_session(session_id) or {"id": session_id, "source": source, "model": model, "title": title}
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
 
     async def _handle_get_session(self, request: "web.Request") -> "web.Response":
@@ -1819,12 +1835,20 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        allowed = {"title", "end_reason", "source"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
         db = self._ensure_session_db()
+        if "source" in body:
+            source = self._normalize_session_source(body["source"], default="")
+            if source is None or not source:
+                return web.json_response(
+                    _openai_error("Invalid session source", code="invalid_session_source"),
+                    status=400,
+                )
+            db.set_session_source(session_id, source)
         if "title" in body:
             try:
                 db.set_session_title(session_id, "" if body["title"] is None else str(body["title"]))

@@ -14419,8 +14419,8 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
-    """Validate WS-upgrade auth; return ``(reason, credential)``.
+def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str, Optional[dict]]:
+    """Validate WS-upgrade auth; return ``(reason, credential, info)``.
 
     ``reason`` is None when the credential is accepted, else a short
     machine-parseable token explaining the rejection (``no_credential``,
@@ -14428,6 +14428,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``credential`` names which credential type was presented (``ticket``,
     ``internal``, ``token``, or ``none``) so the accepted path can log *how*
     a peer authed, not just that it did.
+    ``info`` is the identity dict (``{user_id, provider, …}``) returned by
+    :func:`consume_ticket` or :func:`consume_internal_credential` on the
+    accepted paths, or ``None`` for loopback/token auth or on rejection.
 
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
     parameter, constant-time compared.
@@ -14468,8 +14471,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
-                return None, "internal"
+                internal_info = consume_internal_credential(internal)
+                return None, "internal", internal_info
             except TicketInvalid as exc:
                 audit_log(
                     AuditEvent.WS_TICKET_REJECTED,
@@ -14477,15 +14480,15 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                     ip=(ws.client.host if ws.client else ""),
                     path=ws.url.path,
                 )
-                return "internal_invalid", "internal"
+                return "internal_invalid", "internal", None
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
-            return "no_credential", "none"
+            return "no_credential", "none", None
 
         try:
-            consume_ticket(ticket)
-            return None, "ticket"
+            ticket_info = consume_ticket(ticket)
+            return None, "ticket", ticket_info
         except TicketInvalid as exc:
             audit_log(
                 AuditEvent.WS_TICKET_REJECTED,
@@ -14493,14 +14496,14 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 ip=(ws.client.host if ws.client else ""),
                 path=ws.url.path,
             )
-            return "ticket_invalid", "ticket"
+            return "ticket_invalid", "ticket", None
 
     token = ws.query_params.get("token", "")
     if not token:
-        return "no_credential", "none"
+        return "no_credential", "none", None
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+        return None, "token", None
+    return "token_mismatch", "token", None
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
@@ -14520,6 +14523,7 @@ def _resolve_chat_argv(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -14555,6 +14559,10 @@ def _resolve_chat_argv(
     ``HERMES_TUI_GATEWAY_URL`` attach is SKIPPED for scoped chats: the
     dashboard's in-memory gateway runs under the dashboard's own profile,
     so a profile-scoped chat must spawn its own gateway subprocess.
+
+    `user_id` (when set) is forwarded as ``HERMES_SESSION_USER_ID`` so the
+    agent's memory providers and session context receive the authenticated
+    dashboard-user identity rather than falling back to the default.
     """
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
 
@@ -14612,6 +14620,9 @@ def _resolve_chat_argv(
 
     if active_session_file:
         env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
+
+    if user_id:
+        env["HERMES_SESSION_USER_ID"] = user_id
 
     # Profile-scoped chats must NOT attach to the dashboard's in-memory
     # gateway — it runs under the dashboard's own profile. Without the
@@ -14700,6 +14711,7 @@ async def _resolve_chat_argv_async(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -14718,6 +14730,8 @@ async def _resolve_chat_argv_async(
     }
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if user_id is not None:
+        kwargs["user_id"] = user_id
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
@@ -15057,7 +15071,7 @@ async def console_ws(ws: WebSocket) -> None:
         await ws.close(code=4404, reason="embedded chat disabled")
         return
 
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, _auth_info = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -15419,7 +15433,7 @@ async def pty_ws(ws: WebSocket) -> None:
     #     browser banner agree on the cause:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
+    auth_reason, cred, auth_info = _ws_auth_reason(ws)
     mode = _ws_auth_mode()
     if auth_reason is not None:
         _log.warning(
@@ -15484,6 +15498,11 @@ async def pty_ws(ws: WebSocket) -> None:
     }
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+    # Propagate the authenticated dashboard user identity so the agent's
+    # memory providers and session context receive it.
+    auth_user_id = (auth_info or {}).get("user_id")
+    if auth_user_id:
+        resolve_kwargs["user_id"] = auth_user_id
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)

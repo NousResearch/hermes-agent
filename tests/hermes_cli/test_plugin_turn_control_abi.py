@@ -67,6 +67,20 @@ def test_context_aware_plugin_command_receives_cli_session_context():
     assert seen == [("cli-sess", "cli", "start")]
 
 
+def test_plugin_command_records_busy_safe_subcommands():
+    mgr = _manager()
+    ctx = PluginContext(PluginManifest(name="plug"), mgr)
+
+    ctx.register_command(
+        "control",
+        lambda _raw: "ok",
+        busy_safe_subcommands=("status", "pause", "clear"),
+    )
+
+    entry = mgr._plugin_commands["control"]
+    assert entry["busy_safe_subcommands"] == ("status", "pause", "clear")
+
+
 @pytest.mark.asyncio
 async def test_async_context_aware_plugin_command_can_enqueue_followup():
     mgr = _manager()

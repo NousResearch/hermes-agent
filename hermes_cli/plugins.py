@@ -573,6 +573,7 @@ class PluginContext:
         description: str = "",
         args_hint: str = "",
         context_aware: bool = False,
+        busy_safe_subcommands: Sequence[str] = (),
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -591,6 +592,11 @@ class PluginContext:
         as free-form chat.
 
         Names conflicting with built-in commands are rejected with a warning.
+
+        ``busy_safe_subcommands`` declares control-plane verbs that may run
+        while the session's agent is busy (for example ``status`` or ``pause``).
+        Other verbs of the same plugin command are rejected without interrupting
+        the active agent. An empty string allows the bare command form.
         """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
@@ -613,12 +619,20 @@ class PluginContext:
         except Exception:
             pass  # If commands module isn't available, skip the check
 
+        busy_safe = tuple(
+            dict.fromkeys(
+                str(item).strip().lower()
+                for item in busy_safe_subcommands
+                if str(item).strip() or item == ""
+            )
+        )
         self._manager._plugin_commands[clean] = {
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
             "context_aware": bool(context_aware),
+            "busy_safe_subcommands": busy_safe,
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 

@@ -67,6 +67,111 @@ async def test_gateway_context_aware_plugin_command_receives_session_id(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_busy_safe_plugin_control_dispatches_without_interrupt(monkeypatch):
+    gateway_run = importlib.import_module("gateway.run")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        user_id="user-1",
+        chat_type="dm",
+    )
+    session_key = runner._session_key_for_source(source)
+    runner._is_user_authorized = lambda _source: True
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._update_prompt_pending = {}
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SimpleNamespace(
+        session_id="busy-sess"
+    )
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {
+        "seconds_since_activity": 0,
+        "last_activity_desc": "tool",
+        "api_call_count": 1,
+        "max_iterations": 10,
+    }
+    runner._running_agents[session_key] = running_agent
+    runner._running_agents_ts = {session_key: __import__("time").time()}
+
+    mgr = _plugin_manager()
+    ctx = PluginContext(PluginManifest(name="plug"), mgr)
+    seen = []
+
+    def handler(command_ctx, raw_args):
+        seen.append((command_ctx.session_id, raw_args))
+        return "paused"
+
+    ctx.register_command(
+        "control",
+        handler,
+        context_aware=True,
+        busy_safe_subcommands=("status", "pause", "clear"),
+    )
+    event = gateway_run.MessageEvent(
+        text="/control pause",
+        message_type=gateway_run.MessageType.TEXT,
+        source=source,
+    )
+
+    with patch("hermes_cli.plugins._plugin_manager", mgr):
+        result = await runner._handle_message(event)
+
+    assert result == "paused"
+    assert seen == [("busy-sess", "pause")]
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_busy_unsafe_plugin_subcommand_is_rejected_without_interrupt(monkeypatch):
+    gateway_run = importlib.import_module("gateway.run")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        user_id="user-1",
+        chat_type="dm",
+    )
+    session_key = runner._session_key_for_source(source)
+    runner._is_user_authorized = lambda _source: True
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._update_prompt_pending = {}
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {
+        "seconds_since_activity": 0,
+        "last_activity_desc": "tool",
+        "api_call_count": 1,
+        "max_iterations": 10,
+    }
+    runner._running_agents[session_key] = running_agent
+    runner._running_agents_ts = {session_key: __import__("time").time()}
+
+    mgr = _plugin_manager()
+    ctx = PluginContext(PluginManifest(name="plug"), mgr)
+    called = []
+    ctx.register_command(
+        "control",
+        lambda _ctx, raw: called.append(raw) or "started",
+        context_aware=True,
+        busy_safe_subcommands=("status", "pause", "clear"),
+    )
+    event = gateway_run.MessageEvent(
+        text="/control start new mission",
+        message_type=gateway_run.MessageType.TEXT,
+        source=source,
+    )
+
+    with patch("hermes_cli.plugins._plugin_manager", mgr):
+        result = await runner._handle_message(event)
+
+    assert "can't run mid-turn" in result
+    assert called == []
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_gateway_plugin_command_exception_isolated(monkeypatch):
     gateway_run = importlib.import_module("gateway.run")
     adapter = CleanupCaptureAdapter()

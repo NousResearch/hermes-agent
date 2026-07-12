@@ -55,6 +55,11 @@ class TestApprovalModeParsing:
 
 
 class TestSmartApproval:
+    def test_smart_is_the_default_approval_mode(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["approvals"]["mode"] == "smart"
+
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
@@ -67,6 +72,35 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
+
+    def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
+        session_key = "test-smart-per-command"
+        command = "python -c \"print('hello')\""
+        dangerous, pattern_key, _ = detect_dangerous_command(command)
+        assert dangerous is True
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(
+            approval_module,
+            "_get_approval_config",
+            lambda: {"mode": "smart"},
+        )
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: "approve")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        approval_module.clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        result = approval_module.check_all_command_guards(command, "local")
+
+        assert result["approved"] is True
+        assert result["smart_approved"] is True
+        assert is_approved(session_key, pattern_key) is False
 
 
 class TestDetectDangerousRm:
@@ -2140,10 +2174,12 @@ class TestApprovalTimeoutIsNotConsent:
         assert "rephrase" in msg.lower()
         assert "different command" in msg.lower()
 
-    def test_explicit_deny_carries_same_no_consent_shape(self):
+    def test_explicit_deny_carries_same_no_consent_shape(self, monkeypatch):
         """An explicit /deny must produce the same shape as timeout —
         the agent should treat both identically."""
         from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=60)
 
         notified = []
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))

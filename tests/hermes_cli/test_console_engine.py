@@ -585,7 +585,7 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
 
     db = SessionDB()
     try:
-        db.create_session("chat-session", source="cli", model="test/model")
+        db.create_session("matrix-session", source="matrix", model="test/model")
         db.create_session("tool-session", source="tool", model="test/model")
     finally:
         db.close()
@@ -595,10 +595,11 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     stats = engine.execute("sessions stats")
 
     assert listed.status == "ok"
-    assert "chat-session" in listed.output
+    assert "matrix-session" in listed.output
     assert "tool-session" not in listed.output
     assert "Total sessions: 2" in stats.output
     assert "Listable sessions: 1" in stats.output
+    assert "  matrix: 1" in stats.output.splitlines()
 
 
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):

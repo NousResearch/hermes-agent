@@ -5164,10 +5164,11 @@ class SessionDB:
     # =========================================================================
 
     def session_sources(self) -> list[str]:
-        """Return distinct source values from all sessions."""
+        """Return distinct, non-empty source values from all sessions."""
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT DISTINCT source FROM sessions ORDER BY source"
+                "SELECT DISTINCT source FROM sessions "
+                "WHERE TRIM(source) <> '' ORDER BY source"
             )
             return [row[0] for row in cursor.fetchall()]
 

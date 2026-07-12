@@ -194,7 +194,6 @@ def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     base = str(base_url or "")
     return (
         base_url_host_matches(base, "inference-api.nousresearch.com")
-        or base_url_host_matches(base, "inference.nousresearch.com")
     )
 
 

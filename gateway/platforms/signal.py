@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import subprocess
 import tempfile
@@ -37,10 +38,12 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    SUPPORTED_VIDEO_TYPES,
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_url,
+    cache_video_from_bytes,
 )
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.signal_format import markdown_to_signal
@@ -116,12 +119,83 @@ def _guess_extension(data: bytes) -> str:
     return ".bin"
 
 
+def _resolve_attachment_extension(content_type: Optional[str], data: bytes) -> str:
+    """Resolve a Signal attachment's extension from MIME + bytes.
+
+    Three-tier resolver, in priority order:
+
+      1. ``contentType`` from the Signal envelope, looked up in
+         ``_MIME_TO_EXT``. Trusted because the sender's Signal client
+         already classified the payload by filename/MIME.
+      2. ``_guess_extension`` magic-byte sniff as a fallback for when the
+         envelope carries the catch-all ``"application/octet-stream"``
+         (some Signal clients do this for unrecognised types).
+      3. ``".bin"`` only when both signals are absent or uninformative.
+
+    Without this rescue, every text-only document (.txt, .md, .sh, .py,
+    .json, .csv, ...) falls through the magic sniffer to ".bin" and
+    arrives at the agent as a meaningless binary blob — even though the
+    envelope already told us what it was.
+    """
+    if content_type:
+        ext = _mime_to_ext(content_type)
+        if ext:
+            return ext
+    guessed = _guess_extension(data)
+    if guessed != ".bin":
+        return guessed
+    # Last-resort: sniff for plain UTF-8 text. Most non-binary text files
+    # (shell scripts, JSON, YAML, code) decode as UTF-8 with no errors;
+    # binary payloads raise UnicodeDecodeError on the first non-UTF-8 byte.
+    try:
+        text = data[:4096].decode("utf-8")
+        # Reject ASCII control chars (except tab/newline/cr) which signal
+        # binary content masquerading as UTF-8.
+        for ch in text:
+            code = ord(ch)
+            if code < 0x20 and code not in (0x09, 0x0A, 0x0D):
+                return ".bin"
+    except UnicodeDecodeError:
+        return ".bin"
+    # UTF-8 decodable and contains no binary control bytes — it's a
+    # text payload. Default to .txt (the most common case); the cached
+    # file is still routed to the document cache so the agent can read
+    # its content. The signal-cli envelope's contentType would have
+    # provided a more specific extension earlier in the resolver if
+    # the client had one to send.
+    return ".txt"
+
+
+def _mime_to_ext(content_type: str) -> Optional[str]:
+    """Look up an extension for a MIME content type. Strips charset/params."""
+    primary = content_type.split(";", 1)[0].strip().lower()
+    return _MIME_TO_EXT.get(primary)
+
+
 def _is_image_ext(ext: str) -> bool:
     return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
+def _is_image_content_type(content_type: Optional[str]) -> bool:
+    """True when the Signal envelope advertises an image MIME.
+
+    Mirrors ``telegram.py`` §5327: when a Telegram user attaches a
+    screenshot via the file picker it carries ``mime_type="image/png"``
+    but is reported as ``msg.document``. Telegram re-routes it through
+    the image cache; we do the same so an image uploaded "as a file"
+    on Signal still triggers the PHOTO path.
+    """
+    if not content_type:
+        return False
+    return content_type.split(";", 1)[0].strip().lower().startswith("image/")
+
+
 def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
+
+
+def _is_video_ext(ext: str) -> bool:
+    return ext.lower() in set(SUPPORTED_VIDEO_TYPES)
 
 
 _EXT_TO_MIME = {
@@ -136,6 +210,58 @@ _EXT_TO_MIME = {
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
+# Reverse of _EXT_TO_MIME — covers textual/document types that the
+# magic-byte sniffer cannot identify, plus the full MIME mapping for
+# every other content type. Used by ``_resolve_attachment_extension``
+# when the Signal envelope carries a ``contentType`` that
+# ``_guess_extension`` cannot recover from raw bytes (e.g. plain text,
+# JSON, shell scripts).
+_MIME_TO_EXT = {
+    # Documents — keep these keys in sync with the document cache routing
+    # in ``_fetch_attachment`` so MIME-aware resolution lands files in
+    # ``cache_document_from_bytes`` (not in the audio/video/image caches).
+    "application/pdf": ".pdf",
+    "application/zip": ".zip",
+    "application/json": ".json",
+    "application/xml": ".xml",
+    "application/yaml": ".yaml",
+    "application/toml": ".toml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    # Text — most common regression source. Magic-byte sniffer falls
+    # through to ".bin" for any non-trivial text payload because nothing
+    # in the byte prefix matches the existing image/audio/video/document
+    # signatures.
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/csv": ".csv",
+    "text/html": ".html",
+    "text/xml": ".xml",
+    "text/x-shellscript": ".sh",
+    "text/x-python": ".py",
+    "text/x-typescript": ".ts",
+    # Images
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    # Audio
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".aac",
+    "audio/opus": ".ogg",
+    # Video
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "video/x-matroska": ".mkv",
+    "video/x-msvideo": ".avi",
+}
 
 
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
@@ -662,7 +788,14 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
         reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
 
-        # Process attachments
+        # Process attachments — routing through ``_fetch_attachment``
+        # dispatches to the correct cache (image / audio / video /
+        # document) per the shared inbound-media contract at
+        # ``gateway/platforms/base.py``. Authorized-user uploads are cached
+        # and surfaced to the agent as local paths; the file-extension
+        # surface area is intentionally wide so legitimate documents
+        # (.pdf, .zip, .docx, .csv, .json, shellscripts, …) reach the
+        # agent instead of being silently dropped.
         attachments_data = data_message.get("attachments", [])
         media_urls = []
         media_types = []
@@ -674,10 +807,31 @@ class SignalAdapter(BasePlatformAdapter):
                 if not att_id:
                     continue
                 if att_size > SIGNAL_MAX_ATTACHMENT_SIZE:
-                    logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
+                    # Mirror Telegram's "The document is too large or its
+                    # size could not be verified. Maximum: {N} MB." pattern
+                    # (see ``telegram.py`` line 5314–5322). Without the
+                    # user-facing message, the gateway would silently drop
+                    # the file and the user would wonder why the bot
+                    # didn't respond.
+                    limit_mb = SIGNAL_MAX_ATTACHMENT_SIZE // (1024 * 1024)
+                    oversized_msg = (
+                        f"The document is too large. Maximum: {limit_mb} MB."
+                    )
+                    logger.warning(
+                        "Signal: attachment %s too large (%d bytes > %d)",
+                        att_id, att_size, SIGNAL_MAX_ATTACHMENT_SIZE,
+                    )
+                    # Prepend to existing text rather than overwrite so a
+                    # user caption alongside the oversized file is preserved.
+                    if text:
+                        text = f"{oversized_msg}\n\n{text}"
+                    else:
+                        text = oversized_msg
                     continue
                 try:
-                    cached_path, ext = await self._fetch_attachment(att_id)
+                    cached_path, ext = await self._fetch_attachment(
+                        att_id, content_type=att.get("contentType")
+                    )
                     if cached_path:
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
@@ -685,6 +839,54 @@ class SignalAdapter(BasePlatformAdapter):
                         media_types.append(content_type)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
+
+        # Inject small .md / .txt attachment content into a synthetic text body
+        # so the agent can see file contents without re-reading from disk.
+        # Mirrors Telegram's text-injection block (telegram.py line 5405–5421):
+        # capped at 100 KB to avoid flooding the user message; binary files
+        # (PDF/zip/docx/etc.) keep only the cached path in media_urls and
+        # stay out of event.text.
+        injected_text_extras: List[str] = []
+        for url, mt in zip(media_urls, media_types):
+            _, ext = os.path.splitext(url)
+            ext = ext.lower()
+            if ext not in {".md", ".txt"}:
+                continue
+            try:
+                size = os.path.getsize(url)
+            except OSError:
+                continue
+            MAX_TEXT_INJECT_BYTES = 100 * 1024
+            if size > MAX_TEXT_INJECT_BYTES:
+                logger.debug(
+                    "Signal: %s is %d bytes, exceeding 100 KB text-injection cap — not injecting",
+                    url, size,
+                )
+                continue
+            try:
+                with open(url, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+            except (OSError, UnicodeDecodeError):
+                # Binary bytes inside a .txt extension, or file vanished — skip
+                # content injection; the cached file is still in media_urls.
+                logger.debug(
+                    "Signal: could not read %s as UTF-8, skipping text injection",
+                    url,
+                )
+                continue
+            # Telegram uses ``original_filename or f"document{ext}"``.
+            # Signal has no equivalent, so the cached filename we passed
+            # in _fetch_attachment (``document{ext}``) is the best signal.
+            display_name = os.path.basename(url) or f"document{ext}"
+            display_name = re.sub(r"[^\w.\- ]", "_", display_name)
+            injected_text_extras.append(f"[Content of {display_name}]:\n{file_content}")
+
+        # Concatenate any injected text-file contents. Order: injected content
+        # first, then user caption — user caption last so it remains the
+        # most recent/natural stop of the message.
+        if injected_text_extras:
+            injected_blob = "\n\n".join(injected_text_extras)
+            text = f"{injected_blob}\n\n{text}" if text else injected_blob
 
         # Skip envelopes with no meaningful content (no text, no attachments).
         # Catches profile key updates, empty messages, and other metadata-only
@@ -874,8 +1076,17 @@ class SignalAdapter(BasePlatformAdapter):
     # Attachment Handling
     # ------------------------------------------------------------------
 
-    async def _fetch_attachment(self, attachment_id: str) -> tuple:
-        """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
+    async def _fetch_attachment(
+        self, attachment_id: str, content_type: Optional[str] = None
+    ) -> tuple:
+        """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext).
+
+        ``content_type`` is the MIME the Signal envelope advertised for
+        this attachment (e.g. ``"text/plain"``). Passed to
+        ``_resolve_attachment_extension`` so textual/document types that
+        have no magic-byte signature can still be classified correctly
+        instead of falling through to ``.bin``.
+        """
         result = await self._rpc("getAttachment", {
             "account": self.account,
             "id": attachment_id,
@@ -893,7 +1104,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Result is base64-encoded file content
         raw_data = base64.b64decode(result)
-        ext = _guess_extension(raw_data)
+        ext = _resolve_attachment_extension(content_type, raw_data)
 
         # Android Signal voice notes are raw ADTS AAC streams. Most STT
         # providers (Groq Whisper, OpenAI Whisper) reject raw ADTS — they
@@ -907,12 +1118,38 @@ class SignalAdapter(BasePlatformAdapter):
             if remuxed is not None:
                 raw_data, ext = remuxed
 
-        if _is_image_ext(ext):
-            path = cache_image_from_bytes(raw_data, ext)
+        # Use a Telegram-style canonical filename for document cache writes
+        # (matches ``cache_document_from_bytes(raw, original_filename or
+        # f"document{ext}")`` in telegram.py). The leading ``document``
+        # prefix keeps the cached filename human-readable in the document
+        # directory instead of an unnamed leading-dot extension like
+        # ``doc_{uuid}_.txt``. Telegram benefits from ``original_filename``
+        # (its document.file_name field); Signal has no such field, so we
+        # fall back to ``document{ext}``.
+        cached_filename = f"document{ext}" if ext else "document"
+
+        if _is_image_ext(ext) or _is_image_content_type(content_type):
+            # Image-as-document reroute: when contentType advertises an
+            # image MIME (or the bytes decode to a known image extension),
+            # always route through the image cache so the agent gets the
+            # PHOTO path. Mirrors telegram.py §5327–5353.
+            #
+            # Defensive: if the contentType was image/* but our extension
+            # resolver returned something non-image (.bin for an unknown
+            # subtype like image/x-icon), the cached filename would be
+            # wrong. Force a known image extension by sniffing the bytes.
+            image_ext = ext if _is_image_ext(ext) else _guess_extension(raw_data)
+            if not _is_image_ext(image_ext):
+                image_ext = ".jpg"  # ultimate fallback; _looks_like_image
+                                    # validation in cache_image_from_bytes
+                                    # still rejects non-image bytes
+            path = cache_image_from_bytes(raw_data, image_ext)
         elif _is_audio_ext(ext):
             path = cache_audio_from_bytes(raw_data, ext)
+        elif _is_video_ext(ext):
+            path = cache_video_from_bytes(raw_data, ext)
         else:
-            path = cache_document_from_bytes(raw_data, ext)
+            path = cache_document_from_bytes(raw_data, cached_filename)
 
         return path, ext
 

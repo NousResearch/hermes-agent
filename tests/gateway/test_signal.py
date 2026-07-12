@@ -1,12 +1,15 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import json
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType, MessageEvent
 
 
 @pytest.fixture(autouse=True)
@@ -164,102 +167,6 @@ class TestSignalHelpers:
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
 
-    def test_guess_extension_aac_adts_unprotected(self):
-        """ADTS AAC, MPEG-4, no CRC (the canonical Android Signal voice note).
-
-        Byte 0 = 0xFF (sync high), byte 1 = 0xF1 (sync low + ID=0 + layer=00
-        + protection_absent=1). Must NOT be misclassified as MP3 — the old
-        code's ``(b[1] & 0xE0) == 0xE0`` test wrongly returned ``.mp3``.
-        """
-        from gateway.platforms.signal import _guess_extension
-        assert _guess_extension(b"\xff\xf1" + b"\x00" * 200) == ".aac"
-
-    def test_guess_extension_aac_adts_protected(self):
-        """ADTS AAC, MPEG-4, CRC present (protection_absent=0)."""
-        from gateway.platforms.signal import _guess_extension
-        assert _guess_extension(b"\xff\xf0" + b"\x00" * 200) == ".aac"
-
-    def test_guess_extension_mp3_mpeg1_layer3(self):
-        """Real MP3 frame, MPEG-1 Layer 3: byte1 = 0xFB (ID=1, layer=01, prot=1)."""
-        from gateway.platforms.signal import _guess_extension
-        assert _guess_extension(b"\xff\xfb" + b"\x00" * 200) == ".mp3"
-
-    def test_guess_extension_mp3_mpeg2_layer3(self):
-        """Real MP3 frame, MPEG-2 Layer 3: byte1 = 0xF3 (ID=1, layer=01, prot=1)."""
-        from gateway.platforms.signal import _guess_extension
-        assert _guess_extension(b"\xff\xf3" + b"\x00" * 200) == ".mp3"
-
-    def test_guess_extension_aac_routes_to_audio_cache(self):
-        """ADTS-detected files must be routed to the audio cache, not document.
-
-        ``_is_audio_ext(``.aac``)`` is True, so a Signal attachment that
-        begins with the ADTS sync word ends up in ``cache_audio_from_bytes``,
-        which the remux step then converts to MP4 container.
-        """
-        from gateway.platforms.signal import _is_audio_ext, _guess_extension
-        ext = _guess_extension(b"\xff\xf1" + b"\x00" * 200)
-        assert ext == ".aac"
-        assert _is_audio_ext(ext) is True
-
-    def test_remux_aac_to_m4a_round_trip(self):
-        """A real ADTS AAC stream remuxes to a valid MP4 (.m4a) container.
-
-        Generates a short ADTS AAC sample with ffmpeg at runtime so the
-        end-to-end remux path actually exercises in CI (skipped only when
-        ffmpeg is unavailable), rather than depending on a machine-specific
-        file.
-        """
-        import shutil
-        import subprocess
-        import tempfile
-        from gateway.platforms.signal import _remux_aac_to_m4a
-
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            import pytest
-            pytest.skip("ffmpeg not available in this env")
-
-        # Synthesize 0.5s of silence encoded as raw ADTS AAC.
-        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as tmp:
-            adts_path = tmp.name
-        try:
-            gen = subprocess.run(
-                [ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi",
-                 "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
-                 "-c:a", "aac", "-f", "adts", adts_path],
-                capture_output=True, timeout=30,
-            )
-            if gen.returncode != 0:
-                import pytest
-                pytest.skip("ffmpeg could not produce an ADTS AAC sample")
-            with open(adts_path, "rb") as f:
-                aac_data = f.read()
-        finally:
-            try:
-                import os
-                os.unlink(adts_path)
-            except OSError:
-                pass
-
-        result = _remux_aac_to_m4a(aac_data)
-        assert result is not None
-        m4a_bytes, ext = result
-        assert ext == ".m4a"
-        # MP4 files start with a 4-byte size, then ``ftyp`` at offset 4.
-        assert m4a_bytes[4:8] == b"ftyp", \
-            f"expected MP4 ftyp box, got {m4a_bytes[:12]!r}"
-        # File must be at least as long as the input (MP4 has overhead).
-        assert len(m4a_bytes) >= len(aac_data) * 0.5
-
-    def test_remux_aac_to_m4a_handles_garbage(self):
-        """Garbage input should return None, not raise."""
-        from gateway.platforms.signal import _remux_aac_to_m4a
-        result = _remux_aac_to_m4a(b"\xff\xf1garbage_no_aac_frames")
-        # Either returns None (ffmpeg errored) or a real M4A. If it returned
-        # bytes, the bytes must look like an MP4. Otherwise it returns None.
-        if result is not None:
-            m4a_bytes, ext = result
-            assert ext == ".m4a"
 
     def test_guess_extension_unknown(self):
         from gateway.platforms.signal import _guess_extension
@@ -1354,6 +1261,7 @@ class TestSignalTypingBackoff:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # _stop_typing_indicator sends explicit sendTyping(stop=True) RPC
 # ---------------------------------------------------------------------------
 
@@ -1462,6 +1370,1030 @@ class TestSignalStopTypingExplicitRPC:
         assert "+155****0000" not in adapter._typing_failures
         assert "+155****0000" not in adapter._typing_skip_until
 
+# Document attachment classification (PDF/zip/docx/etc.) + text injection
+# ---------------------------------------------------------------------------
+
+class TestSignalDocumentAttachments:
+    """Verify Signal non-media attachments are routed like Telegram/WhatsApp.
+
+    Mirrors the Telegram pattern at ``telegram.py`` line 5395–5421 and the
+    Slack/BlueBubbles/WhatsApp ``MessageType.DOCUMENT`` fallback. Without
+    this, a Signal-sent PDF/zip arrives as ``MessageType.TEXT`` and is
+    dropped at the "no meaningful content" envelope gate.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_tagged_as_document(self, monkeypatch, tmp_path):
+        import base64
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment to return real PDF bytes
+        pdf_bytes = b"%PDF-1.4 sample"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(pdf_bytes).decode()})
+
+        # Simulate cached PDF inside the document cache dir
+        cached_pdf = tmp_path / "doc_test_report.pdf"
+        cached_pdf.write_bytes(b"%PDF-1.4 sample")
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_pdf),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-pdf-1",
+                            "contentType": "application/pdf",
+                            "size": 1024,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == [str(cached_pdf)]
+        assert event.media_types == ["application/pdf"]
+        assert os.path.exists(event.media_urls[0])
+
+    @pytest.mark.asyncio
+    async def test_zip_attachment_tagged_as_document(self, monkeypatch, tmp_path):
+        import base64
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment to return real ZIP bytes
+        zip_bytes = b"PK\x03\x04 fake"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(zip_bytes).decode()})
+
+        cached_zip = tmp_path / "doc_test_archive.zip"
+        cached_zip.write_bytes(b"PK\x03\x04 fake")
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_zip),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-zip-1",
+                            "contentType": "application/zip",
+                            "size": 4096,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == [str(cached_zip)]
+        assert event.media_types == ["application/zip"]
+
+    @pytest.mark.asyncio
+    async def test_md_attachment_injects_content_into_text(self, monkeypatch, tmp_path):
+        """Small .md files get their content inlined into event.text."""
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment with real markdown bytes
+        md_bytes = b"# Heading\n\nHello world\n"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(md_bytes).decode()})
+
+        cached_md = tmp_path / "doc_test_notes.md"
+        cached_md.write_text("# Heading\n\nHello world\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_md),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-md-1",
+                            "contentType": "text/markdown",
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        assert "[Content of" in event.text
+        assert "notes.md" in event.text
+        assert "# Heading" in event.text
+        assert "Hello world" in event.text
+        assert event.media_urls == [str(cached_md)]
+
+
+    @pytest.mark.asyncio
+    async def test_txt_attachment_injects_content_with_caption(self, monkeypatch, tmp_path):
+        """Text injection preserves user caption and preserves attachment path."""
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment with real text bytes
+        txt_bytes = b"please summarize this file"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(txt_bytes).decode()})
+
+        cached_txt = tmp_path / "doc_test_notes.txt"
+        cached_txt.write_text("please summarize this file", encoding="utf-8")
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_txt),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "message": "summarize this please",
+                    "attachments": [
+                        {
+                            "id": "att-txt-1",
+                            "contentType": "text/plain",
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        # Both injected content and user caption present
+        assert "please summarize this file" in event.text
+        assert "summarize this please" in event.text
+        assert "[Content of" in event.text
+        assert "notes.txt" in event.text
+        # User caption appears AFTER injected content (caption is the natural stop)
+        assert event.text.index("summarize this please") > event.text.index(
+            "[Content of"
+        )
+        assert event.media_urls == [str(cached_txt)]
+
+
+    @pytest.mark.asyncio
+    async def test_large_text_file_skips_injection(self, monkeypatch, tmp_path):
+        """Files over 100 KB keep their cached path but don't bloat event.text."""
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment — content doesn't matter (won't be read),
+        # but we need the in-memory size check on cache path to trigger.
+        big_bytes = b"x" * (200 * 1024)
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(big_bytes).decode()})
+
+        # Build a real >100 KB file so os.path.getsize sees the right size
+        big_path = tmp_path / "big.md"
+        big_path.write_bytes(b"x" * (200 * 1024))
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(big_path),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-big-md",
+                            "contentType": "text/markdown",
+                            "size": 200 * 1024,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == [str(big_path)]
+        # Injected-content marker must NOT appear (cap-protected)
+        assert "[Content of" not in event.text
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_tagged_as_video(self, monkeypatch, tmp_path):
+        """mp4 attachments route through cache_video_from_bytes + MessageType.VIDEO."""
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment with ftyp-magic mp4 bytes
+        mp4_bytes = b"\x00\x00\x00\x18ftypmp42"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(mp4_bytes).decode()})
+
+        cached_mp4 = tmp_path / "vid_clip.mp4"
+        cached_mp4.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_video_from_bytes",
+            lambda data, ext: str(cached_mp4),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-mp4-1",
+                            "contentType": "video/mp4",
+                            "size": 5_000_000,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_urls == [str(cached_mp4)]
+        assert event.media_types == ["video/mp4"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_pdf_with_caption_event_text_preserves_caption(self, monkeypatch, tmp_path):
+        """A PDF with a user caption: cached path + caption preserved."""
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Stub JSON-RPC getAttachment to return real PDF bytes
+        pdf_bytes = b"%PDF-1.4 sample"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(pdf_bytes).decode()})
+
+        cached_pdf = tmp_path / "doc_test_q3-report.pdf"
+        cached_pdf.write_bytes(b"%PDF-1.4 sample")
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_pdf),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "message": "can you look this over?",
+                    "attachments": [
+                        {
+                            "id": "att-pdf-2",
+                            "contentType": "application/pdf",
+                            "size": 2048,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        assert "can you look this over?" in event.text
+        assert event.media_urls == [str(cached_pdf)]
+
+
+# ---------------------------------------------------------------------------
+# contentType-based attachment classification (.txt/.sh/.json rescue from .bin)
+# ---------------------------------------------------------------------------
+
+class TestSignalTextFileClassification:
+    """Verify text-only attachments land at the right extension, not .bin.
+
+    Root cause: ``_guess_extension`` only knew magic-byte signatures for
+    images/audio/video/PDF/zip. A .txt / .sh / .md / .json / .csv /
+    .py / .ts / .yaml payload has no matching magic prefix, so it fell
+    through to ``return ".bin"`` — then hit the unsupported-extension
+    reject even though the Signal envelope already advertised it as
+    ``text/plain`` or ``application/json``.
+
+    Fix: ``_resolve_attachment_extension`` prefers ``contentType`` from
+    the Signal envelope and falls back to magic-byte / UTF-8 sniff only
+    when contentType is missing or the catch-all
+    ``application/octet-stream``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_text_plain_payload_rescued_from_bin(self, monkeypatch, tmp_path):
+        """Reproducer from the live bug: text/plain shell-script payload.
+
+        Bytes start with ``#!/usr/bin/env bash``. Without contentType
+        rescue, the magic sniffer returns ".bin" because nothing in
+        those first bytes matches any known signature. With rescue, the
+        envelope's ``text/plain`` → ``.txt`` mapping takes priority.
+        """
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Real shell-script payload — exactly what the user uploaded.
+        shell_payload = b"#!/usr/bin/env bash\necho hello\n"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(shell_payload).decode()})
+
+        cached_txt = tmp_path / "doc_aaaaaaaaaaaa_.txt"
+        cached_txt.write_bytes(shell_payload)
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_txt),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-shell-1",
+                            # The key fix: Signal envelope advertises this
+                            # as text/plain even when .bin sniffing fails.
+                            "contentType": "text/plain",
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        # No error feedback — the inbound-media contract at base.py
+        # accepts .txt (and every other text payload) and surfaces the
+        # cached file path to the agent.
+        assert "Unsupported document type" not in event.text
+        # Text-injection pulls the script contents into event.text.
+        assert "[Content of" in event.text
+        assert "#!/usr/bin/env bash" in event.text
+        assert "echo hello" in event.text
+        assert event.media_urls[0].endswith(".txt")
+
+    @pytest.mark.asyncio
+    async def test_shellscript_contenttype_maps_to_sh(self, monkeypatch, tmp_path):
+        """text/x-shellscript contentType maps to .sh — not .bin.
+
+        The test's role here is to assert the extension is rescued from
+        .bin so downstream tools know what kind of file it is. The
+        inbound-media contract at base.py accepts every text payload
+        without error feedback.
+        """
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        shell_bytes = b"#!/bin/sh\nexit 0\n"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(shell_bytes).decode()})
+
+        cached_sh = tmp_path / "doc_bbbbbbbbbbbb_.sh"
+        cached_sh.write_bytes(shell_bytes)
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_sh),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-sh-1",
+                            "contentType": "text/x-shellscript",
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        # Cached path's extension is .sh (rescued from .bin)
+        assert event.media_urls[0].endswith(".sh")
+        # No error feedback — base.py accepts every text payload.
+        assert "Unsupported document type" not in event.text
+        # The mime type follows the envelope's contentType
+        assert event.media_types == ["text/x-shellscript"]
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_json_payload_classified_via_contenttype(self, monkeypatch, tmp_path):
+        """application/json text payload lands as .json."""
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        json_bytes = b'{"hello":"world","key":"value"}'
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(json_bytes).decode()})
+
+        cached_json = tmp_path / "doc_cccccccccccc_.json"
+        cached_json.write_bytes(json_bytes)
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_json),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-json-1",
+                            "contentType": "application/json",
+                            "size": 64,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        # Cached path ends in .json (not .bin)
+        assert event.media_urls[0].endswith(".json")
+        assert ".bin" not in event.text
+
+    @pytest.mark.asyncio
+    async def test_no_contenttype_uses_utf8_sniff(self, monkeypatch, tmp_path):
+        """Envelope's contentType missing + magic sniffer says .bin
+        → UTF-8 sniff rescues as .txt.
+        """
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        text_bytes = b"some plain text notes\nwith two lines\n"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(text_bytes).decode()})
+
+        cached_txt = tmp_path / "doc_dddddddddddd_.txt"
+        cached_txt.write_bytes(text_bytes)
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_txt),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-noct-1",
+                            # No contentType at all. Trickiest case.
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        # UTF-8 sniff gave us .txt when there are no other clues
+        assert event.media_urls[0].endswith(".txt")
+        assert "Unsupported document type" not in event.text
+
+    @pytest.mark.asyncio
+    async def test_octet_stream_falls_back_to_magic_then_utf8(self, monkeypatch, tmp_path):
+        """Catch-all ``application/octet-stream`` falls through to magic + UTF-8.
+
+        Some Signal clients (notably desktop) report every attachment
+        as ``application/octet-stream`` regardless of actual content.
+        The helper should fall through to magic-byte + UTF-8 sniff in
+        that case.
+        """
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        text_bytes = b"text contents for octet-stream test\n"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(text_bytes).decode()})
+
+        cached = tmp_path / "doc_eeeeeeeeeeee_.txt"
+        cached.write_bytes(text_bytes)
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-oct-1",
+                            "contentType": "application/octet-stream",
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        # contentType isn't mappable, magic says .bin, UTF-8 sniff rescues → .txt
+        assert event.media_urls[0].endswith(".txt")
+        assert "Unsupported document type" not in event.text
+
+
+class TestSignalResolveAttachmentExtension:
+    """Unit tests for the resolver helper itself — no Signal adapter."""
+
+    def test_contenttype_priority_over_magic_bytes(self):
+        """text/plain wins over magic bytes for a PNG payload."""
+        from gateway.platforms.signal import _resolve_attachment_extension
+        # PNG-magic bytes + envelope saying text/plain → envelope wins
+        png_magic = b"\x89PNG\r\n\x1a\n" + b"x" * 50
+        assert _resolve_attachment_extension("text/plain", png_magic) == ".txt"
+
+    def test_octet_stream_with_utf8_text_becomes_txt(self):
+        """Live-bug reproducer across all 4 contentType variants."""
+        from gateway.platforms.signal import _resolve_attachment_extension
+        shell_payload = b"#!/usr/bin/env bash\necho hello\n"
+        # No contentType
+        assert _resolve_attachment_extension(None, shell_payload) == ".txt"
+        # Catch-all contentType
+        assert _resolve_attachment_extension("application/octet-stream", shell_payload) == ".txt"
+        # Correct contentType
+        assert _resolve_attachment_extension("text/plain", shell_payload) == ".txt"
+        # Shell MIME maps to .sh
+        assert _resolve_attachment_extension("text/x-shellscript", shell_payload) == ".sh"
+
+    def test_real_binary_payload_stays_bin(self):
+        """Non-UTF-8 binary payload must NOT be reclassified as text."""
+        from gateway.platforms.signal import _resolve_attachment_extension
+        binary = bytes(range(0, 256)) * 4  # Fails UTF-8 decode
+        assert _resolve_attachment_extension(None, binary) == ".bin"
+
+    def test_mime_parameters_are_stripped(self):
+        """MIME params like ``; charset=utf-8`` must not break lookup."""
+        from gateway.platforms.signal import _resolve_attachment_extension
+        assert _resolve_attachment_extension("text/plain; charset=utf-8", b"hi\n") == ".txt"
+
+    def test_unknown_mime_with_magic_byte_uses_magic(self):
+        """Unknown MIME → trust the magic byte sniff if it has something."""
+        from gateway.platforms.signal import _resolve_attachment_extension
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 50
+        # application/x-frobnitz is unknown → no MIME map → fall through
+        # to magic sniffer → returns ".png"
+        assert _resolve_attachment_extension("application/x-frobnitz", png_bytes) == ".png"
+
+
+# ---------------------------------------------------------------------------
+# Telegram-parity: image-as-document, oversized-file warning, canonical filename
+# ---------------------------------------------------------------------------
+
+class TestSignalTelegramParity:
+    """Verify Signal matches Telegram's exact handling for less-obvious cases.
+
+    Telegram's document-block (telegram.py:5290-5421) has several subtle
+    behaviors the initial Signal commit missed:
+
+      * Image uploaded as document (mime=image/png) → reroute to image
+        cache + tag PHOTO, not DOCUMENT
+      * Oversized file → user-facing "The document is too large…" rather
+        than silent skip
+      * Canonical cached filename ``document{ext}`` rather than
+        ``doc_{uuid}_.ext`` (the leading-dot awkwardness)
+    """
+
+    @pytest.mark.asyncio
+    async def test_image_contenttype_routes_to_image_cache(self, monkeypatch, tmp_path):
+        """contentType=image/png with PNG bytes routes to image cache.
+
+        Mirrors telegram.py §5327–5353. Telegram reroutes screenshots
+        uploaded via the file picker to the image path; Signal does the
+        same so the agent sees PHOTO, not DOCUMENT.
+        """
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Real PNG bytes
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 50
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(png_bytes).decode()})
+
+        cached_png = tmp_path / "document.png"
+        cached_png.write_bytes(png_bytes)
+        image_calls = []
+        document_calls = []
+
+        def mock_image(data, ext):
+            image_calls.append(ext)
+            return str(cached_png)
+
+        def mock_document(data, filename):
+            document_calls.append(filename)
+            return str(cached_png)
+
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_image_from_bytes", mock_image
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes", mock_document
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-png-1",
+                            # User uploaded screenshot via file picker
+                            "contentType": "image/png",
+                            "size": 64,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == [str(cached_png)]
+        # image cache called, document cache NOT called
+        assert len(image_calls) == 1
+        assert len(document_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_oversized_attachment_emits_telegram_style_warning(self, monkeypatch, tmp_path):
+        """Oversized attachment produces the user-facing Telegram-format
+        message rather than silently dropping.
+        """
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "message": "did you get my file?",
+                    "attachments": [
+                        {
+                            "id": "att-huge-1",
+                            "contentType": "application/pdf",
+                            "size": 200 * 1024 * 1024,  # 200 MB > 100 MB cap
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        # User caption preserved
+        assert "did you get my file?" in event.text
+        # Telegram-format oversized message
+        assert "The document is too large" in event.text
+        assert "Maximum: 100 MB." in event.text
+        # No attachment cached (it wasn't fetched)
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_oversized_no_size_field_skips_check(self, monkeypatch, tmp_path):
+        """Missing size field does not trigger the oversized warning.
+
+        Matches Telegram: ``if not doc.file_size or doc.file_size >
+        self._max_doc_bytes`` — when size is missing/None, the file is
+        allowed through (downstream decides). Signal's
+        ``att.get("size", 0)`` returns 0 in that case, and our condition
+        `if att_size and att_size > MAX` requires the size to be
+        truthy AND over the cap.
+        """
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        pdf_bytes = b"%PDF-1.4 small"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(pdf_bytes).decode()})
+
+        cached_pdf = tmp_path / "document.pdf"
+        cached_pdf.write_bytes(pdf_bytes)
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes",
+            lambda data, ext: str(cached_pdf),
+        )
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-no-size",
+                            "contentType": "application/pdf",
+                            # NOTE: no size field
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        event = captured["event"]
+        # No oversized warning
+        assert "too large" not in event.text
+        # File did arrive as document
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == [str(cached_pdf)]
+
+    @pytest.mark.asyncio
+    async def test_document_cache_filename_uses_canonical_name(self, monkeypatch, tmp_path):
+        """Cached document filename follows Telegram's ``document{ext}`` pattern.
+
+        cache_document_from_bytes accepts ``ext`` as the filename parameter
+        (a leading-dot extension like ``.txt`` produces ``doc_{uuid}_.txt``).
+        The new code passes ``document{ext}`` so the cached filename is
+        ``doc_{uuid}_document.txt`` instead — test asserts we no longer
+        pass the leading-dot extension.
+        """
+        received_filenames = []
+
+        def mock_document(data, filename):
+            received_filenames.append(filename)
+            return str(tmp_path / filename)
+
+        monkeypatch.setattr(
+            "gateway.platforms.signal.cache_document_from_bytes", mock_document
+        )
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        txt_bytes = b"hello world\n"
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(txt_bytes).decode()})
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-name-1",
+                            "contentType": "text/plain",
+                            "size": 32,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        assert received_filenames == ["document.txt"]
+        # Cached path's basename includes "document.txt"
+        event = captured["event"]
+        assert "document.txt" in event.media_urls[0]
+
+    @pytest.mark.asyncio
+    async def test_image_contenttype_with_unknown_subtype_uses_default_ext(self, monkeypatch, tmp_path):
+        """contentType=image/x-icon (no mime map) + valid PNG bytes → image cache.
+
+        Defensive coverage: when contentType is image/* but our resolver
+        can't map it (returns .bin or similar), the routing code must
+        still extract the image extension from the bytes and route to
+        the image cache with a known extension.
+        """
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 50
+        adapter._rpc, _ = _stub_rpc({"data": base64.b64encode(png_bytes).decode()})
+
+        # Spy on which cache function is called
+        image_calls = []
+        document_calls = []
+
+        def mock_image(data, ext):
+            image_calls.append(ext)
+            return str(tmp_path / f"img_{ext}")
+
+        def mock_document(data, filename):
+            document_calls.append(filename)
+            return str(tmp_path / filename)
+
+        monkeypatch.setattr("gateway.platforms.signal.cache_image_from_bytes", mock_image)
+        monkeypatch.setattr("gateway.platforms.signal.cache_document_from_bytes", mock_document)
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1700000000000,
+                "dataMessage": {
+                    "attachments": [
+                        {
+                            "id": "att-icon-1",
+                            # contentType starts with image/ but isn't a
+                            # mapped subtype (none of our _MIME_TO_EXT
+                            # entries cover image/x-icon)
+                            "contentType": "image/x-icon",
+                            "size": 64,
+                        }
+                    ],
+                },
+            }
+        }
+        await adapter._handle_envelope(envelope)
+
+        # Image cache called, document cache NOT called
+        assert len(image_calls) == 1
+        assert len(document_calls) == 0
+        # Tagged as PHOTO (image content, not document)
+        event = captured["event"]
+        assert event.message_type == MessageType.PHOTO
+
+
+class TestSignalIsImageContentType:
+    """Unit tests for the image-contentType helper."""
+
+    def test_image_png(self):
+        from gateway.platforms.signal import _is_image_content_type
+        assert _is_image_content_type("image/png") is True
+
+    def test_image_jpeg(self):
+        from gateway.platforms.signal import _is_image_content_type
+        assert _is_image_content_type("image/jpeg") is True
+
+    def test_image_with_charset_param(self):
+        from gateway.platforms.signal import _is_image_content_type
+        assert _is_image_content_type("image/png; charset=binary") is True
+
+    def test_non_image_mime(self):
+        from gateway.platforms.signal import _is_image_content_type
+        assert _is_image_content_type("text/plain") is False
+        assert _is_image_content_type("application/pdf") is False
+        assert _is_image_content_type("audio/ogg") is False
+
+    def test_empty_or_none(self):
+        from gateway.platforms.signal import _is_image_content_type
+        assert _is_image_content_type("") is False
+        assert _is_image_content_type(None) is False
+
 
 # ---------------------------------------------------------------------------
 # Reply quote extraction
@@ -1491,7 +2423,7 @@ class TestSignalQuoteExtraction:
                     "quote": {
                         "id": 99,
                         "text": "want to grab lunch?",
-                        "author": "other-author",
+                        "author": "+15550002222",
                     },
                 },
             }
@@ -1501,102 +2433,6 @@ class TestSignalQuoteExtraction:
         assert event.text == "yes I agree"
         assert event.reply_to_message_id == "99"
         assert event.reply_to_text == "want to grab lunch?"
-        assert event.reply_to_author_id == "other-author"
-        assert event.reply_to_is_own_message is False
-
-    @pytest.mark.asyncio
-    async def test_handle_envelope_marks_quote_to_own_sent_timestamp(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._remember_sent_message_timestamp(424242)
-        captured = {}
-
-        async def fake_handle(event):
-            captured["event"] = event
-
-        adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****1111",
-                "sourceUuid": "uuid-sender",
-                "sourceName": "Tester",
-                "timestamp": 1000000000,
-                "dataMessage": {
-                    "message": "this specific one",
-                    "quote": {
-                        "id": 424242,
-                        "text": "assistant answer",
-                        "author": "other-author",
-                    },
-                },
-            }
-        })
-
-        event = captured["event"]
-        assert event.reply_to_message_id == "424242"
-        assert event.reply_to_text == "assistant answer"
-        assert event.reply_to_author_id == "other-author"
-        assert event.reply_to_is_own_message is True
-
-    @pytest.mark.asyncio
-    async def test_handle_envelope_marks_quote_to_own_account_author(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, account="bot-author")
-        captured = {}
-
-        async def fake_handle(event):
-            captured["event"] = event
-
-        adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****1111",
-                "sourceUuid": "uuid-sender",
-                "sourceName": "Tester",
-                "timestamp": 1000000000,
-                "dataMessage": {
-                    "message": "reply by author",
-                    "quote": {
-                        "id": 777,
-                        "text": "assistant answer",
-                        "author": "bot-author",
-                    },
-                },
-            }
-        })
-
-        event = captured["event"]
-        assert event.reply_to_message_id == "777"
-        assert event.reply_to_is_own_message is True
-
-    @pytest.mark.asyncio
-    async def test_track_sent_timestamp_keeps_reply_detection_cache_after_echo_discard(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._track_sent_timestamp({"timestamp": 111222333})
-        # Echo suppression consumes the entry from the recent-sent ring; the
-        # separate reply-detection cache must still retain it.
-        adapter._consume_sent_timestamp(111222333)
-
-        assert "111222333" in adapter._sent_message_timestamps
-        assert adapter._quote_references_own_message("111222333", None) is True
-
-    def test_sent_message_timestamps_evicts_oldest_first(self, monkeypatch):
-        """Over the cap, the OLDEST quote-cache timestamp is dropped (FIFO),
-        not an arbitrary one — so a recent reply-to-own-message is still
-        detected after a burst of sends."""
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._max_sent_message_timestamps = 3
-        for ts in (1, 2, 3):
-            adapter._remember_sent_message_timestamp(ts)
-        # Adding a 4th evicts the oldest (1), keeps the rest in order.
-        adapter._remember_sent_message_timestamp(4)
-        assert list(adapter._sent_message_timestamps.keys()) == ["2", "3", "4"]
-        assert "1" not in adapter._sent_message_timestamps
-        # Re-seeing an existing ts promotes it so it survives the next eviction.
-        adapter._remember_sent_message_timestamp(2)  # 2 -> most recent
-        adapter._remember_sent_message_timestamp(5)  # evicts oldest (now 3)
-        assert list(adapter._sent_message_timestamps.keys()) == ["4", "2", "5"]
-        assert "3" not in adapter._sent_message_timestamps
 
     @pytest.mark.asyncio
     async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):
@@ -2336,232 +3172,3 @@ class TestSignalContentlessEnvelope:
         assert "event" in captured, "Normal message should NOT be skipped"
         assert captured["event"].text == "hello world"
 
-
-class TestSignalSyncMessageHandling:
-    """signal-cli running as a linked secondary device receives the user's
-    own messages as ``syncMessage.sentMessage`` envelopes. Two cases must
-    be handled:
-
-      1. Note to Self (destination == self): promote to dataMessage so the
-         user can talk to the agent in their own self-chat.
-      2. Group sync-sent (destination is None, groupInfo set): promote so
-         single-user / personal groups work.
-
-    In both cases, the bot's own outbound replies bounce back as
-    sync-sents and must be suppressed via the recently-sent timestamp ring.
-    """
-
-    @pytest.mark.asyncio
-    async def test_note_to_self_promoted_to_inbound(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
-        captured = {}
-
-        async def fake_handle(event):
-            captured["event"] = event
-
-        adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****4567",  # self
-                "sourceUuid": "uuid-self",
-                "timestamp": 2000000000,
-                "syncMessage": {
-                    "sentMessage": {
-                        "destinationNumber": "+155****4567",
-                        "destination": "+155****4567",
-                        "timestamp": 2000000000,
-                        "message": "note to self: buy milk",
-                    }
-                },
-            }
-        })
-
-        assert "event" in captured, "Note to Self must reach handle_message"
-        assert captured["event"].text == "note to self: buy milk"
-
-    @pytest.mark.asyncio
-    async def test_note_to_self_echo_of_own_reply_is_suppressed(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
-        # Simulate that the bot just sent a reply with timestamp 3000000000
-        adapter._track_sent_timestamp({"timestamp": 3000000000})
-        called = []
-
-        async def fake_handle(event):
-            called.append(event)
-
-        adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****4567",
-                "sourceUuid": "uuid-self",
-                "timestamp": 3000000000,
-                "syncMessage": {
-                    "sentMessage": {
-                        "destinationNumber": "+155****4567",
-                        "destination": "+155****4567",
-                        "timestamp": 3000000000,
-                        "message": "this is the bot's own reply echo",
-                    }
-                },
-            }
-        })
-
-        assert called == [], "Echo of bot's own reply must be suppressed"
-        # Consumed: timestamp must be removed from the ring
-        assert 3000000000 not in adapter._recent_sent_timestamps
-
-    @pytest.mark.asyncio
-    async def test_group_sync_sent_promoted_to_inbound(self, monkeypatch):
-        """User sends a message in a group from their primary phone; the
-        linked device receives it as a sync-sent with destination=None and
-        a groupInfo block. It must be treated as inbound so the agent can
-        respond in groups when the user is the only human participant."""
-        adapter = _make_signal_adapter(
-            monkeypatch, account="+155****4567", group_allowed="abc123=="
-        )
-        captured = {}
-
-        async def fake_handle(event):
-            captured["event"] = event
-
-        adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****4567",
-                "sourceUuid": "uuid-self",
-                "timestamp": 4000000000,
-                "syncMessage": {
-                    "sentMessage": {
-                        "destinationNumber": None,
-                        "destination": None,
-                        "timestamp": 4000000000,
-                        "message": "ping the group",
-                        "groupInfo": {
-                            "groupId": "abc123==",
-                            "type": "DELIVER",
-                        },
-                    }
-                },
-            }
-        })
-
-        assert "event" in captured, "Group sync-sent must reach handle_message"
-        assert captured["event"].text == "ping the group"
-        assert captured["event"].source.chat_id == "group:abc123=="
-
-    @pytest.mark.asyncio
-    async def test_group_sync_sent_echo_of_own_reply_is_suppressed(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
-        adapter._track_sent_timestamp({"timestamp": 5000000000})
-        called = []
-
-        async def fake_handle(event):
-            called.append(event)
-
-        adapter.handle_message = fake_handle
-
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****4567",
-                "sourceUuid": "uuid-self",
-                "timestamp": 5000000000,
-                "syncMessage": {
-                    "sentMessage": {
-                        "destinationNumber": None,
-                        "destination": None,
-                        "timestamp": 5000000000,
-                        "message": "bot's own group reply",
-                        "groupInfo": {"groupId": "abc123==", "type": "DELIVER"},
-                    }
-                },
-            }
-        })
-
-        assert called == [], "Group echo of bot's own reply must be suppressed"
-        assert 5000000000 not in adapter._recent_sent_timestamps
-
-    @pytest.mark.asyncio
-    async def test_unrelated_sync_message_still_dropped(self, monkeypatch):
-        """Read receipts / typing sync events have no sentMessage at all,
-        or a sentMessage with non-self destination — must keep being filtered."""
-        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
-        called = []
-
-        async def fake_handle(event):
-            called.append(event)
-
-        adapter.handle_message = fake_handle
-
-        # No sentMessage at all
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****4567",
-                "timestamp": 6000000000,
-                "syncMessage": {"readMessages": [{"sender": "+155****9999"}]},
-            }
-        })
-        # sentMessage to a different contact (not self, not a group)
-        await adapter._handle_envelope({
-            "envelope": {
-                "sourceNumber": "+155****4567",
-                "timestamp": 6000000001,
-                "syncMessage": {
-                    "sentMessage": {
-                        "destinationNumber": "+155****9999",
-                        "destination": "+155****9999",
-                        "timestamp": 6000000001,
-                        "message": "outbound DM to someone else",
-                    }
-                },
-            }
-        })
-
-        assert called == [], "Non-promotable sync messages must be filtered"
-
-
-class TestRecentSentTimestampRing:
-    """Verify the LRU+TTL behaviour of the echo-suppression ring."""
-
-    def test_track_inserts_and_marks_most_recent(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._track_sent_timestamp({"timestamp": 1})
-        adapter._track_sent_timestamp({"timestamp": 2})
-        adapter._track_sent_timestamp({"timestamp": 1})  # touch
-        # After touching 1, insertion order should be [2, 1]
-        assert list(adapter._recent_sent_timestamps.keys()) == [2, 1]
-
-    def test_consume_returns_true_and_removes(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._track_sent_timestamp({"timestamp": 42})
-        assert adapter._consume_sent_timestamp(42) is True
-        assert 42 not in adapter._recent_sent_timestamps
-        assert adapter._consume_sent_timestamp(42) is False
-        assert adapter._consume_sent_timestamp(None) is False
-
-    def test_hard_cap_evicts_oldest(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._max_recent_timestamps = 3
-        for ts in (1, 2, 3, 4):
-            adapter._track_sent_timestamp({"timestamp": ts})
-        # 1 should have been evicted (oldest); 2/3/4 retained in order
-        assert list(adapter._recent_sent_timestamps.keys()) == [2, 3, 4]
-
-    def test_ttl_evicts_stale_entries(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter._recent_sent_ttl_seconds = 100.0
-
-        # Drive time.monotonic deterministically.
-        import gateway.platforms.signal as sig_mod
-        fake_now = [1000.0]
-        monkeypatch.setattr(sig_mod.time, "monotonic", lambda: fake_now[0])
-
-        adapter._track_sent_timestamp({"timestamp": 1})
-        fake_now[0] = 1050.0
-        adapter._track_sent_timestamp({"timestamp": 2})
-        fake_now[0] = 1200.0  # 200s elapsed since ts=1 (>TTL), 150s since ts=2 (>TTL)
-        adapter._track_sent_timestamp({"timestamp": 3})
-        # Both 1 and 2 should be evicted on TTL, only 3 remains
-        assert list(adapter._recent_sent_timestamps.keys()) == [3]

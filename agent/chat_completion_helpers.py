@@ -1464,6 +1464,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
+        elif fb_provider in {"xai", "xai-oauth"} or base_url_host_matches(
+            fb_base_url, "api.x.ai"
+        ):
+            fb_api_mode = "codex_responses"
         elif (
             fb_provider == "anthropic"
             or fb_base_url.rstrip("/").lower().endswith("/anthropic")

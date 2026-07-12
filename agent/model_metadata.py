@@ -371,6 +371,19 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
     "grok-4.5",
 )
 
+_GROK_HIGH_CAPPED_EFFORT_PREFIXES = (
+    "grok-4.5",
+)
+
+
+def _normalize_grok_model_name(model: str) -> str:
+    name = (model or "").strip().lower()
+    if not name:
+        return ""
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    return name
+
 
 def grok_supports_reasoning_effort(model: str) -> bool:
     """Return True when an xAI Grok model accepts ``reasoning.effort``.
@@ -380,14 +393,20 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     if a future Grok model isn't listed, we send no effort dial rather
     than 400.
     """
-    name = (model or "").strip().lower()
+    name = _normalize_grok_model_name(model)
     if not name:
         return False
-    # Strip common aggregator prefixes (x-ai/, openrouter/x-ai/, xai/, ...)
-    for sep in ("/",):
-        if sep in name:
-            name = name.rsplit(sep, 1)[-1]
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
+
+
+def normalize_grok_reasoning_effort(model: str, effort: str) -> str:
+    """Clamp Grok reasoning effort to the strongest value the model accepts."""
+    normalized_effort = str(effort or "medium").strip().lower() or "medium"
+    name = _normalize_grok_model_name(model)
+    if any(name.startswith(prefix) for prefix in _GROK_HIGH_CAPPED_EFFORT_PREFIXES):
+        if normalized_effort in {"max", "xhigh"}:
+            return "high"
+    return normalized_effort
 
 
 _CONTEXT_LENGTH_KEYS = (

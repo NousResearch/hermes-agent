@@ -6432,6 +6432,30 @@ class TestFallbackAnthropicProvider:
         assert agent.client is mock_client
 
 
+class TestFallbackXaiProvider:
+    """Fallback xAI providers must preserve normal Responses API routing."""
+
+    def test_fallback_to_xai_oauth_sets_codex_responses(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "xai-oauth", "model": "grok-4.5"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.x.ai/v1"
+        mock_client.api_key = "xai-oauth-token"
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.api_mode == "codex_responses"
+        assert agent.client is mock_client
+
+
 def test_aiagent_uses_copilot_acp_client():
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),

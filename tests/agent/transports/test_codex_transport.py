@@ -604,6 +604,27 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning") == {"effort": "low"}
 
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("max", "high"),
+            ("xhigh", "high"),
+        ],
+    )
+    def test_xai_grok_4_5_normalizes_reasoning_effort(self, transport, effort, expected):
+        """grok-4.5 caps stronger inherited effort values at high."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.5", messages=messages, tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+        assert kw.get("reasoning") == {"effort": expected}
+        assert "reasoning.encrypted_content" in kw.get("include", [])
+
     def test_xai_grok_code_fast_omits_reasoning_effort(self, transport):
         """grok-code-fast-1 rejects reasoning.effort."""
         messages = [{"role": "user", "content": "Hi"}]

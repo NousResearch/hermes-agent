@@ -4456,7 +4456,11 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+  // A cold backend boot (plugin discovery + route mounting at web_server
+  // import time) can take 45-60s on slower hardware; a 45s deadline makes
+  // first-boot readiness a coin flip and orphans a backend process on every
+  // lost race. Wait long enough to always win.
+  const deadline = Date.now() + 180_000
   let lastError = null
 
   while (Date.now() < deadline) {

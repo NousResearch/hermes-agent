@@ -1900,42 +1900,90 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")
         elif api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import (
-                build_anthropic_client,
-                resolve_anthropic_token,
-                _is_oauth_token,
-            )
-            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
-            # API key — falling back would send Anthropic credentials to third-party endpoints.
-            _is_native_anthropic = new_provider == "anthropic"
-            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+            # Anthropic Claude on Vertex → construct via the AnthropicVertex
+            # SDK, not the native Anthropic client. Unambiguous inside this
+            # anthropic_messages guard: ``new_provider == "vertex"`` here
+            # can only mean Claude-on-Vertex, because Gemini-on-Vertex uses
+            # chat_completions (the else-branch below). Mirrors the parallel
+            # branches in ``try_recover_primary_transport`` and
+            # ``restore_primary_runtime`` above so a Gemini-on-Vertex →
+            # Claude-on-Vertex ``/model`` switch mid-conversation builds
+            # the right client. Fixes an upstream review-caught gap where
+            # this construction site was unconditionally using
+            # ``build_anthropic_client``, leaving mid-session Vertex Claude
+            # switches to hit the native Anthropic endpoint with no API
+            # key.
+            if new_provider == "vertex":
+                from agent.anthropic_vertex_adapter import (
+                    build_anthropic_vertex_client,
+                    get_anthropic_vertex_config,
+                )
+                # Resolve project/region freshly. ``switch_model`` has no
+                # runtime dict to consume from (unlike the restore paths
+                # that get one from ``_primary_runtime``), and the agent
+                # may have started on a non-Vertex provider whose
+                # ``_vertex_project_id``/``_vertex_region`` attrs aren't
+                # yet set. The resolver reuses the shared vertex-adapter
+                # credential chain, so a session already on Gemini-on-
+                # Vertex sees the same config surface without a re-read.
+                project_id, region = get_anthropic_vertex_config()
+                agent._vertex_project_id = project_id
+                agent._vertex_region = region or "global"
+                # Placeholder — the AnthropicVertex SDK mints its own
+                # bearer tokens per request from google-auth; nothing
+                # observable goes on the wire under this key. Kept
+                # non-empty so downstream code that treats ``api_key``
+                # presence as "auth resolved" continues to work.
+                agent.api_key = "vertex-adc"
+                agent._anthropic_api_key = "vertex-adc"
+                agent._anthropic_base_url = getattr(agent, "_anthropic_base_url", None)
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id, agent._vertex_region,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+                # ``_is_anthropic_oauth`` is the Anthropic-native OAuth
+                # bearer state — irrelevant on the Vertex path where auth
+                # is Google-side and handled internally by AnthropicVertex.
+                agent._is_anthropic_oauth = False
+                agent.client = None
+                agent._client_kwargs = {}
+            else:
+                from agent.anthropic_adapter import (
+                    build_anthropic_client,
+                    resolve_anthropic_token,
+                    _is_oauth_token,
+                )
+                # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+                # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
+                # API key — falling back would send Anthropic credentials to third-party endpoints.
+                _is_native_anthropic = new_provider == "anthropic"
+                effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
 
-            # MiniMax OAuth: swap static string for a per-request callable token
-            # provider so the rebuilt client survives 15-min token expiry. See
-            # the matching block in agent_init.py for the full rationale.
-            if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-                try:
-                    from hermes_cli.auth import build_minimax_oauth_token_provider
-                    effective_key = build_minimax_oauth_token_provider()
-                except Exception as _mm_exc:  # noqa: BLE001
-                    import logging as _logging
-                    _logging.getLogger(__name__).warning(
-                        "MiniMax OAuth: failed to install per-request token provider "
-                        "on switch (%s); using static bearer.",
-                        _mm_exc,
-                    )
+                # MiniMax OAuth: swap static string for a per-request callable token
+                # provider so the rebuilt client survives 15-min token expiry. See
+                # the matching block in agent_init.py for the full rationale.
+                if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+                    try:
+                        from hermes_cli.auth import build_minimax_oauth_token_provider
+                        effective_key = build_minimax_oauth_token_provider()
+                    except Exception as _mm_exc:  # noqa: BLE001
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "MiniMax OAuth: failed to install per-request token provider "
+                            "on switch (%s); using static bearer.",
+                            _mm_exc,
+                        )
 
-            agent.api_key = effective_key
-            agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-            agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url,
-                timeout=get_provider_request_timeout(agent.provider, agent.model),
-            )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent.client = None
-            agent._client_kwargs = {}
+                agent.api_key = effective_key
+                agent._anthropic_api_key = effective_key
+                agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+                agent._anthropic_client = build_anthropic_client(
+                    effective_key, agent._anthropic_base_url,
+                    timeout=get_provider_request_timeout(agent.provider, agent.model),
+                )
+                agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+                agent.client = None
+                agent._client_kwargs = {}
         else:
             effective_key = api_key or agent.api_key
             effective_base = base_url or agent.base_url

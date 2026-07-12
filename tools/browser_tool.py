@@ -229,14 +229,22 @@ DEFAULT_COMMAND_TIMEOUT = 30
 MIN_OPEN_TIMEOUT = 60
 MIN_FIRST_OPEN_TIMEOUT = 120
 
-# Max tokens for snapshot content before summarization
-SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
+# Default max characters for snapshot content before summarization/truncation.
+# Configurable via ``browser.snapshot_threshold`` in config.yaml.
+DEFAULT_SNAPSHOT_THRESHOLD = 8000
+MIN_SNAPSHOT_THRESHOLD = 1000
+
+# Backwards-compatible import surface. Runtime call sites use
+# ``get_browser_snapshot_threshold()`` so config overrides take effect.
+SNAPSHOT_SUMMARIZE_THRESHOLD = DEFAULT_SNAPSHOT_THRESHOLD
 
 # Commands that legitimately return empty stdout (e.g. close, record).
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_cached_snapshot_threshold: Optional[int] = None
+_snapshot_threshold_resolved = False
 
 
 def _sanitize_url_for_logs(value: object) -> str:
@@ -289,6 +297,33 @@ def _safe_command_timeout() -> int:
     """
     val = _get_command_timeout()
     return val if val is not None else DEFAULT_COMMAND_TIMEOUT
+
+
+def get_browser_snapshot_threshold() -> int:
+    """Return the configured maximum browser snapshot size in characters.
+
+    Reads the raw profile-aware config so tool JSON output is not affected by
+    config-loader warnings. The value is cached for the browser lifecycle and
+    reset by :func:`cleanup_all_browsers`.
+    """
+    global _cached_snapshot_threshold, _snapshot_threshold_resolved
+    if _snapshot_threshold_resolved and _cached_snapshot_threshold is not None:
+        return _cached_snapshot_threshold
+
+    result = DEFAULT_SNAPSHOT_THRESHOLD
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg_get(cfg, "browser", "snapshot_threshold")
+        if val is not None:
+            result = max(int(val), MIN_SNAPSHOT_THRESHOLD)
+    except Exception as exc:
+        logger.debug("Could not read browser.snapshot_threshold: %s", exc)
+
+    # Preserve the same race-safety invariant as the command-timeout cache.
+    _cached_snapshot_threshold = result
+    _snapshot_threshold_resolved = True
+    return result
 
 
 def _get_open_command_timeout(*, first_open: bool = False) -> int:
@@ -2581,12 +2616,17 @@ def _run_browser_command(
 
 def _extract_relevant_content(
     snapshot_text: str,
-    user_task: Optional[str] = None
+    user_task: Optional[str] = None,
+    max_chars: Optional[int] = None,
 ) -> str:
     """Use LLM to extract relevant content from a snapshot based on the user's task.
 
     Falls back to simple truncation when no auxiliary text model is configured.
     """
+    fallback_max_chars = (
+        max_chars if max_chars is not None else DEFAULT_SNAPSHOT_THRESHOLD
+    )
+
     if user_task:
         extraction_prompt = (
             f"You are a content extractor for a browser automation agent.\n\n"
@@ -2628,14 +2668,23 @@ def _extract_relevant_content(
         if model:
             call_kwargs["model"] = model
         response = call_llm(**call_kwargs)
-        extracted = (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
+        extracted = (response.choices[0].message.content or "").strip() or _truncate_snapshot(
+            snapshot_text,
+            max_chars=fallback_max_chars,
+        )
         # Redact any secrets the auxiliary LLM may have echoed back.
         return redact_sensitive_text(extracted)
     except Exception:
-        return _truncate_snapshot(snapshot_text)
+        return _truncate_snapshot(
+            snapshot_text,
+            max_chars=fallback_max_chars,
+        )
 
 
-def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
+def _truncate_snapshot(
+    snapshot_text: str,
+    max_chars: int = DEFAULT_SNAPSHOT_THRESHOLD,
+) -> str:
     """Structure-aware truncation for snapshots.
 
     Cuts at line boundaries so that accessibility tree elements are never
@@ -2900,8 +2949,9 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
                 refs = snap_data.get("refs", {})
-                if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-                    snapshot_text = _truncate_snapshot(snapshot_text)
+                threshold = get_browser_snapshot_threshold()
+                if len(snapshot_text) > threshold:
+                    snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
                 response["snapshot"] = _redact_browser_output(snapshot_text)
                 response["element_count"] = len(refs) if refs else 0
                 if snap_result.get("fallback_warning") and not response.get("fallback_warning"):
@@ -2983,10 +3033,15 @@ def browser_snapshot(
                 logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
 
         # Check if snapshot needs summarization
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
-            snapshot_text = _extract_relevant_content(snapshot_text, user_task)
-        elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-            snapshot_text = _truncate_snapshot(snapshot_text)
+        threshold = get_browser_snapshot_threshold()
+        if len(snapshot_text) > threshold and user_task:
+            snapshot_text = _extract_relevant_content(
+                snapshot_text,
+                user_task,
+                max_chars=threshold,
+            )
+        elif len(snapshot_text) > threshold:
+            snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
 
         response = {
             "success": True,
@@ -4380,6 +4435,7 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
+    global _cached_snapshot_threshold, _snapshot_threshold_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
     _cached_agent_browser = None
@@ -4389,6 +4445,8 @@ def cleanup_all_browsers() -> None:
     # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
     _command_timeout_resolved = False
     _cached_command_timeout = None
+    _snapshot_threshold_resolved = False
+    _cached_snapshot_threshold = None
     _cached_chromium_installed = None
     global _chromium_autoinstall_attempted
     _chromium_autoinstall_attempted = False

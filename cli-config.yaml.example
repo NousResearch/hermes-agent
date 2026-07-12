@@ -365,6 +365,11 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Maximum characters of snapshot content before summarization/truncation.
+  # Increase for long pages (for example, documentation or financial reports),
+  # or decrease to reduce context usage. Minimum: 1000; default: 8000.
+  # snapshot_threshold: 8000
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

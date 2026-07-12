@@ -546,11 +546,12 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             )
             snapshot_text = snap_data.get("snapshot", "")
             from tools.browser_tool import (
-                SNAPSHOT_SUMMARIZE_THRESHOLD,
+                get_browser_snapshot_threshold,
                 _truncate_snapshot,
             )
-            if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-                snapshot_text = _truncate_snapshot(snapshot_text)
+            threshold = get_browser_snapshot_threshold()
+            if len(snapshot_text) > threshold:
+                snapshot_text = _truncate_snapshot(snapshot_text, max_chars=threshold)
             result["snapshot"] = snapshot_text
             result["element_count"] = snap_data.get("refsCount", 0)
         except Exception:
@@ -626,16 +627,21 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
 
         # Apply same summarization logic as the main browser tool
         from tools.browser_tool import (
-            SNAPSHOT_SUMMARIZE_THRESHOLD,
+            get_browser_snapshot_threshold,
             _extract_relevant_content,
             _truncate_snapshot,
         )
 
-        if len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        threshold = get_browser_snapshot_threshold()
+        if len(snapshot) > threshold:
             if user_task:
-                snapshot = _extract_relevant_content(snapshot, user_task)
+                snapshot = _extract_relevant_content(
+                    snapshot,
+                    user_task,
+                    max_chars=threshold,
+                )
             else:
-                snapshot = _truncate_snapshot(snapshot)
+                snapshot = _truncate_snapshot(snapshot, max_chars=threshold)
 
         return json.dumps({
             "success": True,
@@ -944,6 +950,5 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
 
 

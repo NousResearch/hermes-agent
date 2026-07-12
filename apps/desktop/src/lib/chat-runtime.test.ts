@@ -5,6 +5,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import {
   attachmentDisplayText,
   coerceThinkingText,
+  contextPath,
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand
@@ -110,6 +111,31 @@ describe('parseCommandDispatch', () => {
 
   it('rejects a prefill directive missing its message', () => {
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
+  })
+})
+
+describe('contextPath', () => {
+  it('relativizes a Windows backslash path under a backslash cwd', () => {
+    // On Windows the OS hands us backslash paths; the ref must still collapse to
+    // the project-relative form the agent expects (`@file:src/a.ts`), not the
+    // full absolute path.
+    expect(contextPath('C:\\Users\\me\\proj\\src\\a.ts', 'C:\\Users\\me\\proj')).toBe('src/a.ts')
+  })
+
+  it('handles a Windows cwd that already carries a trailing separator', () => {
+    expect(contextPath('C:\\proj\\a.ts', 'C:\\proj\\')).toBe('a.ts')
+  })
+
+  it('still relativizes POSIX paths', () => {
+    expect(contextPath('/home/me/proj/src/a.ts', '/home/me/proj')).toBe('src/a.ts')
+  })
+
+  it('returns the original path unchanged when it is not under cwd', () => {
+    expect(contextPath('/other/x.ts', '/home/me/proj')).toBe('/other/x.ts')
+  })
+
+  it('returns the path unchanged when cwd is empty', () => {
+    expect(contextPath('C:\\Users\\me\\a.ts', '')).toBe('C:\\Users\\me\\a.ts')
   })
 })
 

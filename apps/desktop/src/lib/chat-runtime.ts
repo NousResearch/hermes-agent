@@ -142,9 +142,17 @@ export function contextPath(path: string, cwd: string): string {
     return path
   }
 
-  const normalizedCwd = cwd.endsWith('/') ? cwd : `${cwd}/`
+  // Slash-normalize before the prefix compare: on Windows the OS supplies
+  // backslash paths (`C:\Users\me\proj\src\a.ts`), so a raw `startsWith` against
+  // `cwd + '/'` never matches and the full absolute path leaks into the ref.
+  // Every sibling helper (`pathLabel`, markdown `filenameExtToken`) is already
+  // backslash-aware; this one was the outlier.
+  const slash = (p: string) => p.replace(/\\/g, '/')
+  const normalizedPath = slash(path)
+  const normalizedCwdRoot = slash(cwd)
+  const normalizedCwd = normalizedCwdRoot.endsWith('/') ? normalizedCwdRoot : `${normalizedCwdRoot}/`
 
-  return path.startsWith(normalizedCwd) ? path.slice(normalizedCwd.length) : path
+  return normalizedPath.startsWith(normalizedCwd) ? normalizedPath.slice(normalizedCwd.length) : path
 }
 
 export function attachmentId(kind: ComposerAttachment['kind'], value: string): string {

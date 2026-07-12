@@ -2266,6 +2266,7 @@ export const ja = defineLocale({
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
       skip: 'スキップ',
+      skipped: 'スキップ済み',
       continueLabel: '続行'
     },
     tool: {

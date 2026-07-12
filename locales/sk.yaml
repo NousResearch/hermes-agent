@@ -1,0 +1,399 @@
+# Hermes katalóg statických hlásení -- Slovenčina
+# See locales/en.yaml for the source of truth; keep keys in sync.
+
+approval:
+  dangerous_header: "⚠️  NEBEZPEČNÝ PRÍKAZ: {description}"
+  choose_long:     "      [o] raz  |  [s] session  |  [a] vždy  |  [d] zamietnuť"
+  choose_short:    "      [o] raz  |  [s] session  |  [d] zamietnuť"
+  prompt_long:     "      Voľba [o/s/a/D]: "
+  prompt_short:    "      Voľba [o/s/D]: "
+  timeout:         "      ⏱ Časový limit — príkaz zamietam"
+  allowed_once:    "      ✓ Povolené raz"
+  allowed_session: "      ✓ Povolené pre túto session"
+  allowed_always:  "      ✓ Pridané do trvalého allowlistu"
+  denied:          "      ✗ Zamietnuté"
+  cancelled:       "      ✗ Zrušené"
+  blocklist_message: "Tento príkaz je na bezpodmienečnom blockliste a nedá sa povoliť."
+
+gateway:
+  approval_expired: "⚠️ Platnosť schválenia vypršala (agent už nečaká). Požiadaj agenta, nech to skúsi znova."
+  draining:         "⏳ Čakám na dobehnutie {count} aktívnych agentov pred reštartom..."
+  goal_cleared:     "✓ Cieľ zrušený."
+  no_active_goal:   "Žiadny aktívny cieľ."
+  config_read_failed: "⚠️ Nepodarilo sa prečítať config.yaml: {error}"
+  config_save_failed: "⚠️ Nepodarilo sa uložiť config: {error}"
+
+  model:
+    error_prefix:           "Chyba: {error}"
+    switched:               "Model prepnutý na `{model}`"
+    provider_label:         "Provider: {provider}"
+    context_label:          "Kontext: {tokens} tokenov"
+    max_output_label:       "Max. výstup: {tokens} tokenov"
+    cost_label:             "Cena: {cost}"
+    capabilities_label:     "Schopnosti: {capabilities}"
+    prompt_caching_enabled: "Prompt caching: zapnutý"
+    warning_prefix:         "Upozornenie: {warning}"
+    saved_global:           "Uložené do config.yaml (`--global`)"
+    session_only_hint:      "_(len pre túto session — pridaj `--global` na trvalé uloženie)_"
+    current_label:          "Aktuálny: `{model}` na {provider}"
+    current_tag:            " (aktuálny)"
+    more_models_suffix:     " (+{count} ďalších)"
+    usage_switch_model:     "`/model <name>` — prepnúť model"
+    usage_switch_provider:  "`/model <name> --provider <slug>` — prepnúť providera"
+    usage_persist:          "`/model <name> --global` — uložiť trvalo"
+
+  agents:
+    header:                "🤖 **Aktívni agenti a úlohy**"
+    active_agents:         "**Aktívni agenti:** {count}"
+    this_chat:             " · tento chat"
+    more:                  "... a {count} ďalších"
+    running_processes:     "**Bežiace procesy na pozadí:** {count}"
+    async_jobs:            "**Async úlohy gatewayu:** {count}"
+    none:                  "Žiadni aktívni agenti ani bežiace úlohy."
+    state_starting:        "štartuje"
+    state_running:         "beží"
+
+  approve:
+    no_pending:            "Žiadny príkaz nečaká na schválenie."
+    once_singular:         "✅ Príkaz schválený. Agent pokračuje..."
+    once_plural:           "✅ Príkazy schválené ({count} príkazov). Agent pokračuje..."
+    session_singular:      "✅ Príkaz schválený (vzor povolený pre túto session). Agent pokračuje..."
+    session_plural:        "✅ Príkazy schválené (vzor povolený pre túto session) ({count} príkazov). Agent pokračuje..."
+    always_singular:       "✅ Príkaz schválený (vzor povolený natrvalo). Agent pokračuje..."
+    always_plural:         "✅ Príkazy schválené (vzor povolený natrvalo) ({count} príkazov). Agent pokračuje..."
+
+  background:
+    usage:                 "Použitie: /background <prompt>\nPríklad: /background Zhrň dnešné top správy z HN\n\nSpustí prompt v samostatnej session. Môžeš ďalej písať — výsledok sa objaví tu, keď bude hotový."
+    started:               "🔄 Úloha na pozadí spustená: \"{preview}\"\nID úlohy: {task_id}\nMôžeš ďalej písať — výsledok sa objaví, keď bude hotový."
+
+  branch:
+    db_unavailable:        "Databáza sessions nie je dostupná."
+    no_conversation:       "Niet z čoho vetviť — najprv pošli správu."
+    create_failed:         "Vetvu sa nepodarilo vytvoriť: {error}"
+    switch_failed:         "Vetva vytvorená, ale nepodarilo sa na ňu prepnúť."
+    branched_one:          "⑂ Vetva **{title}** ({count} správa skopírovaná)\nOriginál: `{parent}`\nVetva: `{new}`\nPouži `/resume` na návrat k originálu."
+    branched_many:         "⑂ Vetva **{title}** ({count} správ skopírovaných)\nOriginál: `{parent}`\nVetva: `{new}`\nPouži `/resume` na návrat k originálu."
+
+  commands:
+    usage:                 "Použitie: `/commands [page]`"
+    skill_header:          "⚡ **Skill príkazy**:"
+    default_desc:          "Skill príkaz"
+    none:                  "Žiadne príkazy nie sú k dispozícii."
+    header:                "📚 **Príkazy** (spolu {total}, strana {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← predchádzajúca"
+    nav_next:              "ďalšia → `/commands {page}`"
+    out_of_range:          "_(Požadovaná strana {requested} je mimo rozsahu, zobrazujem stranu {page}.)_"
+
+  compress:
+    not_enough:            "Príliš krátka konverzácia na kompresiu (treba aspoň 4 správy)."
+    no_provider:           "Nie je nakonfigurovaný provider — kompresia nie je možná."
+    nothing_to_do:         "Zatiaľ nie je čo komprimovať (celý prepis je stále chránený kontext)."
+    aggressive_unsupported: "--aggressive nie je podporované; použi '/compress here [N]' na ponechanie len posledných výmen, alebo /undo na zahodenie ťahov."
+    focus_line:            "Zameranie: \"{topic}\""
+    summary_failed:        "⚠️ Generovanie súhrnu zlyhalo ({error}). {count} historických správ bolo odstránených a nahradených zástupným textom; skorší kontext sa už nedá obnoviť. Skontroluj konfiguráciu auxiliary.compression modelu."
+    aborted:               "⚠️ Kompresia prerušená ({error}). Žiadne správy neboli zahodené — konverzácia je nezmenená. Spusti /compress znova, /reset pre čistú session, alebo skontroluj konfiguráciu auxiliary.compression modelu."
+    aux_failed:            "ℹ️ Nakonfigurovaný kompresný model `{model}` zlyhal ({error}). Obnovené hlavným modelom — kontext je neporušený — ale skontroluj `auxiliary.compression.model` v config.yaml."
+    failed:                "Kompresia zlyhala: {error}"
+
+  debug:
+    upload_failed:         "✗ Nahranie debug reportu zlyhalo: {error}"
+    header:                "**Debug report nahraný:**"
+    auto_delete:           "⏱ Pasty sa automaticky zmažú o 6 hodín."
+    full_logs_hint:        "Na nahranie kompletných logov použi `hermes debug share` z CLI."
+    share_hint:            "Tieto odkazy zdieľaj s Hermes tímom pre podporu."
+
+  deny:
+    stale:                 "❌ Príkaz zamietnutý (schválenie bolo neaktuálne)."
+    no_pending:            "Žiadny príkaz nečaká na zamietnutie."
+    denied_singular:       "❌ Príkaz zamietnutý."
+    denied_plural:         "❌ Príkazy zamietnuté ({count} príkazov)."
+    denied_reason_singular: "❌ Príkaz zamietnutý. Dôvod odovzdaný agentovi: \"{reason}\""
+    denied_reason_plural:  "❌ Príkazy zamietnuté ({count} príkazov). Dôvod odovzdaný agentovi: \"{reason}\""
+
+  fast:
+    not_supported:         "⚡ /fast je dostupné len pre OpenAI modely s podporou Priority Processing."
+    status:                "⚡ Priority Processing\n\nAktuálny režim: `{mode}`\n\n_Použitie:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ Neznámy argument: `{arg}`\n\n**Platné možnosti:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (uložené do configu)\n_(platí od ďalšej správy)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (len táto session)"
+    label_fast:            "FAST"
+    label_normal:          "NORMAL"
+    status_fast:           "fast"
+    status_normal:         "normal"
+
+  footer:
+    status:                "📎 Runtime pätička: **{state}**\nPolia: `{fields}`\nPlatforma: `{platform}`"
+    usage:                 "Použitie: `/footer [on|off|status]`"
+    saved:                 "📎 Runtime pätička: **{state}**{example}\n_(uložené globálne — platí od ďalšej správy)_"
+    example_line:          "\nPríklad: `{preview}`"
+    state_on:              "ZAPNUTÁ"
+    state_off:             "VYPNUTÁ"
+
+  goal:
+    unavailable:           "Ciele nie sú v tejto session dostupné."
+    no_goal_set:           "Žiadny cieľ nie je nastavený."
+    paused:                "⏸ Cieľ pozastavený: {goal}"
+    no_resume:             "Žiadny cieľ na obnovenie."
+    resumed:               "▶ Cieľ obnovený: {goal}\nPošli ľubovoľnú správu na pokračovanie, alebo počkaj — ďalší krok spravím v ďalšom ťahu."
+    invalid:               "Neplatný cieľ: {error}"
+    set:                   "⊙ Cieľ nastavený (rozpočet {budget} ťahov): {goal}\nBudem pracovať, kým cieľ nesplním, kým ho nepozastavíš/nezrušíš, alebo kým sa nevyčerpá rozpočet.\nOvládanie: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **Hermes príkazy**\n"
+    skill_header:          "\n⚡ **Skill príkazy** ({count} aktívnych):"
+    more_use_commands:     "\n... a {count} ďalších. Kompletný stránkovaný zoznam: `/commands`."
+
+  insights:
+    invalid_days:          "Neplatná hodnota --days: {value}"
+    error:                 "Chyba pri generovaní insights: {error}"
+
+  kanban:
+    error_prefix:          "⚠ kanban chyba: {error}"
+    subscribed_suffix:     "(odoberáš — dostaneš upozornenie, keď sa {task_id} dokončí alebo zablokuje)"
+    truncated_suffix:      "… (skrátené; plný výstup cez `hermes kanban …` v termináli)"
+    no_output:             "(žiadny výstup)"
+    wake:
+      completed:           "dokončená"
+      gave_up:             "vzdaná (vyčerpané opakovania)"
+      crashed:             "spadla (worker skončil); dispatcher to skúsi znova"
+      timed_out:           "vypršal čas; dispatcher to skúsi znova"
+      blocked:             "zablokovaná; vyžaduje pozornosť"
+      status_default:      "zmena stavu"
+      status_joiner:       ", "
+      message:             "[kanban] Úloha {task_id} {status}.\nNázov: {title}\nRieši: @{assignee}\nBoard: {board}\n\nSkontroluj výsledok alebo rozhodni o ďalšom kroku."
+
+  personality:
+    none_configured:       "V `{path}/config.yaml` nie sú nakonfigurované žiadne osobnosti"
+    header:                "🎭 **Dostupné osobnosti**\n"
+    none_option:           "• `none` — (bez osobnostnej vrstvy)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nPoužitie: `/personality <name>`"
+    save_failed:           "⚠️ Zmenu osobnosti sa nepodarilo uložiť: {error}"
+    cleared:               "🎭 Osobnosť zrušená — používam základné správanie agenta.\n_(platí od ďalšej správy)_"
+    set_to:                "🎭 Osobnosť nastavená na **{name}**\n_(platí od ďalšej správy)_"
+    unknown:               "Neznáma osobnosť: `{name}`\n\nDostupné: {available}"
+
+  profile:
+    header:                "👤 **Profil:** `{profile}`"
+    home:                  "📂 **Domov:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (predvolené)"
+    level_disabled:            "none (vypnuté)"
+    scope_session:             "session override"
+    scope_global:              "globálny config"
+    status:                    "🧠 **Nastavenia reasoningu**\n\n**Úsilie:** `{level}`\n**Rozsah:** {scope}\n**Zobrazenie:** {display}\n\n_Použitie:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    display_on:                "zapnuté ✓"
+    display_off:               "vypnuté"
+    display_set_on:            "🧠 ✓ Zobrazenie reasoningu: **ZAPNUTÉ**\nUvažovanie modelu sa zobrazí pred každou odpoveďou na **{platform}**."
+    display_set_off:           "🧠 ✓ Zobrazenie reasoningu: **VYPNUTÉ** pre **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` nie je podporované. Globálne predvolenie zmeníš cez `/reasoning <level> --global`."
+    reset_done:                "🧠 ✓ Session override reasoningu zrušený; platí globálny config."
+    unknown_arg:               "⚠️ Neznámy argument: `{arg}`\n\n**Platné úrovne:** none, minimal, low, medium, high, xhigh\n**Zobrazenie:** show, hide\n**Uloženie:** pridaj `--global` na uloženie nad rámec tejto session"
+    set_global:                "🧠 ✓ Reasoning úsilie nastavené na `{effort}` (uložené do configu)\n_(platí od ďalšej správy)_"
+    set_global_save_failed:    "🧠 ✓ Reasoning úsilie nastavené na `{effort}` (len session — uloženie configu zlyhalo)\n_(platí od ďalšej správy)_"
+    set_session:               "🧠 ✓ Reasoning úsilie nastavené na `{effort}` (len session — pridaj `--global` na trvalé uloženie)\n_(platí od ďalšej správy)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp zrušené. MCP nástroje nezmenené."
+    always_followup:       "ℹ️ Budúce volania `/reload-mcp` pobežia bez potvrdenia. Znovu zapneš cez `approvals.mcp_reload_confirm: true` v config.yaml."
+    confirm_prompt:        "⚠️ **Potvrď /reload-mcp**\n\nZnovunačítanie MCP serverov prestaví sadu nástrojov pre túto session a **zneplatní prompt cache providera** — ďalšia správa pošle plné vstupné tokeny. Pri dlhom kontexte alebo vysokom reasoningu to môže byť drahé.\n\nVyber:\n• **Approve Once** — načítať teraz\n• **Always Approve** — načítať teraz a už sa nepýtať\n• **Cancel** — nechať MCP nástroje nezmenené\n\n_Textová alternatíva: odpovedz `/approve`, `/always` alebo `/cancel`._"
+    header:                "🔄 **MCP servery znovu načítané**\n"
+    reconnected:           "♻️ Znovu pripojené: {names}"
+    added:                 "➕ Pridané: {names}"
+    removed:               "➖ Odstránené: {names}"
+    none_connected:        "Žiadne MCP servery nie sú pripojené."
+    tools_available:       "\n🔧 {tools} nástrojov z {servers} serverov"
+    failed:                "❌ Znovunačítanie MCP zlyhalo: {error}"
+
+  reload_skills:
+    header:                "🔄 **Skilly znovu načítané**\n"
+    no_new:                "Žiadne nové skilly."
+    total:                 "\n📚 {count} skillov k dispozícii"
+    added_header:          "➕ **Pridané skilly:**"
+    removed_header:        "➖ **Odstránené skilly:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ Znovunačítanie skillov zlyhalo: {error}"
+
+  reset:
+    header_default:        "✨ Session resetnutá! Začíname odznova."
+    header_new:            "✨ Nová session spustená!"
+    header_titled:         "✨ Nová session spustená: {title}"
+    title_rejected:        "\n⚠️ Názov odmietnutý: {error}"
+    title_error_untitled:  "\n⚠️ {error} — session spustená bez názvu."
+    title_empty_untitled:  "\n⚠️ Názov je po vyčistení prázdny — session spustená bez názvu."
+    tip:                   "\n✦ Tip: {tip}"
+
+  restart:
+    in_progress:           "⏳ Reštart gatewayu už prebieha..."
+    restarting:            "♻ Reštartujem gateway. Ak sa do 60 sekúnd neozvem, reštartni z konzoly cez `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "Databáza sessions nie je dostupná."
+    parse_error:           "⚠️ Argumenty `/resume` sa nepodarilo spracovať: {error}.\nNázvy s medzerami daj do úvodzoviek, napríklad: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "Pre túto Matrix miestnosť neexistujú pomenované sessions.\nPouži `/title Moja session` na pomenovanie aktuálnej session, `/resume --all` na zoznam všetkých Matrix sessions, alebo `/resume --cross-room <názov>` na explicitné prekročenie hraníc miestnosti."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume zablokované: táto pomenovaná session nemá zaznamenaný pôvod miestnosti, takže ju Hermes v aktuálnej miestnosti štandardne neobnoví. Ak chceš zámerne prekročiť hranice miestností, použi `/resume --cross-room {name}`."
+    matrix_blocked_other_room: "⚠️ Matrix /resume zablokované: session patrí inej Matrix miestnosti ({room}). Ak ju tu chceš zámerne obnoviť, použi `/resume --cross-room {name}`."
+    matrix_cross_room_success: "⚠️ Cross-room resume: obnovená **{title}** v Matrix miestnosti **{room}**.\nBudúce správy v tejto miestnosti použijú tento prepis až do `/reset` alebo ďalšieho `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume zablokované: '**{name}**' patrí inému používateľovi alebo chatu. Obnoviť môžeš len sessions z tohto chatu."
+    no_named_sessions:     "Žiadne pomenované sessions.\nPouži `/title Moja session` na pomenovanie aktuálnej session a neskôr `/resume Moja session` na návrat."
+    list_header:           "📋 **Pomenované sessions**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nPoužitie: `/resume <názov session>`"
+    list_footer_numbered:  "\nPoužitie: `/resume <názov session>` alebo `/resume <číslo>` (napr. `/resume 1` pre najnovšiu)"
+    list_failed:           "Zoznam sessions sa nepodarilo načítať: {error}"
+    out_of_range:          "Index {index} je mimo rozsahu.\nPouži `/resume` bez argumentov na zobrazenie dostupných sessions."
+    not_found:             "Nenašla sa session zodpovedajúca '**{name}**'.\nPouži `/resume` bez argumentov na zobrazenie dostupných sessions."
+    already_on:            "📌 Už si na session **{name}**."
+    switch_failed:         "Prepnutie session zlyhalo."
+    resumed_one:           "↻ Obnovená session **{title}** ({count} správa). Konverzácia obnovená."
+    resumed_many:          "↻ Obnovená session **{title}** ({count} správ). Konverzácia obnovená."
+    resumed_no_count:      "↻ Obnovená session **{title}**. Konverzácia obnovená."
+
+  retry:
+    no_previous:           "Žiadna predchádzajúca správa na zopakovanie."
+
+  rollback:
+    not_enabled:           "Checkpointy nie sú zapnuté.\nZapni v config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "Nenašli sa checkpointy pre {cwd}"
+    invalid_number:        "Neplatné číslo checkpointu. Použi 1-{max}."
+    restored:              "✅ Obnovené na checkpoint {hash}: {reason}\nPred-rollbackový snapshot bol uložený automaticky."
+    restore_failed:        "❌ {error}"
+
+  set_home:
+    save_failed:           "Domovský kanál sa nepodarilo uložiť: {error}"
+    success:               "✅ Domovský kanál nastavený na **{name}** (ID: {chat_id}).\nCron úlohy a medziplatformové správy budú doručované sem."
+
+  status:
+    header:                "📊 **Stav Hermes Gatewayu**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  miestnosť: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
+    session_id:            "**ID session:** `{session_id}`"
+    title:                 "**Názov:** {title}"
+    created:               "**Vytvorená:** {timestamp}"
+    last_activity:         "**Posledná aktivita:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Kontext:** {used} / {total} ({pct}%)"
+    context_used:          "**Kontext:** ~{used} tokenov"
+    tokens:                "**Kumulatívne API tokeny (posielané pri každom volaní):** {tokens}"
+    agent_running:         "**Agent beží:** {state}"
+    state_yes:             "Áno ⚡"
+    state_no:              "Nie"
+    queued:                "**Následné správy vo fronte:** {count}"
+    platforms:             "**Pripojené platformy:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ Zastavené. Agent ešte nezačal — môžeš pokračovať v tejto session."
+    stopped:               "⚡ Zastavené. Môžeš pokračovať v tejto session."
+    no_active:             "Žiadna aktívna úloha na zastavenie."
+
+  title:
+    db_unavailable:        "Databáza sessions nie je dostupná."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ Názov je po vyčistení prázdny. Použi tlačiteľné znaky."
+    set_to:                "✏️ Názov session nastavený: **{title}**"
+    not_found:             "Session sa v databáze nenašla."
+    current_with_title:    "📌 Session: `{session_id}`\nNázov: **{title}**"
+    current_no_title:      "📌 Session: `{session_id}`\nBez názvu. Použitie: `/title Názov mojej session`"
+
+  topic:
+    not_telegram_dm:         "Príkaz /topic je dostupný len v súkromných Telegram chatoch."
+    no_session_db:           "Databáza sessions nie je dostupná."
+    unauthorized:            "Nemáš oprávnenie používať /topic na tomto botovi."
+    restore_needs_topic:     "Na obnovenie session najprv vytvor alebo otvor Telegram topic a pošli /topic <session-id> v ňom. Nový topic vytvoríš tak, že otvoríš All Messages a pošleš tam ľubovoľnú správu."
+    topics_disabled:         "Telegram topics zatiaľ nie sú pre tohto bota zapnuté.\n\nAko ich zapnúť:\n1. Otvor @BotFather.\n2. Vyber svojho bota.\n3. Otvor Bot Settings → Threads Settings.\n4. Zapni Threaded Mode a over, že používatelia môžu vytvárať nové vlákna.\n\nPotom pošli /topic znova."
+    topics_user_disallowed:  "Telegram topics sú zapnuté, ale používatelia nemôžu vytvárať topics.\n\nOtvor @BotFather → vyber bota → Bot Settings → Threads Settings a vypni 'Disallow users to create new threads'.\n\nPotom pošli /topic znova."
+    enable_failed:           "Zapnutie Telegram topic režimu zlyhalo: {error}"
+    bound_status:            "Tento topic je prepojený so:\nSession: {label}\nID: {session_id}\n\nPouži /new na nahradenie tohto topicu čerstvou session.\nPre paralelnú prácu otvor All Messages a pošli tam správu — vytvorí sa ďalší topic."
+    thread_ready:            "Telegram multi-session topics sú zapnuté.\n\nTento topic bude fungovať ako nezávislá Hermes session. Použi /new na nahradenie aktuálnej session tohto topicu. Pre paralelnú prácu otvor All Messages a pošli tam správu — vytvorí sa ďalší topic."
+    untitled_session:        "Session bez názvu"
+
+  undo:
+    nothing:               "Nie je čo vrátiť."
+    removed:               "↩️ Vrátených {turns} ťahov ({count} správ).\nZálohované do: \"{preview}\"\nText vyššie skopíruj/uprav a pošli — budeš pokračovať odtiaľto."
+    invalid_count:         "Neplatný počet \"{arg}\" — použi /undo alebo /undo N."
+
+  update:
+    platform_not_messaging:  "✗ /update je dostupné len z messaging platforiem. Spusti `hermes update` v termináli."
+    not_git_repo:            "✗ Nie je to git repozitár — update nie je možný."
+    hermes_cmd_not_found:    "✗ Príkaz `hermes` sa nenašiel. Hermes beží, ale update príkaz nenašiel spustiteľný súbor na PATH ani cez aktuálny Python interpreter. Skús spustiť `hermes update` ručne v termináli."
+    start_failed:            "✗ Spustenie update zlyhalo: {error}"
+    starting:                "⚕ Spúšťam Hermes update… priebeh budem hlásiť sem."
+
+  usage:
+    rate_limits:              "⏱️ **Rate limity:** {state}"
+    header_session:           "📊 **Spotreba tokenov v session**"
+    label_model:              "Model: `{model}`"
+    label_input_tokens:       "Vstupné tokeny: {count}"
+    label_cache_read:         "Tokeny čítané z cache: {count}"
+    label_cache_write:        "Tokeny zapísané do cache: {count}"
+    label_output_tokens:      "Výstupné tokeny: {count}"
+    label_total:              "Spolu: {count}"
+    label_api_calls:          "API volania: {count}"
+    label_cost:               "Cena: {prefix}${amount}"
+    label_cost_included:      "Cena: v cene"
+    label_context:            "Kontext: {used} / {total} ({pct}%)"
+    label_compressions:       "Kompresie: {count}"
+    breakdown_header:         "🧩 **Rozpad kontextu** _(odhad)_"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt:        "Systémový prompt"
+    breakdown_cat_tool_definitions:     "Definície nástrojov"
+    breakdown_cat_rules:                "Pravidlá"
+    breakdown_cat_skills:               "Skilly"
+    breakdown_cat_mcp:                  "MCP"
+    breakdown_cat_subagent_definitions: "Definície subagentov"
+    breakdown_cat_memory:               "Pamäť"
+    breakdown_cat_conversation:         "Konverzácia"
+    header_session_info:      "📊 **Info o session**"
+    label_messages:           "Správy: {count}"
+    label_estimated_context:  "Odhadovaný kontext: ~{count} tokenov"
+    detailed_after_first:     "_(Podrobná spotreba dostupná po prvej odpovedi agenta)_"
+    no_data:                  "Pre túto session nie sú dostupné údaje o spotrebe."
+
+  credits:
+    not_logged_in:            "Nie si prihlásený do Nous Portal. Prihlás sa, aby si videl zostatok kreditov a mohol dobiť."
+
+  verbose:
+    not_enabled:           "Príkaz `/verbose` nie je pre messaging platformy zapnutý.\n\nZapni v `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off:              "⚙️ Priebeh nástrojov: **VYPNUTÝ** — aktivita nástrojov sa nezobrazuje."
+    mode_new:              "⚙️ Priebeh nástrojov: **NOVÉ** — zobrazí sa pri zmene nástroja (dĺžka náhľadu: `display.tool_preview_length`, predvolene 40)."
+    mode_all:              "⚙️ Priebeh nástrojov: **VŠETKO** — každé volanie nástroja (dĺžka náhľadu: `display.tool_preview_length`, predvolene 40)."
+    mode_verbose:          "⚙️ Priebeh nástrojov: **VERBOSE** — každé volanie nástroja s plnými argumentmi."
+    mode_log:              "⚙️ Priebeh nástrojov: **LOG** — v chate ticho; volania nástrojov sa zapisujú do ~/.hermes/logs/tool_calls.log."
+    saved_suffix:          "_(uložené pre **{platform}** — platí od ďalšej správy)_"
+    save_failed:           "_(nepodarilo sa uložiť do configu: {error})_"
+
+  voice:
+    enabled_voice_only:    "Hlasový režim zapnutý.\nNa hlasové správy odpoviem hlasom.\nPouži /voice tts, ak chceš hlasové odpovede na všetky správy."
+    disabled_text:         "Hlasový režim vypnutý. Len textové odpovede."
+    tts_enabled:           "Auto-TTS zapnuté.\nKaždá odpoveď bude obsahovať hlasovú správu."
+    status_mode:           "Hlasový režim: {label}"
+    status_channel:        "Hlasový kanál: #{channel}"
+    status_participants:   "Účastníci: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (hovorí)"
+    enabled_short:         "Hlasový režim zapnutý."
+    disabled_short:        "Hlasový režim vypnutý."
+    label_off:             "Vypnutý (len text)"
+    label_voice_only:      "Zapnutý (hlasová odpoveď na hlasové správy)"
+    label_all:             "TTS (hlasová odpoveď na všetky správy)"
+    help:                  "{toggle}\n\n**Ako funguje /voice**\n• `/voice on` — hlasová odpoveď, keď pošleš hlasovú správu\n• `/voice tts` — hlasová odpoveď na *každú* správu\n• `/voice off` — späť na textové odpovede\n• `/voice status` — aktuálny režim\n• `/voice` (bez argumentu) — rýchle prepnutie medzi on a off{channels}"
+    help_channels:         "\n\n**Živé hlasové kanály (Discord)**\n• Najprv sa pripoj do hlasového kanála, potom `/voice channel` — pripojím sa, počúvam a odpovede hovorím\n• `/voice leave` — odpojenie z hlasového kanála"
+
+  yolo:
+    disabled:                   "⚠️ YOLO režim **VYPNUTÝ** pre túto session — nebezpečné príkazy budú vyžadovať schválenie."
+    enabled:                    "⚡ YOLO režim **ZAPNUTÝ** pre túto session — všetky príkazy sa schvaľujú automaticky. Používaj opatrne."
+
+  shared:
+    session_db_unavailable:      "Databáza sessions nie je dostupná."
+    session_db_unavailable_prefix: "Databáza sessions nie je dostupná"
+    session_not_found:           "Session sa v databáze nenašla."
+    warn_passthrough:            "⚠️ {error}"

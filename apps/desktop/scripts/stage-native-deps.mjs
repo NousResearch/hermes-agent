@@ -13,6 +13,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -34,6 +35,19 @@ function resolveNodePtyRoot() {
     paths: [projectRoot]
   })
   return dirname(pkgJsonPath)
+}
+
+/**
+ * node-pty's darwin prebuild ships a separate `spawn-helper` binary that
+ * lib/unixTerminal.js execs on every pty.spawn(). `cpSync` preserves source
+ * mode bits when available, but packaged/tarball/cache paths frequently
+ * land the helper as 0644. Without +x, Electron's first terminal open fails
+ * with `posix_spawnp failed` / Permission denied — so always re-assert the
+ * executable bit after copy.
+ */
+function copySpawnHelper(srcPath, destPath) {
+  cpSync(srcPath, destPath)
+  chmodSync(destPath, 0o755)
 }
 
 function copyGlobByExt(srcDir, destDir, extensions) {
@@ -71,7 +85,11 @@ function copyBuildRelease(srcDir, destDir) {
       cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
       continue
     }
-    if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
+    if (entry.name === 'spawn-helper') {
+      copySpawnHelper(join(srcDir, entry.name), join(destDir, entry.name))
+      continue
+    }
+    if (/\.(node|dll|exe)$/.test(entry.name)) {
       cpSync(join(srcDir, entry.name), join(destDir, entry.name))
     }
   }
@@ -114,7 +132,8 @@ export function stageNodePty({ platform = process.platform, arch = process.arch 
         continue
       }
       if (entry.name === 'spawn-helper') {
-        cpSync(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
+        // Must be +x: without it darwin pty.spawn() dies with posix_spawnp failed.
+        copySpawnHelper(join(prebuildDir, entry.name), join(destPrebuild, entry.name))
       }
     }
   } else {

@@ -551,11 +551,13 @@ def compress_context(
     # prints the error and retries.  Because compression never succeeds,
     # the token count never drops and the loop re-triggers compaction
     # forever (the "API call #47/#48/#49 ... has no attribute
-    # try_acquire_compression_lock" spin).  Fail OPEN here: if the lock
-    # subsystem is missing or broken in any unexpected way, skip locking
-    # and proceed with compression.  Skipping the lock risks a rare
-    # concurrent-compression session fork; an infinite no-progress loop
-    # that never compresses at all is strictly worse.
+    # try_acquire_compression_lock" spin).  Fail OPEN for that structural-
+    # absence case (AttributeError, or TypeError from a stale signature
+    # missing ``ttl_seconds``): skip locking and proceed with compression,
+    # since the alternative is an infinite no-progress loop.  Any OTHER
+    # exception means the lock subsystem exists and ran but genuinely
+    # errored — fail CLOSED there instead (skip compression this cycle)
+    # rather than risk a concurrent second compressor forking the session.
     try:
         _lock_ttl = float(getattr(agent, "_compression_lock_ttl_seconds", 300.0) or 300.0)
     except (TypeError, ValueError):
@@ -568,7 +570,7 @@ def compress_context(
             _lock_acquired = _lock_db.try_acquire_compression_lock(
                 _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
             )
-        except Exception as _lock_err:
+        except (AttributeError, TypeError) as _lock_err:
             # Broken/absent lock subsystem (version skew, etc.).  Log once
             # per session and proceed WITHOUT the lock rather than letting
             # the exception spin the outer loop.
@@ -583,6 +585,21 @@ def compress_context(
                     _lock_sid, type(_lock_err).__name__, _lock_err,
                 )
             _lock_acquired = True  # treat as acquired-but-unlocked; proceed
+        except Exception as _lock_err:
+            # The lock subsystem exists and ran but raised unexpectedly (not
+            # the version-skew AttributeError/TypeError case above) — e.g. a
+            # transient DB error. Unlike the version-skew case, we don't know
+            # this is safe to skip locking for, so fail CLOSED: skip
+            # compression this cycle rather than risk a concurrent second
+            # compressor forking the session. The auto-compress loop will
+            # simply retry next cycle.
+            _lock_holder = None  # we don't own anything to release
+            logger.warning(
+                "compression lock acquisition raised unexpectedly for "
+                "session=%s (%s: %s) — skipping compression this cycle",
+                _lock_sid, type(_lock_err).__name__, _lock_err,
+            )
+            _lock_acquired = False
         if not _lock_acquired:
             try:
                 existing = _lock_db.get_compression_lock_holder(_lock_sid)

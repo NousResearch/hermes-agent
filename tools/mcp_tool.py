@@ -5645,7 +5645,7 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
             and thread.is_alive()
         ):
             logger.warning("MCP event loop thread did not stop within 5 seconds")
-        elif thread is None and not loop.is_closed():
+        elif (thread is None or not thread.is_alive()) and not loop.is_closed():
             # Defensive fallback for partially initialized test/runtime state.
             try:
                 loop.run_until_complete(loop.shutdown_asyncgens())

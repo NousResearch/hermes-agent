@@ -120,6 +120,32 @@ class TestMCPLoopExceptionHandler:
         assert finalized.wait(timeout=2)
         assert loop.is_closed()
 
+    def test_shutdown_closes_loop_when_recorded_thread_is_already_dead(self):
+        """A stale non-null thread record still takes the defensive fallback."""
+        import tools.mcp_tool as mcp_mod
+
+        loop = asyncio.new_event_loop()
+        dead_thread = threading.Thread(target=lambda: None)
+        dead_thread.start()
+        dead_thread.join(timeout=2)
+        assert not dead_thread.is_alive()
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+            mcp_mod._mcp_loop = loop
+            mcp_mod._mcp_thread = dead_thread
+
+        try:
+            assert mcp_mod._stop_mcp_loop() is True
+            assert loop.is_closed()
+        finally:
+            with mcp_mod._lock:
+                mcp_mod._mcp_loop = None
+                mcp_mod._mcp_thread = None
+            if not loop.is_closed():
+                loop.close()
+
 
 # ---------------------------------------------------------------------------
 # Fix 2: stdio PID tracking

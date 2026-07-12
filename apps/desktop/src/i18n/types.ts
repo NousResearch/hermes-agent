@@ -137,7 +137,8 @@ export interface Translations {
       back: string
       openLogs: string
       repairHint: string
-      remoteSignInHint: string
+      remoteSignInHint: (signInLabel: string) => string
+      signOutAndSignIn: string
       remoteFailureHint: string
       hideRecentLogs: string
       showRecentLogs: string

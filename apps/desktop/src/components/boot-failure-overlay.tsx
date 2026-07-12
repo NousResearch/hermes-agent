@@ -153,10 +153,12 @@ export function BootFailureOverlay() {
     setBusy(null)
   }
 
-  // Open the gateway's login window (username/password form or OAuth redirect —
-  // the desktop drives both). On a successful sign-in the session cookie is
-  // re-established in the persistent partition; reload so boot re-runs and the
-  // reconnect mints a ticket against a live session.
+  // Clear the OAuth partition first, then open the gateway's login window
+  // (username/password form or OAuth redirect — the desktop drives both). A
+  // partition-wide sign-out drops stale gateway AND identity-provider cookies so
+  // an expired session can't silently bounce us back into the same state. On a
+  // successful sign-in the cookie is re-established; reload so boot mints a fresh
+  // ticket against a live session.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -165,6 +167,7 @@ export function BootFailureOverlay() {
     setBusy('signin')
 
     try {
+      await window.hermesDesktop?.oauthLogoutConnectionConfig?.()
       const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
 
       if (result?.connected) {
@@ -238,11 +241,11 @@ export function BootFailureOverlay() {
 
   if (remoteReauth) {
     actions = [
-      { key: 'signin', label, onClick: () => void signInRemote(), icon: <LogIn />, busy: 'signin' },
+      { key: 'signin', label: copy.signOutAndSignIn, onClick: () => void signInRemote(), icon: <LogIn />, busy: 'signin' },
       { ...settingsAction, variant: 'secondary' },
       localAction
     ]
-    hint = copy.remoteSignInHint
+    hint = copy.remoteSignInHint(label)
   } else if (remoteFailure) {
     actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
     hint = copy.remoteFailureHint

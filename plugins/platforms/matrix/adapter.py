@@ -51,12 +51,15 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import logging
 import mimetypes
 import os
 import re
 import time
+from contextvars import ContextVar
+from functools import wraps
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
@@ -131,6 +134,39 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
+
+
+_MATRIX_CRYPTO_TASK_OWNER: ContextVar[Any | None] = ContextVar(
+    "matrix_crypto_task_owner",
+    default=None,
+)
+_BACKGROUND_TRACKER_ATTR = "_hermes_matrix_background_tracker"
+
+
+def _install_mautrix_background_task_tracker() -> bool:
+    """Track nested mautrix crypto tasks without claiming other clients' work."""
+    try:
+        background_task = importlib.import_module("mautrix.util.background_task")
+    except ImportError:
+        # Structural test doubles and older SDKs may omit this optional module.
+        return False
+
+    create = getattr(background_task, "create")
+    if getattr(create, _BACKGROUND_TRACKER_ATTR, False):
+        return True
+
+    @wraps(create)
+    def tracked_create(coro, *args, **kwargs):
+        owner = _MATRIX_CRYPTO_TASK_OWNER.get()
+        task = create(coro, *args, **kwargs)
+        if owner is not None:
+            owner._track_matrix_handler_task(task)
+        return task
+
+    setattr(tracked_create, _BACKGROUND_TRACKER_ATTR, True)
+    setattr(background_task, "create", tracked_create)
+    return True
+
 
 logger = logging.getLogger(__name__)
 
@@ -811,6 +847,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._sync_task: Optional[asyncio.Task] = None
+        self._matrix_handler_tasks: Set[asyncio.Task] = set()
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
@@ -1429,6 +1466,7 @@ class MatrixAdapter(BasePlatformAdapter):
                                     )
 
                     client.crypto = olm
+                    self._instrument_crypto_handlers(client, olm)
                     logger.info(
                         "Matrix: E2EE enabled (store: %s%s)",
                         str(_CRYPTO_DB_PATH),
@@ -1532,6 +1570,95 @@ class MatrixAdapter(BasePlatformAdapter):
         self._mark_connected()
         return True
 
+    def _track_matrix_handler_task(self, task: asyncio.Task) -> None:
+        """Keep adapter-owned handler work visible to disconnect()."""
+        if task.done():
+            return
+        self._matrix_handler_tasks.add(task)
+        task.add_done_callback(self._matrix_handler_tasks.discard)
+
+    def _instrument_crypto_handlers(self, client: Any, olm: Any) -> None:
+        """Track mautrix crypto handlers and background work they spawn."""
+        if not _install_mautrix_background_task_tracker():
+            logger.debug(
+                "Matrix: mautrix background task helper unavailable; "
+                "only top-level crypto handlers will be tracked"
+            )
+
+        crypto_owners = [olm]
+        dispatchers = getattr(client, "dispatchers", {})
+        if isinstance(dispatchers, dict):
+            crypto_owners.extend(
+                dispatcher
+                for dispatcher in dispatchers.values()
+                if type(dispatcher).__name__ == "DecryptionDispatcher"
+            )
+
+        event_handlers = getattr(client, "event_handlers", {})
+        if not isinstance(event_handlers, dict):
+            logger.warning(
+                "Matrix: mautrix event handler registry unavailable; "
+                "crypto teardown task tracking is disabled"
+            )
+            return
+
+        registrations = []
+        for event_type, handlers in event_handlers.items():
+            if not isinstance(handlers, dict):
+                continue
+            for handler, props in list(handlers.items()):
+                handler_owner = getattr(handler, "__self__", None)
+                if any(handler_owner is owner for owner in crypto_owners):
+                    registrations.append((event_type, handler, props))
+
+        for event_type, handler, props in registrations:
+            tracked_handler = self._tracked_crypto_handler(handler)
+            client.remove_event_handler(event_type, handler)
+            client.add_event_handler(
+                event_type,
+                tracked_handler,
+                # Mautrix defaults most crypto handlers to fire-and-forget.
+                # Returning them from handle_sync makes the sync loop own the
+                # top-level task; the wrapper tracks nested crypto work.
+                wait_sync=True,
+                sync_stream=getattr(props, "sync_stream", None),
+            )
+
+        logger.debug(
+            "Matrix: tracking %d mautrix crypto event handler(s)",
+            len(registrations),
+        )
+
+    def _tracked_crypto_handler(self, handler):
+        @wraps(handler)
+        async def tracked(*args, **kwargs):
+            task = asyncio.current_task()
+            if task is not None:
+                self._track_matrix_handler_task(task)
+            token = _MATRIX_CRYPTO_TASK_OWNER.set(self)
+            try:
+                return await handler(*args, **kwargs)
+            finally:
+                _MATRIX_CRYPTO_TASK_OWNER.reset(token)
+
+        return tracked
+
+    async def _drain_matrix_handler_tasks(self) -> None:
+        """Cancel and await handlers before their crypto-store dependency closes."""
+        current = asyncio.current_task()
+        while True:
+            pending = [
+                task
+                for task in self._matrix_handler_tasks
+                if task is not current and not task.done()
+            ]
+            if not pending:
+                break
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._matrix_handler_tasks.clear()
+
     async def disconnect(self) -> None:
         """Disconnect from Matrix."""
         self._closing = True
@@ -1558,6 +1685,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if redaction_tasks:
             await asyncio.gather(*redaction_tasks, return_exceptions=True)
         self._reaction_redaction_tasks.clear()
+
+        await self._drain_matrix_handler_tasks()
 
         # Close the SQLite crypto store database.
         if hasattr(self, "_crypto_db") and self._crypto_db:
@@ -2351,12 +2480,21 @@ class MatrixAdapter(BasePlatformAdapter):
         if inspect.isawaitable(tasks):
             tasks = await tasks
         if tasks:
+            tasks = list(tasks)
+            for task in tasks:
+                if isinstance(task, asyncio.Task):
+                    self._track_matrix_handler_task(task)
             # return_exceptions=True so one failing event handler doesn't abort
             # the whole gather and silently drop the SIBLING events in the same
             # sync response (a bare gather re-raises the first exception, leaving
             # the rest of the batch unprocessed). Mirrors the invite/redaction
             # gathers above. Surface each failure instead of swallowing it.
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                for task in tasks:
+                    if isinstance(task, asyncio.Task):
+                        self._matrix_handler_tasks.discard(task)
             for result in results:
                 if isinstance(result, Exception):
                     logger.warning(

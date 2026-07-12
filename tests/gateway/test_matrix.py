@@ -2810,6 +2810,115 @@ class TestMatrixEncryptedEventHandler:
 
 class TestMatrixDisconnect:
     @pytest.mark.asyncio
+    async def test_disconnect_drains_nested_crypto_tasks_before_stopping_db(self):
+        """Mautrix crypto work must not outlive the SQLite crypto pool."""
+        adapter = _make_adapter()
+        adapter._sync_task = None
+
+        background_task = types.ModuleType("mautrix.util.background_task")
+        setattr(
+            background_task,
+            "create",
+            lambda coro, *args, **kwargs: asyncio.create_task(coro),
+        )
+        mautrix_util = types.ModuleType("mautrix.util")
+        setattr(mautrix_util, "background_task", background_task)
+
+        class CryptoHandler:
+            def __init__(self):
+                self.nested_started = asyncio.Event()
+                self.nested_finished = asyncio.Event()
+
+            async def handle(self, _event):
+                getattr(background_task, "create")(self._nested_store_read())
+
+            async def _nested_store_read(self):
+                self.nested_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    self.nested_finished.set()
+
+        crypto = CryptoHandler()
+
+        class DecryptionDispatcher(CryptoHandler):
+            pass
+
+        decrypt = DecryptionDispatcher()
+
+        async def ordinary_handler(_event):
+            return None
+
+        props = types.SimpleNamespace(wait_sync=False, sync_stream=None)
+
+        class FakeClient:
+            def __init__(self):
+                self.event_handlers = {
+                    "encrypted": {decrypt.handle: props},
+                    "device": {crypto.handle: props},
+                    "message": {ordinary_handler: props},
+                }
+                self.dispatchers = {DecryptionDispatcher: decrypt}
+                self.api = types.SimpleNamespace(
+                    session=types.SimpleNamespace(close=AsyncMock())
+                )
+
+            def remove_event_handler(self, event_type, handler):
+                self.event_handlers[event_type].pop(handler)
+
+            def add_event_handler(
+                self, event_type, handler, *, wait_sync=False, sync_stream=None
+            ):
+                self.event_handlers[event_type][handler] = types.SimpleNamespace(
+                    wait_sync=wait_sync,
+                    sync_stream=sync_stream,
+                )
+
+            def handle_sync(self, _data):
+                handler = next(iter(self.event_handlers["encrypted"]))
+                return [asyncio.create_task(handler(object()))]
+
+        client = FakeClient()
+        adapter._client = client
+
+        crypto_db = types.SimpleNamespace()
+
+        async def stop_crypto_db():
+            assert decrypt.nested_finished.is_set()
+
+        crypto_db.stop = AsyncMock(side_effect=stop_crypto_db)
+        adapter._crypto_db = crypto_db
+
+        with patch.dict(
+            sys.modules,
+            {
+                "mautrix.util": mautrix_util,
+                "mautrix.util.background_task": background_task,
+            },
+        ):
+            adapter._instrument_crypto_handlers(client, crypto)
+
+            wrapped_crypto = next(iter(client.event_handlers["encrypted"]))
+            assert wrapped_crypto is not decrypt.handle
+            assert client.event_handlers["encrypted"][wrapped_crypto].wait_sync is True
+            wrapped_device = next(iter(client.event_handlers["device"]))
+            assert wrapped_device is not crypto.handle
+            assert client.event_handlers["device"][wrapped_device].wait_sync is True
+            assert next(iter(client.event_handlers["message"])) is ordinary_handler
+
+            await adapter._dispatch_sync(
+                {"rooms": {"join": {}}, "next_batch": "s1"}
+            )
+            await asyncio.wait_for(decrypt.nested_started.wait(), timeout=1)
+            assert adapter._matrix_handler_tasks
+
+            await adapter.disconnect()
+
+        assert decrypt.nested_finished.is_set()
+        crypto_db.stop.assert_awaited_once()
+        assert adapter._matrix_handler_tasks == set()
+
+    @pytest.mark.asyncio
     async def test_disconnect_closes_api_session(self):
         """disconnect() should close client.api.session."""
         adapter = _make_adapter()

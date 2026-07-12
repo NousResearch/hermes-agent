@@ -879,6 +879,137 @@ class TestPrefetch:
         p._client = _make_mock_client()
         assert p._prefetch_waits_for_retain is False
 
+
+class TestPrefetchServerRetainVisibility:
+    """PR #62871 review follow-up: draining the local writer queue is not a
+    read-after-write signal for async retains. With ``retain_async=True`` the
+    server accepts the write and returns an ``operation_id`` that stays
+    ``pending`` until the write is durable/recall-visible. The background
+    prefetch must gate on server-side operation completion, not just the local
+    queue, before recalling.
+    """
+
+    def _client_with_ops(self, statuses):
+        """Mock client whose aretain_batch returns an async operation_id and
+        whose operations.get_operation_status yields *statuses* in order
+        (last value repeats)."""
+        client = _make_mock_client()
+        client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id="op-1", operation_ids=None)
+        )
+        seq = list(statuses)
+
+        async def _status(**kwargs):
+            value = seq.pop(0) if len(seq) > 1 else seq[0]
+            return SimpleNamespace(status=value)
+
+        client.operations = MagicMock()
+        client.operations.get_operation_status = AsyncMock(side_effect=_status)
+        return client
+
+    def test_tracks_async_operation_id_from_retain(self, provider):
+        provider._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id="op-async-1", operation_ids=None)
+        )
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        assert "op-async-1" in provider._pending_retain_ops
+
+    def test_tracks_multiple_operation_ids(self, provider):
+        provider._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(
+                operation_id=None, operation_ids=["op-a", "op-b"]
+            )
+        )
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        assert {"op-a", "op-b"} <= provider._pending_retain_ops
+
+    def test_sync_retain_tracks_no_ops(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p._client = _make_mock_client()
+        p._client.aretain_batch = AsyncMock(
+            return_value=SimpleNamespace(operation_id="op-x", operation_ids=None)
+        )
+        p.sync_turn("hello", "world")
+        p._retain_queue.join()
+        # retain_async=False → no server-side op to wait on.
+        assert p._pending_retain_ops == set()
+
+    def test_prefetch_waits_for_server_completion_before_recall(self, provider):
+        """Recall must not run until the tracked async op reports completed."""
+        order = []
+
+        async def _recall(**kwargs):
+            order.append("recall")
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        provider._client = self._client_with_ops(["pending", "pending", "completed"])
+        provider._client.arecall = AsyncMock(side_effect=_recall)
+
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        assert "op-1" in provider._pending_retain_ops
+
+        provider.queue_prefetch("next turn query")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        # Recall ran, the op was polled to completion, and the pending set
+        # was cleared (so a later prefetch won't re-poll it).
+        assert order == ["recall"]
+        assert provider._client.operations.get_operation_status.await_count >= 3
+        assert provider._pending_retain_ops == set()
+
+    def test_prefetch_proceeds_after_server_wait_timeout(self, provider_with_config):
+        """A wedged/never-completing async op must not hang prefetch forever;
+        it recalls anyway once the drain budget is exhausted."""
+        p = provider_with_config(prefetch_retain_drain_timeout=0.3)
+        order = []
+
+        async def _recall(**kwargs):
+            order.append("recall")
+            return SimpleNamespace(results=[SimpleNamespace(text="m")])
+
+        p._client = self._client_with_ops(["pending"])  # never completes
+        p._client.arecall = AsyncMock(side_effect=_recall)
+
+        p.sync_turn("hello", "world")
+        p._retain_queue.join()
+
+        start = time.monotonic()
+        p.queue_prefetch("next turn query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+        elapsed = time.monotonic() - start
+
+        assert order == ["recall"], "prefetch should recall after the timeout"
+        assert elapsed < 3.0, "prefetch must not block well past the drain budget"
+
+    def test_operation_notfound_treated_as_complete(self, provider):
+        """A NotFound (completed+evicted) op is treated as done, not pending."""
+        from hindsight_client_api.exceptions import NotFoundException
+
+        client = _make_mock_client()
+        client.operations = MagicMock()
+        client.operations.get_operation_status = AsyncMock(
+            side_effect=NotFoundException(status=404, reason="gone")
+        )
+        provider._client = client
+
+        assert provider._is_retain_op_complete("bank", "op-gone") is True
+
+    def test_transient_status_error_keeps_waiting(self, provider):
+        """A transient status-check error means 'unknown', so keep waiting."""
+        client = _make_mock_client()
+        client.operations = MagicMock()
+        client.operations.get_operation_status = AsyncMock(
+            side_effect=RuntimeError("temporary blip")
+        )
+        provider._client = client
+
+        assert provider._is_retain_op_complete("bank", "op-1") is False
+
     def test_queue_prefetch_passes_recall_params(self, provider_with_config):
         p = provider_with_config(
             recall_tags=["t1"],

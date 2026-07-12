@@ -31,16 +31,16 @@ def homes(tmp_path, monkeypatch):
 def _load_cli_config(home):
     """Call cli.py's standalone loader fresh.
 
-    cli.py binds ``_hermes_home = get_hermes_home()`` at import time (module
+    cli_config.py binds ``_hermes_home = get_hermes_home()`` at import time (module
     singleton), so monkeypatching HERMES_HOME after import doesn't move it.
     Point the module's cached home at the test's home for the duration of the
     call. (In real use cli is imported once per process with the real home, so
     this only matters for tests that swap HERMES_HOME.)
     """
-    import cli
+    import cli_config
 
-    cli._hermes_home = home
-    return cli.load_cli_config()
+    cli_config._hermes_home = home
+    return cli_config.load_cli_config()
 
 
 def test_cli_config_honors_managed_skin(homes):

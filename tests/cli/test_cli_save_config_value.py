@@ -19,7 +19,7 @@ class TestSaveConfigValueAtomic:
             "model": {"default": "test-model", "provider": "openrouter"},
             "display": {"skin": "default"},
         }))
-        monkeypatch.setattr("cli._hermes_home", hermes_home)
+        monkeypatch.setattr("cli_config._hermes_home", hermes_home)
         return config_path
 
     def test_calls_roundtrip_yaml_update(self, config_env, monkeypatch):

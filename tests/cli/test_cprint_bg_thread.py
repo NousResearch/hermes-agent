@@ -1,4 +1,4 @@
-"""Tests for cli._cprint's bg-thread cooperation with prompt_toolkit.
+"""Tests for cli_display._cprint's bg-thread cooperation with prompt_toolkit.
 
 Background: when a prompt_toolkit Application is running, a bg thread that
 calls ``_pt_print`` directly can race with the input-area redraw and the
@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli
+import cli_display as cli
 
 
 @pytest.fixture(autouse=True)

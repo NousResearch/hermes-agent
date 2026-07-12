@@ -11,6 +11,7 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import cli as cli_mod
+import cli_display
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -316,8 +317,8 @@ class TestDisplayResumedHistory:
             output = self._capture_display(cli)
 
             assert "Previous Conversation" in output
-            assert len(cli_mod._OUTPUT_HISTORY) == 1
-            assert callable(cli_mod._OUTPUT_HISTORY[0])
+            assert len(cli_display._OUTPUT_HISTORY) == 1
+            assert callable(cli_display._OUTPUT_HISTORY[0])
         finally:
             cli_mod._configure_output_history(True, 200)
 

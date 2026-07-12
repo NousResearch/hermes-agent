@@ -7793,6 +7793,21 @@ def _default_spawn(
     # highest-precedence interface override; dropping the env var covers
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
+    # A worker must NOT inherit gateway/cron approval context: the dispatcher
+    # copies the parent's full environment (including HERMES_EXEC_ASK,
+    # HERMES_CRON_SESSION, HERMES_SESSION_*, HERMES_INTERACTIVE, HERMES_YOLO_MODE),
+    # but approval callbacks are process-local Python dictionaries that cannot be
+    # inherited. Without dropping these, workers identify themselves as
+    # approval-capable and attempt to send approval requests that cannot be
+    # delivered, causing silent failures or misrouted notifications.
+    # See issue #63183.
+    env.pop("HERMES_EXEC_ASK", None)
+    env.pop("HERMES_CRON_SESSION", None)
+    env.pop("HERMES_INTERACTIVE", None)
+    env.pop("HERMES_YOLO_MODE", None)
+    for key in list(env.keys()):
+        if key.startswith("HERMES_SESSION_"):
+            env.pop(key)
 
     cmd = [
         *_resolve_hermes_argv(),

@@ -46,7 +46,7 @@ Each plugin's `register(ctx)` function calls `ctx.register_transcription_provide
 
 Subclass `agent.transcription_provider.TranscriptionProvider`. The only required members are the `name` property and the `transcribe()` method.
 
-The running example is a complete, working provider for [Voicebox](https://docs.voicebox.sh), a local-first voice studio whose FastAPI backend bundles Whisper (base → turbo) behind a loopback HTTP API. It's a useful reference because it covers the shapes a shell template can't: multipart upload to a local service, a model catalog, and a retryable "model still downloading" condition mapped onto the error envelope. It's also published as an installable standalone plugin — [`hermes-voicebox`](https://github.com/jamiepine/hermes-voicebox) — if you'd rather read (or just use) the shipping version, which adds a shared HTTP client, a TTS sibling, a bundled skill, and an offline test suite.
+The running example is a complete, working provider for [Voicebox](https://docs.voicebox.sh), a local-first voice studio whose FastAPI backend bundles Whisper (base → turbo) behind a loopback HTTP API. It's a useful reference because it covers the shapes a shell template can't: multipart upload to a local service, a model catalog, and a retryable "model still downloading" condition mapped onto the error envelope. It's also published as an installable standalone plugin — [`hermes-voicebox`](https://github.com/jamiepine/hermes-voicebox) on [PyPI](https://pypi.org/project/hermes-voicebox/) (`pip install hermes-voicebox`) — if you'd rather read (or just use) the shipping version, which adds a shared HTTP client, a TTS sibling, a bundled skill, and an offline test suite.
 
 ```python
 # ~/.hermes/plugins/transcription/voicebox/__init__.py

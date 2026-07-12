@@ -46,7 +46,7 @@ Each plugin's `register(ctx)` function calls `ctx.register_tts_provider(...)` �
 
 Subclass `agent.tts_provider.TTSProvider`. The only required members are the `name` property and the `synthesize()` method — everything else has sane defaults.
 
-The running example below is a complete, working provider for [Voicebox](https://docs.voicebox.sh), a local-first voice studio (voice cloning, preset voices, seven TTS engines). It's a good reference precisely because it exercises the parts a shell template can't: an HTTP API on localhost, a voice catalog fetched at runtime, and a fixed output format that differs from the requested one. It's also published as an installable standalone plugin — [`hermes-voicebox`](https://github.com/jamiepine/hermes-voicebox) — if you'd rather read (or just use) the shipping version, which adds a shared HTTP client, an STT sibling, a bundled skill, and an offline test suite.
+The running example below is a complete, working provider for [Voicebox](https://docs.voicebox.sh), a local-first voice studio (voice cloning, preset voices, seven TTS engines). It's a good reference precisely because it exercises the parts a shell template can't: an HTTP API on localhost, a voice catalog fetched at runtime, and a fixed output format that differs from the requested one. It's also published as an installable standalone plugin — [`hermes-voicebox`](https://github.com/jamiepine/hermes-voicebox) on [PyPI](https://pypi.org/project/hermes-voicebox/) (`pip install hermes-voicebox`) — if you'd rather read (or just use) the shipping version, which adds a shared HTTP client, an STT sibling, a bundled skill, and an offline test suite.
 
 ```python
 # ~/.hermes/plugins/tts/voicebox/__init__.py

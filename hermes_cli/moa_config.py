@@ -272,5 +272,62 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
     return encode_moa_turn(user_prompt, config, preset=preset)
 
 
+def resolve_moa_request(
+    provider: Any,
+    model: Any,
+    config: Any,
+    *,
+    model_explicit: bool,
+) -> tuple[str, str] | None:
+    """Normalize a non-interactive provider/model request onto MoA.
+
+    Returns ``("moa", <bare preset name>)`` when the request targets the MoA
+    virtual provider, else ``None``. This is the resolution seam for
+    ``hermes chat -q``/``hermes -z`` (#56828), which previously sent literal
+    ``moa:<preset>`` model strings to real provider APIs.
+
+    Rules:
+    - A ``moa:`` / ``moa/`` model prefix (case-insensitive scheme) is an
+      EXPLICIT selection: it wins over a conflicting ``provider`` and may
+      target disabled presets — the ``enabled`` opt-out only guards implicit
+      bare-name matches (see ``exact_moa_preset_name``, #55187). An unknown
+      preset raises ``ValueError`` naming the available presets.
+    - ``provider == "moa"``: a model naming a known preset is used as-is; an
+      empty model or a config-inherited non-preset model
+      (``model_explicit=False``) falls back to ``default_preset``; an
+      explicitly requested non-preset model raises ``ValueError`` (mirrors
+      the interactive ``/model`` acceptance rule in ``hermes_cli/models.py``).
+
+    ``config`` is the full loaded config dict (the ``moa`` section is read
+    from it); non-dict values behave as an empty config.
+    """
+    provider_norm = str(provider or "").strip().lower()
+    model_norm = str(model or "").strip()
+    lowered = model_norm.lower()
+
+    prefixed = lowered.startswith(("moa:", "moa/"))
+    if prefixed:
+        preset = model_norm[4:].strip()
+    elif provider_norm == "moa":
+        preset = model_norm
+    else:
+        return None
+
+    moa_section = config.get("moa") if isinstance(config, dict) else {}
+    cfg = normalize_moa_config(moa_section)
+    if not preset:
+        return ("moa", cfg["default_preset"])
+    if preset in cfg["presets"]:
+        return ("moa", preset)
+    if prefixed or model_explicit:
+        available = ", ".join(sorted(cfg["presets"])) or "(none configured)"
+        raise ValueError(
+            f"Unknown MoA preset {preset!r}. Available presets: {available}"
+        )
+    # provider=moa with a stale config-inherited real-model default: the
+    # user never asked for that model here, so run the default preset.
+    return ("moa", cfg["default_preset"])
+
+
 def moa_usage() -> str:
     return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"

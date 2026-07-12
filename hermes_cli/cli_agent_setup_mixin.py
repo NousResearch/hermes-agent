@@ -35,6 +35,26 @@ class CLIAgentSetupMixin:
             format_runtime_provider_error,
         )
 
+        # MoA virtual provider (#56828): recognize `-m moa:<preset>` /
+        # `--provider moa` here so classic non-interactive chat resolves the
+        # virtual provider instead of sending the literal model string to a
+        # real API. Idempotent: once normalized, re-resolution is a no-op.
+        from hermes_cli.moa_config import resolve_moa_request
+
+        _cli_config = getattr(self, "config", None)
+        try:
+            _moa = resolve_moa_request(
+                self.requested_provider,
+                self.model,
+                _cli_config if isinstance(_cli_config, dict) else {},
+                model_explicit=not getattr(self, "_model_is_default", True),
+            )
+        except ValueError as exc:
+            ChatConsole().print(f"[bold red]{exc}[/]")
+            return False
+        if _moa is not None:
+            self.requested_provider, self.model = _moa
+
         _primary_exc = None
         runtime = None
         try:

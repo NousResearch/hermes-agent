@@ -39,7 +39,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 try:
     from croniter import croniter
@@ -760,7 +760,7 @@ def _atomic_write_epoch(path: Path) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, path)
     except BaseException:
         try:
@@ -877,7 +877,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, jobs_file)
         _secure_file(jobs_file)
     except BaseException:
@@ -2173,7 +2173,7 @@ def save_job_output(job_id: str, output: str):
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(output)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, output_file)
         _secure_file(output_file)
     except BaseException:

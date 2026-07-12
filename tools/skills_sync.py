@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def _write_manifest(entries: Dict[str, str]):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(data)
                 f.flush()
-                os.fsync(f.fileno())
+                durable_fsync(f.fileno())
             atomic_replace(tmp_path, MANIFEST_FILE)
         except BaseException:
             try:
@@ -469,7 +469,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(payload)
                 f.flush()
-                os.fsync(f.fileno())
+                durable_fsync(f.fileno())
             atomic_replace(tmp_path, lock_path)
         except BaseException:
             try:

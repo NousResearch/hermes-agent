@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, normalize_proxy_env_vars
+from utils import base_url_host_matches, durable_fsync, normalize_proxy_env_vars
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -1183,7 +1183,7 @@ def _write_claude_code_credentials(
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(existing, fh, indent=2)
                 fh.flush()
-                os.fsync(fh.fileno())
+                durable_fsync(fh.fileno())
             os.replace(_tmp_cred, cred_path)
         except OSError:
             try:

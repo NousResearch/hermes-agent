@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
                 indent=2,
             )
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         atomic_replace(tmp_path, SUGGESTIONS_FILE)
         _secure_file(SUGGESTIONS_FILE)
     except BaseException:

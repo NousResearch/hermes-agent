@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from utils import durable_fsync
 
 
 CACHE_PATH = get_hermes_home() / "sticker_cache.json"
@@ -46,7 +47,7 @@ def _save_cache(cache: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=2, ensure_ascii=False)
             f.flush()
-            os.fsync(f.fileno())
+            durable_fsync(f.fileno())
         os.replace(tmp_path, str(CACHE_PATH))
     except BaseException:
         try:

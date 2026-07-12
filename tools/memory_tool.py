@@ -33,7 +33,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -775,7 +775,7 @@ class MemoryStore:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(content)
                     f.flush()
-                    os.fsync(f.fileno())
+                    durable_fsync(f.fileno())
                 atomic_replace(tmp_path, path)
             except BaseException:
                 # Clean up temp file on any failure

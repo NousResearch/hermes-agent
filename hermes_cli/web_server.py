@@ -84,7 +84,7 @@ from gateway.status import (
     parse_active_agents,
     read_runtime_status,
 )
-from utils import env_var_enabled
+from utils import durable_fsync, env_var_enabled
 
 try:
     from fastapi import (
@@ -16902,7 +16902,7 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         ) as fh:
             fh.write(payload)
             fh.flush()
-            os.fsync(fh.fileno())
+            durable_fsync(fh.fileno())
             tmp_name = fh.name
         os.replace(tmp_name, path)
     except Exception as exc:

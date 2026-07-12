@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from hermes_constants import secure_parent_dir
+from utils import durable_fsync
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +272,7 @@ def _write_json(path: Path, data: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, default=str)
             fh.flush()
-            os.fsync(fh.fileno())
+            durable_fsync(fh.fileno())
         os.replace(tmp, path)
     except OSError:
         try:

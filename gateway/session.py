@@ -94,7 +94,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -1283,7 +1283,7 @@ class SessionStore:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
                 f.flush()
-                os.fsync(f.fileno())
+                durable_fsync(f.fileno())
             atomic_replace(tmp_path, sessions_file)
         except BaseException:
             try:

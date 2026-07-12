@@ -91,7 +91,7 @@ except (ModuleNotFoundError, ImportError):
         except ValueError:
             return str(home)
 
-from utils import atomic_replace
+from utils import atomic_replace, durable_fsync
 
 
 def _hermes_home() -> Path:
@@ -344,7 +344,7 @@ def _write_private_json(path: Path, data: Any) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
             fh.flush()
-            os.fsync(fh.fileno())
+            durable_fsync(fh.fileno())
         atomic_replace(tmp_path, path)
         try:
             os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)

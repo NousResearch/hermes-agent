@@ -1618,6 +1618,88 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+_ANTHROPIC_SCHEMA_PROPERTY_KEY_RE = None
+
+
+def _sanitize_anthropic_schema_property_key(key: str, seen: set[str]) -> str:
+    """Return a property key accepted by Anthropic's tool schema validator."""
+    import hashlib
+    import re
+
+    original = str(key or "")
+    sanitized = original.replace("[]", "")
+    sanitized = re.sub(r"[^a-zA-Z0-9_.-]+", "_", sanitized)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    if not sanitized:
+        sanitized = "property"
+    sanitized = sanitized[:64]
+    if sanitized not in seen:
+        seen.add(sanitized)
+        return sanitized
+
+    suffix = "_" + hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
+    base = sanitized[: 64 - len(suffix)] or "property"
+    candidate = base + suffix
+    counter = 2
+    while candidate in seen:
+        extra = f"_{counter}"
+        candidate = base[: 64 - len(suffix) - len(extra)] + suffix + extra
+        counter += 1
+    seen.add(candidate)
+    return candidate
+
+
+def _sanitize_anthropic_schema_property_keys(node: Any) -> Any:
+    """Recursively rewrite JSON Schema property keys to Anthropic-safe names."""
+    import re
+
+    global _ANTHROPIC_SCHEMA_PROPERTY_KEY_RE
+    if _ANTHROPIC_SCHEMA_PROPERTY_KEY_RE is None:
+        _ANTHROPIC_SCHEMA_PROPERTY_KEY_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+
+    if isinstance(node, list):
+        return [_sanitize_anthropic_schema_property_keys(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out = {
+        key: _sanitize_anthropic_schema_property_keys(value)
+        for key, value in node.items()
+    }
+    properties = out.get("properties")
+    if isinstance(properties, dict):
+        key_map: dict[str, str] = {}
+        seen: set[str] = set()
+        safe_properties: dict[str, Any] = {}
+        for prop_key, prop_schema in properties.items():
+            prop_key_str = str(prop_key)
+            if (
+                _ANTHROPIC_SCHEMA_PROPERTY_KEY_RE.match(prop_key_str)
+                and prop_key_str not in seen
+            ):
+                safe_key = prop_key_str
+                seen.add(safe_key)
+            else:
+                safe_key = _sanitize_anthropic_schema_property_key(prop_key_str, seen)
+            key_map[prop_key_str] = safe_key
+            safe_properties[safe_key] = prop_schema
+        out["properties"] = safe_properties
+
+        required = out.get("required")
+        if isinstance(required, list):
+            rewritten_required = [
+                key_map.get(req, req)
+                for req in required
+                if isinstance(req, str) and key_map.get(req, req) in safe_properties
+            ]
+            if rewritten_required:
+                out["required"] = rewritten_required
+            else:
+                out.pop("required", None)
+
+    return out
+
+
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     """Normalize tool schemas before sending them to Anthropic.
 
@@ -1656,6 +1738,7 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
             normalized["type"] = "object"
     if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
         normalized = {**normalized, "properties": {}}
+    normalized = _sanitize_anthropic_schema_property_keys(normalized)
     return normalized
 
 

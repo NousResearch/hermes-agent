@@ -2,6 +2,30 @@
 
 Native, offline-safe stylus client for the Hermes Notebook platform.
 
+> [!IMPORTANT]
+> This APK is a client, not a standalone Hermes installation. Sending pages to
+> Hermes requires the Kindle/Notebook gateway adapter introduced by
+> [NousResearch/hermes-agent PR #61687](https://github.com/NousResearch/hermes-agent/pull/61687)
+> to be installed, enabled, configured, and running on the Hermes host. Without
+> that PR's `plugins/platforms/kindle` adapter, the app can draw and save pages
+> offline but cannot connect to Hermes.
+
+## Required Hermes dependency
+
+The complete system has two required halves:
+
+```text
+Android / BOOX APK
+        -> private HTTPS endpoint
+Kindle/Notebook gateway adapter from PR #61687
+        -> Hermes Gateway, sessions, tools, and memory
+```
+
+The Android app does not include Hermes, the Gateway, or a public relay. The
+Hermes operator must deploy the PR branch, enable `platforms/kindle`, configure
+its token and allowed user, and provide the tester with a private HTTPS endpoint.
+See [BOOX-TESTING.md](BOOX-TESTING.md#hermes-operator-setup) for the exact setup.
+
 ## Product guarantees
 
 - Pen samples preserve pressure, tilt, orientation, historical points, and eraser input.

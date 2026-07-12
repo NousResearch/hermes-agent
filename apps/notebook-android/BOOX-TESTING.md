@@ -3,6 +3,13 @@
 Thank you for testing Hermes Notebook. This is an early debug build: use a
 non-critical notebook page and do not enter secrets into screenshots or bug reports.
 
+> [!IMPORTANT]
+> The APK does not provide Hermes by itself. Hermes replies require the
+> Kindle/Notebook gateway adapter from
+> [NousResearch/hermes-agent PR #61687](https://github.com/NousResearch/hermes-agent/pull/61687)
+> to be deployed and running on the Hermes host. Without that adapter, drawing
+> and offline recovery still work, but **Send cannot connect to Hermes**.
+
 ## 1. Download and install
 
 1. Open [PR #61687](https://github.com/NousResearch/hermes-agent/pull/61687).
@@ -14,6 +21,9 @@ non-critical notebook page and do not enter secrets into screenshots or bug repo
 The debug APK is not a public release and does not update automatically.
 
 ## 2. Connect to Hermes
+
+Before this step, confirm the Hermes operator completed
+[Hermes operator setup](#hermes-operator-setup) using the PR #61687 branch.
 
 The BOOX app needs two values from the Hermes operator:
 
@@ -71,6 +81,10 @@ private notebook text before sharing.
 ## Hermes operator setup
 
 These steps run on the Hermes host, not on the BOOX tablet.
+
+These steps require the Kindle/Notebook gateway work in PR #61687. They will not
+work against an ordinary Hermes checkout that does not contain
+`plugins/platforms/kindle`.
 
 1. Check out the PR branch and install Hermes normally.
 2. Enable the bundled platform:

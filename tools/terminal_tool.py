@@ -2356,17 +2356,35 @@ def terminal_tool(
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
         if os.environ.get("_HERMES_GATEWAY") == "1":
-            from hermes_cli.cron import _contains_gateway_lifecycle_command
-            if _contains_gateway_lifecycle_command(command):
+            from cron.lifecycle_guard import (
+                contains_gateway_lifecycle_command_or_referenced_script,
+                contains_launchctl_submit_command,
+            )
+            if contains_launchctl_submit_command(command):
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,
                     "error": (
-                        "Blocked: cannot restart or stop the gateway from inside the "
-                        "gateway process. The gateway would kill this command before "
-                        "it could complete (SIGTERM propagates to child processes). "
-                        "Run `hermes gateway restart` from a separate shell outside "
-                        "the running gateway."
+                        "Blocked: launchctl submit creates a persistent KeepAlive job "
+                        "and is unsafe from inside the gateway process. Use Hermes cron "
+                        "for one-shot delayed work, or install an explicit LaunchAgent "
+                        "from a separate shell."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
+            if contains_gateway_lifecycle_command_or_referenced_script(
+                command,
+                cwd=workdir or cwd,
+            ):
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": (
+                        "Blocked: command or referenced script cannot restart or stop "
+                        "the gateway from inside the gateway process. The gateway would "
+                        "kill this command before it could complete (SIGTERM propagates "
+                        "to child processes). Run `hermes gateway restart` from a "
+                        "separate shell outside the running gateway."
                     ),
                     "status": "error",
                 }, ensure_ascii=False)

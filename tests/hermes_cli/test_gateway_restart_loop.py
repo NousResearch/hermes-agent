@@ -338,6 +338,61 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
 
+    def test_blocks_lifecycle_command_hidden_in_referenced_script(
+        self, monkeypatch, tmp_path
+    ):
+        import tools.terminal_tool as tt
+
+        script = tmp_path / "delayed-ops.sh"
+        script.write_text("#!/bin/bash\nsleep 45\nhermes gateway restart\n")
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command=f"/bin/bash {script}"))
+
+        assert result["exit_code"] == 1
+        assert "referenced script" in result["error"]
+
+    def test_blocks_launchctl_submit_inside_gateway(self, monkeypatch, tmp_path):
+        import tools.terminal_tool as tt
+
+        script = tmp_path / "health-check.sh"
+        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n")
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(
+            command=(
+                "launchctl submit -l ai.hermes.delayed-ops -- "
+                f"/bin/bash {script}"
+            )
+        ))
+
+        assert result["exit_code"] == 1
+        assert "KeepAlive" in result["error"]
+
+    def test_safe_referenced_script_passes_through(self, monkeypatch, tmp_path):
+        import tools.terminal_tool as tt
+
+        calls = []
+        script = tmp_path / "health-check.sh"
+        script.write_text("#!/bin/bash\nprintf 'healthy\\n'\n")
+
+        class _FakeEnv:
+            env = {}
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "healthy", "returncode": 0}
+
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=True)
+        monkeypatch.setattr(
+            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
+        )
+        command = f"/bin/bash {script}"
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] == 0
+        assert calls == [command]
+
     def test_safe_systemctl_commands_pass_through(self, monkeypatch):
         """Non-hermes systemctl commands must not be blocked by this guard."""
         import tools.terminal_tool as tt

@@ -278,6 +278,50 @@ def test_api_mode_normalizes_provider_case(monkeypatch):
     assert agent.api_mode == "codex_responses"
 
 
+def test_responses_transport_defaults_to_sse(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    assert agent.responses_transport == "sse"
+
+
+def test_responses_transport_auto_falls_back_to_sse_before_start(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.responses_transport = "auto"
+    final = _codex_message_response("ok")
+    calls = {"websocket": 0, "sse": 0}
+
+    def fake_ws(**kwargs):
+        calls["websocket"] += 1
+        from agent.codex_websocket_transport import WebSocketNotStartedError
+        raise WebSocketNotStartedError("unsupported before start")
+
+    class Responses:
+        def stream(self, **kwargs):
+            calls["sse"] += 1
+            return _FakeResponsesStream(final_response=final)
+
+    monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
+    result = agent._run_codex_stream(_codex_request_kwargs(), client=SimpleNamespace(responses=Responses()))
+    assert result is final
+    assert calls == {"websocket": 1, "sse": 1}
+
+
+def test_responses_transport_websocket_forced_does_not_fallback(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.responses_transport = "websocket"
+
+    def fake_ws(**kwargs):
+        from agent.codex_websocket_transport import WebSocketNotStartedError
+        raise WebSocketNotStartedError("unsupported before start")
+
+    class Responses:
+        def stream(self, **kwargs):
+            raise AssertionError("SSE must not run for forced websocket")
+
+    monkeypatch.setattr("agent.codex_websocket_transport.run_codex_websocket_stream", fake_ws)
+    with pytest.raises(Exception, match="unsupported before start"):
+        agent._run_codex_stream(_codex_request_kwargs(), client=SimpleNamespace(responses=Responses()))
+
+
 def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):
     """GPT-5.x models need codex_responses even on OpenRouter.
 

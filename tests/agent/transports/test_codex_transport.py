@@ -744,6 +744,22 @@ class TestCodexBuildKwargs:
         assert "reasoning" not in kw
 
 
+class TestCodexPreflightKwargs:
+    def test_previous_response_id_survives_only_when_present(self):
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+        base = {
+            "model": "codex",
+            "instructions": "You are helpful",
+            "input": [{"role": "user", "content": "hi"}],
+            "store": False,
+        }
+        assert "previous_response_id" not in _preflight_codex_api_kwargs(dict(base))
+        with_previous = dict(base)
+        with_previous["previous_response_id"] = "resp_123"
+        assert _preflight_codex_api_kwargs(with_previous)["previous_response_id"] == "resp_123"
+
+
 class TestCodexValidateResponse:
 
     def test_none_response(self, transport):

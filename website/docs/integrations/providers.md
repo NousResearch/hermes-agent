@@ -83,6 +83,8 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add openai-codex` (or `hermes model` → OpenAI Codex) to start a fresh device-code login; the quarantine clears on the next successful exchange.
+
+Codex Responses uses SSE streaming by default. Advanced users can opt into the ChatGPT Codex WebSocket transport with `model.responses_transport: websocket`, `websocket-cached`, or `auto` in `config.yaml`. `websocket-cached` reuses a session-scoped socket and sends appended input deltas with upstream `previous_response_id` when strict prefix checks pass. Initial support is limited to the `openai-codex` provider on `https://chatgpt.com/backend-api/codex`; custom and generic OpenAI Responses endpoints keep the SSE path unless explicitly supported later. The WebSocket path uses the optional `websockets` package and may not inherit custom SDK/httpx enterprise transports, so keep `responses_transport: sse` for routed environments.
 :::
 
 :::warning

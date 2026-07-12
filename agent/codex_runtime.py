@@ -1207,6 +1207,58 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
 
+    def _interrupt_check() -> bool:
+        return bool(agent._interrupt_requested)
+
+    transport = getattr(agent, "responses_transport", "sse") or "sse"
+    if transport != "sse":
+        from agent.codex_websocket_transport import (
+            WebSocketNotStartedError,
+            run_codex_websocket_stream,
+        )
+
+        timeout = api_kwargs.get("timeout")
+        timeout = float(timeout) if isinstance(timeout, (int, float)) and timeout > 0 else None
+
+        def _consume_websocket_events(events, _get_final_response=None):
+            return _consume_codex_event_stream(
+                events,
+                model=api_kwargs.get("model"),
+                on_text_delta=_on_text_delta,
+                on_reasoning_delta=_on_reasoning_delta,
+                on_commentary_message=(
+                    _on_commentary_message
+                    if (
+                        getattr(agent, "interim_assistant_callback", None) is not None
+                        and getattr(agent, "show_commentary", True)
+                    )
+                    else None
+                ),
+                on_first_delta=on_first_delta,
+                on_event=_on_event,
+                interrupt_check=_interrupt_check,
+            )
+
+        try:
+            return run_codex_websocket_stream(
+                api_kwargs=api_kwargs,
+                client=active_client,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                session_id=agent.session_id,
+                transport=transport,
+                collect_events=_consume_websocket_events,
+                interrupted=_interrupt_check,
+                timeout=timeout,
+            )
+        except WebSocketNotStartedError as exc:
+            if transport != "auto":
+                raise
+            logger.debug(
+                "Codex WebSocket auto mode fell back to SSE before request start: %s",
+                exc,
+            )
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")

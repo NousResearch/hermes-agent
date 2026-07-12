@@ -249,7 +249,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 
 Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
 
-The tool error message is always `Write denied: '…' is a protected system/credential file.` even when the actual reason is the safe-root sandbox below. If the path does not look like a credential file, check `echo $HERMES_WRITE_SAFE_ROOT`.
+Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`
 
 ### HERMES_WRITE_SAFE_ROOT (optional sandbox)
 

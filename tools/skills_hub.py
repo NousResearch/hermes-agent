@@ -3555,7 +3555,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
 
     dest = _quarantine_dir() / skill_name
     if dest.exists():
-        shutil.rmtree(dest)
+        shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
 
     for rel_path, file_content in validated_files:

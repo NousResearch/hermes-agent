@@ -139,6 +139,37 @@ def test_late_pid_registration_cannot_reanimate_parked_worker(kanban_home):
         assert "spawned" not in [event.kind for event in kb.list_events(conn, task.id)]
 
 
+def test_late_pid_registration_cannot_attach_to_successor_run(kanban_home):
+    with kb.connect() as conn:
+        first = _claimed_task(conn)
+        first_run_id = first.current_run_id
+        first_claim_lock = first.claim_lock
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, current_run_id = NULL WHERE id = ?",
+                (first.id,),
+            )
+            conn.execute(
+                "UPDATE task_runs SET status = 'released', outcome = 'released', "
+                "ended_at = 1 WHERE id = ?",
+                (first_run_id,),
+            )
+        successor = kb.claim_task(conn, first.id, claimer="test:successor")
+        assert successor is not None
+        assert successor.current_run_id != first_run_id
+
+        assert kb._set_worker_pid(
+            conn,
+            first.id,
+            424242,
+            expected_run_id=first_run_id,
+            expected_claim_lock=first_claim_lock,
+        ) is False
+        assert kb.get_task(conn, first.id).worker_pid is None
+        assert kb.get_run(conn, successor.current_run_id).worker_pid is None
+
+
 def test_request_is_owner_cas_and_idempotent(kanban_home):
     with kb.connect() as conn:
         task = _claimed_task(conn)

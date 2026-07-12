@@ -8111,7 +8111,14 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> bool:
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Optional[str] = None,
+) -> bool:
     """CAS-record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
@@ -8122,20 +8129,32 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> bool:
     """
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if (
             row is None
             or row["status"] != "running"
             or row["current_run_id"] is None
+            or (
+                expected_run_id is not None
+                and int(row["current_run_id"]) != int(expected_run_id)
+            )
+            or (
+                expected_claim_lock is not None
+                and row["claim_lock"] != expected_claim_lock
+            )
         ):
             return False
         run_id = int(row["current_run_id"])
         task_update = conn.execute(
             "UPDATE tasks SET worker_pid = ? "
-            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-            (int(pid), task_id, run_id),
+            "WHERE id = ? AND status = 'running' AND current_run_id = ? "
+            "  AND (? IS NULL OR claim_lock = ?)",
+            (
+                int(pid), task_id, run_id,
+                expected_claim_lock, expected_claim_lock,
+            ),
         )
         if task_update.rowcount != 1:
             return False
@@ -8734,7 +8753,13 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=claimed.current_run_id,
+                    expected_claim_lock=claimed.claim_lock,
+                )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -8845,7 +8870,13 @@ def _dispatch_once_locked(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    expected_run_id=claimed.current_run_id,
+                    expected_claim_lock=claimed.claim_lock,
+                )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:

@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import shutil
+from unittest.mock import patch
 
 import pytest
 
@@ -63,6 +64,27 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled(None) is False
 
 
+def test_config_read_failure_blocks_instead_of_allowing(hermes_home):
+    from tools import write_approval as wa
+
+    with patch("hermes_cli.config.load_config", side_effect=RuntimeError("config unreadable")):
+        decision = wa.evaluate_gate(wa.MEMORY)
+
+    assert decision.blocked is True
+    assert decision.allow is False
+    assert "configuration" in decision.message.lower()
+
+
+def test_status_command_reports_config_failure_as_blocked(hermes_home):
+    from hermes_cli.write_approval_commands import _fmt_state
+
+    with patch("hermes_cli.config.load_config", side_effect=RuntimeError("config unreadable")):
+        state = _fmt_state("memory")
+
+    assert "unavailable" in state.lower()
+    assert "blocked" in state.lower()
+
+
 # ---------------------------------------------------------------------------
 # Memory gate
 # ---------------------------------------------------------------------------
@@ -76,6 +98,26 @@ def test_memory_gate_off_allows_write(hermes_home):
     assert r["success"] is True
     assert r["entry_count"] == 1
     assert wa.pending_count("memory") == 0
+
+
+def test_memory_gate_module_import_failure_blocks_write(hermes_home):
+    import builtins
+    import tools.memory_tool as mt
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools" and "write_approval" in (fromlist or ()):
+            raise ImportError("gate unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    with patch("builtins.__import__", side_effect=guarded_import):
+        raw = mt._apply_write_gate("add", "memory", "must not write", None)
+
+    assert raw is not None
+    result = json.loads(raw)
+    assert result["success"] is False
+    assert "gate" in result["error"].lower()
 
 
 def test_memory_gate_on_no_interactive_stages(hermes_home):
@@ -183,6 +225,26 @@ def test_skill_gate_off_allows_create(hermes_home):
     r = json.loads(smt.skill_manage("create", "free-skill", content=_SKILL))
     assert r.get("success") is True
     assert wa.pending_count("skills") == 0
+
+
+def test_skill_gate_module_import_failure_blocks_write(hermes_home):
+    import builtins
+    import tools.skill_manager_tool as smt
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools" and "write_approval" in (fromlist or ()):
+            raise ImportError("gate unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    with patch("builtins.__import__", side_effect=guarded_import):
+        raw = smt._apply_skill_write_gate("create", "must-not-write", content=_SKILL)
+
+    assert raw is not None
+    result = json.loads(raw)
+    assert result["success"] is False
+    assert "gate" in result["error"].lower()
 
 
 def test_skill_gate_on_always_stages(hermes_home):

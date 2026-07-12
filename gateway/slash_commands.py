@@ -2822,7 +2822,11 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 
-        gate_on = wa.write_approval_enabled(wa.SKILLS)
+        try:
+            gate_on = wa.write_approval_enabled(wa.SKILLS)
+        except wa.WriteApprovalConfigError:
+            # Fail closed: keep the review surface available while writes are blocked.
+            gate_on = True
         wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
         if not gate_on and not wants_toggle and wa.pending_count(wa.SKILLS) == 0:
             return ("Skill write approval is off (skills.write_approval). "

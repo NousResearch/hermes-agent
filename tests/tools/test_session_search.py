@@ -638,3 +638,141 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+
+# =========================================================================
+# Output redaction (#54027)
+# =========================================================================
+
+# Fake credentials shaped to match agent.redact prefix patterns. Never real.
+_FAKE_OPENAI_KEY = "sk-hermesFAKEtestkey1234567890abcdefghij"
+_FAKE_GITHUB_PAT = "ghp_FAKEtestpat567890abcdefghijklmnopqrs"
+
+
+def _seed_secret_session(db):
+    """One session whose stored content embeds credential-shaped tokens.
+
+    The key sits inside the first 60 chars of the first user message so it
+    also flows through the browse shape's preview column.
+    """
+    now = int(time.time())
+    db.create_session("s_secrets", source="cli")
+    db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                     (now - 5000, "Deploy Key Rotation", "s_secrets"))
+    db.append_message("s_secrets", role="user",
+                      content=f"Use key {_FAKE_OPENAI_KEY} for the wombat deploy")
+    db.append_message("s_secrets", role="assistant",
+                      content=f"Deployed with token {_FAKE_GITHUB_PAT}; wombat rollout done.")
+    db._conn.commit()
+
+
+class TestOutputRedaction:
+    """Stored session text is redacted on its way back into model context.
+
+    Transcripts are written before any output-time redaction ran on them
+    (and DBs older than the redactor entirely so), so recall is the one
+    boundary every stored secret must pass to leak. Same policy as
+    read_file / search_files: redact_sensitive_text(..., file_read=True),
+    which emits non-reusable sentinels («redacted:sk-…») instead of
+    head/tail-preserving masks (issue #35519).
+    """
+
+    def test_discover_window_content_redacted(self, db):
+        _seed_secret_session(db)
+        raw = session_search(query="wombat", db=db)
+        assert _FAKE_OPENAI_KEY not in raw
+        assert _FAKE_GITHUB_PAT not in raw
+        result = json.loads(raw)
+        assert result["count"] >= 1
+        contents = [m.get("content") or ""
+                    for hit in result["results"] for m in hit["messages"]]
+        assert any("«redacted:sk-…»" in c for c in contents)
+
+    def test_discover_snippet_redacted(self, db):
+        _seed_secret_session(db)
+        result = json.loads(session_search(query="wombat", db=db))
+        assert result["count"] >= 1
+        for hit in result["results"]:
+            assert _FAKE_OPENAI_KEY not in hit["snippet"]
+            assert _FAKE_GITHUB_PAT not in hit["snippet"]
+
+    def test_read_shape_redacted(self, db):
+        _seed_secret_session(db)
+        raw = session_search(session_id="s_secrets", db=db)
+        assert _FAKE_OPENAI_KEY not in raw
+        assert _FAKE_GITHUB_PAT not in raw
+        contents = [m.get("content") or "" for m in json.loads(raw)["messages"]]
+        assert any("«redacted:sk-…»" in c for c in contents)
+        assert any("«redacted:ghp_…»" in c for c in contents)
+
+    def test_scroll_shape_redacted(self, db):
+        _seed_secret_session(db)
+        anchor = json.loads(session_search(session_id="s_secrets", db=db))["messages"][0]["id"]
+        raw = session_search(session_id="s_secrets", around_message_id=anchor, db=db)
+        assert json.loads(raw)["mode"] == "scroll"
+        assert _FAKE_OPENAI_KEY not in raw
+        assert _FAKE_GITHUB_PAT not in raw
+
+    def test_browse_preview_redacted(self, db):
+        _seed_secret_session(db)
+        raw = session_search(db=db)
+        assert _FAKE_OPENAI_KEY not in raw
+        previews = [r.get("preview") or "" for r in json.loads(raw)["results"]]
+        assert any("«redacted:sk-…»" in p for p in previews)
+
+    def test_multimodal_content_parts_redacted(self, db):
+        # content round-trips _decode_content and comes back as a LIST of
+        # parts for multimodal messages — string-only redaction would skip it.
+        db.create_session("s_multi", source="cli")
+        db.append_message("s_multi", role="user", content=[
+            {"type": "text", "text": f"key is {_FAKE_OPENAI_KEY} ok"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
+        ])
+        raw = session_search(session_id="s_multi", db=db)
+        assert _FAKE_OPENAI_KEY not in raw
+        parts = json.loads(raw)["messages"][0]["content"]
+        assert isinstance(parts, list)
+        assert "«redacted:sk-…»" in parts[0]["text"]
+        assert parts[1]["image_url"]["url"] == "https://example.com/x.png"
+
+    def test_tool_calls_arguments_redacted(self, db):
+        # tool_calls are FTS-indexed (discover can anchor on them) and
+        # deserialize to structured dicts — their string leaves must redact.
+        db.create_session("s_calls", source="cli")
+        db.append_message("s_calls", role="assistant", content="", tool_calls=[{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "terminal",
+                         "arguments": f'{{"cmd": "export OPENAI_API_KEY={_FAKE_OPENAI_KEY}"}}'},
+        }])
+        raw = session_search(session_id="s_calls", db=db)
+        assert _FAKE_OPENAI_KEY not in raw
+        call = json.loads(raw)["messages"][0]["tool_calls"][0]
+        assert call["function"]["name"] == "terminal"
+        assert "«redacted:sk-…»" in call["function"]["arguments"]
+
+    def test_session_title_redacted_everywhere(self, db):
+        # Titles are stored text too (generated or user-set) and flow through
+        # browse, read/scroll session_meta, and discover result rows.
+        now = int(time.time())
+        db.create_session("s_titled", source="cli")
+        db._conn.execute("UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                         (now - 100, f"Rotating {_FAKE_GITHUB_PAT} today", "s_titled"))
+        db.append_message("s_titled", role="user", content="rotate the aardvark token")
+        db._conn.commit()
+
+        for raw in (
+            session_search(db=db),                                   # browse
+            session_search(session_id="s_titled", db=db),            # read
+            session_search(query="aardvark", db=db),                 # discover
+        ):
+            assert _FAKE_GITHUB_PAT not in raw
+            assert "«redacted:ghp_…»" in raw
+
+    def test_benign_content_passes_unchanged(self, db):
+        # Redaction must not mangle ordinary session text (#57735-class risk).
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(session_id="s_oldest", db=db))
+        contents = [m.get("content") for m in result["messages"]]
+        assert "Let's build a Minecraft modpack" in contents
+        assert "Done. Modpack repo created with NeoForge 1.21.1." in contents

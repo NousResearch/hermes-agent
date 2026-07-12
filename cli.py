@@ -12820,12 +12820,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not isinstance(messages, list) or not messages:
             return
 
-        conversation_history = getattr(self, "conversation_history", None)
-        if not isinstance(conversation_history, list):
-            conversation_history = messages
-
         try:
-            agent._persist_session(messages, conversation_history)
+            # Do not pass CLI conversation_history here: during interrupted
+            # shutdown it can alias _session_messages, which makes the DB flush
+            # treat every live message as already durable.
+            agent._persist_session(messages)
             if getattr(agent, "session_id", None):
                 self.session_id = agent.session_id
         except (Exception, KeyboardInterrupt) as e:

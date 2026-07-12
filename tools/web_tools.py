@@ -463,7 +463,7 @@ Extract all important information from this section in a structured format. Focu
 
     else:
         # Standard full-document prompt
-        system_prompt = """You are an expert content analyst. Your job is to process web content and create a comprehensive yet concise summary that preserves all important information while dramatically reducing bulk.
+        system_prompt = """You are an expert content analyst. Your job is to process web content and create a comprehensive, well-structured summary that preserves all important information while removing redundant filler. Accuracy and completeness are paramount — never omit key facts, figures, or insights to save space.
 
 Create a well-structured markdown summary that includes:
 1. Key excerpts (quotes, code snippets, important facts) in their original format

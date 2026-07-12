@@ -145,11 +145,38 @@ cannot later be converted into send authority.
 
 The Canonical route-back path and the primary Discord adapter reject DMs,
 group DMs, private channels, private threads, and guild surfaces that the live
-Discord `@everyone` role cannot view. This is not yet a global
-Discord-egress guarantee: alternate media, prompt, edit, plugin, or direct REST
-paths may still hold the Discord token outside this boundary. A separate
-privileged Discord-egress gate is required before claiming that *all* Muncho
-Discord sends are public-only.
+Discord `@everyone` role cannot view. When the privileged writer policy is
+declared enabled, inbound DM/private interactions are ignored, native slash
+and component callbacks fail closed before responding, prompt/edit/media paths
+repeat the public-target proof, the send-message tool prefers the live adapter,
+standalone Discord REST delivery is disabled, typing re-attests before every
+request, and voice egress re-attests immediately before playback and tears down
+on bot moves, channel changes, or `@everyone` role changes. Voice proof also
+requires the default role's effective `CONNECT`, preventing a bot-role override
+from speaking into a visible but closed-audience channel. Raw Discord channel
+mutations also re-read the current channel, parent, role, and overwrite data;
+missing or malformed permission data fails closed. Channel-scoped raw content
+reads use the same live proof, so a DM/private snowflake cannot bypass the
+gateway's ignored private ingress. Chunked text, reactions, media batches, and
+download-backed sends re-attest immediately before each Discord mutation and
+stop after permission revocation.
+
+The model-facing raw `create_thread`, pin/unpin/delete, and role mutation
+actions are hidden and denied while the privileged writer policy is enabled.
+They do not yet carry an exact owner/passkey capability and Canonical terminal
+receipt, and deterministic code must not guess whether arbitrary thread text is
+a handoff. Existing public channels/threads remain usable through the typed
+Canonical route-back lifecycle. A future thread/handoff executor must add its
+own writer-owned claim and terminal receipt before these raw actions can be
+enabled in production. The legacy SQLite/synthetic gateway handoff watcher and
+its silent home-channel fallback are likewise disabled under the privileged
+policy, so returning `None` from thread creation cannot bypass Canonical truth.
+
+These are defense-in-depth code gates, not yet a global token-egress guarantee:
+the gateway still owns the Discord token, so a compromised gateway or an
+insufficiently isolated child could bypass Python call sites. A separate
+privileged Discord-token/egress boundary remains required before claiming that
+*all* Muncho Discord sends are public-only.
 
 ## Dangerous-plan capability lifetime
 
@@ -221,6 +248,11 @@ owner, language, `SECURITY DEFINER`/invoker mode, exact safe
 `search_path`, definition SHA-256, PUBLIC ACL absence, helper catalog, owner
 attributes, memberships, table identity, and all effective privileges are
 attested at startup and again inside every serializable advisory-locked call.
+The root-owned writer config also pins a SHA-256 over the complete private
+schema identity: schema/table/index owners and dangerous owner attributes,
+the exact relation set, columns, defaults, constraints, indexes, persistence,
+storage, RLS, triggers, rules, policies, and inheritance. Any owner or
+structural drift fails closed on startup and on every call.
 
 The password comes from an explicit writer-owned regular file or an
 already-open descriptor. It is never accepted through a model payload, gateway
@@ -241,7 +273,8 @@ canonical_brain:
 The writer consumes a separate root-owned, secret-free strict JSON file. It
 pins service identities, verified database coordinates, the writer-owned
 credential path, Discord owner IDs, deployment lock, and exact routine
-identities. Unknown fields, embedded secret-shaped keys, mutable modes,
+identities plus the reviewed private-schema identity SHA-256. Unknown fields,
+embedded secret-shaped keys, mutable modes,
 symlinks, untrusted parents, unpinned units, and shared gateway/writer UIDs are
 rejected.
 
@@ -283,12 +316,15 @@ Cloud deployment must remain blocked until all of the following are complete:
 
 1. **Live schema attestation and reconciliation.** The checked-in migration
    intentionally requires an exact fourteen-column event-log contract. Legacy
-   Cloud code wrote four additional audit columns (`idempotency_key`,
-   `source_spool`, `spool_line_number`, and `raw_event_sha256`), so production
-   may still have a different eighteen-column shape. Collect the exact live
+   Cloud currently has five additional columns (`inserted_at`,
+   `idempotency_key`, `source_spool`, `spool_line_number`, and
+   `raw_event_sha256`), producing a nineteen-column shape with additional
+   defaults and indexes. Collect the exact live
    types, order, nullability, defaults, owner, constraints, ACLs, triggers,
    rules, policies, and row count read-only; then review a reconciliation
-   migration. Do not apply `canonical_writer_v1.sql` beforehand.
+   migration and derive/review the private-schema identity digest from the
+   resulting production-shaped PostgreSQL instance. Do not apply
+   `canonical_writer_v1.sql` beforehand.
 2. **Dedicated database authority.** Prove that the writer role has no ambient
    `PUBLIC`/`TEMP`, public-schema/function, or other-database authority. If the
    current Cloud database is shared/default, provision a dedicated Canonical
@@ -317,6 +353,16 @@ Cloud deployment must remain blocked until all of the following are complete:
    users, groups, config, CA, credential, systemd units, exporter state, IAM
    removals, migration, canary, and rollback under the applicable owner/passkey
    gate.
+8. **Real isolated canary and forward-only rollback.** The current
+   `muncho-auto-deploy-release` helper switches the sole production symlink,
+   restarts the production gateway, has no traffic isolation, and does not
+   restore the previous symlink after a failed post-start check. It is not a
+   canary. Because peer authentication pins the exact gateway and writer unit
+   names, the canary needs an isolated host with those same unit names, its own
+   dedicated database, and a separate Discord identity/public test channel.
+   After truth cutover, rollback may disable Canonical mutations and select
+   only a boundary-compatible artifact; reverting to a legacy gateway with
+   superuser/helper authority is forbidden.
 
 ## Deployment sequence after the blockers close
 

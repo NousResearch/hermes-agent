@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +15,7 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _apply_channel_aliases,
+    _build_discord,
     _build_from_sessions,
     _build_slack,
     is_discord_public_target,
@@ -137,6 +139,130 @@ class TestBuildChannelDirectoryOffload:
 
         assert [name for name, _ in calls] == ["telegram"]
         assert calls[0][1] != loop_thread
+
+
+class TestBuildDiscordPublicBoundary:
+    @staticmethod
+    def _channel(channel_id, name, guild, type_value, type_name, view_channel):
+        channel_type = SimpleNamespace(value=type_value, name=type_name)
+
+        def permissions_for(role):
+            assert role is guild.default_role
+            if view_channel == "raises":
+                raise RuntimeError("permission cache malformed")
+            if view_channel == "missing":
+                return SimpleNamespace()
+            return SimpleNamespace(view_channel=view_channel)
+
+        return SimpleNamespace(
+            id=channel_id,
+            name=name,
+            guild=guild,
+            type=channel_type,
+            permissions_for=permissions_for,
+        )
+
+    def test_writer_policy_keeps_only_everyone_visible_public_surfaces(self):
+        role = object()
+        guild = SimpleNamespace(
+            id=1,
+            name="Guild",
+            default_role=role,
+            text_channels=[],
+            forum_channels=[],
+        )
+        public_text = self._channel(10, "public", guild, 0, "text", True)
+        private_text = self._channel(11, "staff", guild, 0, "text", False)
+        malformed_text = self._channel(12, "broken", guild, 0, "text", "missing")
+        raising_text = self._channel(13, "raising", guild, 0, "text", "raises")
+        public_forum = self._channel(20, "forum", guild, 15, "forum", True)
+        private_forum = self._channel(21, "staff-forum", guild, 15, "forum", False)
+        public_thread = self._channel(30, "public-thread", guild, 11, "public_thread", True)
+        private_thread = self._channel(31, "private-thread", guild, 12, "private_thread", True)
+        dm = SimpleNamespace(id=32, name="dm", guild=None, type=1)
+        guild.text_channels = [
+            public_text,
+            private_text,
+            malformed_text,
+            raising_text,
+        ]
+        guild.forum_channels = [public_forum, private_forum]
+        cached = {
+            target.id: target
+            for target in (public_text, public_thread, private_thread, dm)
+        }
+        client = SimpleNamespace(
+            guilds=[guild],
+            get_channel=lambda channel_id: cached.get(channel_id),
+        )
+        adapter = SimpleNamespace(_client=client)
+        sessions = [
+            {"id": "10", "name": "public-session", "type": "dm", "thread_id": None},
+            {"id": "10:30", "name": "thread-session", "type": "thread", "thread_id": "30"},
+            {"id": "10:31", "name": "private-thread-session", "type": "thread", "thread_id": "31"},
+            {"id": "32", "name": "dm-session", "type": "dm", "thread_id": None},
+            {"id": "999", "name": "uncached-session", "type": "channel", "thread_id": None},
+            {"id": "malformed", "name": "bad-session", "type": "channel", "thread_id": None},
+        ]
+
+        with patch.dict(sys.modules, {"discord": SimpleNamespace()}), patch(
+            "gateway.channel_directory._discord_public_directory_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory._build_from_sessions",
+            return_value=sessions,
+        ):
+            channels = _build_discord(adapter)
+
+        assert [channel["id"] for channel in channels] == ["10", "20", "10", "10:30"]
+        assert channels[-2]["type"] == "channel"
+        assert channels[-1]["type"] == "thread"
+        assert channels[-1]["guild"] == "Guild"
+        serialized = json.dumps(channels)
+        assert "staff" not in serialized
+        assert "private-thread" not in serialized
+        assert "dm-session" not in serialized
+        assert "uncached-session" not in serialized
+
+    def test_writer_policy_fails_closed_when_live_cache_lookup_is_unavailable(self):
+        guild = SimpleNamespace(
+            name="Guild",
+            default_role=object(),
+            text_channels=[],
+            forum_channels=[],
+        )
+        adapter = SimpleNamespace(_client=SimpleNamespace(guilds=[guild]))
+        sessions = [{"id": "10:30", "name": "thread", "type": "thread", "thread_id": "30"}]
+
+        with patch.dict(sys.modules, {"discord": SimpleNamespace()}), patch(
+            "gateway.channel_directory._discord_public_directory_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory._build_from_sessions",
+            return_value=sessions,
+        ):
+            assert _build_discord(adapter) == []
+
+    def test_generic_hermes_preserves_legacy_session_discovery(self):
+        guild = SimpleNamespace(
+            name="Guild",
+            text_channels=[SimpleNamespace(id=10, name="visible-to-bot")],
+            forum_channels=[],
+        )
+        adapter = SimpleNamespace(_client=SimpleNamespace(guilds=[guild]))
+        sessions = [{"id": "dm", "name": "legacy-dm", "type": "dm", "thread_id": None}]
+
+        with patch.dict(sys.modules, {"discord": SimpleNamespace()}), patch(
+            "gateway.channel_directory._discord_public_directory_policy_required",
+            return_value=False,
+        ), patch(
+            "gateway.channel_directory._build_from_sessions",
+            return_value=sessions,
+        ):
+            channels = _build_discord(adapter)
+
+        assert channels[-1] == sessions[0]
+        assert channels[0]["id"] == "10"
 
     def test_plugin_session_discovery_runs_off_event_loop_thread(self, tmp_path):
         cache_file = tmp_path / "channel_directory.json"

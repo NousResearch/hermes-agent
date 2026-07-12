@@ -135,6 +135,22 @@ def test_every_public_routine_is_security_definer_with_pinned_search_path():
     )
 
 
+def test_public_routines_reraise_only_retryable_transaction_aborts():
+    retry_clause = (
+        "EXCEPTION\n"
+        "WHEN serialization_failure OR deadlock_detected THEN\n"
+        "    RAISE;\n"
+        "WHEN OTHERS THEN\n"
+    )
+
+    for name in _writer_names():
+        definition = _function_definition(name)
+        assert definition.count(retry_clause) == 1
+        assert "RETURN canonical_brain._fail('database_failure'" in definition
+
+    assert SQL.count(retry_clause) == 16
+
+
 def test_owner_and_execute_acl_cover_exactly_public_catalog():
     expected = _writer_names()
     owners = set(
@@ -246,6 +262,11 @@ def test_canonical_event_log_has_exact_owner_shape_and_exclusive_append_boundary
     assert "exact column/type contract mismatch" in contract
     assert "nullability/identity contract mismatch" in contract
     assert "only the exact event_id primary key constraint" in contract
+    assert "constraint_row.contype <> 'n'" in contract
+    assert "constraint_row.contype NOT IN ('p','u','f','c','n')" in SQL
+    assert "constraint_row.connoinherit <>" in SQL
+    assert "'{}'::aclitem[]" not in SQL
+    assert "FROM ROWS FROM (" in SQL
     for forbidden_surface in (
         "pg_catalog.pg_trigger",
         "pg_catalog.pg_rewrite",
@@ -258,12 +279,12 @@ def test_canonical_event_log_has_exact_owner_shape_and_exclusive_append_boundary
     assert "REVOKE ALL ON TABLE public.canonical_event_log FROM PUBLIC;" in SQL
     assert "retire_event_log_writers" in SQL
     retire = _dollar_block("retire_event_log_writers")
-    assert "COALESCE(attribute.attacl, '{}'::aclitem[])" in retire
+    assert "attribute.attacl" in retire
     assert "attribute.attnum > 0" in retire
     assert "direct_acl.grantee <> direct_acl.relowner" in retire
     assert "REVOKE ALL PRIVILEGES (%I) ON TABLE" in retire
     assert "acl.grantee NOT IN (owner_oid)" in exclusivity
-    assert "COALESCE(attribute.attacl, '{}'::aclitem[])" in exclusivity
+    assert "attribute.attacl" in exclusivity
     assert "acl.privilege_type IN (" in exclusivity
     for column_privilege in ("'SELECT'", "'INSERT'", "'UPDATE'", "'REFERENCES'"):
         assert column_privilege in exclusivity
@@ -317,14 +338,14 @@ def test_canonical_acl_cleanup_and_attestation_cover_every_direct_surface():
 
     for surface in ("'schema'::text", "'table'", "'sequence'", "'function'", "'procedure'"):
         assert surface in retire
-    assert "COALESCE(attribute.attacl, '{}'::aclitem[])" in retire
+    assert "attribute.attacl" in retire
     assert "attribute.attnum > 0" in retire
     assert "acl.grantee <> class.relowner" in retire
 
     for surface in ("'schema'", "'table'", "'column'", "'function'", "'procedure'"):
         assert surface in attest
     assert "class.oid = 'public.canonical_event_log'::regclass" in attest
-    assert "COALESCE(attribute.attacl, '{}'::aclitem[])" in attest
+    assert "attribute.attacl" in attest
     assert "acl.grantee <> class.relowner" in attest
     assert re.search(
         r"'canonical_brain_writer',\s*'USAGE', false", attest
@@ -399,10 +420,10 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_consumptions", "remaining_uses"),
     }
     assert "CREATE TEMPORARY TABLE canonical_writer_check_contract" in SQL
-    assert "pg_catalog.pg_get_constraintdef(constraint.oid, false)" in contract
+    assert "pg_catalog.pg_get_constraintdef(constraint_row.oid, false)" in contract
     assert "preexisting writer table CHECK contract mismatch" in contract
     assert "occurrences" in contract
-    assert "constraint.contype NOT IN ('p','u','f','c')" in contract
+    assert "constraint_row.contype NOT IN ('p','u','f','c','n')" in contract
     assert "preexisting writer constraint index contract mismatch" in contract
     assert "pg_catalog.unnest(index.indkey)" in contract
 
@@ -525,8 +546,8 @@ def test_thread_reads_cannot_use_model_authored_source_refs_as_authority():
 
     assert "thread query must match the exact observed runtime thread" in query
     assert "provenance.trusted_runtime->>'thread_id'" in query
-    assert "authorization.source_thread_id" in route_context
-    assert "authorization.source_refs" not in route_context
+    assert "authorization_row.source_thread_id" in route_context
+    assert "authorization_row.source_refs" not in route_context
 
 
 def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():

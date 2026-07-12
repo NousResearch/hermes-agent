@@ -75,6 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as discord_adapter_module  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -182,6 +183,91 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "/reset"
     assert event.source.chat_id == "123"
+    interaction.edit_original_response.assert_not_awaited()
+    interaction.delete_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_skips_delayed_cleanup_after_visibility_revoked(
+    adapter,
+    monkeypatch,
+):
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        id=123,
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        user=SimpleNamespace(id=42, name="Owner"),
+        guild_id=1,
+        response=SimpleNamespace(defer=AsyncMock()),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    adapter._build_slash_event = MagicMock(return_value=object())
+
+    async def _handle(_event):
+        state["public"] = False
+
+    adapter.handle_message = AsyncMock(side_effect=_handle)
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    await adapter._run_simple_slash(interaction, "/status", "done")
+
+    interaction.edit_original_response.assert_not_awaited()
+    interaction.delete_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_aborts_model_dispatch_when_defer_loses_visibility(
+    adapter,
+    monkeypatch,
+):
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        id=123,
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+
+    async def _defer(**_kwargs):
+        state["public"] = False
+
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        user=SimpleNamespace(id=42, name="Owner"),
+        guild_id=1,
+        response=SimpleNamespace(defer=AsyncMock(side_effect=_defer)),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+    adapter._build_slash_event = MagicMock(return_value=object())
+    adapter.handle_message = AsyncMock()
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    await adapter._run_simple_slash(interaction, "/status", "done")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    adapter._build_slash_event.assert_not_called()
+    adapter.handle_message.assert_not_awaited()
     interaction.edit_original_response.assert_not_awaited()
     interaction.delete_original_response.assert_not_awaited()
 
@@ -396,6 +482,7 @@ async def test_handle_thread_create_slash_reports_success(adapter):
     parent_channel.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
+        type=discord_adapter_module.discord.ChannelType.public_thread,
         reason="Requested by Jezza via /thread",
     )
     created_thread.send.assert_awaited_once_with("Kickoff")
@@ -404,6 +491,88 @@ async def test_handle_thread_create_slash_reports_success(adapter):
     args, kwargs = interaction.followup.send.await_args
     assert "<#555>" in args[0]
     assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_thread_starter_failure_cleans_up_without_duplicate_fallback(adapter):
+    created_thread = SimpleNamespace(
+        id=555,
+        name="Planning",
+        send=AsyncMock(side_effect=RuntimeError("starter failed")),
+        delete=AsyncMock(),
+    )
+    parent_channel = SimpleNamespace(
+        create_thread=AsyncMock(return_value=created_thread),
+        send=AsyncMock(),
+    )
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent=parent_channel),
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    result = await adapter._create_thread(
+        interaction,
+        name="Planning",
+        message="Kickoff",
+    )
+
+    assert "error" in result
+    assert "cleaned up" in result["error"]
+    assert "no fallback thread was attempted" in result["error"]
+    created_thread.delete.assert_awaited_once_with(
+        reason="Hermes /thread starter-send cleanup"
+    )
+    parent_channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_direct_thread_creation_rejects_and_cleans_private_result(adapter):
+    private_thread = SimpleNamespace(
+        id=555,
+        name="Private",
+        type=SimpleNamespace(value=12, name="private_thread"),
+        delete=AsyncMock(),
+        send=AsyncMock(),
+    )
+    parent_channel = SimpleNamespace(
+        create_thread=AsyncMock(return_value=private_thread),
+        send=AsyncMock(side_effect=RuntimeError("fallback disabled")),
+    )
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent=parent_channel),
+        user=SimpleNamespace(display_name="Jezza", id=42),
+    )
+
+    result = await adapter._create_thread(
+        interaction,
+        name="Must be public",
+        message="do not post privately",
+    )
+
+    assert "error" in result
+    private_thread.delete.assert_awaited_once()
+    private_thread.send.assert_not_awaited()
+    assert (
+        parent_channel.create_thread.await_args.kwargs["type"]
+        == discord_adapter_module.discord.ChannelType.public_thread
+    )
+
+
+@pytest.mark.asyncio
+async def test_privileged_writer_policy_disables_unreceipted_handoff_thread(adapter):
+    parent = SimpleNamespace(create_thread=AsyncMock(), send=AsyncMock())
+    adapter._client.get_channel = MagicMock(return_value=parent)
+
+    with patch.object(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        return_value=True,
+    ):
+        result = await adapter.create_handoff_thread("123", "handoff")
+
+    assert result is None
+    parent.create_thread.assert_not_awaited()
+    parent.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -425,7 +594,11 @@ async def test_handle_thread_create_slash_dispatches_session_when_message_provid
     await adapter._handle_thread_create_slash(interaction, "Planning", "Hello Hermes", 1440)
 
     adapter._dispatch_thread_session.assert_awaited_once_with(
-        interaction, "555", "Planning", "Hello Hermes",
+        interaction,
+        "555",
+        "Planning",
+        "Hello Hermes",
+        verified_thread=adapter._client.fetch_channel.return_value,
     )
 
 
@@ -532,6 +705,33 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert "TestGuild" in event.source.chat_name
 
 
+@pytest.mark.asyncio
+async def test_dispatch_thread_session_rejects_unproven_thread_under_writer_policy(
+    adapter,
+    monkeypatch,
+):
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+    )
+    adapter.handle_message = AsyncMock()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    await adapter._dispatch_thread_session(
+        interaction,
+        "555",
+        "Planning",
+        "Hello!",
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
 # ------------------------------------------------------------------
 # _build_slash_event — preserve thread context for native slash commands
 # ------------------------------------------------------------------
@@ -591,6 +791,33 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     assert call_kwargs["name"] == "Hello world, how are you?"
     assert call_kwargs["auto_archive_duration"] == 1440
     assert thread._hermes_auto_thread_initial_name == "Hello world, how are you?"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_rejects_and_cleans_private_result(adapter):
+    private_thread = SimpleNamespace(
+        id=999,
+        name="private",
+        type=SimpleNamespace(value=12, name="private_thread"),
+        delete=AsyncMock(),
+    )
+    message = SimpleNamespace(
+        content="must stay public",
+        create_thread=AsyncMock(return_value=private_thread),
+        channel=SimpleNamespace(
+            send=AsyncMock(side_effect=RuntimeError("fallback disabled"))
+        ),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.asyncio.sleep",
+        AsyncMock(),
+    ):
+        result = await adapter._auto_create_thread(message)
+
+    assert result is None
+    assert private_thread.delete.await_count == 2
 
 
 @pytest.mark.asyncio

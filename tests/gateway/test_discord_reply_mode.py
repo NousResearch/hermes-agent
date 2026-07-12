@@ -110,6 +110,11 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     # the fetched Message via to_reference(fail_if_not_exists=False) so a
     # deleted target degrades to "send without reply chip" instead of a 400.
     mock_channel = AsyncMock()
+    default_role = object()
+    mock_channel.guild = SimpleNamespace(id=1, default_role=default_role)
+    mock_channel.permissions_for = MagicMock(
+        return_value=SimpleNamespace(view_channel=True)
+    )
     ref_message = MagicMock()
     ref_reference = MagicMock(name="MessageReference")
     ref_message.to_reference = MagicMock(return_value=ref_reference)

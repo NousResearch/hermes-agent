@@ -35,6 +35,13 @@ _MAX_QUERY_BYTES = 128 * 1024
 _MAX_RESULT_BYTES = 8 * 1024 * 1024
 _MAX_FIELD_BYTES = 1024 * 1024
 _MAX_ATTESTATION_ROWS = 2048
+_MAX_FIXED_TRANSACTION_ATTEMPTS = 3
+_RETRYABLE_TRANSACTION_ERRORS = frozenset(
+    {
+        "database_error_sqlstate:40001",
+        "database_error_sqlstate:40P01",
+    }
+)
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _PLACEHOLDER = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 _SAFE_FIXED_SQL = re.compile(
@@ -74,6 +81,17 @@ CANONICAL_EVENT_LOG_COLUMNS = (
     "next_action:jsonb:t::",
     "safety:jsonb:t::",
     "payload:jsonb:t::",
+)
+CANONICAL_PRIVATE_WRITER_TABLES = (
+    "writer_capability_consumptions",
+    "writer_capability_grants",
+    "writer_capability_revocation_scopes",
+    "writer_capability_revocations",
+    "writer_event_provenance",
+    "writer_public_routeback_targets",
+    "writer_routeback_authorizations",
+    "writer_routeback_lifecycle_terminals",
+    "writer_routeback_terminals",
 )
 
 
@@ -376,6 +394,119 @@ class CanonicalEventLogIdentity:
             object.__setattr__(self, name, normalized)
 
 
+@dataclass(frozen=True, order=True)
+class CanonicalPrivateRelationIdentity:
+    """Canonical structural identity for one writer-owned table or sequence."""
+
+    name: str
+    owner: str
+    owner_dangerous: bool
+    relation_kind: str
+    persistence: str
+    is_partition: bool
+    access_method: str
+    tablespace_oid: int
+    row_security: bool
+    force_row_security: bool
+    replica_identity: str
+    relation_options: tuple[str, ...]
+    columns: tuple[str, ...]
+    constraints: tuple[str, ...]
+    indexes: tuple[str, ...]
+    index_owners: tuple[str, ...]
+    user_triggers: tuple[str, ...]
+    rewrite_rules: tuple[str, ...]
+    policies: tuple[str, ...]
+    inheritance: bool
+
+    def __post_init__(self) -> None:
+        _valid_identifier(self.name, "private relation name")
+        _valid_identifier(self.owner, "private relation owner")
+        if self.relation_kind not in {"r", "p", "S", "v", "m", "f", "c"}:
+            raise ValueError("private relation kind is invalid")
+        if self.persistence not in {"p", "u", "t"}:
+            raise ValueError("private relation persistence is invalid")
+        if not isinstance(self.tablespace_oid, int) or self.tablespace_oid < 0:
+            raise ValueError("private relation tablespace is invalid")
+        for name in (
+            "relation_options",
+            "columns",
+            "constraints",
+            "indexes",
+            "index_owners",
+            "user_triggers",
+            "rewrite_rules",
+            "policies",
+        ):
+            normalized = tuple(getattr(self, name))
+            if any(
+                not isinstance(item, str)
+                or not item
+                or len(item) > 64 * 1024
+                or "\x00" in item
+                for item in normalized
+            ):
+                raise ValueError(f"private relation {name} identity is invalid")
+            object.__setattr__(self, name, normalized)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "owner": self.owner,
+            "owner_dangerous": self.owner_dangerous,
+            "relation_kind": self.relation_kind,
+            "persistence": self.persistence,
+            "is_partition": self.is_partition,
+            "access_method": self.access_method,
+            "tablespace_oid": self.tablespace_oid,
+            "row_security": self.row_security,
+            "force_row_security": self.force_row_security,
+            "replica_identity": self.replica_identity,
+            "relation_options": self.relation_options,
+            "columns": self.columns,
+            "constraints": self.constraints,
+            "indexes": self.indexes,
+            "index_owners": self.index_owners,
+            "user_triggers": self.user_triggers,
+            "rewrite_rules": self.rewrite_rules,
+            "policies": self.policies,
+            "inheritance": self.inheritance,
+        }
+
+
+@dataclass(frozen=True)
+class CanonicalPrivateSchemaIdentity:
+    """Root-config-pinned identity of the complete private writer schema."""
+
+    schema: str
+    owner: str
+    owner_dangerous: bool
+    relations: tuple[CanonicalPrivateRelationIdentity, ...]
+
+    def __post_init__(self) -> None:
+        _valid_identifier(self.schema, "private schema")
+        _valid_identifier(self.owner, "private schema owner")
+        relations = tuple(sorted(self.relations))
+        if len({relation.name for relation in relations}) != len(relations):
+            raise ValueError("private schema contains duplicate relation identities")
+        object.__setattr__(self, "relations", relations)
+
+    @property
+    def sha256(self) -> str:
+        encoded = json.dumps(
+            {
+                "schema": self.schema,
+                "owner": self.owner,
+                "owner_dangerous": self.owner_dangerous,
+                "relations": [relation.as_dict() for relation in self.relations],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
 @dataclass(frozen=True)
 class WriterPrivilegePolicy:
     """Exact role privileges allowed for this writer deployment."""
@@ -391,6 +522,7 @@ class WriterPrivilegePolicy:
     role_memberships: tuple[str, ...] = ()
     canonical_owner_role: str = "canonical_brain_migration_owner"
     canonical_acl_grantee_role: str = "canonical_brain_writer"
+    private_schema_identity_sha256: str = ""
     deployment_lock_key: int = CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
 
     def __post_init__(self) -> None:
@@ -445,6 +577,8 @@ class WriterPrivilegePolicy:
         )
         if self.canonical_owner_role == self.canonical_acl_grantee_role:
             raise ValueError("canonical owner and ACL grantee roles must differ")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.private_schema_identity_sha256):
+            raise ValueError("private writer schema identity digest is invalid")
         if (
             isinstance(self.deployment_lock_key, bool)
             or not -(1 << 63) <= self.deployment_lock_key < (1 << 63)
@@ -483,6 +617,7 @@ class PrivilegeAttestation:
     canonical_non_owner_acl_grants: tuple[str, ...] = ()
     canonical_writer_role_inheritors: tuple[str, ...] = ()
     canonical_event_log_identity: CanonicalEventLogIdentity | None = None
+    canonical_private_schema_identity: CanonicalPrivateSchemaIdentity | None = None
 
 
 def _expected_canonical_non_owner_acl_grants(
@@ -548,6 +683,67 @@ def _validate_canonical_event_log_identity(
         )
 
 
+def _validate_private_writer_schema_identity(
+    identity: CanonicalPrivateSchemaIdentity | None,
+    policy: WriterPrivilegePolicy,
+) -> None:
+    """Reject owner, relation-surface, and structural drift in private ledgers."""
+
+    if identity is None:
+        raise PrivilegeAttestationError(
+            "database_private_schema_identity_missing"
+        )
+    if (
+        identity.schema != policy.schema
+        or identity.owner != policy.canonical_owner_role
+        or identity.owner_dangerous
+    ):
+        raise PrivilegeAttestationError(
+            "database_private_schema_owner_identity_mismatch"
+        )
+    if tuple(relation.name for relation in identity.relations) != (
+        CANONICAL_PRIVATE_WRITER_TABLES
+    ):
+        raise PrivilegeAttestationError(
+            "database_private_schema_relation_set_mismatch"
+        )
+    expected_index_owner = f"{policy.canonical_owner_role}:f"
+    for relation in identity.relations:
+        if (
+            relation.owner != policy.canonical_owner_role
+            or relation.owner_dangerous
+            or relation.relation_kind != "r"
+            or relation.persistence != "p"
+            or relation.is_partition
+            or relation.access_method != "heap"
+            or relation.tablespace_oid != 0
+            or relation.row_security
+            or relation.force_row_security
+            or relation.replica_identity != "d"
+            or relation.relation_options
+            or not relation.columns
+            or not relation.constraints
+            or not relation.indexes
+            or len(relation.index_owners) != len(relation.indexes)
+            or any(
+                owner != expected_index_owner
+                for owner in relation.index_owners
+            )
+            or relation.user_triggers
+            or relation.rewrite_rules
+            or relation.policies
+            or relation.inheritance
+        ):
+            raise PrivilegeAttestationError(
+                "database_private_relation_identity_mismatch:"
+                + relation.name
+            )
+    if identity.sha256 != policy.private_schema_identity_sha256:
+        raise PrivilegeAttestationError(
+            "database_private_schema_structure_digest_mismatch"
+        )
+
+
 def validate_privilege_attestation(
     attestation: PrivilegeAttestation,
     policy: WriterPrivilegePolicy,
@@ -562,6 +758,10 @@ def validate_privilege_attestation(
         raise PrivilegeAttestationError("postgres_role_forbidden")
     _validate_canonical_event_log_identity(
         attestation.canonical_event_log_identity
+    )
+    _validate_private_writer_schema_identity(
+        attestation.canonical_private_schema_identity,
+        policy,
     )
     dangerous = {
         "superuser": attestation.superuser,
@@ -997,10 +1197,10 @@ class CanonicalWriterDB:
         if not self._startup_attested:
             raise PrivilegeAttestationError("database_startup_attestation_required")
         sql = _render_fixed(statement, parameters)
-        session = self._session_factory(self._config)
-        try:
-            _begin_locked_transaction(session, self._policy)
+        for attempt in range(_MAX_FIXED_TRANSACTION_ATTEMPTS):
+            session = self._session_factory(self._config)
             try:
+                _begin_locked_transaction(session, self._policy)
                 attestation = _collect_privilege_attestation(
                     session,
                     config=self._config,
@@ -1020,13 +1220,22 @@ class CanonicalWriterDB:
                     raise PostgresProtocolError("database_command_tag_not_allowed")
                 if len(result.rows) > statement.maximum_rows:
                     raise PostgresProtocolError("database_result_row_bound_exceeded")
+                _require_command(session, "COMMIT", "COMMIT")
+            except PostgresProtocolError as exc:
+                _rollback_quietly(session)
+                if (
+                    str(exc) in _RETRYABLE_TRANSACTION_ERRORS
+                    and attempt + 1 < _MAX_FIXED_TRANSACTION_ATTEMPTS
+                ):
+                    continue
+                raise
             except BaseException:
                 _rollback_quietly(session)
                 raise
-            _require_command(session, "COMMIT", "COMMIT")
-        finally:
-            session.close()
-        return result
+            finally:
+                session.close()
+            return result
+        raise AssertionError("fixed transaction retry bound is unreachable")
 
 
 def _require_command(
@@ -1095,6 +1304,25 @@ def _collect_privilege_attestation(
         raise PostgresProtocolError("database_role_attestation_missing")
     role_row = role_result.rows[0]
     role = role_row[0] or ""
+    schema = _sql_string(policy.schema)
+
+    private_schema_result = session.query(
+        "SELECT owner.rolname, (owner.rolcanlogin OR owner.rolsuper OR "
+        "owner.rolcreatedb OR owner.rolcreaterole OR owner.rolreplication OR "
+        "owner.rolbypassrls OR EXISTS (SELECT 1 FROM "
+        "pg_catalog.pg_auth_members membership WHERE "
+        "membership.roleid = owner.oid OR membership.member = owner.oid)) "
+        "FROM pg_catalog.pg_namespace namespace JOIN pg_catalog.pg_roles owner "
+        "ON owner.oid = namespace.nspowner WHERE namespace.nspname = "
+        + schema,
+        maximum_rows=1,
+    )
+    if (
+        len(private_schema_result.rows) != 1
+        or len(private_schema_result.rows[0]) != 2
+        or not private_schema_result.rows[0][0]
+    ):
+        raise PostgresProtocolError("database_private_schema_attestation_missing")
 
     event_log_result = session.query(
         "SELECT owner.rolname, "
@@ -1112,7 +1340,7 @@ def _collect_privilege_attestation(
         "WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), '[]'), "
         "coalesce((SELECT json_agg(pg_get_constraintdef(con.oid, true) "
         "ORDER BY con.oid)::text FROM pg_catalog.pg_constraint con "
-        "WHERE con.conrelid = c.oid), '[]'), "
+        "WHERE con.conrelid = c.oid AND con.contype <> 'n'), '[]'), "
         "coalesce((SELECT json_agg(t.tgname ORDER BY t.tgname)::text "
         "FROM pg_catalog.pg_trigger t WHERE t.tgrelid = c.oid "
         "AND NOT t.tgisinternal), '[]'), "
@@ -1136,7 +1364,7 @@ def _collect_privilege_attestation(
         "coalesce(grantee.rolname, 'PUBLIC'), acl.privilege_type, "
         "acl.is_grantable) AS value "
         "FROM pg_catalog.pg_attribute attribute CROSS JOIN LATERAL "
-        "aclexplode(coalesce(attribute.attacl, '{}'::aclitem[])) acl "
+        "aclexplode(attribute.attacl) acl "
         "LEFT JOIN pg_catalog.pg_roles grantor ON grantor.oid = acl.grantor "
         "LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee "
         "WHERE attribute.attrelid = c.oid AND attribute.attnum > 0 "
@@ -1238,7 +1466,242 @@ def _collect_privilege_attestation(
             "database_canonical_event_log_identity_invalid"
         ) from exc
 
-    schema = _sql_string(policy.schema)
+    def _identity_json_items(raw: str | None, label: str) -> tuple[str, ...]:
+        try:
+            value = json.loads(raw or "")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PostgresProtocolError(
+                "database_private_schema_" + label + "_invalid"
+            ) from exc
+        if not isinstance(value, list):
+            raise PostgresProtocolError(
+                "database_private_schema_" + label + "_invalid"
+            )
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, (dict, str)):
+                raise PostgresProtocolError(
+                    "database_private_schema_" + label + "_invalid"
+                )
+            try:
+                result.append(
+                    json.dumps(
+                        item,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if isinstance(item, dict)
+                    else item
+                )
+            except (TypeError, ValueError) as exc:
+                raise PostgresProtocolError(
+                    "database_private_schema_" + label + "_invalid"
+                ) from exc
+        return tuple(result)
+
+    private_relations_result = session.query(
+        "SELECT class.relname, owner.rolname, (owner.rolcanlogin OR "
+        "owner.rolsuper OR owner.rolcreatedb OR owner.rolcreaterole OR "
+        "owner.rolreplication OR owner.rolbypassrls OR EXISTS (SELECT 1 "
+        "FROM pg_catalog.pg_auth_members membership WHERE "
+        "membership.roleid = owner.oid OR membership.member = owner.oid)), "
+        "class.relkind::text, class.relpersistence::text, class.relispartition, "
+        "coalesce(method.amname, ''), class.reltablespace::text, "
+        "class.relrowsecurity, class.relforcerowsecurity, class.relreplident::text, "
+        "array_to_json(coalesce(class.reloptions, ARRAY[]::text[]))::text, "
+        "coalesce((SELECT json_agg(column_identity.value ORDER BY "
+        "column_identity.ordinal)::text FROM (SELECT attribute.attnum AS ordinal, "
+        "json_build_object('name', attribute.attname, 'type', "
+        "pg_catalog.format_type(attribute.atttypid, attribute.atttypmod), "
+        "'not_null', attribute.attnotnull, 'identity', attribute.attidentity, "
+        "'generated', attribute.attgenerated, 'has_default', attribute.atthasdef, "
+        "'default', coalesce(pg_catalog.pg_get_expr(default_value.adbin, "
+        "default_value.adrelid, true), ''), 'has_missing', attribute.atthasmissing, "
+        "'missing_value', coalesce(attribute.attmissingval::text, ''), "
+        "'is_local', attribute.attislocal, 'inheritance_count', "
+        "attribute.attinhcount, 'dimensions', attribute.attndims, 'collation', "
+        "CASE WHEN attribute.attcollation = 0 THEN '' ELSE "
+        "pg_catalog.format('%I.%I', collation_namespace.nspname, "
+        "collation_row.collname) END, 'storage', attribute.attstorage::text, "
+        "'statistics_target', "
+        "attribute.attstattarget, 'options', coalesce(attribute.attoptions, "
+        "ARRAY[]::text[]), 'fdw_options', coalesce(attribute.attfdwoptions, "
+        "ARRAY[]::text[])) AS value FROM pg_catalog.pg_attribute attribute "
+        "LEFT JOIN pg_catalog.pg_attrdef default_value ON "
+        "default_value.adrelid = attribute.attrelid AND "
+        "default_value.adnum = attribute.attnum LEFT JOIN "
+        "pg_catalog.pg_collation collation_row ON collation_row.oid = "
+        "attribute.attcollation LEFT JOIN pg_catalog.pg_namespace "
+        "collation_namespace ON collation_namespace.oid = "
+        "collation_row.collnamespace WHERE attribute.attrelid = class.oid AND "
+        "attribute.attnum > 0 AND NOT attribute.attisdropped) column_identity), "
+        "'[]'), coalesce((SELECT json_agg(constraint_identity.value ORDER BY "
+        "constraint_identity.sort_key)::text FROM (SELECT "
+        "constraint_row.contype::text || ':' || "
+        "pg_catalog.pg_get_constraintdef(constraint_row.oid, true) AS sort_key, "
+        "json_build_object('type', constraint_row.contype::text, 'definition', "
+        "pg_catalog.pg_get_constraintdef(constraint_row.oid, true), 'key_columns', "
+        "coalesce((SELECT json_agg(key_attribute.attname ORDER BY "
+        "key_part.ordinal) FROM pg_catalog.unnest(constraint_row.conkey) WITH "
+        "ORDINALITY key_part(attnum, ordinal) JOIN pg_catalog.pg_attribute "
+        "key_attribute ON key_attribute.attrelid = constraint_row.conrelid AND "
+        "key_attribute.attnum = key_part.attnum), '[]'::json), "
+        "'referenced_relation', coalesce((SELECT "
+        "pg_catalog.format('%I.%I', referenced_namespace.nspname, "
+        "referenced_class.relname) FROM pg_catalog.pg_class referenced_class "
+        "JOIN pg_catalog.pg_namespace referenced_namespace ON "
+        "referenced_namespace.oid = referenced_class.relnamespace WHERE "
+        "referenced_class.oid = constraint_row.confrelid), ''), "
+        "'referenced_columns', coalesce((SELECT json_agg(ref_attribute.attname "
+        "ORDER BY ref_part.ordinal) FROM pg_catalog.unnest(constraint_row.confkey) "
+        "WITH ORDINALITY ref_part(attnum, ordinal) JOIN "
+        "pg_catalog.pg_attribute ref_attribute ON ref_attribute.attrelid = "
+        "constraint_row.confrelid AND ref_attribute.attnum = ref_part.attnum), "
+        "'[]'::json), 'deferrable', constraint_row.condeferrable, 'deferred', "
+        "constraint_row.condeferred, 'validated', constraint_row.convalidated, "
+        "'no_inherit', constraint_row.connoinherit, 'is_local', "
+        "constraint_row.conislocal, 'inheritance_count', constraint_row.coninhcount, "
+        "'parent_oid_zero', constraint_row.conparentid = 0, 'update_action', "
+        "constraint_row.confupdtype::text, 'delete_action', "
+        "constraint_row.confdeltype::text, 'match_type', "
+        "constraint_row.confmatchtype::text) AS value FROM "
+        "pg_catalog.pg_constraint constraint_row WHERE constraint_row.conrelid = "
+        "class.oid) constraint_identity), '[]'), coalesce((SELECT "
+        "json_agg(index_identity.value ORDER BY index_identity.sort_key)::text "
+        "FROM (SELECT coalesce(owning_constraint.contype::text, '') || ':' || "
+        "coalesce(pg_catalog.pg_get_constraintdef(owning_constraint.oid, true), "
+        "'') || ':' || CASE WHEN owning_constraint.oid IS NULL THEN "
+        "index_class.relname ELSE '' "
+        "END AS sort_key, json_build_object('constraint_type', "
+        "coalesce(owning_constraint.contype::text, ''), 'name', CASE WHEN "
+        "owning_constraint.oid IS NULL THEN index_class.relname ELSE '' END, "
+        "'access_method', index_method.amname, 'unique', index.indisunique, "
+        "'primary', index.indisprimary, 'exclusion', index.indisexclusion, "
+        "'immediate', index.indimmediate, 'valid', index.indisvalid, 'ready', "
+        "index.indisready, 'live', index.indislive, 'clustered', "
+        "index.indisclustered, 'replica_identity', index.indisreplident, "
+        "'check_xmin', index.indcheckxmin, 'key_attribute_count', "
+        "index.indnkeyatts, 'attribute_count', index.indnatts, 'key_columns', "
+        "coalesce((SELECT json_agg(coalesce(key_attribute.attname, '') ORDER BY "
+        "key_part.ordinal) FROM pg_catalog.unnest(index.indkey) WITH ORDINALITY "
+        "key_part(attnum, ordinal) LEFT JOIN pg_catalog.pg_attribute "
+        "key_attribute ON key_attribute.attrelid = index.indrelid AND "
+        "key_attribute.attnum = key_part.attnum), '[]'::json), 'expressions', "
+        "coalesce(pg_catalog.pg_get_expr(index.indexprs, index.indrelid, true), "
+        "''), 'predicate', coalesce(pg_catalog.pg_get_expr(index.indpred, "
+        "index.indrelid, true), ''), 'operator_classes', coalesce((SELECT "
+        "json_agg(pg_catalog.format('%I.%I', operator_namespace.nspname, "
+        "operator_class.opcname) ORDER BY operator_part.ordinal) FROM "
+        "pg_catalog.unnest(index.indclass) WITH ORDINALITY "
+        "operator_part(opclass_oid, ordinal) JOIN pg_catalog.pg_opclass "
+        "operator_class ON operator_class.oid = operator_part.opclass_oid JOIN "
+        "pg_catalog.pg_namespace operator_namespace ON operator_namespace.oid = "
+        "operator_class.opcnamespace), '[]'::json), 'collations', coalesce((SELECT "
+        "json_agg(CASE WHEN collation_part.collation_oid = 0 THEN '' ELSE "
+        "pg_catalog.format('%I.%I', index_collation_namespace.nspname, "
+        "index_collation.collname) END ORDER BY collation_part.ordinal) FROM "
+        "pg_catalog.unnest(index.indcollation) WITH ORDINALITY "
+        "collation_part(collation_oid, ordinal) LEFT JOIN "
+        "pg_catalog.pg_collation index_collation ON index_collation.oid = "
+        "collation_part.collation_oid LEFT JOIN pg_catalog.pg_namespace "
+        "index_collation_namespace ON index_collation_namespace.oid = "
+        "index_collation.collnamespace), '[]'::json), 'options', coalesce((SELECT "
+        "json_agg(option_part.option_value ORDER BY option_part.ordinal) FROM "
+        "pg_catalog.unnest(index.indoption) WITH ORDINALITY "
+        "option_part(option_value, ordinal)), '[]'::json), 'persistence', "
+        "index_class.relpersistence::text, 'tablespace_oid', "
+        "index_class.reltablespace, 'relation_options', "
+        "coalesce(index_class.reloptions, ARRAY[]::text[])) AS value FROM "
+        "pg_catalog.pg_index index JOIN pg_catalog.pg_class index_class ON "
+        "index_class.oid = index.indexrelid JOIN pg_catalog.pg_am index_method "
+        "ON index_method.oid = index_class.relam LEFT JOIN "
+        "pg_catalog.pg_constraint owning_constraint ON "
+        "owning_constraint.conindid = index.indexrelid WHERE index.indrelid = "
+        "class.oid) index_identity), '[]'), coalesce((SELECT "
+        "json_agg(pg_catalog.format('%s:%s', index_owner.rolname, CASE WHEN "
+        "index_owner.rolcanlogin OR index_owner.rolsuper OR "
+        "index_owner.rolcreatedb OR index_owner.rolcreaterole OR "
+        "index_owner.rolreplication OR index_owner.rolbypassrls OR EXISTS "
+        "(SELECT 1 FROM pg_catalog.pg_auth_members index_membership WHERE "
+        "index_membership.roleid = index_owner.oid OR "
+        "index_membership.member = index_owner.oid) THEN 't' ELSE 'f' END) "
+        "ORDER BY coalesce(owning_constraint.contype::text, ''), "
+        "coalesce(pg_catalog.pg_get_constraintdef(owning_constraint.oid, true), "
+        "''), CASE WHEN owning_constraint.oid IS NULL THEN index_class.relname "
+        "ELSE '' END)::text "
+        "FROM pg_catalog.pg_index index JOIN pg_catalog.pg_class index_class "
+        "ON index_class.oid = index.indexrelid JOIN pg_catalog.pg_roles "
+        "index_owner ON index_owner.oid = index_class.relowner LEFT JOIN "
+        "pg_catalog.pg_constraint owning_constraint ON "
+        "owning_constraint.conindid = index.indexrelid WHERE index.indrelid = "
+        "class.oid), '[]'), coalesce((SELECT json_agg(trigger.tgname ORDER BY "
+        "trigger.tgname)::text FROM pg_catalog.pg_trigger trigger WHERE "
+        "trigger.tgrelid = class.oid AND NOT trigger.tgisinternal), '[]'), "
+        "coalesce((SELECT json_agg(rewrite.rulename ORDER BY rewrite.rulename)::text "
+        "FROM pg_catalog.pg_rewrite rewrite WHERE rewrite.ev_class = class.oid), "
+        "'[]'), coalesce((SELECT json_agg(policy_row.polname ORDER BY "
+        "policy_row.polname)::text FROM pg_catalog.pg_policy policy_row WHERE "
+        "policy_row.polrelid = class.oid), '[]'), EXISTS (SELECT 1 FROM "
+        "pg_catalog.pg_inherits inheritance WHERE inheritance.inhrelid = "
+        "class.oid OR inheritance.inhparent = class.oid) FROM "
+        "pg_catalog.pg_class class JOIN pg_catalog.pg_namespace namespace ON "
+        "namespace.oid = class.relnamespace JOIN pg_catalog.pg_roles owner ON "
+        "owner.oid = class.relowner LEFT JOIN pg_catalog.pg_am method ON "
+        "method.oid = class.relam WHERE namespace.nspname = "
+        + schema
+        + " AND class.relkind IN ('r','p','S','v','m','f','c') "
+        "ORDER BY class.relname",
+        maximum_rows=_MAX_ATTESTATION_ROWS,
+    )
+    private_relations: list[CanonicalPrivateRelationIdentity] = []
+    for row in private_relations_result.rows:
+        if len(row) != 20 or not row[0] or not row[1]:
+            raise PostgresProtocolError(
+                "database_private_relation_attestation_invalid"
+            )
+        try:
+            private_relations.append(
+                CanonicalPrivateRelationIdentity(
+                    name=row[0],
+                    owner=row[1],
+                    owner_dangerous=_bool(row[2]),
+                    relation_kind=row[3] or "",
+                    persistence=row[4] or "",
+                    is_partition=_bool(row[5]),
+                    access_method=row[6] or "",
+                    tablespace_oid=int(row[7] or "-1"),
+                    row_security=_bool(row[8]),
+                    force_row_security=_bool(row[9]),
+                    replica_identity=row[10] or "",
+                    relation_options=_identity_items(row[11], "options"),
+                    columns=_identity_json_items(row[12], "columns"),
+                    constraints=_identity_json_items(row[13], "constraints"),
+                    indexes=_identity_json_items(row[14], "indexes"),
+                    index_owners=_identity_json_items(row[15], "index_owners"),
+                    user_triggers=_identity_items(row[16], "triggers"),
+                    rewrite_rules=_identity_items(row[17], "rules"),
+                    policies=_identity_items(row[18], "policies"),
+                    inheritance=_bool(row[19]),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise PostgresProtocolError(
+                "database_private_relation_identity_invalid"
+            ) from exc
+    try:
+        private_schema_identity = CanonicalPrivateSchemaIdentity(
+            schema=policy.schema,
+            owner=private_schema_result.rows[0][0] or "",
+            owner_dangerous=_bool(private_schema_result.rows[0][1]),
+            relations=tuple(private_relations),
+        )
+    except (TypeError, ValueError) as exc:
+        raise PostgresProtocolError(
+            "database_private_schema_identity_invalid"
+        ) from exc
+
     unexpected: list[str] = []
     tables_result = session.query(
         "SELECT format('%I.%I', n.nspname, c.relname), "
@@ -1301,7 +1764,7 @@ def _collect_privilege_attestation(
 
     routines_result = session.query(
         "SELECT format('%I.%I(%s)', n.nspname, p.proname, "
-        "pg_get_function_identity_arguments(p.oid)), "
+        "pg_catalog.oidvectortypes(p.proargtypes)), "
         "pg_get_userbyid(p.proowner) = current_user, "
         "has_function_privilege(current_user, p.oid, 'EXECUTE'), "
         "owner.rolname, (owner.rolcanlogin OR owner.rolsuper OR EXISTS ("
@@ -1507,14 +1970,14 @@ def _collect_privilege_attestation(
         "ON n.oid = c.relnamespace JOIN pg_catalog.pg_attribute attribute "
         "ON attribute.attrelid = c.oid AND attribute.attnum > 0 "
         "AND NOT attribute.attisdropped CROSS JOIN LATERAL "
-        "aclexplode(coalesce(attribute.attacl, '{}'::aclitem[])) a "
+        "aclexplode(attribute.attacl) a "
         "WHERE n.nspname = "
         + schema
         + " AND c.relkind IN ('r','p') AND a.grantee <> c.relowner "
         "UNION ALL SELECT format('%s:%s::%s:%s:%s:%s', "
         "CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END, "
         "format('%I.%I(%s)', n.nspname, p.proname, "
-        "pg_get_function_identity_arguments(p.oid)), pg_get_userbyid(a.grantor), "
+        "pg_catalog.oidvectortypes(p.proargtypes)), pg_get_userbyid(a.grantor), "
         "CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, "
         "a.privilege_type, a.is_grantable) "
         "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n "
@@ -1558,6 +2021,7 @@ def _collect_privilege_attestation(
             canonical_writer_role_inheritors
         ),
         canonical_event_log_identity=canonical_event_log_identity,
+        canonical_private_schema_identity=private_schema_identity,
     )
 
 

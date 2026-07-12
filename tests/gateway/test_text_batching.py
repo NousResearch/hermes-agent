@@ -9,7 +9,8 @@ Telegram and Feishu.
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -130,6 +131,33 @@ class TestDiscordTextBatching:
         await asyncio.sleep(0.2)
 
         assert len(adapter._pending_text_batches) == 0
+
+    @pytest.mark.asyncio
+    async def test_public_visibility_revoked_during_delay_discards_batch(self):
+        adapter = _make_discord_adapter()
+        state = {"public": True}
+        default_role = object()
+        channel = SimpleNamespace(
+            id=12345,
+            guild=SimpleNamespace(id=1, default_role=default_role),
+            permissions_for=lambda role: SimpleNamespace(
+                view_channel=bool(state["public"] and role is default_role)
+            ),
+        )
+        event = _make_event("must not reach GPT", Platform.DISCORD)
+        event.raw_message = SimpleNamespace(channel=channel)
+
+        with patch(
+            "plugins.platforms.discord.adapter._discord_public_only_policy_required",
+            return_value=True,
+        ):
+            adapter._enqueue_text_event(event)
+            await asyncio.sleep(0.05)
+            state["public"] = False
+            await asyncio.sleep(0.15)
+
+        adapter.handle_message.assert_not_called()
+        assert adapter._pending_text_batches == {}
 
     @pytest.mark.asyncio
     async def test_adaptive_delay_for_near_limit_chunk(self):

@@ -54,6 +54,45 @@ _EVENT_LOG_IDENTITY = writer_db.CanonicalEventLogIdentity(
     index_count=1,
     primary_index_exact=True,
 )
+_PRIVATE_RELATION_IDENTITIES = tuple(
+    writer_db.CanonicalPrivateRelationIdentity(
+        name=name,
+        owner="canonical_owner",
+        owner_dangerous=False,
+        relation_kind="r",
+        persistence="p",
+        is_partition=False,
+        access_method="heap",
+        tablespace_oid=0,
+        row_security=False,
+        force_row_security=False,
+        replica_identity="d",
+        relation_options=(),
+        columns=('{"name":"id"}',),
+        constraints=('{"definition":"PRIMARY KEY (id)"}',),
+        indexes=('{"primary":true}',),
+        index_owners=("canonical_owner:f",),
+        user_triggers=(),
+        rewrite_rules=(),
+        policies=(),
+        inheritance=False,
+    )
+    for name in writer_db.CANONICAL_PRIVATE_WRITER_TABLES
+)
+_PRIVATE_SCHEMA_IDENTITY = writer_db.CanonicalPrivateSchemaIdentity(
+    schema="canonical_brain",
+    owner="canonical_owner",
+    owner_dangerous=False,
+    relations=_PRIVATE_RELATION_IDENTITIES,
+)
+
+
+def _private_schema_with_relation_change(**changes):
+    first, *remaining = _PRIVATE_SCHEMA_IDENTITY.relations
+    return replace(
+        _PRIVATE_SCHEMA_IDENTITY,
+        relations=(replace(first, **changes), *remaining),
+    )
 
 
 def _credential(tmp_path, value: bytes = b"secret\n") -> writer_db.CredentialSource:
@@ -84,6 +123,7 @@ def _policy() -> writer_db.WriterPrivilegePolicy:
         routine_identities=(_ROUTINE_IDENTITY,),
         dependency_routine_identities=(_HELPER_IDENTITY,),
         canonical_owner_role="canonical_owner",
+        private_schema_identity_sha256=_PRIVATE_SCHEMA_IDENTITY.sha256,
     )
 
 
@@ -101,6 +141,7 @@ def _attestation(**changes) -> writer_db.PrivilegeAttestation:
         ),
         canonical_writer_role_inheritors=("canonical_writer:1:t:f",),
         canonical_event_log_identity=_EVENT_LOG_IDENTITY,
+        canonical_private_schema_identity=_PRIVATE_SCHEMA_IDENTITY,
     )
     return replace(value, **changes)
 
@@ -210,6 +251,101 @@ def test_credential_source_requires_exactly_one_explicit_source(tmp_path):
         ({"routine_identities": ()}, "routine_identity"),
         ({"dependency_routine_identities": ()}, "dependency_routine_identity"),
         ({"canonical_event_log_identity": None}, "canonical_event_log_identity"),
+        (
+            {"canonical_private_schema_identity": None},
+            "private_schema_identity",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": replace(
+                    _PRIVATE_SCHEMA_IDENTITY,
+                    owner="rogue_owner",
+                )
+            },
+            "private_schema_owner_identity",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": replace(
+                    _PRIVATE_SCHEMA_IDENTITY,
+                    owner_dangerous=True,
+                )
+            },
+            "private_schema_owner_identity",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": _private_schema_with_relation_change(
+                    owner="rogue_owner"
+                )
+            },
+            "private_relation_identity",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": _private_schema_with_relation_change(
+                    owner_dangerous=True
+                )
+            },
+            "private_relation_identity",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": replace(
+                    _PRIVATE_SCHEMA_IDENTITY,
+                    relations=_PRIVATE_SCHEMA_IDENTITY.relations[:-1],
+                )
+            },
+            "private_schema_relation_set",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": replace(
+                    _PRIVATE_SCHEMA_IDENTITY,
+                    relations=(
+                        *_PRIVATE_SCHEMA_IDENTITY.relations,
+                        replace(
+                            _PRIVATE_SCHEMA_IDENTITY.relations[0],
+                            name="rogue_view",
+                            relation_kind="v",
+                            access_method="",
+                            constraints=(),
+                            indexes=(),
+                            index_owners=(),
+                        ),
+                    ),
+                )
+            },
+            "private_schema_relation_set",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": _private_schema_with_relation_change(
+                    relation_kind="S",
+                    access_method="",
+                )
+            },
+            "private_relation_identity",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": _private_schema_with_relation_change(
+                    columns=(
+                        '{"name":"id"}',
+                        '{"name":"forged"}',
+                    )
+                )
+            },
+            "private_schema_structure_digest",
+        ),
+        (
+            {
+                "canonical_private_schema_identity": _private_schema_with_relation_change(
+                    index_owners=("rogue_owner:t",)
+                )
+            },
+            "private_relation_identity",
+        ),
         (
             {
                 "canonical_event_log_identity": replace(
@@ -344,6 +480,34 @@ def test_fixed_statement_renders_typed_values_without_sql_injection():
         writer_db._render_fixed(statement, {"case_id": "missing payload"})
 
 
+def _private_relation_attestation_row(relation):
+    def structured(values):
+        return json.dumps([json.loads(item) for item in values])
+
+    return (
+        relation.name,
+        relation.owner,
+        "t" if relation.owner_dangerous else "f",
+        relation.relation_kind,
+        relation.persistence,
+        "t" if relation.is_partition else "f",
+        relation.access_method,
+        str(relation.tablespace_oid),
+        "t" if relation.row_security else "f",
+        "t" if relation.force_row_security else "f",
+        relation.replica_identity,
+        json.dumps(list(relation.relation_options)),
+        structured(relation.columns),
+        structured(relation.constraints),
+        structured(relation.indexes),
+        json.dumps(list(relation.index_owners)),
+        json.dumps(list(relation.user_triggers)),
+        json.dumps(list(relation.rewrite_rules)),
+        json.dumps(list(relation.policies)),
+        "t" if relation.inheritance else "f",
+    )
+
+
 class _FakeSession:
     def __init__(self, statement_result=None):
         self.closed = False
@@ -365,6 +529,15 @@ class _FakeSession:
         if "FROM pg_catalog.pg_roles r" in sql:
             return writer_db.QueryResult(
                 (), (("canonical_writer", "f", "f", "f", "f", "f"),), "SELECT 1"
+            )
+        if "FROM pg_catalog.pg_namespace namespace" in sql:
+            return writer_db.QueryResult(
+                (),
+                ((
+                    _PRIVATE_SCHEMA_IDENTITY.owner,
+                    "t" if _PRIVATE_SCHEMA_IDENTITY.owner_dangerous else "f",
+                ),),
+                "SELECT 1",
             )
         if "c.relname = 'canonical_event_log'" in sql:
             return writer_db.QueryResult(
@@ -392,6 +565,15 @@ class _FakeSession:
                     "t",
                 ),),
                 "SELECT 1",
+            )
+        if "column_identity.value" in sql:
+            return writer_db.QueryResult(
+                (),
+                tuple(
+                    _private_relation_attestation_row(relation)
+                    for relation in _PRIVATE_SCHEMA_IDENTITY.relations
+                ),
+                f"SELECT {len(_PRIVATE_SCHEMA_IDENTITY.relations)}",
             )
         if "SELECT object_acl FROM" in sql:
             return writer_db.QueryResult(
@@ -469,6 +651,20 @@ class _FakeSession:
         self.closed = True
 
 
+class _FixedStatementFailureSession(_FakeSession):
+    def __init__(self, sqlstate):
+        super().__init__()
+        self.sqlstate = sqlstate
+
+    def query(self, sql, *, maximum_rows):
+        if sql.startswith("SELECT * FROM canonical_brain.append_event"):
+            self.queries.append((sql, maximum_rows))
+            raise writer_db.PostgresProtocolError(
+                "database_error_sqlstate:" + self.sqlstate
+            )
+        return super().query(sql, maximum_rows=maximum_rows)
+
+
 class _DriftedCanonicalAclSession(_FakeSession):
     def query(self, sql, *, maximum_rows):
         if "SELECT object_acl FROM" in sql:
@@ -485,6 +681,21 @@ class _DriftedCanonicalAclSession(_FakeSession):
                     ),
                 )),
                 "SELECT 3",
+            )
+        return super().query(sql, maximum_rows=maximum_rows)
+
+
+class _DriftedPrivateRelationOwnerSession(_FakeSession):
+    def query(self, sql, *, maximum_rows):
+        if "column_identity.value" in sql:
+            drifted = _private_schema_with_relation_change(owner="rogue_owner")
+            return writer_db.QueryResult(
+                (),
+                tuple(
+                    _private_relation_attestation_row(relation)
+                    for relation in drifted.relations
+                ),
+                f"SELECT {len(drifted.relations)}",
             )
         return super().query(sql, maximum_rows=maximum_rows)
 
@@ -519,11 +730,19 @@ def test_db_requires_startup_attestation_and_reattests_each_session(tmp_path):
     assert result.rows == (("receipt-1",),)
     assert len(sessions) == 2
     assert all(session.closed for session in sessions)
-    assert len(sessions[1].queries) == 15
+    assert len(sessions[1].queries) == 17
     assert "canonical_brain.append_event" in sessions[1].queries[-2][0]
     event_identity_query = next(
         sql for sql, _ in sessions[1].queries
         if "c.relname = 'canonical_event_log'" in sql
+    )
+    private_schema_query = next(
+        sql for sql, _ in sessions[1].queries
+        if "FROM pg_catalog.pg_namespace namespace" in sql
+    )
+    private_relations_query = next(
+        sql for sql, _ in sessions[1].queries
+        if "column_identity.value" in sql
     )
     routine_identity_query = next(
         sql for sql, _ in sessions[1].queries
@@ -537,6 +756,14 @@ def test_db_requires_startup_attestation_and_reattests_each_session(tmp_path):
     assert "pg_catalog.pg_auth_members membership" in event_identity_query
     assert "attribute.attacl" in event_identity_query
     assert "column:%s:%s:%s:%s:%s" in event_identity_query
+    assert "owner.rolcanlogin" in private_schema_query
+    assert "pg_catalog.pg_auth_members membership" in private_schema_query
+    assert "class.relkind IN ('r','p','S','v','m','f','c')" in (
+        private_relations_query
+    )
+    assert "pg_catalog.pg_get_constraintdef" in private_relations_query
+    assert "index_owner.rolcanlogin" in private_relations_query
+    assert "NOT trigger.tgisinternal" in private_relations_query
     assert "owner.rolcanlogin" in routine_identity_query
     assert "owner_membership.member = owner.oid" in routine_identity_query
     assert "a.grantee <> n.nspowner" in canonical_acl_query
@@ -545,6 +772,86 @@ def test_db_requires_startup_attestation_and_reattests_each_session(tmp_path):
     assert "a.is_grantable" in canonical_acl_query
     assert not hasattr(database, "query")
     assert not hasattr(database, "password")
+
+
+def _retry_test_database(tmp_path, sessions):
+    available = iter(sessions)
+    statement = writer_db.FixedStatement(
+        name="append_event",
+        sql_template="SELECT * FROM canonical_brain.append_event({{payload}})",
+        parameters=(
+            writer_db.ParameterSpec("payload", writer_db.ParameterKind.JSON),
+        ),
+    )
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=_policy(),
+        statements=writer_db.StatementCatalog((statement,)),
+        _session_factory=lambda _config: next(available),
+    )
+    database.startup_attest()
+    return database
+
+
+@pytest.mark.parametrize("sqlstate", ["40001", "40P01"])
+def test_fixed_transaction_retries_only_retryable_postgres_aborts(
+    tmp_path,
+    sqlstate,
+):
+    startup = _FakeSession()
+    failed = _FixedStatementFailureSession(sqlstate)
+    succeeded = _FakeSession()
+    database = _retry_test_database(tmp_path, [startup, failed, succeeded])
+
+    result = database.query_fixed("append_event", {"payload": {"case": 1}})
+
+    assert result.rows == (("receipt-1",),)
+    assert all(session.closed for session in (startup, failed, succeeded))
+    failed_sql = [sql for sql, _maximum_rows in failed.queries]
+    succeeded_sql = [sql for sql, _maximum_rows in succeeded.queries]
+    assert sum("FROM pg_catalog.pg_roles r" in sql for sql in failed_sql) == 1
+    assert sum("FROM pg_catalog.pg_roles r" in sql for sql in succeeded_sql) == 1
+    assert failed_sql.count("ROLLBACK") == 1
+    assert "COMMIT" not in failed_sql
+    assert succeeded_sql.count("COMMIT") == 1
+
+
+def test_fixed_transaction_stops_after_three_whole_attested_attempts(tmp_path):
+    startup = _FakeSession()
+    attempts = [_FixedStatementFailureSession("40001") for _ in range(3)]
+    database = _retry_test_database(tmp_path, [startup, *attempts])
+
+    with pytest.raises(
+        writer_db.PostgresProtocolError,
+        match="database_error_sqlstate:40001",
+    ):
+        database.query_fixed("append_event", {"payload": {"case": 1}})
+
+    assert all(session.closed for session in (startup, *attempts))
+    for session in attempts:
+        sql = [query for query, _maximum_rows in session.queries]
+        assert sum("FROM pg_catalog.pg_roles r" in query for query in sql) == 1
+        assert sql.count("ROLLBACK") == 1
+        assert "COMMIT" not in sql
+
+
+def test_fixed_transaction_does_not_retry_other_database_errors(tmp_path):
+    startup = _FakeSession()
+    failed = _FixedStatementFailureSession("23505")
+    database = _retry_test_database(tmp_path, [startup, failed])
+
+    with pytest.raises(
+        writer_db.PostgresProtocolError,
+        match="database_error_sqlstate:23505",
+    ):
+        database.query_fixed("append_event", {"payload": {"case": 1}})
+
+    assert startup.closed is True
+    assert failed.closed is True
+    sql = [query for query, _maximum_rows in failed.queries]
+    assert sum("FROM pg_catalog.pg_roles r" in query for query in sql) == 1
+    assert sql.count("ROLLBACK") == 1
+    assert "COMMIT" not in sql
 
 
 def test_each_runtime_call_rejects_new_arbitrary_canonical_acl(tmp_path):
@@ -567,6 +874,30 @@ def test_each_runtime_call_rejects_new_arbitrary_canonical_acl(tmp_path):
     with pytest.raises(
         writer_db.PrivilegeAttestationError,
         match="canonical_non_owner_acl",
+    ):
+        database.query_fixed("append_event", {"payload": {"case": 1}})
+
+
+def test_each_runtime_call_rejects_private_relation_owner_drift(tmp_path):
+    sessions = iter((_FakeSession(), _DriftedPrivateRelationOwnerSession()))
+    statement = writer_db.FixedStatement(
+        name="append_event",
+        sql_template="SELECT * FROM canonical_brain.append_event({{payload}})",
+        parameters=(
+            writer_db.ParameterSpec("payload", writer_db.ParameterKind.JSON),
+        ),
+    )
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=_policy(),
+        statements=writer_db.StatementCatalog((statement,)),
+        _session_factory=lambda _config: next(sessions),
+    )
+    database.startup_attest()
+
+    with pytest.raises(
+        writer_db.PrivilegeAttestationError,
+        match="private_relation_identity",
     ):
         database.query_fixed("append_event", {"payload": {"case": 1}})
 

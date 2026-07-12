@@ -19,6 +19,8 @@ from typing import Any, Mapping, Sequence
 
 from gateway.canonical_writer_db import (
     CanonicalEventLogIdentity,
+    CanonicalPrivateRelationIdentity,
+    CanonicalPrivateSchemaIdentity,
     PrivilegeAttestation,
     PrivilegeAttestationError,
     RoutineIdentity,
@@ -2019,6 +2021,14 @@ def _strings(value: Any) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _strict_boolean(value: Any, label: str) -> bool:
+    """Parse untrusted snapshot evidence without truthy/falsey coercion."""
+
+    if type(value) is not bool:
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
 def _routine_identities(value: Any) -> tuple[RoutineIdentity, ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise ValueError("routine identities must be a sequence")
@@ -2029,11 +2039,17 @@ def _routine_identities(value: Any) -> tuple[RoutineIdentity, ...]:
             RoutineIdentity(
                 signature=str(item.get("signature") or ""),
                 owner=str(item.get("owner") or ""),
-                security_definer=item.get("security_definer") is True,
+                security_definer=_strict_boolean(
+                    item.get("security_definer"),
+                    "routine identity security_definer",
+                ),
                 language=str(item.get("language") or ""),
                 configuration=_strings(item.get("configuration", ())),
                 definition_sha256=str(item.get("definition_sha256") or ""),
-                owner_dangerous=item.get("owner_dangerous") is True,
+                owner_dangerous=_strict_boolean(
+                    item.get("owner_dangerous"),
+                    "routine identity owner_dangerous",
+                ),
             )
         )
     return tuple(identities)
@@ -2044,14 +2060,26 @@ def _canonical_event_log_identity(value: Any) -> CanonicalEventLogIdentity:
     return CanonicalEventLogIdentity(
         table=str(item.get("table") or ""),
         owner=str(item.get("owner") or ""),
-        owner_dangerous=item.get("owner_dangerous") is True,
+        owner_dangerous=_strict_boolean(
+            item.get("owner_dangerous"),
+            "canonical event log owner_dangerous",
+        ),
         relation_kind=str(item.get("relation_kind") or ""),
         persistence=str(item.get("persistence") or ""),
-        is_partition=item.get("is_partition") is True,
+        is_partition=_strict_boolean(
+            item.get("is_partition"),
+            "canonical event log is_partition",
+        ),
         access_method=str(item.get("access_method") or ""),
         tablespace_oid=int(item.get("tablespace_oid", -1)),
-        row_security=item.get("row_security") is True,
-        force_row_security=item.get("force_row_security") is True,
+        row_security=_strict_boolean(
+            item.get("row_security"),
+            "canonical event log row_security",
+        ),
+        force_row_security=_strict_boolean(
+            item.get("force_row_security"),
+            "canonical event log force_row_security",
+        ),
         replica_identity=str(item.get("replica_identity") or ""),
         relation_options=_strings(item.get("relation_options", ())),
         columns=_strings(item.get("columns", ())),
@@ -2059,12 +2087,87 @@ def _canonical_event_log_identity(value: Any) -> CanonicalEventLogIdentity:
         user_triggers=_strings(item.get("user_triggers", ())),
         rewrite_rules=_strings(item.get("rewrite_rules", ())),
         policies=_strings(item.get("policies", ())),
-        inheritance=item.get("inheritance") is True,
+        inheritance=_strict_boolean(
+            item.get("inheritance"),
+            "canonical event log inheritance",
+        ),
         non_owner_acl_grants=_strings(
             item.get("non_owner_acl_grants", ())
         ),
         index_count=int(item.get("index_count", -1)),
-        primary_index_exact=item.get("primary_index_exact") is True,
+        primary_index_exact=_strict_boolean(
+            item.get("primary_index_exact"),
+            "canonical event log primary_index_exact",
+        ),
+    )
+
+
+def _canonical_private_relation_identities(
+    value: Any,
+) -> tuple[CanonicalPrivateRelationIdentity, ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        raise ValueError("private relation identities must be a sequence")
+    identities = []
+    for raw in value:
+        item = _mapping(raw)
+        identities.append(
+            CanonicalPrivateRelationIdentity(
+                name=str(item.get("name") or ""),
+                owner=str(item.get("owner") or ""),
+                owner_dangerous=_strict_boolean(
+                    item.get("owner_dangerous"),
+                    "private relation owner_dangerous",
+                ),
+                relation_kind=str(item.get("relation_kind") or ""),
+                persistence=str(item.get("persistence") or ""),
+                is_partition=_strict_boolean(
+                    item.get("is_partition"),
+                    "private relation is_partition",
+                ),
+                access_method=str(item.get("access_method") or ""),
+                tablespace_oid=int(item.get("tablespace_oid", -1)),
+                row_security=_strict_boolean(
+                    item.get("row_security"),
+                    "private relation row_security",
+                ),
+                force_row_security=_strict_boolean(
+                    item.get("force_row_security"),
+                    "private relation force_row_security",
+                ),
+                replica_identity=str(item.get("replica_identity") or ""),
+                relation_options=_strings(item.get("relation_options", ())),
+                columns=_strings(item.get("columns", ())),
+                constraints=_strings(item.get("constraints", ())),
+                indexes=_strings(item.get("indexes", ())),
+                index_owners=_strings(item.get("index_owners", ())),
+                user_triggers=_strings(item.get("user_triggers", ())),
+                rewrite_rules=_strings(item.get("rewrite_rules", ())),
+                policies=_strings(item.get("policies", ())),
+                inheritance=_strict_boolean(
+                    item.get("inheritance"),
+                    "private relation inheritance",
+                ),
+            )
+        )
+    return tuple(identities)
+
+
+def _canonical_private_schema_identity(
+    value: Any,
+) -> CanonicalPrivateSchemaIdentity:
+    item = _mapping(value)
+    return CanonicalPrivateSchemaIdentity(
+        schema=str(item.get("schema") or ""),
+        owner=str(item.get("owner") or ""),
+        owner_dangerous=_strict_boolean(
+            item.get("owner_dangerous"),
+            "private schema owner_dangerous",
+        ),
+        relations=_canonical_private_relation_identities(
+            item.get("relations", ())
+        ),
     )
 
 
@@ -2107,6 +2210,9 @@ def _parse_database_attestation(
         schema_privileges=raw_schema_privileges,
         database_privileges=raw_database_privileges,
         role_memberships=raw_role_memberships,
+        private_schema_identity_sha256=str(
+            policy_raw.get("private_schema_identity_sha256") or ""
+        ),
     )
     attested_schema_privileges = tuple(
         sorted(
@@ -2125,13 +2231,27 @@ def _parse_database_attestation(
     )
     attestation = PrivilegeAttestation(
         role=str(attestation_raw.get("role") or ""),
-        superuser=attestation_raw.get("superuser") is True,
-        createdb=attestation_raw.get("createdb") is True,
-        createrole=attestation_raw.get("createrole") is True,
-        replication=attestation_raw.get("replication") is True,
-        bypassrls=attestation_raw.get("bypassrls") is True,
-        table_owner=attestation_raw.get("table_owner") is True,
-        routine_owner=attestation_raw.get("routine_owner") is True,
+        superuser=_strict_boolean(
+            attestation_raw.get("superuser"), "attestation superuser"
+        ),
+        createdb=_strict_boolean(
+            attestation_raw.get("createdb"), "attestation createdb"
+        ),
+        createrole=_strict_boolean(
+            attestation_raw.get("createrole"), "attestation createrole"
+        ),
+        replication=_strict_boolean(
+            attestation_raw.get("replication"), "attestation replication"
+        ),
+        bypassrls=_strict_boolean(
+            attestation_raw.get("bypassrls"), "attestation bypassrls"
+        ),
+        table_owner=_strict_boolean(
+            attestation_raw.get("table_owner"), "attestation table_owner"
+        ),
+        routine_owner=_strict_boolean(
+            attestation_raw.get("routine_owner"), "attestation routine_owner"
+        ),
         table_grants=_table_grants(attestation_raw.get("table_grants", ())),
         sequence_grants=_sequence_grants(
             attestation_raw.get("sequence_grants", ())
@@ -2160,6 +2280,11 @@ def _parse_database_attestation(
         ),
         canonical_event_log_identity=_canonical_event_log_identity(
             attestation_raw.get("canonical_event_log_identity")
+        ),
+        canonical_private_schema_identity=(
+            _canonical_private_schema_identity(
+                attestation_raw.get("canonical_private_schema_identity")
+            )
         ),
     )
     if policy.schema != CANONICAL_WRITER_SCHEMA:

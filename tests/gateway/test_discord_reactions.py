@@ -41,6 +41,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as discord_adapter_module  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -311,6 +312,36 @@ async def test_reactions_enabled_by_default(adapter, monkeypatch):
     await adapter.on_processing_start(event)
 
     raw_message.add_reaction.assert_awaited_once_with("👀")
+
+
+@pytest.mark.asyncio
+async def test_reactions_stop_after_public_visibility_is_revoked(adapter, monkeypatch):
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+    raw_message = SimpleNamespace(
+        channel=channel,
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+    event = _make_event("public-then-private", raw_message)
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    await adapter.on_processing_start(event)
+    state["public"] = False
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    raw_message.add_reaction.assert_awaited_once_with("👀")
+    raw_message.remove_reaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio

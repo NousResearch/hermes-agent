@@ -129,6 +129,7 @@ def _config_value(tmp_path):
             "schema_privileges": ["USAGE"],
             "database_privileges": ["CONNECT"],
             "role_memberships": [CANONICAL_WRITER_ROLE],
+            "private_schema_identity_sha256": "c" * 64,
             "deployment_lock_key": 4_841_739_663_211_427_921,
         },
     }
@@ -169,6 +170,7 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
     assert config.privileges.schema_privileges == ("USAGE",)
     assert config.privileges.database_privileges == ("CONNECT",)
     assert config.privileges.role_memberships == (CANONICAL_WRITER_ROLE,)
+    assert config.privileges.private_schema_identity_sha256 == "c" * 64
     assert config.privileges.deployment_lock_key == 4_841_739_663_211_427_921
 
 
@@ -282,6 +284,18 @@ def test_config_rejects_deployment_lock_key_drift(tmp_path):
     value["privileges"]["deployment_lock_key"] += 1
 
     with pytest.raises(ValueError, match="pinned writer lock"):
+        _load(_write_config(tmp_path, value))
+
+
+@pytest.mark.parametrize("digest", [None, "c" * 63, "C" * 64, "g" * 64])
+def test_config_requires_exact_private_schema_identity_digest(tmp_path, digest):
+    value = _config_value(tmp_path)
+    if digest is None:
+        del value["privileges"]["private_schema_identity_sha256"]
+    else:
+        value["privileges"]["private_schema_identity_sha256"] = digest
+
+    with pytest.raises(ValueError, match="private_schema_identity_sha256"):
         _load(_write_config(tmp_path, value))
 
 

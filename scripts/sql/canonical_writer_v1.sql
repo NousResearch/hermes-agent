@@ -295,20 +295,24 @@ BEGIN
     END IF;
 
     SELECT pg_catalog.string_agg(
-               constraint.contype::text || ':'
-               || pg_catalog.pg_get_constraintdef(constraint.oid, true),
-               ';' ORDER BY constraint.oid
+               constraint_row.contype::text || ':'
+               || pg_catalog.pg_get_constraintdef(constraint_row.oid, true),
+               ';' ORDER BY constraint_row.oid
            )
       INTO mismatch
-      FROM pg_catalog.pg_constraint AS constraint
-     WHERE constraint.conrelid = 'public.canonical_event_log'::regclass
-       AND pg_catalog.pg_get_constraintdef(constraint.oid, true)
+      FROM pg_catalog.pg_constraint AS constraint_row
+     WHERE constraint_row.conrelid = 'public.canonical_event_log'::regclass
+       -- PostgreSQL 18 materializes column NOT NULL state as ``contype = 'n'``
+       -- rows.  Column nullability is attested independently above, so those
+       -- version-specific catalog rows are not additional table constraints.
+       AND constraint_row.contype <> 'n'
+       AND pg_catalog.pg_get_constraintdef(constraint_row.oid, true)
            <> 'PRIMARY KEY (event_id)';
     IF mismatch IS NOT NULL OR NOT EXISTS (
         SELECT 1
-         FROM pg_catalog.pg_constraint AS constraint
-         WHERE constraint.conrelid = 'public.canonical_event_log'::regclass
-           AND pg_catalog.pg_get_constraintdef(constraint.oid, true)
+         FROM pg_catalog.pg_constraint AS constraint_row
+         WHERE constraint_row.conrelid = 'public.canonical_event_log'::regclass
+           AND pg_catalog.pg_get_constraintdef(constraint_row.oid, true)
                = 'PRIMARY KEY (event_id)'
     ) THEN
         RAISE EXCEPTION
@@ -347,7 +351,7 @@ BEGIN
                 SELECT acl.grantee, class.relowner, NULL::text AS column_name
                   FROM pg_catalog.pg_class AS class
                   CROSS JOIN LATERAL pg_catalog.aclexplode(
-                      COALESCE(class.relacl, '{}'::aclitem[])
+                      class.relacl
                   ) AS acl
                  WHERE class.oid = 'public.canonical_event_log'::regclass
                 UNION ALL
@@ -359,7 +363,7 @@ BEGIN
                    AND attribute.attnum > 0
                    AND NOT attribute.attisdropped
                   CROSS JOIN LATERAL pg_catalog.aclexplode(
-                      COALESCE(attribute.attacl, '{}'::aclitem[])
+                      attribute.attacl
                   ) AS acl
                  WHERE class.oid = 'public.canonical_event_log'::regclass
           ) AS direct_acl
@@ -413,7 +417,7 @@ BEGIN
         SELECT 1
           FROM pg_catalog.pg_attribute AS attribute
           CROSS JOIN LATERAL pg_catalog.aclexplode(
-              COALESCE(attribute.attacl, '{}'::aclitem[])
+              attribute.attacl
           ) AS acl
          WHERE attribute.attrelid = 'public.canonical_event_log'::regclass
            AND attribute.attnum > 0
@@ -485,11 +489,11 @@ BEGIN
                    <> 'canonical_brain_migration_owner'
                 OR NOT EXISTS (
                     SELECT 1
-                      FROM pg_catalog.pg_constraint AS constraint
-                     WHERE constraint.conrelid =
+                      FROM pg_catalog.pg_constraint AS constraint_row
+                     WHERE constraint_row.conrelid =
                            'public.canonical_event_log'::regclass
-                       AND constraint.contype = 'p'
-                       AND constraint.conindid = index.indexrelid
+                       AND constraint_row.contype = 'p'
+                       AND constraint_row.conindid = index.indexrelid
                 )
             ), true)
           FROM pg_catalog.pg_index AS index
@@ -1199,15 +1203,15 @@ BEGIN
           ('writer_capability_consumptions','remaining_uses')
     ), template AS (
         SELECT attribute.attname AS column_name,
-               pg_catalog.pg_get_constraintdef(constraint.oid, false)
+               pg_catalog.pg_get_constraintdef(constraint_row.oid, false)
                    AS definition
-          FROM pg_catalog.pg_constraint AS constraint
+          FROM pg_catalog.pg_constraint AS constraint_row
           JOIN pg_catalog.pg_attribute AS attribute
-            ON attribute.attrelid = constraint.conrelid
-           AND attribute.attnum = constraint.conkey[1]
-         WHERE constraint.conrelid = 'canonical_writer_check_contract'::regclass
-           AND constraint.contype = 'c'
-           AND pg_catalog.cardinality(constraint.conkey) = 1
+            ON attribute.attrelid = constraint_row.conrelid
+           AND attribute.attnum = constraint_row.conkey[1]
+         WHERE constraint_row.conrelid = 'canonical_writer_check_contract'::regclass
+           AND constraint_row.contype = 'c'
+           AND pg_catalog.cardinality(constraint_row.conkey) = 1
     ), expected_rows AS (
         SELECT expected_columns.table_name,
                expected_columns.column_name,
@@ -1220,15 +1224,15 @@ BEGIN
     ), actual_rows AS (
         SELECT class.relname AS table_name,
                attribute.attname AS column_name,
-               pg_catalog.pg_get_constraintdef(constraint.oid, false)
+               pg_catalog.pg_get_constraintdef(constraint_row.oid, false)
                    AS definition
-          FROM pg_catalog.pg_constraint AS constraint
-          JOIN pg_catalog.pg_class AS class ON class.oid = constraint.conrelid
+          FROM pg_catalog.pg_constraint AS constraint_row
+          JOIN pg_catalog.pg_class AS class ON class.oid = constraint_row.conrelid
           JOIN pg_catalog.pg_namespace AS namespace
             ON namespace.oid = class.relnamespace
           LEFT JOIN pg_catalog.pg_attribute AS attribute
-            ON attribute.attrelid = constraint.conrelid
-           AND attribute.attnum = constraint.conkey[1]
+            ON attribute.attrelid = constraint_row.conrelid
+           AND attribute.attnum = constraint_row.conkey[1]
          WHERE namespace.nspname = 'canonical_brain'
            AND class.relname IN (
                 'writer_routeback_authorizations',
@@ -1241,7 +1245,7 @@ BEGIN
                 'writer_capability_revocations',
                 'writer_capability_consumptions'
            )
-           AND constraint.contype = 'c'
+           AND constraint_row.contype = 'c'
     ), actual AS (
         SELECT actual_rows.table_name, actual_rows.column_name,
                actual_rows.definition, pg_catalog.count(*) AS occurrences
@@ -1292,20 +1296,20 @@ BEGIN
           FROM expected_rows
     ), actual_rows AS (
         SELECT class.relname AS table_name,
-               constraint.contype::text AS constraint_type,
+               constraint_row.contype::text AS constraint_type,
                pg_catalog.array_agg(attribute.attname ORDER BY key_position.ordinality)
                    AS columns
-          FROM pg_catalog.pg_constraint AS constraint
-          JOIN pg_catalog.pg_class AS class ON class.oid = constraint.conrelid
+          FROM pg_catalog.pg_constraint AS constraint_row
+          JOIN pg_catalog.pg_class AS class ON class.oid = constraint_row.conrelid
           JOIN pg_catalog.pg_namespace AS namespace
             ON namespace.oid = class.relnamespace
-          JOIN LATERAL pg_catalog.unnest(constraint.conkey)
+          JOIN LATERAL pg_catalog.unnest(constraint_row.conkey)
                WITH ORDINALITY AS key_position(attnum, ordinality) ON true
           JOIN pg_catalog.pg_attribute AS attribute
             ON attribute.attrelid = class.oid
            AND attribute.attnum = key_position.attnum
          WHERE namespace.nspname = 'canonical_brain'
-           AND constraint.contype IN ('p','u','f')
+           AND constraint_row.contype IN ('p','u','f')
            AND class.relname IN (
                 'writer_routeback_authorizations',
                 'writer_routeback_lifecycle_terminals',
@@ -1317,7 +1321,7 @@ BEGIN
                 'writer_capability_revocations',
                 'writer_capability_consumptions'
            )
-         GROUP BY class.relname, constraint.oid, constraint.contype
+         GROUP BY class.relname, constraint_row.oid, constraint_row.contype
     ), actual AS (
         SELECT actual_rows.table_name, actual_rows.constraint_type,
                actual_rows.columns, pg_catalog.count(*) AS occurrences
@@ -1343,39 +1347,39 @@ BEGIN
 
     SELECT pg_catalog.string_agg(class.relname, ',' ORDER BY class.relname)
       INTO mismatch
-      FROM pg_catalog.pg_constraint AS constraint
-      JOIN pg_catalog.pg_class AS class ON class.oid = constraint.conrelid
+      FROM pg_catalog.pg_constraint AS constraint_row
+      JOIN pg_catalog.pg_class AS class ON class.oid = constraint_row.conrelid
       JOIN pg_catalog.pg_namespace AS namespace
         ON namespace.oid = class.relnamespace
      WHERE namespace.nspname = 'canonical_brain'
-       AND constraint.contype = 'f'
+       AND constraint_row.contype = 'f'
        AND class.relname IN (
             'writer_routeback_terminals',
             'writer_capability_revocations',
             'writer_capability_consumptions'
        )
        AND (
-            constraint.condeferrable
-            OR constraint.condeferred
-            OR constraint.confupdtype <> 'a'
-            OR constraint.confdeltype <> 'a'
-            OR constraint.confmatchtype <> 's'
+            constraint_row.condeferrable
+            OR constraint_row.condeferred
+            OR constraint_row.confupdtype <> 'a'
+            OR constraint_row.confdeltype <> 'a'
+            OR constraint_row.confmatchtype <> 's'
             OR NOT (
                 (class.relname = 'writer_routeback_terminals'
-                 AND constraint.confrelid =
+                 AND constraint_row.confrelid =
                      'canonical_brain.writer_routeback_authorizations'::regclass)
                 OR (class.relname IN (
                         'writer_capability_revocations',
                         'writer_capability_consumptions'
                     )
-                    AND constraint.confrelid =
+                    AND constraint_row.confrelid =
                         'canonical_brain.writer_capability_grants'::regclass)
             )
-            OR constraint.confkey <> ARRAY[
+            OR constraint_row.confkey <> ARRAY[
                 (
                     SELECT attribute.attnum
                       FROM pg_catalog.pg_attribute AS attribute
-                     WHERE attribute.attrelid = constraint.confrelid
+                     WHERE attribute.attrelid = constraint_row.confrelid
                        AND attribute.attname = CASE
                            WHEN class.relname = 'writer_routeback_terminals'
                                THEN 'authorization_id'
@@ -1393,22 +1397,22 @@ BEGIN
     -- mechanical structure as well: no INCLUDE columns, expressions,
     -- predicates, alternate ordering/collation, or nondefault opclasses.
     SELECT pg_catalog.string_agg(
-               class.relname || ':' || constraint.conname,
-               ',' ORDER BY class.relname, constraint.conname
+               class.relname || ':' || constraint_row.conname,
+               ',' ORDER BY class.relname, constraint_row.conname
            )
       INTO mismatch
-      FROM pg_catalog.pg_constraint AS constraint
-      JOIN pg_catalog.pg_class AS class ON class.oid = constraint.conrelid
+      FROM pg_catalog.pg_constraint AS constraint_row
+      JOIN pg_catalog.pg_class AS class ON class.oid = constraint_row.conrelid
       JOIN pg_catalog.pg_namespace AS namespace
         ON namespace.oid = class.relnamespace
       JOIN pg_catalog.pg_index AS index
-        ON index.indexrelid = constraint.conindid
+        ON index.indexrelid = constraint_row.conindid
       JOIN pg_catalog.pg_class AS index_class
         ON index_class.oid = index.indexrelid
       JOIN pg_catalog.pg_am AS access_method
         ON access_method.oid = index_class.relam
      WHERE namespace.nspname = 'canonical_brain'
-       AND constraint.contype IN ('p','u')
+       AND constraint_row.contype IN ('p','u')
        AND class.relname IN (
             'writer_routeback_authorizations',
             'writer_routeback_lifecycle_terminals',
@@ -1422,7 +1426,7 @@ BEGIN
        )
        AND (
             NOT index.indisunique
-            OR index.indisprimary <> (constraint.contype = 'p')
+            OR index.indisprimary <> (constraint_row.contype = 'p')
             OR index.indisexclusion
             OR NOT index.indimmediate
             OR NOT index.indisvalid
@@ -1431,14 +1435,14 @@ BEGIN
             OR index.indisclustered
             OR index.indisreplident
             OR index.indcheckxmin
-            OR index.indnkeyatts <> pg_catalog.cardinality(constraint.conkey)
-            OR index.indnatts <> pg_catalog.cardinality(constraint.conkey)
+            OR index.indnkeyatts <> pg_catalog.cardinality(constraint_row.conkey)
+            OR index.indnatts <> pg_catalog.cardinality(constraint_row.conkey)
             OR ARRAY(
                 SELECT key_part.attnum
                   FROM pg_catalog.unnest(index.indkey)
                        WITH ORDINALITY AS key_part(attnum, ordinal)
                  ORDER BY key_part.ordinal
-            ) <> constraint.conkey
+            ) <> constraint_row.conkey
             OR index.indexprs IS NOT NULL
             OR index.indpred IS NOT NULL
             OR access_method.amname <> 'btree'
@@ -1449,11 +1453,11 @@ BEGIN
                <> 'canonical_brain_migration_owner'
             OR EXISTS (
                 SELECT 1
-                  FROM pg_catalog.unnest(
-                      index.indkey::smallint[],
-                      index.indclass::oid[],
-                      index.indcollation::oid[],
-                      index.indoption::smallint[]
+                  FROM ROWS FROM (
+                      pg_catalog.unnest(index.indkey::smallint[]),
+                      pg_catalog.unnest(index.indclass::oid[]),
+                      pg_catalog.unnest(index.indcollation::oid[]),
+                      pg_catalog.unnest(index.indoption::smallint[])
                   ) WITH ORDINALITY AS key_part(
                       attnum, opclass_oid, collation_oid, option_value, ordinal
                   )
@@ -1478,12 +1482,12 @@ BEGIN
     END IF;
 
     SELECT pg_catalog.string_agg(
-               class.relname || ':' || constraint.conname,
-               ',' ORDER BY class.relname, constraint.conname
+               class.relname || ':' || constraint_row.conname,
+               ',' ORDER BY class.relname, constraint_row.conname
            )
       INTO mismatch
-      FROM pg_catalog.pg_constraint AS constraint
-      JOIN pg_catalog.pg_class AS class ON class.oid = constraint.conrelid
+      FROM pg_catalog.pg_constraint AS constraint_row
+      JOIN pg_catalog.pg_class AS class ON class.oid = constraint_row.conrelid
       JOIN pg_catalog.pg_namespace AS namespace
         ON namespace.oid = class.relnamespace
      WHERE namespace.nspname = 'canonical_brain'
@@ -1499,14 +1503,21 @@ BEGIN
             'writer_capability_consumptions'
        )
        AND (
-            constraint.contype NOT IN ('p','u','f','c')
-            OR NOT constraint.convalidated
-            OR constraint.condeferrable
-            OR constraint.condeferred
-            OR constraint.connoinherit
-            OR NOT constraint.conislocal
-            OR constraint.coninhcount <> 0
-            OR constraint.conparentid <> 0
+            -- PostgreSQL 18 adds ``contype = 'n'`` rows for NOT NULL.  Their
+            -- exact state is already pinned by the column contract.
+            constraint_row.contype NOT IN ('p','u','f','c','n')
+            OR NOT constraint_row.convalidated
+            OR constraint_row.condeferrable
+            OR constraint_row.condeferred
+            -- Primary, unique, and foreign-key constraints are inherently
+            -- non-inheritable in PostgreSQL; CHECK/NOT-NULL must not opt out
+            -- of inheritance.  Pin the semantic value instead of assuming
+            -- the catalog flag is always false.
+            OR constraint_row.connoinherit <>
+               (constraint_row.contype IN ('p','u','f'))
+            OR NOT constraint_row.conislocal
+            OR constraint_row.coninhcount <> 0
+            OR constraint_row.conparentid <> 0
        );
     IF mismatch IS NOT NULL THEN
         RAISE EXCEPTION
@@ -1612,8 +1623,8 @@ BEGIN
                 'writer_capability_consumptions'
            )
            AND NOT EXISTS (
-                SELECT 1 FROM pg_catalog.pg_constraint AS constraint
-                 WHERE constraint.conindid = index.indexrelid
+                SELECT 1 FROM pg_catalog.pg_constraint AS constraint_row
+                 WHERE constraint_row.conindid = index.indexrelid
            )
     ), difference AS (
         (SELECT * FROM expected EXCEPT SELECT * FROM actual)
@@ -2371,21 +2382,21 @@ BEGIN
         -- edge that authorizes the destination thread to continue the case.
         -- Claimed-only and blocked attempts confer no authority.
         SELECT 1
-          FROM canonical_brain.writer_routeback_authorizations AS authorization
+          FROM canonical_brain.writer_routeback_authorizations AS authorization_row
           JOIN canonical_brain.writer_routeback_terminals AS terminal
-            ON terminal.authorization_id = authorization.authorization_id
+            ON terminal.authorization_id = authorization_row.authorization_id
            AND terminal.outcome = 'sent'
           JOIN canonical_brain.writer_public_routeback_targets AS allowed
             ON allowed.channel_id = COALESCE(
-                authorization.target_ref->>'thread_id',
-                authorization.target_ref->>'channel_id',
+                authorization_row.target_ref->>'thread_id',
+                authorization_row.target_ref->>'channel_id',
                 ''
             )
            AND allowed.enabled
            AND allowed.target_type IN ('public_channel', 'public_thread')
          WHERE runtime_value->>'platform' = 'discord'
            AND observed_thread <> ''
-           AND authorization.case_id = case_id_value
+           AND authorization_row.case_id = case_id_value
            AND observed_thread = allowed.channel_id
     );
 END
@@ -2409,7 +2420,10 @@ BEGIN
         'database_identity', CURRENT_USER,
         'request_id', runtime->>'request_id'
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'writer ping failed');
 END
 $function$;
@@ -2812,7 +2826,10 @@ BEGIN
         'support_incomplete_reasons', support_incomplete_value,
         'missing_verification_event_ids', missing_verification_value
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'canonical case query failed');
 END
 $function$;
@@ -2840,17 +2857,17 @@ BEGIN
 
     SELECT pg_catalog.count(*)
       INTO total_count
-      FROM canonical_brain.writer_routeback_authorizations AS authorization
+      FROM canonical_brain.writer_routeback_authorizations AS authorization_row
       JOIN canonical_brain.writer_routeback_terminals AS terminal
-        ON terminal.authorization_id = authorization.authorization_id
+        ON terminal.authorization_id = authorization_row.authorization_id
      WHERE terminal.outcome = 'sent'
        AND thread_value = COALESCE(
-            authorization.target_ref->>'thread_id',
-            authorization.target_ref->>'channel_id',
+            authorization_row.target_ref->>'thread_id',
+            authorization_row.target_ref->>'channel_id',
             ''
        )
        AND COALESCE(
-            authorization.source_thread_id,
+            authorization_row.source_thread_id,
             ''
        ) NOT IN ('', thread_value);
 
@@ -2858,20 +2875,20 @@ BEGIN
       INTO cases_value
       FROM (
         SELECT pg_catalog.jsonb_build_object(
-            'case_id', authorization.case_id,
-            'source_thread_id', authorization.source_thread_id
+            'case_id', authorization_row.case_id,
+            'source_thread_id', authorization_row.source_thread_id
         ) AS item
-          FROM canonical_brain.writer_routeback_authorizations AS authorization
+          FROM canonical_brain.writer_routeback_authorizations AS authorization_row
           JOIN canonical_brain.writer_routeback_terminals AS terminal
-            ON terminal.authorization_id = authorization.authorization_id
+            ON terminal.authorization_id = authorization_row.authorization_id
          WHERE terminal.outcome = 'sent'
            AND thread_value = COALESCE(
-                authorization.target_ref->>'thread_id',
-                authorization.target_ref->>'channel_id',
+                authorization_row.target_ref->>'thread_id',
+                authorization_row.target_ref->>'channel_id',
                 ''
            )
-           AND authorization.source_thread_id NOT IN ('', thread_value)
-         ORDER BY terminal.finalized_at DESC, authorization.authorization_id DESC
+           AND authorization_row.source_thread_id NOT IN ('', thread_value)
+         ORDER BY terminal.finalized_at DESC, authorization_row.authorization_id DESC
          LIMIT 3
       ) AS bounded;
     RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
@@ -2879,7 +2896,10 @@ BEGIN
         'cases', cases_value,
         'truncated', total_count > 3
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'route-back context read failed');
 END
 $function$;
@@ -2930,7 +2950,10 @@ BEGIN
         'active_plan_revision', CASE WHEN head_plan->>'state' = 'active'
                                      THEN head_plan->'revision' ELSE NULL END
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'active plan query failed');
 END
 $function$;
@@ -2997,7 +3020,9 @@ BEGIN
         );
     END IF;
     PERFORM pg_catalog.pg_advisory_xact_lock(
-        pg_catalog.hashtextextended('canonical-case:' || request->>'case_id', 0)
+        pg_catalog.hashtextextended(
+            'canonical-case:' || (request->>'case_id'), 0
+        )
     );
     IF NOT canonical_brain._case_scope_authorized(request->>'case_id', runtime, true) THEN
         RETURN canonical_brain._fail(
@@ -3017,7 +3042,10 @@ BEGIN
         'hermes_agent_llm_reasoning',
         runtime
     );
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'model event append failed');
 END
 $function$;
@@ -3356,7 +3384,10 @@ BEGIN
         ON CONFLICT (approval_id) DO NOTHING;
     END IF;
     RETURN append_result;
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'canonical plan transition failed');
 END
 $function$;
@@ -3429,7 +3460,7 @@ BEGIN
     );
     verification_event_id := canonical_brain._deterministic_uuid(
         'canonical-writer:' || case_value || ':task.verification.recorded:'
-            || request->>'idempotency_key'
+            || (request->>'idempotency_key')
     );
     IF EXISTS (
         SELECT 1
@@ -3517,7 +3548,10 @@ BEGIN
         'canonical_verification_receipt',
         runtime
     );
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'verification append failed');
 END
 $function$;
@@ -3606,18 +3640,20 @@ BEGIN
         );
     END IF;
     authorization_value := 'routeauth:' || pg_catalog.substr(
-        canonical_brain._sha256_json(pg_catalog.jsonb_build_object(
-            'case_id', case_value,
-            'idempotency_key', request->>'idempotency_key'
-        )),
+        canonical_brain._sha256_text(
+            '{"case_id":' || pg_catalog.to_json(case_value)::text
+            || ',"idempotency_key":'
+            || pg_catalog.to_json(request->>'idempotency_key')::text || '}'
+        ),
         1,
         40
     );
     lifecycle_value := 'routeblock:' || pg_catalog.substr(
-        canonical_brain._sha256_json(pg_catalog.jsonb_build_object(
-            'case_id', case_value,
-            'idempotency_key', request->>'idempotency_key'
-        )),
+        canonical_brain._sha256_text(
+            '{"case_id":' || pg_catalog.to_json(case_value)::text
+            || ',"idempotency_key":'
+            || pg_catalog.to_json(request->>'idempotency_key')::text || '}'
+        ),
         1,
         40
     );
@@ -3666,8 +3702,8 @@ BEGIN
     END IF;
 
     SELECT * INTO existing_record
-      FROM canonical_brain.writer_routeback_authorizations AS authorization
-     WHERE authorization.authorization_id = authorization_value;
+      FROM canonical_brain.writer_routeback_authorizations AS authorization_row
+     WHERE authorization_row.authorization_id = authorization_value;
     IF FOUND THEN
         IF existing_record.request_sha256 <> request_hash THEN
             RETURN canonical_brain._fail(
@@ -3770,7 +3806,10 @@ BEGIN
         'inserted', true,
         'deduped', false
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'route-back claim failed');
 END
 $function$;
@@ -3846,8 +3885,8 @@ BEGIN
         )
     );
     SELECT * INTO authorization_record
-      FROM canonical_brain.writer_routeback_authorizations AS authorization
-     WHERE authorization.authorization_id = request->>'authorization_id';
+      FROM canonical_brain.writer_routeback_authorizations AS authorization_row
+     WHERE authorization_row.authorization_id = request->>'authorization_id';
     IF NOT FOUND THEN
         RETURN canonical_brain._fail('authorization_missing', 'route-back authorization not found');
     END IF;
@@ -3949,7 +3988,10 @@ BEGIN
         'inserted', true,
         'deduped', false
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'route-back sent finalization failed');
 END
 $function$;
@@ -3964,6 +4006,7 @@ SET search_path = pg_catalog, canonical_brain
 AS $function$
 DECLARE
     authorization_record canonical_brain.writer_routeback_authorizations%ROWTYPE;
+    lifecycle_record canonical_brain.writer_routeback_lifecycle_terminals%ROWTYPE;
     terminal_record canonical_brain.writer_routeback_terminals%ROWTYPE;
     blocker_value text := COALESCE(request->>'blocker_reason', '');
     receipt_value jsonb := request->'receipt';
@@ -4042,18 +4085,20 @@ BEGIN
             );
         END IF;
         authorization_value := 'routeauth:' || pg_catalog.substr(
-            canonical_brain._sha256_json(pg_catalog.jsonb_build_object(
-                'case_id', case_value,
-                'idempotency_key', request->>'idempotency_key'
-            )),
+            canonical_brain._sha256_text(
+                '{"case_id":' || pg_catalog.to_json(case_value)::text
+                || ',"idempotency_key":'
+                || pg_catalog.to_json(request->>'idempotency_key')::text || '}'
+            ),
             1,
             40
         );
         preclaim_id := 'routeblock:' || pg_catalog.substr(
-            canonical_brain._sha256_json(pg_catalog.jsonb_build_object(
-                'case_id', case_value,
-                'idempotency_key', request->>'idempotency_key'
-            )),
+            canonical_brain._sha256_text(
+                '{"case_id":' || pg_catalog.to_json(case_value)::text
+                || ',"idempotency_key":'
+                || pg_catalog.to_json(request->>'idempotency_key')::text || '}'
+            ),
             1,
             40
         );
@@ -4098,8 +4143,8 @@ BEGIN
             ));
         END IF;
         SELECT * INTO authorization_record
-          FROM canonical_brain.writer_routeback_authorizations AS authorization
-         WHERE authorization.authorization_id = authorization_value;
+          FROM canonical_brain.writer_routeback_authorizations AS authorization_row
+         WHERE authorization_row.authorization_id = authorization_value;
         IF FOUND THEN
             IF authorization_record.case_id <> case_value
                OR authorization_record.target_ref IS DISTINCT FROM target_value
@@ -4254,8 +4299,8 @@ BEGIN
         )
     );
     SELECT * INTO authorization_record
-      FROM canonical_brain.writer_routeback_authorizations AS authorization
-     WHERE authorization.authorization_id = request->>'authorization_id';
+      FROM canonical_brain.writer_routeback_authorizations AS authorization_row
+     WHERE authorization_row.authorization_id = request->>'authorization_id';
     IF NOT FOUND THEN
         RETURN canonical_brain._fail('authorization_missing', 'route-back authorization not found');
     END IF;
@@ -4384,7 +4429,10 @@ BEGIN
         'inserted', true,
         'deduped', false
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'route-back blocked finalization failed');
 END
 $function$;
@@ -4435,7 +4483,7 @@ BEGIN
         'Deterministic send-path lease shadow receipt',
         pg_catalog.jsonb_build_object(
             'platform', request->>'source_platform',
-            'manual_ref', 'lease-shadow:' || request->>'intent_event_id'
+            'manual_ref', 'lease-shadow:' || (request->>'intent_event_id')
         ),
         pg_catalog.jsonb_build_object(
             'actor', pg_catalog.jsonb_build_object(
@@ -4448,7 +4496,10 @@ BEGIN
         'lease_shadow_record',
         runtime
     );
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'lease shadow append failed');
 END
 $function$;
@@ -4541,11 +4592,13 @@ BEGIN
 
     PERFORM pg_catalog.pg_advisory_xact_lock(
         pg_catalog.hashtextextended(
-            'approval-source:' || request->>'approval_source_sha256', 0
+            'approval-source:' || (request->>'approval_source_sha256'), 0
         )
     );
     PERFORM pg_catalog.pg_advisory_xact_lock(
-        pg_catalog.hashtextextended('approval-id:' || request->>'approval_id', 0)
+        pg_catalog.hashtextextended(
+            'approval-id:' || (request->>'approval_id'), 0
+        )
     );
     -- Grant, consume, and both explicit revoke operations share this exact
     -- scope lock.  The tombstone check below therefore cannot race a revoke
@@ -4675,7 +4728,8 @@ BEGIN
         'Exact plan capability granted',
         pg_catalog.jsonb_build_object(
             'platform', COALESCE(runtime->>'platform', ''),
-            'manual_ref', 'approval-source:' || request->>'approval_source_sha256'
+            'manual_ref',
+            'approval-source:' || (request->>'approval_source_sha256')
         ),
         pg_catalog.jsonb_build_object(
             'actor', pg_catalog.jsonb_build_object(
@@ -4703,7 +4757,7 @@ BEGIN
             )
         ),
         '{}'::jsonb,
-        'grant:' || request->>'approval_id',
+        'grant:' || (request->>'approval_id'),
         'capability_grant',
         runtime
     );
@@ -4743,7 +4797,10 @@ BEGIN
         'inserted', true,
         'deduped', false
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'capability grant failed');
 END
 $function$;
@@ -5012,7 +5069,10 @@ BEGIN
         (append_result->'result'->>'event_id')::uuid, response_value
     );
     RETURN canonical_brain._ok(response_value);
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'capability consume failed');
 END
 $function$;
@@ -5130,7 +5190,10 @@ BEGIN
         'scope_revoked', true,
         'revoked', inserted_total
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'capability revoke failed');
 END
 $function$;
@@ -5247,7 +5310,10 @@ BEGIN
         'scope_revoked', true,
         'revoked', inserted_total
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'session capability revoke failed');
 END
 $function$;
@@ -5393,7 +5459,10 @@ BEGIN
         'case_id', case_value,
         'bounded', true
     ));
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
     RETURN canonical_brain._fail('database_failure', 'projection read failed');
 END
 $function$;
@@ -5524,7 +5593,7 @@ BEGIN
                    AND attribute.attnum > 0
                    AND NOT attribute.attisdropped
                   CROSS JOIN LATERAL pg_catalog.aclexplode(
-                      COALESCE(attribute.attacl, '{}'::aclitem[])
+                      attribute.attacl
                   ) AS acl
                  WHERE namespace.nspname = 'canonical_brain'
                    AND class.relkind IN ('r','p')
@@ -5534,7 +5603,7 @@ BEGIN
                             THEN 'procedure' ELSE 'function' END,
                        pg_catalog.format(
                            '%I.%I(%s)', namespace.nspname, routine.proname,
-                           pg_catalog.pg_get_function_identity_arguments(routine.oid)
+                           pg_catalog.oidvectortypes(routine.proargtypes)
                        ),
                        NULL::text AS column_name,
                        acl.grantee
@@ -5676,7 +5745,7 @@ BEGIN
            AND attribute.attnum > 0
            AND NOT attribute.attisdropped
           CROSS JOIN LATERAL pg_catalog.aclexplode(
-              COALESCE(attribute.attacl, '{}'::aclitem[])
+              attribute.attacl
           ) AS acl
          WHERE (
                 namespace.nspname = 'canonical_brain'
@@ -5688,7 +5757,7 @@ BEGIN
         SELECT CASE WHEN routine.prokind = 'p' THEN 'procedure' ELSE 'function' END,
                pg_catalog.format(
                    '%I.%I(%s)', namespace.nspname, routine.proname,
-                   pg_catalog.pg_get_function_identity_arguments(routine.oid)
+                   pg_catalog.oidvectortypes(routine.proargtypes)
                ),
                ''::text,
                pg_catalog.pg_get_userbyid(acl.grantor),
@@ -5718,7 +5787,7 @@ BEGIN
         SELECT 'function',
                pg_catalog.format(
                    '%I.%I(%s)', namespace.nspname, routine.proname,
-                   pg_catalog.pg_get_function_identity_arguments(routine.oid)
+                   pg_catalog.oidvectortypes(routine.proargtypes)
                ),
                '', 'canonical_brain_migration_owner',
                'canonical_brain_writer', 'EXECUTE', false
@@ -5736,7 +5805,7 @@ BEGIN
                 'writer_capability_revoke','writer_capability_revoke_session',
                 'writer_projection_read_events'
            ])
-           AND pg_catalog.pg_get_function_identity_arguments(routine.oid)
+           AND pg_catalog.oidvectortypes(routine.proargtypes)
                = 'jsonb, jsonb'
     ), difference AS (
         (SELECT * FROM actual EXCEPT SELECT * FROM expected)

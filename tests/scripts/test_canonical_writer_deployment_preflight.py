@@ -9,6 +9,9 @@ from gateway.canonical_writer_db import (
     CANONICAL_EVENT_LOG_COLUMNS,
     CANONICAL_EVENT_LOG_OWNER,
     CANONICAL_EVENT_LOG_TABLE,
+    CANONICAL_PRIVATE_WRITER_TABLES,
+    CanonicalPrivateRelationIdentity,
+    CanonicalPrivateSchemaIdentity,
 )
 from gateway.canonical_writer_postgres_backend import (
     CANONICAL_WRITER_MIGRATION_OWNER,
@@ -426,6 +429,55 @@ def _helper_identities():
     ]
 
 
+def _private_relation_identity(name):
+    return {
+        "name": name,
+        "owner": CANONICAL_WRITER_MIGRATION_OWNER,
+        "owner_dangerous": False,
+        "relation_kind": "r",
+        "persistence": "p",
+        "is_partition": False,
+        "access_method": "heap",
+        "tablespace_oid": 0,
+        "row_security": False,
+        "force_row_security": False,
+        "replica_identity": "d",
+        "relation_options": [],
+        "columns": [json.dumps({"name": "identity"}, separators=(",", ":"))],
+        "constraints": [json.dumps({"type": "p"}, separators=(",", ":"))],
+        "indexes": [json.dumps({"primary": True}, separators=(",", ":"))],
+        "index_owners": [f"{CANONICAL_WRITER_MIGRATION_OWNER}:f"],
+        "user_triggers": [],
+        "rewrite_rules": [],
+        "policies": [],
+        "inheritance": False,
+    }
+
+
+def _private_schema_identity():
+    return {
+        "schema": "canonical_brain",
+        "owner": CANONICAL_WRITER_MIGRATION_OWNER,
+        "owner_dangerous": False,
+        "relations": [
+            _private_relation_identity(name)
+            for name in CANONICAL_PRIVATE_WRITER_TABLES
+        ],
+    }
+
+
+def _private_schema_identity_sha256(identity):
+    return CanonicalPrivateSchemaIdentity(
+        schema=identity["schema"],
+        owner=identity["owner"],
+        owner_dangerous=identity["owner_dangerous"],
+        relations=tuple(
+            CanonicalPrivateRelationIdentity(**relation)
+            for relation in identity["relations"]
+        ),
+    ).sha256
+
+
 def _good_snapshot():
     writer_deployment = _writer_deployment()
     hardened = {
@@ -443,6 +495,7 @@ def _good_snapshot():
             "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
         }
     )
+    private_schema_identity = _private_schema_identity()
     return {
         "collected_at_unix": 1_800_000_000,
         "gateway_uid": 1001,
@@ -582,6 +635,9 @@ def _good_snapshot():
                 "schema_privileges": ["USAGE"],
                 "database_privileges": ["CONNECT"],
                 "role_memberships": [CANONICAL_WRITER_ROLE],
+                "private_schema_identity_sha256": (
+                    _private_schema_identity_sha256(private_schema_identity)
+                ),
             },
             "attestation": {
                 "role": "canonical_writer",
@@ -631,6 +687,7 @@ def _good_snapshot():
                     "index_count": 1,
                     "primary_index_exact": True,
                 },
+                "canonical_private_schema_identity": private_schema_identity,
             },
         },
     }
@@ -879,6 +936,12 @@ def test_exact_immutable_projection_exporter_unit_and_timer_can_be_enabled():
             ].update(owner="gateway_controlled_owner"),
             "database.least_privilege",
         ),
+        (
+            lambda value: value["database"]["attestation"][
+                "canonical_private_schema_identity"
+            ].update(owner="gateway_controlled_owner"),
+            "database.least_privilege",
+        ),
     ],
 )
 def test_each_boundary_violation_fails_closed(mutate, failed):
@@ -909,6 +972,109 @@ def test_preflight_hard_pins_production_database_privileges(field, value):
     snapshot = _good_snapshot()
     snapshot["database"]["policy"][field] = value
     snapshot["database"]["attestation"][field] = copy.deepcopy(value)
+
+    assert "database.least_privilege" in _failed_names(snapshot)
+
+
+def test_preflight_rejects_private_schema_structure_drift():
+    snapshot = _good_snapshot()
+    snapshot["database"]["attestation"][
+        "canonical_private_schema_identity"
+    ]["relations"][0]["columns"] = ["{\"name\":\"drifted\"}"]
+
+    assert "database.least_privilege" in _failed_names(snapshot)
+
+
+_DATABASE_BOOLEAN_EVIDENCE_PATHS = (
+    ("attestation", "superuser"),
+    ("attestation", "createdb"),
+    ("attestation", "createrole"),
+    ("attestation", "replication"),
+    ("attestation", "bypassrls"),
+    ("attestation", "table_owner"),
+    ("attestation", "routine_owner"),
+    ("attestation", "routine_identities", 0, "security_definer"),
+    ("attestation", "routine_identities", 0, "owner_dangerous"),
+    ("attestation", "canonical_event_log_identity", "owner_dangerous"),
+    ("attestation", "canonical_event_log_identity", "is_partition"),
+    ("attestation", "canonical_event_log_identity", "row_security"),
+    ("attestation", "canonical_event_log_identity", "force_row_security"),
+    ("attestation", "canonical_event_log_identity", "inheritance"),
+    ("attestation", "canonical_event_log_identity", "primary_index_exact"),
+    (
+        "attestation",
+        "canonical_private_schema_identity",
+        "owner_dangerous",
+    ),
+    (
+        "attestation",
+        "canonical_private_schema_identity",
+        "relations",
+        0,
+        "owner_dangerous",
+    ),
+    (
+        "attestation",
+        "canonical_private_schema_identity",
+        "relations",
+        0,
+        "is_partition",
+    ),
+    (
+        "attestation",
+        "canonical_private_schema_identity",
+        "relations",
+        0,
+        "row_security",
+    ),
+    (
+        "attestation",
+        "canonical_private_schema_identity",
+        "relations",
+        0,
+        "force_row_security",
+    ),
+    (
+        "attestation",
+        "canonical_private_schema_identity",
+        "relations",
+        0,
+        "inheritance",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    _DATABASE_BOOLEAN_EVIDENCE_PATHS,
+    ids=lambda path: ".".join(str(part) for part in path),
+)
+@pytest.mark.parametrize(
+    "malformed",
+    ["true", 1, None],
+    ids=("string", "integer", "null"),
+)
+def test_preflight_rejects_non_boolean_database_evidence(path, malformed):
+    snapshot = _good_snapshot()
+    target = snapshot["database"]
+    for part in path[:-1]:
+        target = target[part]
+    target[path[-1]] = malformed
+
+    assert "database.least_privilege" in _failed_names(snapshot)
+
+
+@pytest.mark.parametrize("digest", [None, "f" * 63, "F" * 64])
+def test_preflight_requires_exact_private_schema_policy_digest(digest):
+    snapshot = _good_snapshot()
+    if digest is None:
+        snapshot["database"]["policy"].pop(
+            "private_schema_identity_sha256"
+        )
+    else:
+        snapshot["database"]["policy"][
+            "private_schema_identity_sha256"
+        ] = digest
 
     assert "database.least_privilege" in _failed_names(snapshot)
 

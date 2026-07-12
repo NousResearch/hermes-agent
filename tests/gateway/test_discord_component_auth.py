@@ -13,6 +13,7 @@ handling, and fail-closed behavior so the parity cannot regress.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,6 +28,7 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     _component_check_auth,
     _resolve_exec_approval_admin_gate,
 )
+import plugins.platforms.discord.adapter as discord_adapter_module  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +83,17 @@ def test_component_check_empty_allowlists_rejects_by_default(monkeypatch):
     interaction = _interaction(11111)
     assert _component_check_auth(interaction, set(), set()) is False
     assert _component_check_auth(interaction, None, None) is False
+
+
+def test_writer_policy_rejects_component_without_public_channel(monkeypatch):
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+    interaction = _interaction(11111)
+
+    assert _component_check_auth(interaction, {"11111"}, set()) is False
 
 
 @pytest.mark.parametrize(
@@ -264,6 +277,36 @@ def test_model_picker_view_accepts_role_allowlist():
     assert view._check_auth(_interaction(99999, role_ids=[7])) is False
 
 
+@pytest.mark.asyncio
+async def test_model_picker_cancel_rejects_unauthorized_user():
+    async def _noop(*_a, **_k):
+        return ""
+
+    view = ModelPickerView(
+        providers=[],
+        current_model="m",
+        current_provider="p",
+        session_key="sess-1",
+        on_model_selected=_noop,
+        allowed_user_ids={"11111"},
+    )
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=99999, roles=[]),
+        response=SimpleNamespace(
+            send_message=AsyncMock(),
+            edit_message=AsyncMock(),
+        ),
+    )
+
+    await view._on_cancel(interaction)
+
+    assert view.resolved is False
+    interaction.response.send_message.assert_awaited_once_with(
+        "You're not authorized~", ephemeral=True,
+    )
+    interaction.response.edit_message.assert_not_awaited()
+
+
 def test_clarify_choice_view_accepts_role_allowlist():
     view = ClarifyChoiceView(
         choices=["one", "two"],
@@ -273,6 +316,200 @@ def test_clarify_choice_view_accepts_role_allowlist():
     )
     assert view._check_auth(_interaction(99999, role_ids=[42])) is True
     assert view._check_auth(_interaction(99999, role_ids=[7])) is False
+
+
+@pytest.mark.asyncio
+async def test_view_timeout_does_not_edit_after_public_visibility_revoked(monkeypatch):
+    view = ExecApprovalView(session_key="s", allowed_user_ids={"11111"})
+    channel = SimpleNamespace(guild=None)
+    message = SimpleNamespace(channel=channel, embeds=[], edit=AsyncMock())
+    view._message = message
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    await view.on_timeout()
+
+    message.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slash_confirm_skips_delayed_followup_after_visibility_revoked(
+    monkeypatch,
+):
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+    interaction = SimpleNamespace(
+        channel=channel,
+        user=SimpleNamespace(id=11111, display_name="Owner", roles=[]),
+        message=SimpleNamespace(embeds=[]),
+        response=SimpleNamespace(edit_message=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    view = SlashConfirmView(
+        session_key="s",
+        confirm_id="c",
+        allowed_user_ids={"11111"},
+    )
+
+    async def _resolve(*_args, **_kwargs):
+        state["public"] = False
+        return "finished"
+
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+    with patch("tools.slash_confirm.resolve", side_effect=_resolve):
+        await view._resolve(
+            interaction,
+            "once",
+            MagicMock(),
+            "Approved once",
+        )
+
+    interaction.response.edit_message.assert_awaited_once()
+    interaction.followup.send.assert_not_awaited()
+
+
+def _revoking_public_component_interaction():
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+
+    async def _edit_then_revoke(**_kwargs):
+        state["public"] = False
+
+    interaction = SimpleNamespace(
+        channel=channel,
+        channel_id=123,
+        user=SimpleNamespace(id=11111, display_name="Owner", roles=[]),
+        message=SimpleNamespace(embeds=[]),
+        response=SimpleNamespace(
+            edit_message=AsyncMock(side_effect=_edit_then_revoke),
+            send_message=AsyncMock(),
+            defer=AsyncMock(),
+        ),
+        followup=SimpleNamespace(send=AsyncMock()),
+        edit_original_response=AsyncMock(),
+    )
+    return interaction
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_does_not_resolve_after_edit_loses_visibility(monkeypatch):
+    interaction = _revoking_public_component_interaction()
+    view = ExecApprovalView(session_key="s", allowed_user_ids={"11111"})
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    with patch("tools.approval.resolve_gateway_approval") as resolver:
+        await view._resolve(interaction, "once", MagicMock(), "Approved once")
+
+    interaction.response.edit_message.assert_awaited_once()
+    resolver.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_slash_confirm_does_not_resolve_after_edit_loses_visibility(monkeypatch):
+    interaction = _revoking_public_component_interaction()
+    view = SlashConfirmView(
+        session_key="s",
+        confirm_id="c",
+        allowed_user_ids={"11111"},
+    )
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    with patch("tools.slash_confirm.resolve", new=AsyncMock()) as resolver:
+        await view._resolve(interaction, "once", MagicMock(), "Approved once")
+
+    interaction.response.edit_message.assert_awaited_once()
+    resolver.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_prompt_does_not_write_after_edit_loses_visibility(monkeypatch):
+    interaction = _revoking_public_component_interaction()
+    view = UpdatePromptView(session_key="s", allowed_user_ids={"11111"})
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    with patch("hermes_constants.get_hermes_home") as get_home:
+        await view._respond(interaction, "yes", MagicMock(), "Approved")
+
+    interaction.response.edit_message.assert_awaited_once()
+    get_home.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_picker_does_not_switch_after_edit_loses_visibility(monkeypatch):
+    interaction = _revoking_public_component_interaction()
+    switch_model = AsyncMock(return_value="switched")
+    view = ModelPickerView(
+        providers=[],
+        current_model="old",
+        current_provider="provider",
+        session_key="s",
+        on_model_selected=switch_model,
+        allowed_user_ids={"11111"},
+    )
+    view._selected_provider = "provider"
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    await view._switch_selected_model(interaction, "new")
+
+    interaction.response.edit_message.assert_awaited_once()
+    switch_model.assert_not_awaited()
+    interaction.edit_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clarify_does_not_resolve_after_edit_loses_visibility(monkeypatch):
+    interaction = _revoking_public_component_interaction()
+    view = ClarifyChoiceView(
+        choices=["one"],
+        clarify_id="c",
+        allowed_user_ids={"11111"},
+    )
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    with patch("tools.clarify_gateway.resolve_gateway_clarify") as resolver:
+        await view._resolve_choice(interaction, 0, "one")
+
+    interaction.response.edit_message.assert_awaited_once()
+    resolver.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -462,4 +699,3 @@ def test_other_views_not_admin_gated():
         session_key="s", confirm_id="c", allowed_user_ids={"11111"}
     )
     assert sc._check_auth(_interaction(11111)) is True
-

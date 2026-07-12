@@ -171,3 +171,32 @@ async def test_watcher_wraps_calls_via_asyncio_to_thread(monkeypatch):
     assert "list_pending_handoffs" in wrapped
     assert "claim_handoff" in wrapped
     assert "complete_handoff" in wrapped
+
+
+@pytest.mark.asyncio
+async def test_writer_policy_disables_legacy_handoff_watcher(monkeypatch):
+    import threading
+
+    db = _RecordingSessionDB(threading.get_ident())
+    fake = _make_fake_runner(db)
+    monkeypatch.setattr(
+        run,
+        "_legacy_handoff_forbidden_by_writer_policy",
+        lambda: True,
+    )
+
+    await run.GatewayRunner._handoff_watcher(fake, interval=0.0)
+
+    assert db.calls == []
+
+
+@pytest.mark.asyncio
+async def test_writer_policy_denies_direct_legacy_handoff_processing(monkeypatch):
+    monkeypatch.setattr(
+        run,
+        "_legacy_handoff_forbidden_by_writer_policy",
+        lambda: True,
+    )
+
+    with pytest.raises(RuntimeError, match="legacy handoff is disabled"):
+        await run.GatewayRunner._process_handoff(types.SimpleNamespace(), {})

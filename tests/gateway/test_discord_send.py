@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 
 import pytest
@@ -43,6 +43,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import plugins.platforms.discord.adapter as discord_adapter_module  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -68,6 +69,167 @@ def _mark_public(channel):
         view_channel=role is default_role
     )
     return channel
+
+
+@pytest.mark.asyncio
+async def test_writer_policy_blocks_standalone_discord_rest_egress(monkeypatch):
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+
+    result = await discord_adapter_module._standalone_send(
+        SimpleNamespace(token="test-token", extra={}),
+        "555",
+        "must use live adapter",
+    )
+
+    assert "standalone REST egress is disabled" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_live_media_sender_requires_public_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    media_path = tmp_path / "proof.txt"
+    media_path.write_text("proof", encoding="utf-8")
+    private_channel = SimpleNamespace(
+        id=555,
+        guild=SimpleNamespace(id=1, default_role=object()),
+        permissions_for=lambda _role: SimpleNamespace(view_channel=False),
+        send=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _channel_id: private_channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_media_files(
+        "555",
+        "blocked",
+        [(str(media_path), False)],
+    )
+
+    assert result.success is False
+    assert "not publicly visible" in (result.error or "")
+    private_channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_media_batches_stop_after_public_visibility_is_revoked(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        id=555,
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+
+    async def _send_first_batch(**_kwargs):
+        state["public"] = False
+        return SimpleNamespace(id=700)
+
+    channel.send = AsyncMock(side_effect=_send_first_batch)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+    media_files = []
+    for index in range(11):
+        path = tmp_path / f"proof-{index}.txt"
+        path.write_text("proof", encoding="utf-8")
+        media_files.append((str(path), False))
+
+    result = await adapter.send_media_files("555", "caption", media_files)
+
+    assert result.success is False
+    assert "not publicly visible" in (result.error or "")
+    assert result.raw_response == {"message_ids": ["700"]}
+    assert channel.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_image_download_rechecks_public_proof_before_send(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(id=555, send=AsyncMock())
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    response = MagicMock()
+    response.status = 200
+    response.headers = {"content-type": "image/png"}
+    response.read = AsyncMock(return_value=b"image")
+    response.__aenter__ = AsyncMock(return_value=response)
+    response.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.get.return_value = response
+    session_context = MagicMock()
+    session_context.__aenter__ = AsyncMock(return_value=session)
+    session_context.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "plugins.platforms.discord.adapter.is_safe_url",
+        return_value=True,
+    ), patch(
+        "plugins.platforms.discord.adapter._discord_policy_public_target_error",
+        side_effect=[None, "public proof revoked"],
+    ), patch(
+        "aiohttp.ClientSession",
+        return_value=session_context,
+    ), patch("plugins.platforms.discord.adapter.discord.File", return_value=MagicMock()):
+        result = await adapter.send_image("555", "https://example.test/image.png")
+
+    assert result.success is False
+    assert result.error == "public proof revoked"
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chunked_text_stops_after_public_visibility_is_revoked():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        id=555,
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+
+    async def _send_first_chunk(**_kwargs):
+        state["public"] = False
+        return SimpleNamespace(id=701)
+
+    channel.send = AsyncMock(side_effect=_send_first_chunk)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "x" * 3000)
+
+    assert result.success is False
+    assert "not publicly visible" in (result.error or "")
+    assert result.raw_response == {"message_ids": ["701"]}
+    assert channel.send.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -327,7 +489,8 @@ async def test_public_thread_visible_to_everyone_allows_send_and_receipt():
     assert sent.success is True
     assert receipt["verified"] is True
     assert receipt["channel_id"] == "555"
-    assert thread.permissions_for.call_count == 2
+    # Initial send + pre-POST + receipt pre-read + receipt post-read proofs.
+    assert thread.permissions_for.call_count == 4
     assert all(
         call.args == (default_role,)
         for call in thread.permissions_for.call_args_list
@@ -365,6 +528,39 @@ async def test_guild_channel_hidden_from_everyone_fails_send_and_receipt_closed(
             message_id="1234",
         )
     channel.fetch_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_receipt_fails_if_public_visibility_is_revoked_during_readback():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    state = {"public": True}
+    default_role = object()
+    bot_user = SimpleNamespace(id=42)
+    message = SimpleNamespace(id=1234, author=bot_user, content="receipt")
+
+    async def _fetch(_message_id):
+        state["public"] = False
+        return message
+
+    channel = SimpleNamespace(
+        id=555,
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+        fetch_message=AsyncMock(side_effect=_fetch),
+    )
+    adapter._client = SimpleNamespace(
+        user=bot_user,
+        get_channel=lambda _channel_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    with pytest.raises(RuntimeError, match="lost public"):
+        await adapter.verify_public_message_receipt(
+            channel_id="555",
+            message_id="1234",
+        )
 
 
 @pytest.mark.asyncio
@@ -589,6 +785,7 @@ async def test_forum_post_file_creates_thread_with_attachment():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
     forum_channel.name = "ideas"
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(return_value=thread)
 
     # discord.File is a real class; build a MagicMock that looks like one
@@ -619,6 +816,7 @@ async def test_forum_post_file_uses_filename_when_no_content():
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 10
     forum_channel.name = "forum"
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(return_value=thread)
 
     fake_file = SimpleNamespace(filename="voice-message.ogg")
@@ -637,6 +835,7 @@ async def test_forum_post_file_creation_failure():
 
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999
+    _mark_public(forum_channel)
     forum_channel.create_thread = AsyncMock(side_effect=Exception("missing perms"))
 
     result = await adapter._forum_post_file(
@@ -652,6 +851,47 @@ async def test_forum_post_file_creation_failure():
 # ---------------------------------------------------------------------------
 # Typing indicator task lifecycle
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_stops_when_public_visibility_is_revoked(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    state = {"public": True}
+    default_role = object()
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=1, default_role=default_role),
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=state["public"] and role is default_role
+        ),
+    )
+    adapter._client = MagicMock()
+    adapter._client.get_channel.return_value = channel
+
+    async def _request(_route):
+        state["public"] = False
+
+    adapter._client.http.request = AsyncMock(side_effect=_request)
+    adapter._typing_tasks = {}
+    original_sleep = asyncio.sleep
+
+    async def _no_wait(_delay):
+        return None
+
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+    with patch(
+        "plugins.platforms.discord.adapter.asyncio.sleep",
+        new=_no_wait,
+    ):
+        await adapter.send_typing("12345")
+        await original_sleep(0)
+        await original_sleep(0)
+
+    assert adapter._client.http.request.await_count == 1
+    assert "12345" not in adapter._typing_tasks
 
 
 @pytest.mark.asyncio

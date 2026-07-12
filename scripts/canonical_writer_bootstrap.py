@@ -101,6 +101,7 @@ _PRIVILEGE_KEYS = frozenset(
         "schema_privileges",
         "database_privileges",
         "role_memberships",
+        "private_schema_identity_sha256",
         "deployment_lock_key",
     }
 )
@@ -495,6 +496,14 @@ def load_service_config(
         raise ValueError(
             "privileges.role_memberships must be exactly the dedicated writer role"
         )
+    private_schema_identity_sha256 = _required_text(
+        privileges.get("private_schema_identity_sha256"),
+        "privileges.private_schema_identity_sha256",
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", private_schema_identity_sha256):
+        raise ValueError(
+            "privileges.private_schema_identity_sha256 must be lowercase SHA-256"
+        )
 
     credential_path = _absolute_path(
         database.get("credential_file"),
@@ -549,6 +558,7 @@ def load_service_config(
         schema_privileges=("USAGE",),
         database_privileges=("CONNECT",),
         role_memberships=(CANONICAL_WRITER_ROLE,),
+        private_schema_identity_sha256=private_schema_identity_sha256,
         deployment_lock_key=deployment_lock_key,
     )
     socket_path = _absolute_path(
@@ -751,7 +761,11 @@ def build_service(
 ) -> CanonicalWriterBootstrap:
     """Assemble and startup-attest the privileged service without serving."""
 
-    if os.getuid() != config.writer_uid or os.getgid() != config.writer_gid:
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if not callable(getuid) or not callable(getgid):
+        raise RuntimeError("privileged Canonical writer requires POSIX UID/GID")
+    if getuid() != config.writer_uid or getgid() != config.writer_gid:
         raise PermissionError("writer service process UID/GID does not match config")
     database = _database_factory(
         config=config.database,

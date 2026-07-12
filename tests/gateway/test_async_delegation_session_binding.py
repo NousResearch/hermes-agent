@@ -125,6 +125,12 @@ class TestResetHandlerInterruptsDelegations:
         import inspect
         from gateway import slash_commands
 
-        src = inspect.getsource(slash_commands.GatewaySlashCommandsMixin._handle_reset_command)
-        assert "interrupt_for_session" in src
-        assert "session_reset" in src
+        wrapper_src = inspect.getsource(
+            slash_commands.GatewaySlashCommandsMixin._handle_reset_command
+        )
+        claimed_src = inspect.getsource(
+            slash_commands.GatewaySlashCommandsMixin._handle_reset_command_claimed
+        )
+        assert "_run_fenced_session_transition" in wrapper_src
+        assert "interrupt_for_session" in claimed_src
+        assert "session_reset" in claimed_src

@@ -61,7 +61,15 @@ class FakeTextChannel:
     def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        default_role = object()
+        self.guild = SimpleNamespace(
+            id=100,
+            name=guild_name,
+            default_role=default_role,
+        )
+        self.permissions_for = lambda role: SimpleNamespace(
+            view_channel=role is default_role
+        )
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -75,7 +83,15 @@ class FakeForumChannel:
     def __init__(self, channel_id: int = 1, name: str = "support-forum", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        default_role = object()
+        self.guild = SimpleNamespace(
+            id=100,
+            name=guild_name,
+            default_role=default_role,
+        )
+        self.permissions_for = lambda role: SimpleNamespace(
+            view_channel=role is default_role
+        )
         self.type = 15
         self.topic = None
 
@@ -86,7 +102,18 @@ class FakeThread:
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        parent_guild = getattr(parent, "guild", None)
+        if parent_guild is None:
+            default_role = object()
+            parent_guild = SimpleNamespace(
+                id=100,
+                name=guild_name,
+                default_role=default_role,
+            )
+        self.guild = parent_guild
+        self.permissions_for = lambda role: SimpleNamespace(
+            view_channel=role is self.guild.default_role
+        )
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -804,6 +831,30 @@ async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chron
 
 
 @pytest.mark.asyncio
+async def test_fetch_channel_context_discards_history_if_target_turns_private(adapter, monkeypatch):
+    """Never pass bot-readable history to GPT after public visibility is revoked."""
+    adapter.config.extra["history_backfill_limit"] = 10
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [make_history_message(author=human, content="now private", msg_id=1)],
+        channel_id=123,
+    )
+    attestations = iter((None, "Discord target is no longer public."))
+    monkeypatch.setattr(
+        discord_platform,
+        "_discord_policy_public_target_error",
+        lambda _channel: next(attestations),
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel,
+        before=make_message(channel=channel, content="trigger"),
+    )
+
+    assert result == ""
+
+
+@pytest.mark.asyncio
 async def test_fetch_channel_context_skips_self_improvement_boundary_message(adapter, monkeypatch):
     """Delayed harness status bumps must not hide messages after the real reply."""
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
@@ -1485,4 +1536,3 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_not_awaited()
-

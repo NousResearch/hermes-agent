@@ -801,7 +801,33 @@ def _is_discord_private_thread(channel: Any) -> bool:
     return type_value == 12 or type_name == "private_thread"
 
 
-def _discord_everyone_can_view(channel: Any) -> bool:
+def _discord_public_only_policy_required() -> bool:
+    """Return whether Muncho's privileged Canonical boundary is declared on.
+
+    Generic Hermes installations retain their existing Discord interaction
+    behavior. The private Muncho runtime, however, must fail closed across
+    every Discord egress surface once the privileged writer boundary is
+    declared enabled, including standalone cron/tool sends and native
+    interaction callbacks that do not pass through DiscordAdapter.send.
+    """
+
+    try:
+        from gateway.canonical_writer_boundary import (
+            writer_boundary_policy_required,
+        )
+
+        return bool(writer_boundary_policy_required())
+    except Exception:
+        # The boundary module is part of the same immutable release. If its
+        # policy state cannot be evaluated, treating Discord egress as public-
+        # only is the safe outcome.
+        return True
+
+
+def _discord_everyone_can_view(
+    channel: Any,
+    default_role: Any = None,
+) -> bool:
     """Return exact effective ``view_channel`` for the guild default role.
 
     A guild-backed object is not necessarily public. Discord permission
@@ -811,7 +837,8 @@ def _discord_everyone_can_view(channel: Any) -> bool:
     """
 
     guild = getattr(channel, "guild", None)
-    default_role = getattr(guild, "default_role", None)
+    if default_role is None:
+        default_role = getattr(guild, "default_role", None)
     permissions_for = getattr(channel, "permissions_for", None)
     if guild is None or default_role is None or not callable(permissions_for):
         return False
@@ -820,6 +847,105 @@ def _discord_everyone_can_view(channel: Any) -> bool:
     except Exception:
         return False
     return getattr(permissions, "view_channel", None) is True
+
+
+def _discord_public_target_error(
+    channel: Any,
+    default_role: Any = None,
+) -> Optional[str]:
+    """Return a deterministic rejection reason for a non-public target."""
+
+    dm_types = tuple(
+        channel_type
+        for channel_type in (
+            getattr(discord, "DMChannel", None),
+            getattr(discord, "GroupChannel", None),
+        )
+        if isinstance(channel_type, type)
+    )
+    if (
+        channel is None
+        or (dm_types and isinstance(channel, dm_types))
+        or getattr(channel, "guild", None) is None
+        or _is_discord_private_thread(channel)
+    ):
+        return (
+            "Discord DMs, group DMs, and private threads are forbidden; "
+            "use an approved public guild channel/thread."
+        )
+    if not _discord_everyone_can_view(channel, default_role):
+        return (
+            "Discord target is not publicly visible to the guild "
+            "@everyone/default role; use an approved public guild "
+            "channel/thread."
+        )
+    return None
+
+
+def _discord_policy_public_target_error(
+    channel: Any,
+    default_role: Any = None,
+) -> Optional[str]:
+    """Apply the public-only proof when the Muncho writer policy is active."""
+
+    if not _discord_public_only_policy_required():
+        return None
+    return _discord_public_target_error(channel, default_role)
+
+
+class _DiscordAttachmentPublicTargetRevoked(PermissionError):
+    """Raised when an inbound attachment loses its public-target proof."""
+
+
+def _require_discord_attachment_public_target(channel: Any) -> None:
+    """Fail closed before downloaded attachment data can become model input."""
+
+    public_target_error = _discord_policy_public_target_error(channel)
+    if public_target_error:
+        raise _DiscordAttachmentPublicTargetRevoked(public_target_error)
+
+
+def _discard_revoked_discord_attachment_cache(path: Any) -> None:
+    """Best-effort cleanup for a cache file written before revocation won."""
+
+    try:
+        if path and os.path.isfile(path):
+            os.unlink(path)
+    except OSError:
+        logger.warning(
+            "Failed to remove Discord attachment cached after public-target revocation: %s",
+            path,
+            exc_info=True,
+        )
+
+
+def _discord_policy_public_voice_target_error(
+    channel: Any,
+    default_role: Any = None,
+) -> Optional[str]:
+    """Require an @everyone-visible voice target that everyone can join."""
+
+    if not _discord_public_only_policy_required():
+        return None
+    public_target_error = _discord_public_target_error(channel, default_role)
+    if public_target_error:
+        return public_target_error
+    guild = getattr(channel, "guild", None)
+    if default_role is None:
+        default_role = getattr(guild, "default_role", None)
+    permissions_for = getattr(channel, "permissions_for", None)
+    if default_role is None or not callable(permissions_for):
+        return "Discord voice target public CONNECT proof is unavailable."
+    try:
+        permissions = permissions_for(default_role)
+    except Exception:
+        return "Discord voice target public CONNECT proof failed."
+    if getattr(permissions, "connect", None) is not True:
+        return (
+            "Discord voice target is not joinable by the guild @everyone/"
+            "default role; privileged closed-audience voice egress is forbidden."
+        )
+    return None
 
 
 class DiscordAdapter(BasePlatformAdapter):
@@ -1149,6 +1275,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return
 
+                if _discord_public_only_policy_required():
+                    public_target_error = _discord_public_target_error(
+                        getattr(message, "channel", None)
+                    )
+                    if public_target_error:
+                        logger.warning(
+                            "[%s] Ignoring forbidden Discord ingress target: %s",
+                            adapter_self.name,
+                            public_target_error,
+                        )
+                        return
+
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
@@ -1245,8 +1383,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 guild_id = member.guild.id
                 if guild_id not in bot_guild_ids:
                     return
-                # Ignore the bot itself
-                if member == adapter_self._client.user:
+                is_self = (
+                    member == adapter_self._client.user
+                    or getattr(member, "id", None)
+                    == getattr(adapter_self._client.user, "id", None)
+                )
+                if is_self:
+                    await adapter_self._handle_own_voice_state_policy_update(
+                        guild_id,
+                        after.channel,
+                    )
                     return
 
                 joined = before.channel is None and after.channel is not None
@@ -1267,6 +1413,28 @@ class DiscordAdapter(BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+
+            @self._client.event
+            async def on_guild_channel_update(_before, after):
+                """Stop voice egress if channel/category permissions change."""
+                await adapter_self._handle_voice_channel_policy_update(after)
+
+            @self._client.event
+            async def on_guild_role_update(_before, after):
+                """Stop voice egress if @everyone visibility is revoked."""
+                await adapter_self._handle_voice_role_policy_update(after)
+
+            @self._client.event
+            async def on_guild_channel_delete(channel):
+                """Tear down a voice stream whose channel disappeared."""
+                guild_id = getattr(getattr(channel, "guild", None), "id", None)
+                voice_client = adapter_self._voice_clients.get(guild_id)
+                current = getattr(voice_client, "channel", None)
+                if (
+                    current is not None
+                    and getattr(current, "id", None) == getattr(channel, "id", None)
+                ):
+                    await adapter_self.leave_voice_channel(guild_id)
 
             # Register slash commands
             if self._slash_commands:
@@ -1973,6 +2141,8 @@ class DiscordAdapter(BasePlatformAdapter):
         """Add an emoji reaction to a Discord message."""
         if not message or not hasattr(message, "add_reaction"):
             return False
+        if _discord_policy_public_target_error(getattr(message, "channel", None)):
+            return False
         try:
             await message.add_reaction(emoji)
             return True
@@ -1983,6 +2153,8 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _remove_reaction(self, message: Any, emoji: str) -> bool:
         """Remove the bot's own emoji reaction from a Discord message."""
         if not message or not hasattr(message, "remove_reaction") or not self._client or not self._client.user:
+            return False
+        if _discord_policy_public_target_error(getattr(message, "channel", None)):
             return False
         try:
             await message.remove_reaction(emoji, self._client.user)
@@ -2059,34 +2231,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 metadata and metadata.get("require_single_public_receipt")
             )
 
-            dm_types = tuple(
-                t for t in (
-                    getattr(discord, "DMChannel", None),
-                    getattr(discord, "GroupChannel", None),
-                )
-                if isinstance(t, type)
-            )
-            if (
-                (dm_types and isinstance(channel, dm_types))
-                or getattr(channel, "guild", None) is None
-                or _is_discord_private_thread(channel)
-            ):
-                return SendResult(
-                    success=False,
-                    error=(
-                        "Discord DMs, group DMs, and private threads are forbidden; "
-                        "use an approved public guild channel/thread."
-                    ),
-                )
-            if not _discord_everyone_can_view(channel):
-                return SendResult(
-                    success=False,
-                    error=(
-                        "Discord target is not publicly visible to the guild "
-                        "@everyone/default role; use an approved public guild "
-                        "channel/thread."
-                    ),
-                )
+            public_target_error = _discord_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
@@ -2126,6 +2273,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
 
             for i, chunk in enumerate(chunks):
+                public_target_error = _discord_public_target_error(channel)
+                if public_target_error:
+                    return SendResult(
+                        success=False,
+                        error=public_target_error,
+                        raw_response={"message_ids": message_ids},
+                    )
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
@@ -2153,6 +2307,13 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
+                        public_target_error = _discord_public_target_error(channel)
+                        if public_target_error:
+                            return SendResult(
+                                success=False,
+                                error=public_target_error,
+                                raw_response={"message_ids": message_ids},
+                            )
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
@@ -2198,25 +2359,17 @@ class DiscordAdapter(BasePlatformAdapter):
         channel = self._client.get_channel(int(channel_id))
         if channel is None:
             channel = await self._client.fetch_channel(int(channel_id))
-        dm_types = tuple(
-            cls for cls in (
-                getattr(discord, "DMChannel", None),
-                getattr(discord, "GroupChannel", None),
-            )
-            if isinstance(cls, type)
-        )
-        if (
-            channel is None
-            or (dm_types and isinstance(channel, dm_types))
-            or getattr(channel, "guild", None) is None
-            or _is_discord_private_thread(channel)
-            or not _discord_everyone_can_view(channel)
-        ):
+        if _discord_public_target_error(channel):
             raise RuntimeError(
                 "Discord receipt target is not a public guild channel/thread "
                 "visible to @everyone/default role"
             )
         message = await channel.fetch_message(int(message_id))
+        if _discord_public_target_error(channel):
+            raise RuntimeError(
+                "Discord receipt target lost public @everyone visibility "
+                "during readback"
+            )
         author_id = str(getattr(getattr(message, "author", None), "id", "") or "")
         bot_id = str(getattr(self._client.user, "id", "") or "")
         if not author_id or author_id != bot_id:
@@ -2244,6 +2397,10 @@ class DiscordAdapter(BasePlatformAdapter):
         reported in ``raw_response['warnings']`` so the caller can surface
         partial-send issues.
         """
+        public_target_error = _discord_policy_public_target_error(forum_channel)
+        if public_target_error:
+            return SendResult(success=False, error=public_target_error)
+
         # _derive_forum_thread_name is defined further down in this same
         # module — no cross-module import needed.
 
@@ -2273,6 +2430,10 @@ class DiscordAdapter(BasePlatformAdapter):
         message_ids = [message_id]
         warnings: list[str] = []
         for chunk in chunks[1:]:
+            public_target_error = _discord_public_target_error(forum_channel)
+            if public_target_error:
+                warnings.append(public_target_error)
+                break
             try:
                 msg = await thread_channel.send(content=chunk)
                 message_ids.append(str(msg.id))
@@ -2307,6 +2468,10 @@ class DiscordAdapter(BasePlatformAdapter):
         ForumChannel accepts the same file/files/content kwargs as
         ``channel.send``, creating the thread and starter message atomically.
         """
+        public_target_error = _discord_policy_public_target_error(forum_channel)
+        if public_target_error:
+            return SendResult(success=False, error=public_target_error)
+
         # _derive_forum_thread_name is defined further down in this same
         # module — no cross-module import needed.
 
@@ -2378,6 +2543,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
 
@@ -2413,6 +2581,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
+                public_target_error = _discord_policy_public_target_error(channel)
+                if public_target_error:
+                    return SendResult(success=False, error=public_target_error)
                 await msg.edit(content=formatted)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
@@ -2433,6 +2604,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
                         return SendResult(success=True, message_id=message_id)
+                    public_target_error = _discord_policy_public_target_error(channel)
+                    if public_target_error:
+                        return SendResult(success=False, error=public_target_error)
                     await msg.edit(content=truncated)
                     self._last_overflow_preview[_preview_key] = truncated
                 else:
@@ -2484,12 +2658,20 @@ class DiscordAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
-            # not, just edit normally.
+            # not, just edit normally.  Re-attest even on this reactive retry:
+            # the first edit already crossed an await boundary during which a
+            # public channel can become private while the bot keeps access.
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
             await msg.edit(content=chunks[0] if chunks else formatted)
             return SendResult(success=True, message_id=message_id)
 
         # Step 1 — edit the existing message with the first chunk.
         try:
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
             await msg.edit(content=chunks[0])
         except Exception as e:
             logger.error(
@@ -2503,6 +2685,16 @@ class DiscordAdapter(BasePlatformAdapter):
         delivered = 1
         prev_msg = msg
         for chunk in chunks[1:]:
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                last_id = continuation_ids[-1] if continuation_ids else message_id
+                return SendResult(
+                    success=False,
+                    message_id=last_id,
+                    error=public_target_error,
+                    continuation_message_ids=tuple(continuation_ids),
+                    raw_response={"delivered_chunks": delivered},
+                )
             reference = None
             if hasattr(prev_msg, "to_reference"):
                 try:
@@ -2520,6 +2712,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
+                    public_target_error = _discord_policy_public_target_error(channel)
+                    if public_target_error:
+                        last_id = continuation_ids[-1] if continuation_ids else message_id
+                        return SendResult(
+                            success=False,
+                            message_id=last_id,
+                            error=public_target_error,
+                            continuation_message_ids=tuple(continuation_ids),
+                            raw_response={"delivered_chunks": delivered},
+                        )
                     sent = await channel.send(content=chunk, reference=None)
                 except Exception as retry_err:
                     logger.warning(
@@ -2579,10 +2781,16 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = await self._client.fetch_channel(int(chat_id))
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
+        public_target_error = _discord_policy_public_target_error(channel)
+        if public_target_error:
+            return SendResult(success=False, error=public_target_error)
 
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
             if self._is_forum_parent(channel):
                 return await self._forum_post_file(
                     channel,
@@ -2591,6 +2799,120 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
+
+    async def send_media_files(
+        self,
+        chat_id: str,
+        content: str,
+        media_files: list,
+        *,
+        thread_id: Optional[str] = None,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Send locally resolved attachments through the live public adapter.
+
+        This is the in-process counterpart to the historical standalone REST
+        sender.  Under the privileged Muncho policy, model tools and gateway
+        cron must use this live path so the exact guild/@everyone check cannot
+        be bypassed by a raw bot-token POST.
+        """
+
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        target_id = str(thread_id or chat_id)
+        channel = self._client.get_channel(int(target_id))
+        if channel is None:
+            channel = await self._client.fetch_channel(int(target_id))
+        if channel is None:
+            return SendResult(
+                success=False,
+                error=f"Discord target {target_id} not found",
+            )
+        public_target_error = _discord_policy_public_target_error(channel)
+        if public_target_error:
+            return SendResult(success=False, error=public_target_error)
+
+        valid_paths = [
+            str(path)
+            for path, _is_voice in (media_files or [])
+            if os.path.isfile(path)
+        ]
+        missing_paths = [
+            str(path)
+            for path, _is_voice in (media_files or [])
+            if not os.path.isfile(path)
+        ]
+        if not valid_paths:
+            if content or caption:
+                return await self.send(
+                    chat_id,
+                    caption or content,
+                    metadata={"thread_id": thread_id} if thread_id else None,
+                )
+            return SendResult(
+                success=False,
+                error=(
+                    "No readable Discord media files"
+                    + (f": {', '.join(missing_paths)}" if missing_paths else "")
+                ),
+            )
+        if self._is_forum_parent(channel) and len(valid_paths) > 10:
+            return SendResult(
+                success=False,
+                error=(
+                    "Discord forum media delivery supports at most "
+                    "10 attachments in one public starter post"
+                ),
+            )
+
+        message_ids: list[str] = []
+        text = caption if caption is not None else content
+        try:
+            for index in range(0, len(valid_paths), 10):
+                batch_paths = valid_paths[index:index + 10]
+                files = [
+                    discord.File(path, filename=os.path.basename(path))
+                    for path in batch_paths
+                ]
+                batch_content = text if index == 0 else None
+                public_target_error = _discord_policy_public_target_error(channel)
+                if public_target_error:
+                    return SendResult(
+                        success=False,
+                        error=public_target_error,
+                        raw_response={"message_ids": message_ids},
+                    )
+                if self._is_forum_parent(channel):
+                    result = await self._forum_post_file(
+                        channel,
+                        content=(batch_content or "").strip(),
+                        files=files,
+                    )
+                    if not result.success:
+                        return result
+                    if result.message_id:
+                        message_ids.append(str(result.message_id))
+                    continue
+                msg = await channel.send(
+                    content=batch_content or None,
+                    files=files,
+                )
+                message_ids.append(str(msg.id))
+        except Exception as exc:
+            return SendResult(
+                success=False,
+                error=f"Discord public media send failed: {exc}",
+                raw_response={"message_ids": message_ids},
+            )
+
+        return SendResult(
+            success=True,
+            message_id=message_ids[-1] if message_ids else None,
+            raw_response={
+                "message_ids": message_ids,
+                "missing_media_files": missing_paths,
+            },
+        )
 
     async def send_multiple_images(
         self,
@@ -2627,6 +2949,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
+                return
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                logger.warning("[%s] %s", self.name, public_target_error)
                 return
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
@@ -2698,6 +3024,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     self.name, len(files), chunk_idx + 1, len(chunks),
                 )
 
+                public_target_error = _discord_policy_public_target_error(channel)
+                if public_target_error:
+                    logger.warning("[%s] %s", self.name, public_target_error)
+                    return
+
                 if self._is_forum_parent(channel):
                     await self._forum_post_file(
                         channel,
@@ -2756,6 +3087,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
@@ -2811,6 +3145,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         "content_type": "audio/ogg",
                     },
                 ]
+                public_target_error = _discord_policy_public_target_error(channel)
+                if public_target_error:
+                    return SendResult(success=False, error=public_target_error)
                 msg_data = await self._client.http.request(
                     discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
                     form=form,
@@ -2818,6 +3155,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=str(msg_data["id"]))
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
+                public_target_error = _discord_policy_public_target_error(channel)
+                if public_target_error:
+                    return SendResult(success=False, error=public_target_error)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
                 msg = await channel.send(file=file)
                 return SendResult(success=True, message_id=str(msg.id))
@@ -2898,6 +3238,12 @@ class DiscordAdapter(BasePlatformAdapter):
         The mixer runs continuously for the life of the connection: one
         ``vc.play(mixer)`` call, never stopped until leave.
         """
+        public_target_error = _discord_policy_public_voice_target_error(
+            getattr(vc, "channel", None)
+        )
+        if public_target_error:
+            raise PermissionError(public_target_error)
+
         try:
             from voice_mixer import VoiceMixer
         except ImportError:
@@ -2911,6 +3257,12 @@ class DiscordAdapter(BasePlatformAdapter):
         ambient = await asyncio.to_thread(self._get_ambient_pcm)
         if ambient:
             mixer.set_ambient(ambient)
+
+        public_target_error = _discord_policy_public_voice_target_error(
+            getattr(vc, "channel", None)
+        )
+        if public_target_error:
+            raise PermissionError(public_target_error)
 
         def _after(error):
             if error:
@@ -2930,6 +3282,11 @@ class DiscordAdapter(BasePlatformAdapter):
         quiet to work.  No-op unless the mixer is installed and acks enabled.
         """
         if not self._voice_fx_cfg.get("ack_enabled"):
+            return False
+        voice_client = self._voice_clients.get(guild_id)
+        if _discord_policy_public_voice_target_error(
+            getattr(voice_client, "channel", None)
+        ):
             return False
         mixer = self._voice_mixers.get(guild_id)
         if mixer is None:
@@ -2962,6 +3319,15 @@ class DiscordAdapter(BasePlatformAdapter):
             pcm = await asyncio.to_thread(decode_to_pcm, actual)
             if not pcm:
                 return False
+            current_voice_client = self._voice_clients.get(guild_id)
+            if (
+                current_voice_client is not voice_client
+                or self._voice_mixers.get(guild_id) is not mixer
+                or _discord_policy_public_voice_target_error(
+                    getattr(current_voice_client, "channel", None)
+                )
+            ):
+                return False
             mixer.play_speech(
                 pcm, gain=float(self._voice_fx_cfg.get("speech_gain", 1.0))
             )
@@ -2983,24 +3349,143 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    async def _handle_own_voice_state_policy_update(
+        self,
+        guild_id: int,
+        channel: Any,
+    ) -> None:
+        """Reconcile a server-side disconnect or move of the bot itself."""
+
+        if channel is None:
+            await self.leave_voice_channel(guild_id)
+            return
+        await self._disconnect_forbidden_voice_target(
+            guild_id,
+            channel,
+            reason="bot voice-state move",
+        )
+
+    async def _handle_voice_channel_policy_update(self, after: Any) -> None:
+        """Use the authoritative channel update to re-attest voice egress."""
+
+        guild_id = getattr(getattr(after, "guild", None), "id", None)
+        if guild_id not in self._voice_clients:
+            return
+        voice_client = self._voice_clients.get(guild_id)
+        current = getattr(voice_client, "channel", None)
+        if getattr(current, "id", None) == getattr(after, "id", None):
+            current = after
+        elif current is not None:
+            current = self._client.get_channel(getattr(current, "id", 0))
+        await self._disconnect_forbidden_voice_target(
+            guild_id,
+            current,
+            reason="guild channel permission update",
+        )
+
+    async def _handle_voice_role_policy_update(self, after: Any) -> None:
+        """Re-attest voice egress against an authoritative role update."""
+
+        guild = getattr(after, "guild", None)
+        guild_id = getattr(guild, "id", None)
+        if (
+            guild_id not in self._voice_clients
+            or getattr(after, "id", None) != guild_id
+        ):
+            return
+        voice_client = self._voice_clients.get(guild_id)
+        await self._disconnect_forbidden_voice_target(
+            guild_id,
+            getattr(voice_client, "channel", None),
+            reason="@everyone role update",
+            default_role=after,
+        )
+
+    async def _disconnect_forbidden_voice_target(
+        self,
+        guild_id: int,
+        channel: Any,
+        *,
+        reason: str,
+        default_role: Any = None,
+    ) -> bool:
+        """Disconnect an active stream after its public proof is revoked."""
+
+        public_target_error = _discord_policy_public_voice_target_error(
+            channel,
+            default_role,
+        )
+        if not public_target_error:
+            return False
+        logger.warning(
+            "[%s] Disconnecting Discord voice egress after %s: %s",
+            self.name,
+            reason,
+            public_target_error,
+        )
+        await self.leave_voice_channel(guild_id)
+        return True
+
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
             return False
+        public_target_error = _discord_policy_public_voice_target_error(channel)
+        if public_target_error:
+            logger.warning(
+                "[%s] Refusing non-public Discord voice target: %s",
+                self.name,
+                public_target_error,
+            )
+            return False
         guild_id = channel.guild.id
 
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            public_target_error = _discord_policy_public_voice_target_error(channel)
+            if public_target_error:
+                return False
             # Already connected in this guild?
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
                 if existing.channel.id == channel.id:
+                    if _discord_policy_public_voice_target_error(existing.channel):
+                        await self._teardown_voice_channel_unlocked(guild_id)
+                        return False
                     self._reset_voice_timeout(guild_id)
                     return True
                 await existing.move_to(channel)
+                if _discord_policy_public_voice_target_error(
+                    getattr(existing, "channel", None)
+                ):
+                    await self._teardown_voice_channel_unlocked(guild_id)
+                    return False
                 self._reset_voice_timeout(guild_id)
                 return True
 
             vc = await channel.connect()
+            actual_target_error = _discord_policy_public_voice_target_error(
+                getattr(vc, "channel", None)
+            )
+            if actual_target_error:
+                logger.warning(
+                    "[%s] Disconnecting unexpected non-public Discord voice "
+                    "target after connect: %s",
+                    self.name,
+                    actual_target_error,
+                )
+                try:
+                    if vc.is_playing():
+                        vc.stop()
+                except Exception:
+                    pass
+                try:
+                    await vc.disconnect()
+                except Exception:
+                    logger.debug(
+                        "Failed to disconnect rejected Discord voice client",
+                        exc_info=True,
+                    )
+                return False
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
 
@@ -3021,39 +3506,46 @@ class DiscordAdapter(BasePlatformAdapter):
             if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
                 try:
                     await self._install_voice_mixer(guild_id, vc)
+                except PermissionError as e:
+                    logger.warning("Voice mixer public proof failed: %s", e)
+                    await self._teardown_voice_channel_unlocked(guild_id)
+                    return False
                 except Exception as e:
                     logger.warning("Voice mixer failed to start: %s", e)
 
             return True
 
+    async def _teardown_voice_channel_unlocked(self, guild_id: int) -> None:
+        """Clear one voice connection while its per-guild lock is held."""
+
+        receiver = self._voice_receivers.pop(guild_id, None)
+        if receiver:
+            receiver.stop()
+        listen_task = self._voice_listen_tasks.pop(guild_id, None)
+        if listen_task:
+            listen_task.cancel()
+
+        if getattr(self, "_voice_mixers", None) is not None:
+            self._voice_mixers.pop(guild_id, None)
+
+        vc = self._voice_clients.pop(guild_id, None)
+        if vc and vc.is_connected():
+            try:
+                if vc.is_playing():
+                    vc.stop()
+            except Exception:
+                pass
+            await vc.disconnect()
+        task = self._voice_timeout_tasks.pop(guild_id, None)
+        if task:
+            task.cancel()
+        self._voice_text_channels.pop(guild_id, None)
+        self._voice_sources.pop(guild_id, None)
+
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            # Stop voice receiver first
-            receiver = self._voice_receivers.pop(guild_id, None)
-            if receiver:
-                receiver.stop()
-            listen_task = self._voice_listen_tasks.pop(guild_id, None)
-            if listen_task:
-                listen_task.cancel()
-
-            # Tear down the mixer (stops the continuous outgoing stream).
-            if getattr(self, "_voice_mixers", None) is not None:
-                self._voice_mixers.pop(guild_id, None)
-
-            vc = self._voice_clients.pop(guild_id, None)
-            if vc and vc.is_connected():
-                try:
-                    if vc.is_playing():
-                        vc.stop()
-                except Exception:
-                    pass
-                await vc.disconnect()
-            task = self._voice_timeout_tasks.pop(guild_id, None)
-            if task:
-                task.cancel()
-            self._voice_text_channels.pop(guild_id, None)
-            self._voice_sources.pop(guild_id, None)
+            await self._teardown_voice_channel_unlocked(guild_id)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -3069,6 +3561,17 @@ class DiscordAdapter(BasePlatformAdapter):
         vc = self._voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return False
+        public_target_error = _discord_policy_public_voice_target_error(
+            getattr(vc, "channel", None)
+        )
+        if public_target_error:
+            logger.warning(
+                "[%s] Blocking Discord voice playback after public-target "
+                "proof failed: %s",
+                self.name,
+                public_target_error,
+            )
+            return False
 
         # ── Mixer path (overlap + ducking) ──────────────────────────────
         mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
@@ -3079,6 +3582,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 from .voice_mixer import decode_to_pcm
             pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
             if pcm:
+                if (
+                    self._voice_clients.get(guild_id) is not vc
+                    or self._voice_mixers.get(guild_id) is not mixer
+                    or _discord_policy_public_voice_target_error(
+                        getattr(vc, "channel", None)
+                    )
+                ):
+                    return False
                 speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
                 mixer.play_speech(pcm, gain=speech_gain)
                 # Block until the speech child drains so callers serialise
@@ -3110,6 +3621,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     vc.stop()
                     break
                 await asyncio.sleep(0.1)
+
+            if (
+                self._voice_clients.get(guild_id) is not vc
+                or not vc.is_connected()
+                or _discord_policy_public_voice_target_error(
+                    getattr(vc, "channel", None)
+                )
+            ):
+                return False
 
             done = asyncio.Event()
             loop = asyncio.get_running_loop()
@@ -3207,7 +3727,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
         if text_ch_id and self._client:
             ch = self._client.get_channel(text_ch_id)
-            if ch:
+            if ch and not _discord_policy_public_target_error(ch):
                 try:
                     await ch.send("Left voice channel (inactivity timeout).")
                 except Exception:
@@ -3231,6 +3751,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
         channel = vc.channel
         if not channel:
+            return None
+        public_target_error = _discord_policy_public_voice_target_error(channel)
+        if public_target_error:
+            logger.warning(
+                "[%s] Refusing Discord voice context from an unverified public target: %s",
+                self.name,
+                public_target_error,
+            )
             return None
 
         # Members currently in the voice channel (includes bot)
@@ -3322,6 +3850,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 # guild-scoped and not cross-guild.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
                 for user_id, pcm_data in completed:
+                    voice_client = self._voice_clients.get(guild_id)
+                    public_target_error = _discord_policy_public_voice_target_error(
+                        getattr(voice_client, "channel", None)
+                    )
+                    if public_target_error:
+                        logger.warning(
+                            "[%s] Discarding Discord voice input after public-target revocation: %s",
+                            self.name,
+                            public_target_error,
+                        )
+                        return
                     if not self._is_allowed_user(
                         str(user_id),
                         guild=_vc_guild,
@@ -3343,6 +3882,18 @@ class DiscordAdapter(BasePlatformAdapter):
         """Convert PCM -> WAV -> STT -> callback."""
         from tools.voice_mode import is_whisper_hallucination
 
+        voice_client = self._voice_clients.get(guild_id)
+        public_target_error = _discord_policy_public_voice_target_error(
+            getattr(voice_client, "channel", None)
+        )
+        if public_target_error:
+            logger.warning(
+                "[%s] Refusing Discord voice transcription from an unverified public target: %s",
+                self.name,
+                public_target_error,
+            )
+            return
+
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
         tmp_f.close()
@@ -3356,6 +3907,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
             transcript = result.get("transcript", "").strip()
             if not transcript or is_whisper_hallucination(transcript):
+                return
+
+            current_voice_client = self._voice_clients.get(guild_id)
+            public_target_error = _discord_policy_public_voice_target_error(
+                getattr(current_voice_client, "channel", None)
+            )
+            if current_voice_client is not voice_client or public_target_error:
+                logger.warning(
+                    "[%s] Discarding Discord voice transcript after channel/public-target change: %s",
+                    self.name,
+                    public_target_error or "voice client changed during transcription",
+                )
                 return
 
             logger.info("Voice input from user %d: %s", user_id, transcript[:100])
@@ -3575,6 +4138,13 @@ class DiscordAdapter(BasePlatformAdapter):
         an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
+        if _discord_public_only_policy_required():
+            public_target_error = _discord_public_target_error(chan_obj)
+            if public_target_error:
+                return (
+                    False,
+                    f"public_target_forbidden: {public_target_error}",
+                )
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
 
         channel_ids: set = set()
@@ -3705,15 +4275,22 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name, user_id, chan_id, guild_id, command_text, reason,
         )
 
-        try:
-            await interaction.response.send_message(
-                "You're not authorized to use this command.",
-                ephemeral=True,
+        unsafe_target = (
+            _discord_public_only_policy_required()
+            and _discord_public_target_error(
+                getattr(interaction, "channel", None)
             )
-        except Exception as e:
-            # Interaction may already be responded to (e.g. caller deferred
-            # before the auth check, or Discord retried). Best-effort only.
-            logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
+        )
+        if not unsafe_target:
+            try:
+                await interaction.response.send_message(
+                    "You're not authorized to use this command.",
+                    ephemeral=True,
+                )
+            except Exception as e:
+                # Interaction may already be responded to (e.g. caller deferred
+                # before the auth check, or Discord retried). Best-effort only.
+                logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
 
         # Fire-and-forget: don't block the interaction handler on Telegram I/O.
         try:
@@ -3816,6 +4393,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             # Download the image and send as a Discord file attachment
             # (Discord renders attachments inline, unlike plain URLs)
@@ -3841,6 +4421,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     import io
                     file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
+
+                    public_target_error = _discord_policy_public_target_error(channel)
+                    if public_target_error:
+                        return SendResult(success=False, error=public_target_error)
 
                     if self._is_forum_parent(channel):
                         return await self._forum_post_file(
@@ -3895,6 +4479,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             # Download the GIF and send as a Discord file attachment
             # (Discord renders .gif attachments as auto-playing animations inline)
@@ -3910,6 +4497,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     import io
                     file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
+
+                    public_target_error = _discord_policy_public_target_error(channel)
+                    if public_target_error:
+                        return SendResult(success=False, error=public_target_error)
 
                     if self._is_forum_parent(channel):
                         return await self._forum_post_file(
@@ -3990,6 +4581,15 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return
+        if _discord_public_only_policy_required():
+            channel = self._client.get_channel(int(chat_id))
+            if channel is None:
+                try:
+                    channel = await self._client.fetch_channel(int(chat_id))
+                except Exception:
+                    return
+            if _discord_public_target_error(channel):
+                return
         # Don't start a duplicate loop
         if chat_id in self._typing_tasks:
             return
@@ -3998,6 +4598,13 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 while True:
                     try:
+                        if _discord_public_only_policy_required():
+                            current_channel = self._client.get_channel(int(chat_id))
+                            if (
+                                current_channel is None
+                                or _discord_public_target_error(current_channel)
+                            ):
+                                return
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
                             channel_id=chat_id,
@@ -4209,9 +4816,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Executing command anyway, skipping interaction followup.",
                 command_text,
             )
+        # ``defer`` is a network await. Re-attest before turning the command
+        # into model/session input so a public -> private permission change
+        # cannot race the initial authorization proof.
+        if _discord_policy_public_target_error(
+            getattr(interaction, "channel", None)
+        ):
+            return
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
         if not deferred_response:
+            return
+        if _discord_policy_public_target_error(
+            getattr(interaction, "channel", None)
+        ):
             return
         try:
             if followup_msg:
@@ -4828,7 +5446,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not result.get("success"):
             error = result.get("error", "unknown error")
-            if deferred_response:
+            if (
+                deferred_response
+                and not _discord_policy_public_target_error(
+                    getattr(interaction, "channel", None)
+                )
+            ):
                 await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
             return
 
@@ -4837,8 +5460,24 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Tell the user where the thread is
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
-        if deferred_response:
+        if (
+            deferred_response
+            and not _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            )
+        ):
             await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+
+        verified_thread = None
+        if thread_id and self._client:
+            verified_thread = self._client.get_channel(int(thread_id))
+            if verified_thread is None:
+                try:
+                    verified_thread = await self._client.fetch_channel(int(thread_id))
+                except Exception:
+                    verified_thread = None
+            if _discord_policy_public_target_error(verified_thread):
+                return
 
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
@@ -4847,7 +5486,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # If a message was provided, kick off a new Hermes session in the thread
         starter = (message or "").strip()
         if starter and thread_id:
-            await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+            await self._dispatch_thread_session(
+                interaction,
+                thread_id,
+                thread_name,
+                starter,
+                verified_thread=verified_thread,
+            )
 
     async def _dispatch_thread_session(
         self,
@@ -4855,8 +5500,25 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_id: str,
         thread_name: str,
         text: str,
+        *,
+        verified_thread: Any = None,
     ) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
+        # Keep this model-input boundary independently fail-closed. The caller
+        # normally passes the just-created and verified thread, but direct or
+        # future callers must not be able to dispatch a starter into an
+        # unproven/private thread under the writer policy.
+        client = getattr(self, "_client", None)
+        if verified_thread is None and client:
+            get_channel = getattr(client, "get_channel", None)
+            if callable(get_channel):
+                try:
+                    verified_thread = get_channel(int(thread_id))
+                except (TypeError, ValueError):
+                    verified_thread = None
+        if _discord_policy_public_target_error(verified_thread):
+            return
+
         guild_name = ""
         if hasattr(interaction, "guild") and interaction.guild:
             guild_name = interaction.guild.name
@@ -5180,6 +5842,19 @@ class DiscordAdapter(BasePlatformAdapter):
         if limit <= 0:
             return ""
 
+        # History is model input, so a bot-only permission is not sufficient:
+        # the current channel must still be public to @everyone.  Re-attest at
+        # entry and after each network scan because visibility can be revoked
+        # while discord.py is awaiting/iterating history.
+        public_target_error = _discord_policy_public_target_error(channel)
+        if public_target_error:
+            logger.warning(
+                "[%s] Refusing Discord history from an unverified public target: %s",
+                self.name,
+                public_target_error,
+            )
+            return ""
+
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
         include_other_bots = allow_bots_raw != "none"
@@ -5301,6 +5976,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 if mid:
                     seen_ids.add(mid)
 
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                logger.warning(
+                    "[%s] Discarding Discord history after public visibility changed: %s",
+                    self.name,
+                    public_target_error,
+                )
+                return ""
+
             # ── Reply window: context around the message the user pointed at ──
             # When the user replied to a specific message that sits BEFORE the
             # primary window's partition point, the surrounding exchange isn't
@@ -5337,6 +6021,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     reply_collected.append((mid, line))
                     if mid:
                         seen_ids.add(mid)
+
+                public_target_error = _discord_policy_public_target_error(channel)
+                if public_target_error:
+                    logger.warning(
+                        "[%s] Discarding Discord reply history after public visibility changed: %s",
+                        self.name,
+                        public_target_error,
+                    )
+                    return ""
 
             if not collected and not reply_collected:
                 return ""
@@ -5377,6 +6070,43 @@ class DiscordAdapter(BasePlatformAdapter):
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
+
+    async def _validated_created_public_thread(
+        self,
+        created: Any,
+        *,
+        context: str,
+    ) -> Optional[Any]:
+        """Return an actually public created thread or clean it up and fail."""
+
+        thread = getattr(created, "thread", None) or created
+        if thread is None:
+            return None
+        public_target_error = (
+            "Discord created a forbidden private thread."
+            if _is_discord_private_thread(thread)
+            else _discord_policy_public_target_error(thread)
+        )
+        if not public_target_error:
+            return thread
+        logger.error(
+            "[%s] %s produced a forbidden/unverified thread: %s",
+            self.name,
+            context,
+            public_target_error,
+        )
+        delete = getattr(thread, "delete", None)
+        if callable(delete):
+            try:
+                await delete(reason="Hermes public-thread safety cleanup")
+            except Exception:
+                logger.warning(
+                    "[%s] Failed to clean up rejected Discord thread %s",
+                    self.name,
+                    getattr(thread, "id", "?"),
+                    exc_info=True,
+                )
+        return None
 
     async def _resolve_interaction_channel(self, interaction: discord.Interaction) -> Optional[Any]:
         """Return the interaction channel, fetching it if the payload is partial."""
@@ -5421,8 +6151,9 @@ class DiscordAdapter(BasePlatformAdapter):
         channel = await self._resolve_interaction_channel(interaction)
         if channel is None:
             return {"error": "Could not resolve the current Discord channel."}
-        if isinstance(channel, discord.DMChannel):
-            return {"error": "Discord threads can only be created inside server text channels, not DMs."}
+        public_target_error = _discord_policy_public_target_error(channel)
+        if public_target_error:
+            return {"error": public_target_error}
 
         parent_channel = self._thread_parent_channel(channel)
         if parent_channel is None:
@@ -5433,13 +6164,90 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_message = (message or "").strip()
 
         try:
-            thread = await parent_channel.create_thread(
-                name=name,
-                auto_archive_duration=auto_archive_duration,
-                reason=reason,
+            public_target_error = _discord_policy_public_target_error(parent_channel)
+            if public_target_error:
+                raise PermissionError(public_target_error)
+            if self._is_forum_parent(parent_channel):
+                created = await parent_channel.create_thread(
+                    name=name,
+                    content=(
+                        starter_message
+                        or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                    ),
+                    auto_archive_duration=auto_archive_duration,
+                    reason=reason,
+                )
+            else:
+                public_thread_type = getattr(
+                    getattr(discord, "ChannelType", None),
+                    "public_thread",
+                    None,
+                )
+                if public_thread_type is None:
+                    raise RuntimeError("discord.py public thread type is unavailable")
+                created = await parent_channel.create_thread(
+                    name=name,
+                    auto_archive_duration=auto_archive_duration,
+                    type=public_thread_type,
+                    reason=reason,
+                )
+            thread = await self._validated_created_public_thread(
+                created,
+                context="direct /thread creation",
             )
-            if starter_message:
-                await thread.send(starter_message)
+            if thread is None:
+                raise RuntimeError("Discord did not return a verified public thread")
+            if starter_message and not self._is_forum_parent(parent_channel):
+                thread = await self._validated_created_public_thread(
+                    thread,
+                    context="/thread starter send",
+                )
+                if thread is None:
+                    return {
+                        "error": (
+                            "Discord created the thread, but its public proof was "
+                            "revoked before the starter message. No fallback thread "
+                            "was attempted."
+                        )
+                    }
+                try:
+                    await thread.send(starter_message)
+                except Exception as starter_error:
+                    # Creation already succeeded. Falling through to the seed
+                    # fallback would create a second thread and leave this one
+                    # orphaned. Perform a bounded cleanup of the newly-created
+                    # empty public thread instead and report the exact outcome.
+                    cleanup_error: Optional[str] = None
+                    public_target_error = _discord_policy_public_target_error(thread)
+                    if public_target_error:
+                        cleanup_error = public_target_error
+                    else:
+                        delete = getattr(thread, "delete", None)
+                        if not callable(delete):
+                            cleanup_error = "Discord did not expose thread deletion."
+                        else:
+                            try:
+                                await delete(
+                                    reason="Hermes /thread starter-send cleanup"
+                                )
+                            except Exception as exc:
+                                cleanup_error = str(exc)
+                    if cleanup_error:
+                        return {
+                            "error": (
+                                f"Discord created public thread {thread.id}, but the "
+                                f"starter message failed: {starter_error}. Cleanup "
+                                f"was blocked or failed: {cleanup_error}. No fallback "
+                                "thread was attempted."
+                            )
+                        }
+                    return {
+                        "error": (
+                            "Discord created the thread, but the starter message "
+                            f"failed: {starter_error}. The empty thread was cleaned "
+                            "up; no fallback thread was attempted."
+                        )
+                    }
             return {
                 "success": True,
                 "thread_id": str(thread.id),
@@ -5448,12 +6256,24 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as direct_error:
             try:
                 seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                public_target_error = _discord_policy_public_target_error(parent_channel)
+                if public_target_error:
+                    raise PermissionError(public_target_error)
                 seed_msg = await parent_channel.send(seed_content)
-                thread = await seed_msg.create_thread(
+                public_target_error = _discord_policy_public_target_error(parent_channel)
+                if public_target_error:
+                    raise PermissionError(public_target_error)
+                created = await seed_msg.create_thread(
                     name=name,
                     auto_archive_duration=auto_archive_duration,
                     reason=reason,
                 )
+                thread = await self._validated_created_public_thread(
+                    created,
+                    context="fallback /thread creation",
+                )
+                if thread is None:
+                    raise RuntimeError("Discord did not return a verified public thread")
                 return {
                     "success": True,
                     "thread_id": str(thread.id),
@@ -5509,7 +6329,21 @@ class DiscordAdapter(BasePlatformAdapter):
 
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                public_target_error = _discord_policy_public_target_error(
+                    getattr(message, "channel", None)
+                )
+                if public_target_error:
+                    raise PermissionError(public_target_error)
+                created = await message.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                )
+                thread = await self._validated_created_public_thread(
+                    created,
+                    context="auto-thread creation",
+                )
+                if thread is None:
+                    raise RuntimeError("Discord did not return a verified public thread")
                 try:
                     setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                 except Exception:
@@ -5518,14 +6352,32 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as direct_error:
                 last_direct_error = direct_error
                 try:
+                    public_target_error = _discord_policy_public_target_error(
+                        getattr(message, "channel", None)
+                    )
+                    if public_target_error:
+                        raise PermissionError(public_target_error)
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
                     )
-                    thread = await seed_msg.create_thread(
+                    public_target_error = _discord_policy_public_target_error(
+                        getattr(message, "channel", None)
+                    )
+                    if public_target_error:
+                        raise PermissionError(public_target_error)
+                    created = await seed_msg.create_thread(
                         name=thread_name,
                         auto_archive_duration=1440,
                         reason=reason,
                     )
+                    thread = await self._validated_created_public_thread(
+                        created,
+                        context="auto-thread fallback creation",
+                    )
+                    if thread is None:
+                        raise RuntimeError(
+                            "Discord did not return a verified public thread"
+                        )
                     try:
                         setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                     except Exception:
@@ -5585,6 +6437,9 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] Failed to resolve Discord thread %s for rename", self.name, thread_id, exc_info=True)
             return False
 
+        if _discord_policy_public_target_error(thread):
+            return False
+
         current_name = getattr(thread, "name", None)
         if only_if_current_name is not None and current_name != only_if_current_name:
             logger.info(
@@ -5624,6 +6479,14 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client or not DISCORD_AVAILABLE:
             return None
+        if _discord_public_only_policy_required():
+            logger.warning(
+                "[%s] Direct Discord handoff-thread creation is disabled by "
+                "the privileged writer policy until a typed Canonical claim "
+                "and terminal receipt executor is available",
+                self.name,
+            )
+            return None
 
         try:
             parent_id = int(parent_chat_id)
@@ -5641,11 +6504,13 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return None
 
-        # DMs, voice channels, and existing threads can't host child threads.
-        if isinstance(parent, getattr(discord, "DMChannel", ())):
+        public_target_error = _discord_policy_public_target_error(parent)
+        if public_target_error:
             logger.info(
-                "[%s] Handoff thread: parent %s is a DM; threads not supported here",
-                self.name, parent_chat_id,
+                "[%s] Handoff thread: parent %s is not public: %s",
+                self.name,
+                parent_chat_id,
+                public_target_error,
             )
             return None
 
@@ -5656,11 +6521,37 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    reason=reason,
+                if self._is_forum_parent(parent):
+                    created = await create(
+                        name=thread_name,
+                        content=f"\U0001f9f5 Hermes handoff: **{thread_name}**",
+                        auto_archive_duration=1440,
+                        reason=reason,
+                    )
+                else:
+                    public_thread_type = getattr(
+                        getattr(discord, "ChannelType", None),
+                        "public_thread",
+                        None,
+                    )
+                    if public_thread_type is None:
+                        raise RuntimeError(
+                            "discord.py public thread type is unavailable"
+                        )
+                    created = await create(
+                        name=thread_name,
+                        auto_archive_duration=1440,
+                        type=public_thread_type,
+                        reason=reason,
+                    )
+                thread = await self._validated_created_public_thread(
+                    created,
+                    context="direct handoff-thread creation",
                 )
+                if thread is None:
+                    raise RuntimeError(
+                        "Discord did not return a verified public handoff thread"
+                    )
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5673,12 +6564,24 @@ class DiscordAdapter(BasePlatformAdapter):
             send = getattr(parent, "send", None)
             if send is None:
                 return None
+            public_target_error = _discord_policy_public_target_error(parent)
+            if public_target_error:
+                return None
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
-            thread = await seed_msg.create_thread(
+            public_target_error = _discord_policy_public_target_error(parent)
+            if public_target_error:
+                return None
+            created = await seed_msg.create_thread(
                 name=thread_name,
                 auto_archive_duration=1440,
                 reason=reason,
             )
+            thread = await self._validated_created_public_thread(
+                created,
+                context="fallback handoff-thread creation",
+            )
+            if thread is None:
+                return None
             return str(thread.id)
         except Exception as fallback_error:
             logger.warning(
@@ -5747,6 +6650,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             # Keep the approval request self-contained in plain message content.
             # Discord embeds can be invisible or visually separated from the
@@ -5834,6 +6740,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             # Embed description limit is 4096; message usually fits easily.
             max_desc = 4088
@@ -5901,6 +6810,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             # Discord embed description limit is 4096; trim conservatively.
             max_desc = 4088
@@ -6006,6 +6918,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             default_hint = f" (default: {default})" if default else ""
             embed = discord.Embed(
@@ -6058,6 +6973,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
+            public_target_error = _discord_policy_public_target_error(channel)
+            if public_target_error:
+                return SendResult(success=False, error=public_target_error)
 
             try:
                 from hermes_cli.providers import get_label
@@ -6172,6 +7090,7 @@ class DiscordAdapter(BasePlatformAdapter):
         att,
         *,
         media_type: str = "media",
+        channel: Any = None,
     ) -> Optional[bytes]:
         """Read an attachment via discord.py's authenticated bot session.
 
@@ -6184,6 +7103,8 @@ class DiscordAdapter(BasePlatformAdapter):
         ``ValueError`` BEFORE the bytes are pulled into memory when Discord
         reports the size up front, so a hostile upload can't OOM the gateway.
         """
+        _require_discord_attachment_public_target(channel)
+
         attachment_size = getattr(att, "size", None)
         if attachment_size:
             validate_inbound_media_size(int(attachment_size), media_type=media_type)
@@ -6199,11 +7120,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 getattr(att, "filename", None) or getattr(att, "url", "<unknown>"),
                 e,
             )
+            _require_discord_attachment_public_target(channel)
             return None
+        _require_discord_attachment_public_target(channel)
         validate_inbound_media_size(len(raw_bytes), media_type=media_type)
         return raw_bytes
 
-    async def _cache_discord_image(self, att, ext: str) -> str:
+    async def _cache_discord_image(
+        self,
+        att,
+        ext: str,
+        *,
+        channel: Any = None,
+    ) -> str:
         """Cache a Discord image attachment to local disk.
 
         Primary path: ``att.read()`` + ``cache_image_from_bytes``
@@ -6211,18 +7140,47 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_image_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att, media_type="image")
+        raw_bytes = await self._read_attachment_bytes(
+            att,
+            media_type="image",
+            channel=channel,
+        )
         if raw_bytes is not None:
             try:
-                return cache_image_from_bytes(raw_bytes, ext=ext)
+                cached_path = cache_image_from_bytes(raw_bytes, ext=ext)
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_image_from_bytes rejected att.read() data; falling back to URL: %s",
                     e,
                 )
-        return await cache_image_from_url(att.url, ext=ext)
+            else:
+                try:
+                    _require_discord_attachment_public_target(channel)
+                except _DiscordAttachmentPublicTargetRevoked:
+                    _discard_revoked_discord_attachment_cache(cached_path)
+                    raise
+                return cached_path
 
-    async def _cache_discord_audio(self, att, ext: str) -> str:
+        _require_discord_attachment_public_target(channel)
+        try:
+            cached_path = await cache_image_from_url(att.url, ext=ext)
+        except Exception:
+            _require_discord_attachment_public_target(channel)
+            raise
+        try:
+            _require_discord_attachment_public_target(channel)
+        except _DiscordAttachmentPublicTargetRevoked:
+            _discard_revoked_discord_attachment_cache(cached_path)
+            raise
+        return cached_path
+
+    async def _cache_discord_audio(
+        self,
+        att,
+        ext: str,
+        *,
+        channel: Any = None,
+    ) -> str:
         """Cache a Discord audio attachment to local disk.
 
         Primary path: ``att.read()`` + ``cache_audio_from_bytes``
@@ -6230,18 +7188,47 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_audio_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
+        raw_bytes = await self._read_attachment_bytes(
+            att,
+            media_type="audio",
+            channel=channel,
+        )
         if raw_bytes is not None:
             try:
-                return cache_audio_from_bytes(raw_bytes, ext=ext)
+                cached_path = cache_audio_from_bytes(raw_bytes, ext=ext)
             except Exception as e:
                 logger.debug(
                     "[Discord] cache_audio_from_bytes failed; falling back to URL: %s",
                     e,
                 )
-        return await cache_audio_from_url(att.url, ext=ext)
+            else:
+                try:
+                    _require_discord_attachment_public_target(channel)
+                except _DiscordAttachmentPublicTargetRevoked:
+                    _discard_revoked_discord_attachment_cache(cached_path)
+                    raise
+                return cached_path
 
-    async def _cache_discord_document(self, att, ext: str) -> bytes:
+        _require_discord_attachment_public_target(channel)
+        try:
+            cached_path = await cache_audio_from_url(att.url, ext=ext)
+        except Exception:
+            _require_discord_attachment_public_target(channel)
+            raise
+        try:
+            _require_discord_attachment_public_target(channel)
+        except _DiscordAttachmentPublicTargetRevoked:
+            _discard_revoked_discord_attachment_cache(cached_path)
+            raise
+        return cached_path
+
+    async def _cache_discord_document(
+        self,
+        att,
+        ext: str,
+        *,
+        channel: Any = None,
+    ) -> bytes:
         """Download a Discord document attachment and return the raw bytes.
 
         Primary path: ``att.read()`` (authenticated, no SSRF gate).
@@ -6252,11 +7239,16 @@ class DiscordAdapter(BasePlatformAdapter):
         for passing the returned bytes to ``cache_document_from_bytes``
         (and, where applicable, for injecting text content).
         """
-        raw_bytes = await self._read_attachment_bytes(att, media_type="document")
+        raw_bytes = await self._read_attachment_bytes(
+            att,
+            media_type="document",
+            channel=channel,
+        )
         if raw_bytes is not None:
             return raw_bytes
 
         # Fallback: SSRF-gated URL download.
+        _require_discord_attachment_public_target(channel)
         if not is_safe_url(att.url):
             raise ValueError(
                 f"Blocked unsafe attachment URL (SSRF protection): {att.url}"
@@ -6265,15 +7257,24 @@ class DiscordAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        async with aiohttp.ClientSession(**_sess_kw) as session:
-            async with session.get(
-                att.url,
-                timeout=aiohttp.ClientTimeout(total=30),
-                **_req_kw,
-            ) as resp:
-                if resp.status != 200:
-                    raise Exception(f"HTTP {resp.status}")
-                return await resp.read()
+        try:
+            async with aiohttp.ClientSession(**_sess_kw) as session:
+                async with session.get(
+                    att.url,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    **_req_kw,
+                ) as resp:
+                    if resp.status != 200:
+                        _require_discord_attachment_public_target(channel)
+                        raise Exception(f"HTTP {resp.status}")
+                    raw_bytes = await resp.read()
+        except _DiscordAttachmentPublicTargetRevoked:
+            raise
+        except Exception:
+            _require_discord_attachment_public_target(channel)
+            raise
+        _require_discord_attachment_public_target(channel)
+        return raw_bytes
 
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
@@ -6407,6 +7408,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     # user can retry once Discord recovers, and skip agent
                     # invocation for this message.
                     try:
+                        public_target_error = _discord_policy_public_target_error(
+                            message.channel
+                        )
+                        if public_target_error:
+                            return
                         await message.channel.send(
                             "⚠️ Hermes could not create a Discord thread for "
                             "this message, so the request was not processed. Please retry."
@@ -6512,10 +7518,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                         ext = ".jpg"
-                    cached_path = await self._cache_discord_image(att, ext)
+                    cached_path = await self._cache_discord_image(
+                        att,
+                        ext,
+                        channel=message.channel,
+                    )
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
+                except _DiscordAttachmentPublicTargetRevoked as e:
+                    logger.warning(
+                        "[Discord] Aborting inbound attachment turn after public-target revocation: %s",
+                        e,
+                    )
+                    return
                 except Exception as e:
                     print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
                     # Fall back to the CDN URL if caching fails
@@ -6526,10 +7542,20 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in {".ogg", ".mp3", ".wav", ".webm", ".m4a"}:
                         ext = ".ogg"
-                    cached_path = await self._cache_discord_audio(att, ext)
+                    cached_path = await self._cache_discord_audio(
+                        att,
+                        ext,
+                        channel=message.channel,
+                    )
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user audio: {cached_path}", flush=True)
+                except _DiscordAttachmentPublicTargetRevoked as e:
+                    logger.warning(
+                        "[Discord] Aborting inbound attachment turn after public-target revocation: %s",
+                        e,
+                    )
+                    return
                 except Exception as e:
                     print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
                     media_urls.append(att.url)
@@ -6556,7 +7582,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                 else:
                     try:
-                        raw_bytes = await self._cache_discord_document(att, ext)
+                        raw_bytes = await self._cache_discord_document(
+                            att,
+                            ext,
+                            channel=message.channel,
+                        )
                         cached_path = cache_document_from_bytes(
                             raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
@@ -6611,6 +7641,12 @@ class DiscordAdapter(BasePlatformAdapter):
                         # note with the sandbox-translated cache path via
                         # ``to_agent_visible_cache_path()`` (important for
                         # Docker/Modal terminal backends).
+                    except _DiscordAttachmentPublicTargetRevoked as e:
+                        logger.warning(
+                            "[Discord] Aborting inbound attachment turn after public-target revocation: %s",
+                            e,
+                        )
+                        return
                     except Exception as e:
                         logger.warning(
                             "[Discord] Failed to cache document %s: %s",
@@ -6817,6 +7853,21 @@ class DiscordAdapter(BasePlatformAdapter):
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
+            # The batch delay is an intentional await boundary. A channel that
+            # was public when the first chunk arrived can become private before
+            # the aggregate reaches GPT while the bot itself retains access.
+            # Re-attest the current channel immediately before model dispatch;
+            # discarded private batches must never be merged into a later turn.
+            raw_message = getattr(event, "raw_message", None)
+            public_target_error = _discord_policy_public_target_error(
+                getattr(raw_message, "channel", None)
+            )
+            if public_target_error:
+                logger.warning(
+                    "[Discord] Discarding delayed text batch after public-target revocation: %s",
+                    public_target_error,
+                )
+                return
             logger.info(
                 "[Discord] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
@@ -6868,6 +7919,12 @@ def _component_check_auth(
       - user is approved in the pairing store -> allow
       - otherwise -> reject
     """
+    if (
+        _discord_public_only_policy_required()
+        and _discord_public_target_error(getattr(interaction, "channel", None))
+    ):
+        return False
+
     user = getattr(interaction, "user", None)
     if user is None or getattr(user, "id", None) is None:
         return False
@@ -6976,7 +8033,23 @@ def _define_discord_view_classes() -> None:
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
 
-    class ExecApprovalView(discord.ui.View):
+    class _PublicOnlyDiscordView(discord.ui.View):
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if not _discord_public_only_policy_required():
+                return True
+            public_target_error = _discord_public_target_error(
+                getattr(interaction, "channel", None)
+            )
+            if not public_target_error:
+                return True
+            logger.warning(
+                "[Discord] Blocking component interaction outside a public "
+                "guild channel/thread: %s",
+                public_target_error,
+            )
+            return False
+
+    class ExecApprovalView(_PublicOnlyDiscordView):
         """
         Interactive button view for exec approval of dangerous commands.
 
@@ -7071,6 +8144,11 @@ def _define_discord_view_classes() -> None:
 
             await interaction.response.edit_message(embed=embed, view=self)
 
+            if _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            ):
+                return
+
             # Unblock the waiting agent thread via the gateway approval queue
             try:
                 from tools.approval import resolve_gateway_approval
@@ -7114,6 +8192,10 @@ def _define_discord_view_classes() -> None:
             # Visually update the Discord message so buttons appear disabled.
             msg = getattr(self, '_message', None)
             if msg:
+                if _discord_policy_public_target_error(
+                    getattr(msg, "channel", None)
+                ):
+                    return
                 try:
                     embed = msg.embeds[0] if msg.embeds else None
                     if embed:
@@ -7123,7 +8205,7 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass  # message deleted or too old to edit
 
-    class SlashConfirmView(discord.ui.View):
+    class SlashConfirmView(_PublicOnlyDiscordView):
         """Three-button view for generic slash-command confirmations.
 
         Used by ``/reload-mcp`` and any future slash command routed through
@@ -7187,6 +8269,11 @@ def _define_discord_view_classes() -> None:
 
             await interaction.response.edit_message(embed=embed, view=self)
 
+            if _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            ):
+                return
+
             # Resolve via the module-level primitive.  If the handler
             # returns a follow-up message, post it in the same channel.
             try:
@@ -7194,7 +8281,12 @@ def _define_discord_view_classes() -> None:
                 result_text = await _slash_confirm_mod.resolve(
                     self.session_key, self.confirm_id, choice,
                 )
-                if result_text:
+                if (
+                    result_text
+                    and not _discord_policy_public_target_error(
+                        getattr(interaction, "channel", None)
+                    )
+                ):
                     await interaction.followup.send(result_text)
                 logger.info(
                     "Discord button resolved slash-confirm for session %s "
@@ -7229,6 +8321,10 @@ def _define_discord_view_classes() -> None:
             # Visually update the Discord message so buttons appear disabled.
             msg = getattr(self, '_message', None)
             if msg:
+                if _discord_policy_public_target_error(
+                    getattr(msg, "channel", None)
+                ):
+                    return
                 try:
                     embed = msg.embeds[0] if msg.embeds else None
                     if embed:
@@ -7238,7 +8334,7 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
-    class UpdatePromptView(discord.ui.View):
+    class UpdatePromptView(_PublicOnlyDiscordView):
         """Interactive Yes/No buttons for ``hermes update`` prompts.
 
         Clicking a button writes the answer to ``.update_response`` so the
@@ -7291,6 +8387,11 @@ def _define_discord_view_classes() -> None:
                 child.disabled = True
             await interaction.response.edit_message(embed=embed, view=self)
 
+            if _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            ):
+                return
+
             # Write response file
             try:
                 from hermes_constants import get_hermes_home
@@ -7325,6 +8426,10 @@ def _define_discord_view_classes() -> None:
             # Visually update the Discord message so buttons appear disabled.
             msg = getattr(self, '_message', None)
             if msg:
+                if _discord_policy_public_target_error(
+                    getattr(msg, "channel", None)
+                ):
+                    return
                 try:
                     embed = msg.embeds[0] if msg.embeds else None
                     if embed:
@@ -7334,7 +8439,7 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
-    class ModelPickerView(discord.ui.View):
+    class ModelPickerView(_PublicOnlyDiscordView):
         """Interactive select-menu view for model switching.
 
         Two-step drill-down: provider dropdown → model dropdown.
@@ -7545,6 +8650,11 @@ def _define_discord_view_classes() -> None:
                 view=None,
             )
 
+            if _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            ):
+                return
+
             try:
                 result_text = await self.on_model_selected(
                     str(interaction.channel_id),
@@ -7554,6 +8664,10 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
+            if _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            ):
+                return
             await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
@@ -7579,6 +8693,10 @@ def _define_discord_view_classes() -> None:
             warning = await self._expensive_warning_for(model_id)
             if warning is not None:
                 self._build_expensive_confirm(model_id)
+                if _discord_policy_public_target_error(
+                    getattr(interaction, "channel", None)
+                ):
+                    return
                 await interaction.response.edit_message(
                     embed=discord.Embed(
                         title="⚠ Expensive Model Warning",
@@ -7636,6 +8754,11 @@ def _define_discord_view_classes() -> None:
             )
 
         async def _on_cancel(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
             self.resolved = True
             self.clear_items()
             await interaction.response.edit_message(
@@ -7653,6 +8776,10 @@ def _define_discord_view_classes() -> None:
             # Visually update the Discord message so it appears expired.
             msg = getattr(self, '_message', None)
             if msg:
+                if _discord_policy_public_target_error(
+                    getattr(msg, "channel", None)
+                ):
+                    return
                 try:
                     embed = discord.Embed(
                         title="⚙ Model Configuration",
@@ -7664,7 +8791,7 @@ def _define_discord_view_classes() -> None:
                     pass
 
 
-    class ClarifyChoiceView(discord.ui.View):
+    class ClarifyChoiceView(_PublicOnlyDiscordView):
         """Interactive button view for the clarify tool's multiple-choice prompts.
 
         Renders one button per choice (max 24) plus a final ``✏️ Other`` button.
@@ -7806,6 +8933,11 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
+            if _discord_policy_public_target_error(
+                getattr(interaction, "channel", None)
+            ):
+                return
+
             # Resolve via the gateway clarify primitive — same mechanism as
             # Telegram. Look up the canonical choice text from the entry so
             # we round-trip the original value, not a button-label variant.
@@ -7890,6 +9022,10 @@ def _define_discord_view_classes() -> None:
             # Visually update the Discord message so buttons appear disabled.
             msg = getattr(self, '_message', None)
             if msg:
+                if _discord_policy_public_target_error(
+                    getattr(msg, "channel", None)
+                ):
+                    return
                 try:
                     embed = msg.embeds[0] if msg.embeds else None
                     if embed:
@@ -8061,6 +9197,16 @@ async def _standalone_send(
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    if _discord_public_only_policy_required():
+        return {
+            "error": (
+                "Discord standalone REST egress is disabled while the "
+                "privileged Canonical writer policy is enabled; delivery "
+                "requires the live gateway adapter and a verified public "
+                "guild channel/thread."
+            )
+        }
 
     token = (getattr(pconfig, "token", None) or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
     if not token:

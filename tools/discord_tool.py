@@ -77,6 +77,134 @@ def _get_bot_token() -> Optional[str]:
     return os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
 
 
+def _writer_policy_required() -> bool:
+    """Return the frozen privileged-writer policy, failing closed on error."""
+
+    try:
+        from gateway.canonical_writer_boundary import (
+            writer_boundary_policy_required,
+        )
+
+        return bool(writer_boundary_policy_required())
+    except Exception:
+        return True
+
+
+def _writer_policy_public_target_error(
+    token: str,
+    channel_id: str,
+    *,
+    require_thread_parent: bool = False,
+) -> Optional[str]:
+    """Fail closed unless current Discord data proves a public guild target.
+
+    The cached directory is only the first mechanical gate: a bot can see a
+    private guild channel and the cache can be stale.  Re-read the channel and
+    ``@everyone`` role immediately before the mutation so permission changes
+    cannot turn a previously public target into an unverified send surface.
+    """
+
+    if not _writer_policy_required():
+        return None
+    try:
+        from gateway.channel_directory import is_discord_public_target
+
+        is_public = bool(is_discord_public_target(str(channel_id or "")))
+    except Exception:
+        is_public = False
+    if is_public:
+        try:
+            channel = _discord_request("GET", f"/channels/{channel_id}", token)
+            if not isinstance(channel, dict):
+                raise ValueError("channel response is not an object")
+            guild_id = str(channel.get("guild_id") or "").strip()
+            channel_type = channel.get("type")
+            parent_types = {0, 5, 15, 16}
+            public_target_types = parent_types | {10, 11}
+            allowed_types = parent_types if require_thread_parent else public_target_types
+            if not guild_id or channel_type not in allowed_types:
+                return (
+                    "Discord writer policy permits this mutation only in a "
+                    "public guild channel or public thread."
+                )
+
+            # Public/announcement threads inherit visibility from their
+            # parent. Verify the current parent snapshot rather than trusting
+            # a stale directory entry or an empty thread overwrite list.
+            permission_channel = channel
+            if channel_type in {10, 11}:
+                parent_id = str(channel.get("parent_id") or "").strip()
+                if not parent_id:
+                    raise ValueError("public thread parent is missing")
+                permission_channel = _discord_request(
+                    "GET", f"/channels/{parent_id}", token
+                )
+                if (
+                    not isinstance(permission_channel, dict)
+                    or str(permission_channel.get("guild_id") or "") != guild_id
+                    or permission_channel.get("type") not in parent_types
+                ):
+                    raise ValueError("public thread parent is invalid")
+
+            roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
+            if not isinstance(roles, list):
+                raise ValueError("guild roles response is not a list")
+            everyone = next(
+                (
+                    role
+                    for role in roles
+                    if isinstance(role, dict)
+                    and str(role.get("id") or "") == guild_id
+                ),
+                None,
+            )
+            if everyone is None:
+                raise ValueError("guild @everyone role is missing")
+
+            permissions = int(str(everyone.get("permissions") or ""))
+            administrator_bit = 1 << 3
+            view_channel_bit = 1 << 10
+            if permissions & administrator_bit:
+                return None
+            overwrites = permission_channel.get("permission_overwrites")
+            if not isinstance(overwrites, list):
+                raise ValueError("channel permission_overwrites is not a list")
+            for overwrite in overwrites:
+                if not isinstance(overwrite, dict):
+                    raise ValueError("channel permission overwrite is not an object")
+                overwrite_id = str(overwrite.get("id") or "").strip()
+                overwrite_type = int(overwrite.get("type", -1))
+                allow = int(str(overwrite.get("allow") or "0"))
+                deny = int(str(overwrite.get("deny") or "0"))
+                if not overwrite_id or overwrite_type not in {0, 1}:
+                    raise ValueError("channel permission overwrite is malformed")
+                if overwrite_id == guild_id and overwrite_type == 0:
+                    permissions &= ~deny
+                    permissions |= allow
+                    break
+            if permissions & view_channel_bit:
+                return None
+        except Exception as exc:
+            logger.warning(
+                "Discord public-target proof failed for channel %s: %s",
+                channel_id,
+                exc,
+            )
+            return (
+                "Discord writer policy could not verify the current public "
+                "channel permissions; no thread was created."
+            )
+        return (
+            "Discord target is not currently visible to the guild @everyone "
+            "role; no thread was created."
+        )
+    return (
+        "Discord writer policy requires a directory-confirmed public guild "
+        "channel/thread; DMs, private channels, and unknown targets are "
+        "forbidden."
+    )
+
+
 def _discord_request(
     method: str,
     path: str,
@@ -437,7 +565,13 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
 
 def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
     """Get detailed info about a specific channel."""
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     ch = _discord_request("GET", f"/channels/{channel_id}", token)
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     return json.dumps({
         "id": ch["id"],
         "name": ch.get("name"),
@@ -515,6 +649,9 @@ def _fetch_messages(
     **_kwargs: Any,
 ) -> str:
     """Fetch recent messages from a channel."""
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -525,6 +662,9 @@ def _fetch_messages(
     if after:
         params["after"] = after
     messages = _discord_request("GET", f"/channels/{channel_id}/messages", token, params=params)
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     result = []
     for msg in messages:
         author = msg.get("author", {})
@@ -659,6 +799,13 @@ def _case_export(
         if value and not _valid_discord_id(value):
             return json.dumps({"error": f"case_export requires numeric Discord snowflake for {label}."})
 
+    public_target_error = _writer_policy_public_target_error(
+        token,
+        target_channel_id,
+    )
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
+
     anchors = [name for name, value in (("message_id", message_id), ("before", before), ("after", after)) if value]
     if len(anchors) > 1:
         return json.dumps({"error": f"case_export accepts only one anchor; got: {', '.join(anchors)}."})
@@ -678,6 +825,12 @@ def _case_export(
         params["after"] = after
 
     messages = _discord_request("GET", f"/channels/{target_channel_id}/messages", token, params=params)
+    public_target_error = _writer_policy_public_target_error(
+        token,
+        target_channel_id,
+    )
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     transcript = []
     redaction_hits = 0
     for msg in reversed(messages):
@@ -707,7 +860,13 @@ def _case_export(
 
 def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
     """List pinned messages in a channel."""
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     messages = _discord_request("GET", f"/channels/{channel_id}/pins", token)
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     result = []
     for msg in messages:
         author = msg.get("author", {})
@@ -722,18 +881,27 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _pin_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Pin a message in a channel."""
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     _discord_request("PUT", f"/channels/{channel_id}/pins/{message_id}", token)
     return json.dumps({"success": True, "message": f"Message {message_id} pinned."})
 
 
 def _unpin_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Unpin a message from a channel."""
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     _discord_request("DELETE", f"/channels/{channel_id}/pins/{message_id}", token)
     return json.dumps({"success": True, "message": f"Message {message_id} unpinned."})
 
 
 def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Delete a message from a channel or thread."""
+    public_target_error = _writer_policy_public_target_error(token, channel_id)
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
     _discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}", token)
     return json.dumps({"success": True, "message": f"Message {message_id} deleted."})
 
@@ -747,6 +915,14 @@ def _create_thread(
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
+    public_target_error = _writer_policy_public_target_error(
+        token,
+        channel_id,
+        require_thread_parent=True,
+    )
+    if public_target_error:
+        return json.dumps({"error": public_target_error})
+
     initial_message = str(initial_message or "").strip()
     if initial_message and len(initial_message) > 2000:
         return json.dumps({
@@ -852,6 +1028,29 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
 # Actions that require the GUILD_MEMBERS privileged intent.
 _INTENT_GATED_MEMBERS = frozenset({"member_info", "search_members"})
 
+# These model-facing mutations do not yet carry an exact owner/passkey-bound
+# capability plus a Canonical terminal receipt. Hiding and denying a fixed
+# structured action enum is a mechanical permission boundary, not semantic
+# routing. Generic Hermes behavior is unchanged while the fork's privileged
+# writer policy is off.
+_WRITER_POLICY_FORBIDDEN_MUTATIONS = frozenset({
+    "pin_message",
+    "unpin_message",
+    "delete_message",
+    "create_thread",
+    "add_role",
+    "remove_role",
+})
+
+# A raw guild channel listing includes names/topics for private channels that
+# the bot can see. Until this endpoint has complete per-channel @everyone
+# visibility proof, hide and deny it under the privileged writer policy.
+_WRITER_POLICY_FORBIDDEN_ENUMERATIONS = frozenset({"list_channels"})
+_WRITER_POLICY_HIDDEN_ACTIONS = (
+    _WRITER_POLICY_FORBIDDEN_MUTATIONS
+    | _WRITER_POLICY_FORBIDDEN_ENUMERATIONS
+)
+
 # Per-action required params for runtime validation.
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "server_info": ["guild_id"],
@@ -926,6 +1125,8 @@ def _available_actions(
     """
     actions: List[str] = []
     for name in _ACTIONS:
+        if _writer_policy_required() and name in _WRITER_POLICY_HIDDEN_ACTIONS:
+            continue
         # Intent filter
         if not caps.get("has_members_intent", True) and name in _INTENT_GATED_MEMBERS:
             continue
@@ -1210,6 +1411,29 @@ def _run_discord_action(
         return json.dumps({
             "error": f"Unknown action: {action}",
             "available_actions": list(valid_actions.keys()),
+        })
+
+    writer_policy_required = _writer_policy_required()
+    if writer_policy_required and action in _WRITER_POLICY_FORBIDDEN_ENUMERATIONS:
+        return json.dumps({
+            "error": (
+                f"Discord enumeration '{action}' is blocked by the privileged "
+                "writer policy because the raw guild endpoint can expose "
+                "private channel metadata without complete live per-channel "
+                "@everyone visibility proof. Use the public-only messaging "
+                "channel directory or an exact public channel read."
+            ),
+        })
+
+    if writer_policy_required and action in _WRITER_POLICY_FORBIDDEN_MUTATIONS:
+        return json.dumps({
+            "error": (
+                f"Discord mutation '{action}' is blocked by the privileged "
+                "writer policy because this raw bot-token path has no exact "
+                "owner/passkey capability and Canonical terminal receipt. "
+                "Use read-only Discord actions or an approved typed "
+                "Canonical executor."
+            ),
         })
 
     # Config-level allowlist gate (defense in depth — schema already filtered,

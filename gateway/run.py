@@ -2603,6 +2603,19 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _legacy_handoff_forbidden_by_writer_policy() -> bool:
+    """Fail closed when handoffs require a typed Canonical lifecycle."""
+
+    try:
+        from gateway.canonical_writer_boundary import (
+            writer_boundary_policy_required,
+        )
+
+        return bool(writer_boundary_policy_required())
+    except Exception:
+        return True
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -7535,6 +7548,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The CLI process is poll-blocked on the row's terminal state and
         prints the result to the user.
         """
+        if _legacy_handoff_forbidden_by_writer_policy():
+            logger.warning(
+                "Legacy SQLite/synthetic handoff watcher is disabled by the "
+                "privileged Canonical writer policy; a typed claim and "
+                "terminal receipt executor is required"
+            )
+            return
         # Initial delay so the gateway is fully connected to its platforms
         # before we try to dispatch handoffs through them.
         await asyncio.sleep(5)
@@ -7568,6 +7588,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _process_handoff(self, row: Dict[str, Any]) -> None:
         """Execute one handoff row. Raises on failure (caller marks failed)."""
+        if _legacy_handoff_forbidden_by_writer_policy():
+            raise RuntimeError(
+                "legacy handoff is disabled by the privileged Canonical "
+                "writer policy until a typed claim/receipt executor exists"
+            )
         from gateway.config import Platform
         from gateway.session import SessionSource, build_session_key
         from gateway.platforms.base import MessageEvent

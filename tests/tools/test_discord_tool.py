@@ -3,7 +3,7 @@
 import json
 import urllib.error
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -19,7 +19,9 @@ from tools.discord_tool import (
     _enrich_403,
     _get_bot_token,
     _load_allowed_actions_config,
+    _create_thread,
     _reset_capability_cache,
+    _writer_policy_public_target_error,
     check_discord_tool_requirements,
     discord_admin_handler,
     discord_core,
@@ -572,11 +574,185 @@ class TestListPins:
         assert result["pinned_messages"][0]["content"] == "Important announcement"
 
 
+@pytest.mark.parametrize(
+    ("handler", "action", "kwargs"),
+    [
+        (discord_admin_handler, "channel_info", {"channel_id": "11"}),
+        (discord_core, "fetch_messages", {"channel_id": "11"}),
+        (discord_core, "case_export", {"channel_id": "11"}),
+        (discord_admin_handler, "list_pins", {"channel_id": "11"}),
+    ],
+)
+@patch("tools.discord_tool._discord_request")
+def test_writer_policy_blocks_private_channel_content_reads(
+    mock_req,
+    monkeypatch,
+    handler,
+    action,
+    kwargs,
+):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    mock_req.return_value = {"id": "11", "type": 1}
+    with patch("tools.discord_tool._writer_policy_required", return_value=True), patch(
+        "gateway.channel_directory.is_discord_public_target",
+        return_value=True,
+    ):
+        result = json.loads(handler(action=action, **kwargs))
+
+    assert "public guild channel or public thread" in result["error"]
+    mock_req.assert_called_once_with("GET", "/channels/11", "test-token")
+
+
+@patch("tools.discord_tool._discord_request")
+def test_writer_policy_allows_public_thread_message_read_after_parent_proof(
+    mock_req,
+    monkeypatch,
+):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    mock_req.side_effect = [
+        {"id": "33", "type": 11, "guild_id": "99", "parent_id": "22"},
+        {
+            "id": "22",
+            "type": 0,
+            "guild_id": "99",
+            "permission_overwrites": [],
+        },
+        [{"id": "99", "permissions": str(1 << 10)}],
+        [],
+        {"id": "33", "type": 11, "guild_id": "99", "parent_id": "22"},
+        {
+            "id": "22",
+            "type": 0,
+            "guild_id": "99",
+            "permission_overwrites": [],
+        },
+        [{"id": "99", "permissions": str(1 << 10)}],
+    ]
+    with patch("tools.discord_tool._writer_policy_required", return_value=True), patch(
+        "gateway.channel_directory.is_discord_public_target",
+        return_value=True,
+    ):
+        result = json.loads(
+            discord_core(action="fetch_messages", channel_id="33")
+        )
+
+    assert result == {"messages": [], "count": 0}
+    assert call(
+        "GET",
+        "/channels/33/messages",
+        "test-token",
+        params={"limit": "50"},
+    ) in mock_req.call_args_list
+
+
+@pytest.mark.parametrize(
+    (
+        "handler",
+        "action",
+        "kwargs",
+        "content_response",
+        "expected_content_call",
+    ),
+    [
+        (
+            discord_admin_handler,
+            "channel_info",
+            {"channel_id": "11"},
+            {"id": "11", "name": "secret", "type": 0},
+            call("GET", "/channels/11", "test-token"),
+        ),
+        (
+            discord_core,
+            "fetch_messages",
+            {"channel_id": "11"},
+            [{"id": "500", "content": "secret", "author": {}}],
+            call(
+                "GET",
+                "/channels/11/messages",
+                "test-token",
+                params={"limit": "50"},
+            ),
+        ),
+        (
+            discord_core,
+            "case_export",
+            {"channel_id": "11"},
+            [{"id": "500", "content": "secret", "author": {}}],
+            call(
+                "GET",
+                "/channels/11/messages",
+                "test-token",
+                params={"limit": "50"},
+            ),
+        ),
+        (
+            discord_admin_handler,
+            "list_pins",
+            {"channel_id": "11"},
+            [{"id": "500", "content": "secret", "author": {}}],
+            call("GET", "/channels/11/pins", "test-token"),
+        ),
+    ],
+)
+@patch("tools.discord_tool._discord_request")
+def test_writer_policy_discards_channel_read_if_visibility_is_revoked_during_fetch(
+    mock_req,
+    monkeypatch,
+    handler,
+    action,
+    kwargs,
+    content_response,
+    expected_content_call,
+):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    mock_req.return_value = content_response
+    with patch(
+        "tools.discord_tool._writer_policy_required",
+        return_value=True,
+    ), patch(
+        "tools.discord_tool._writer_policy_public_target_error",
+        side_effect=[None, "public visibility revoked during read"],
+    ) as public_proof:
+        result = json.loads(handler(action=action, **kwargs))
+
+    assert result == {"error": "public visibility revoked during read"}
+    assert "secret" not in json.dumps(result)
+    assert mock_req.call_args_list == [expected_content_call]
+    assert public_proof.call_args_list == [
+        call("test-token", "11"),
+        call("test-token", "11"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Actions: pin_message / unpin_message / delete_message
 # ---------------------------------------------------------------------------
 
 class TestPinUnpinDelete:
+    @pytest.mark.parametrize(
+        "action",
+        ["pin_message", "unpin_message", "delete_message"],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_blocks_nonpublic_raw_mutations(
+        self, mock_req, monkeypatch, action
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        with patch(
+            "tools.discord_tool._writer_policy_public_target_error",
+            return_value="public target proof failed",
+        ):
+            result = json.loads(
+                discord_admin_handler(
+                    action=action,
+                    channel_id="11",
+                    message_id="500",
+                )
+            )
+
+        assert result == {"error": "public target proof failed"}
+        mock_req.assert_not_called()
+
     @patch("tools.discord_tool._discord_request")
     def test_pin_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
@@ -608,6 +784,183 @@ class TestPinUnpinDelete:
 # ---------------------------------------------------------------------------
 
 class TestCreateThread:
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_rechecks_live_everyone_visibility(
+        self, mock_req
+    ):
+        mock_req.side_effect = [
+            {
+                "id": "11",
+                "type": 0,
+                "guild_id": "99",
+                "permission_overwrites": [],
+            },
+            [{"id": "99", "permissions": str(1 << 10)}],
+        ]
+        with patch(
+            "gateway.canonical_writer_boundary.writer_boundary_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory.is_discord_public_target",
+            return_value=True,
+        ):
+            error = _writer_policy_public_target_error("test-token", "11")
+
+        assert error is None
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/11", "test-token"),
+            call("GET", "/guilds/99/roles", "test-token"),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_verifies_public_thread_parent_visibility(
+        self, mock_req
+    ):
+        mock_req.side_effect = [
+            {
+                "id": "33",
+                "type": 11,
+                "guild_id": "99",
+                "parent_id": "22",
+            },
+            {
+                "id": "22",
+                "type": 0,
+                "guild_id": "99",
+                "permission_overwrites": [],
+            },
+            [{"id": "99", "permissions": str(1 << 10)}],
+        ]
+        with patch(
+            "gateway.canonical_writer_boundary.writer_boundary_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory.is_discord_public_target",
+            return_value=True,
+        ):
+            error = _writer_policy_public_target_error("test-token", "33")
+
+        assert error is None
+        assert mock_req.call_args_list == [
+            call("GET", "/channels/33", "test-token"),
+            call("GET", "/channels/22", "test-token"),
+            call("GET", "/guilds/99/roles", "test-token"),
+        ]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_rejects_private_thread_type(self, mock_req):
+        mock_req.return_value = {
+            "id": "33",
+            "type": 12,
+            "guild_id": "99",
+            "parent_id": "22",
+        }
+        with patch(
+            "gateway.canonical_writer_boundary.writer_boundary_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory.is_discord_public_target",
+            return_value=True,
+        ):
+            error = _writer_policy_public_target_error("test-token", "33")
+
+        assert "public guild channel or public thread" in error
+        mock_req.assert_called_once_with("GET", "/channels/33", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_rejects_missing_permission_overwrites(
+        self, mock_req
+    ):
+        mock_req.side_effect = [
+            {"id": "11", "type": 0, "guild_id": "99"},
+            [{"id": "99", "permissions": str(1 << 10)}],
+        ]
+        with patch(
+            "gateway.canonical_writer_boundary.writer_boundary_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory.is_discord_public_target",
+            return_value=True,
+        ):
+            error = _writer_policy_public_target_error("test-token", "11")
+
+        assert "could not verify" in error
+
+    @pytest.mark.parametrize(
+        "overwrites",
+        [None, {}, [None], [{"id": "99", "type": "bad"}]],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_rejects_malformed_permission_overwrites(
+        self, mock_req, overwrites
+    ):
+        mock_req.side_effect = [
+            {
+                "id": "11",
+                "type": 0,
+                "guild_id": "99",
+                "permission_overwrites": overwrites,
+            },
+            [{"id": "99", "permissions": str(1 << 10)}],
+        ]
+        with patch(
+            "gateway.canonical_writer_boundary.writer_boundary_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory.is_discord_public_target",
+            return_value=True,
+        ):
+            error = _writer_policy_public_target_error("test-token", "11")
+
+        assert "could not verify" in error
+
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_rejects_live_everyone_view_deny(
+        self, mock_req
+    ):
+        mock_req.side_effect = [
+            {
+                "id": "11",
+                "type": 0,
+                "guild_id": "99",
+                "permission_overwrites": [
+                    {
+                        "id": "99",
+                        "type": 0,
+                        "allow": "0",
+                        "deny": str(1 << 10),
+                    }
+                ],
+            },
+            [{"id": "99", "permissions": str(1 << 10)}],
+        ]
+        with patch(
+            "gateway.canonical_writer_boundary.writer_boundary_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory.is_discord_public_target",
+            return_value=True,
+        ):
+            error = _writer_policy_public_target_error("test-token", "11")
+
+        assert "not currently visible" in error
+
+    @patch("tools.discord_tool._discord_request")
+    def test_writer_policy_blocks_unknown_public_target_before_api_call(
+        self, mock_req, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        with patch(
+            "tools.discord_tool._writer_policy_public_target_error",
+            return_value="public target proof failed",
+        ):
+            result = json.loads(
+                _create_thread("test-token", "11", "Forbidden Thread")
+            )
+
+        assert result == {"error": "public target proof failed"}
+        mock_req.assert_not_called()
+
     @patch("tools.discord_tool._discord_request")
     def test_create_standalone_thread(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
@@ -867,6 +1220,51 @@ class TestRoleManagement:
             action="remove_role", guild_id="111", user_id="42", role_id="2",
         ))
         assert result["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("handler", "action", "kwargs"),
+    [
+        (discord_admin_handler, "pin_message", {"channel_id": "11", "message_id": "500"}),
+        (discord_admin_handler, "unpin_message", {"channel_id": "11", "message_id": "500"}),
+        (discord_admin_handler, "delete_message", {"channel_id": "11", "message_id": "500"}),
+        (discord_core, "create_thread", {"channel_id": "11", "name": "blocked"}),
+        (discord_admin_handler, "add_role", {"guild_id": "1", "user_id": "2", "role_id": "3"}),
+        (discord_admin_handler, "remove_role", {"guild_id": "1", "user_id": "2", "role_id": "3"}),
+    ],
+)
+@patch("tools.discord_tool._discord_request")
+def test_writer_policy_denies_raw_mutations_without_owner_capability_receipt(
+    mock_req,
+    monkeypatch,
+    handler,
+    action,
+    kwargs,
+):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    with patch("tools.discord_tool._writer_policy_required", return_value=True):
+        result = json.loads(handler(action=action, **kwargs))
+
+    assert "blocked by the privileged writer policy" in result["error"]
+    assert "owner/passkey capability" in result["error"]
+    mock_req.assert_not_called()
+
+
+@patch("tools.discord_tool._discord_request")
+def test_writer_policy_denies_stale_raw_channel_enumeration_schema(
+    mock_req,
+    monkeypatch,
+):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+    with patch("tools.discord_tool._writer_policy_required", return_value=True):
+        result = json.loads(
+            discord_admin_handler(action="list_channels", guild_id="111")
+        )
+
+    assert "blocked by the privileged writer policy" in result["error"]
+    assert "private channel metadata" in result["error"]
+    assert "@everyone visibility proof" in result["error"]
+    mock_req.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1322,6 +1720,17 @@ class TestAvailableActions:
     def test_all_available_when_unrestricted(self):
         caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
         assert _available_actions(caps, None) == list(_ACTIONS.keys())
+
+    def test_writer_policy_hides_unreceipted_mutations(self):
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+        with patch("tools.discord_tool._writer_policy_required", return_value=True):
+            actions = _available_actions(caps, None)
+
+        assert "create_thread" not in actions
+        assert "delete_message" not in actions
+        assert "add_role" not in actions
+        assert "fetch_messages" in actions
+        assert "list_channels" not in actions
 
     def test_no_members_intent_hides_member_actions(self):
         caps = {"detected": True, "has_members_intent": False, "has_message_content": True}

@@ -259,8 +259,130 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     return directory
 
 
+_DISCORD_PUBLIC_DIRECTORY_TYPE_VALUES = frozenset({0, 5, 10, 11, 15, 16})
+_DISCORD_PUBLIC_DIRECTORY_TYPE_NAMES = frozenset({
+    "text",
+    "news",
+    "news_thread",
+    "announcement_thread",
+    "public_thread",
+    "forum",
+    "media",
+})
+
+
+def _discord_public_directory_policy_required() -> bool:
+    """Return the frozen public-only policy, failing closed on import errors."""
+
+    try:
+        from gateway.canonical_writer_boundary import (
+            writer_boundary_policy_required,
+        )
+
+        return bool(writer_boundary_policy_required())
+    except Exception:
+        return True
+
+
+def _discord_cached_public_directory_target(channel: Any) -> bool:
+    """Prove a cached Discord object is a public text-capable guild surface.
+
+    This proof is intentionally mechanical: the object must have an allowed
+    Discord channel type and exact effective ``view_channel=True`` permission
+    for its guild's ``@everyone``/default role. Missing or malformed cache data
+    fails closed.
+    """
+
+    if channel is None:
+        return False
+    guild = getattr(channel, "guild", None)
+    default_role = getattr(guild, "default_role", None)
+    permissions_for = getattr(channel, "permissions_for", None)
+    if guild is None or default_role is None or not callable(permissions_for):
+        return False
+
+    channel_type = getattr(channel, "type", None)
+    type_value = getattr(channel_type, "value", channel_type)
+    type_name = str(getattr(channel_type, "name", "") or "").strip().casefold()
+    value_is_public = (
+        isinstance(type_value, int)
+        and not isinstance(type_value, bool)
+        and type_value in _DISCORD_PUBLIC_DIRECTORY_TYPE_VALUES
+    )
+    if not value_is_public and type_name not in _DISCORD_PUBLIC_DIRECTORY_TYPE_NAMES:
+        return False
+
+    try:
+        permissions = permissions_for(default_role)
+    except Exception:
+        return False
+    return getattr(permissions, "view_channel", None) is True
+
+
+def _discord_session_target_id(entry: Dict[str, Any]) -> Optional[int]:
+    """Return the exact cached target id for a Discord session entry."""
+
+    raw_target = entry.get("thread_id") or entry.get("id")
+    if raw_target is None:
+        return None
+    raw_target = str(raw_target).strip()
+    if not raw_target:
+        return None
+    if ":" in raw_target:
+        raw_target = raw_target.rsplit(":", 1)[-1]
+    try:
+        return int(raw_target)
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_verified_session_entry(
+    client: Any,
+    entry: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return a live-cache-proven public Discord session target or ``None``."""
+
+    get_channel = getattr(client, "get_channel", None)
+    target_id = _discord_session_target_id(entry)
+    if target_id is None or not callable(get_channel):
+        return None
+    try:
+        target = get_channel(target_id)
+    except Exception:
+        return None
+    if not _discord_cached_public_directory_target(target):
+        return None
+
+    channel_type = getattr(target, "type", None)
+    type_value = getattr(channel_type, "value", channel_type)
+    type_name = str(getattr(channel_type, "name", "") or "").strip().casefold()
+    numeric_type = (
+        type_value
+        if isinstance(type_value, int) and not isinstance(type_value, bool)
+        else None
+    )
+    if numeric_type in {10, 11} or type_name in {
+        "news_thread",
+        "announcement_thread",
+        "public_thread",
+    }:
+        public_type = "thread"
+    elif numeric_type in {15, 16} or type_name in {"forum", "media"}:
+        public_type = "forum"
+    else:
+        public_type = "channel"
+
+    verified = dict(entry)
+    verified["type"] = public_type
+    guild = getattr(target, "guild", None)
+    guild_name = getattr(guild, "name", None)
+    if guild_name:
+        verified["guild"] = str(guild_name)
+    return verified
+
+
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """Enumerate all text channels and forum channels the Discord bot can see."""
+    """Enumerate Discord send targets, public-only under writer policy."""
     channels = []
     client = getattr(adapter, "_client", None)
     if not client:
@@ -271,8 +393,12 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     except ImportError:
         return channels
 
-    for guild in client.guilds:
-        for ch in guild.text_channels:
+    public_only = _discord_public_directory_policy_required()
+
+    for guild in getattr(client, "guilds", None) or []:
+        for ch in getattr(guild, "text_channels", None) or []:
+            if public_only and not _discord_cached_public_directory_target(ch):
+                continue
             channels.append({
                 "id": str(ch.id),
                 "name": ch.name,
@@ -282,6 +408,8 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for ch in forums:
+            if public_only and not _discord_cached_public_directory_target(ch):
+                continue
             channels.append({
                 "id": str(ch.id),
                 "name": ch.name,
@@ -291,8 +419,18 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
 
-    # Merge any DMs from session history
-    channels.extend(_build_from_sessions("discord"))
+    session_entries = _build_from_sessions("discord")
+    if public_only:
+        for entry in session_entries:
+            if not isinstance(entry, dict):
+                continue
+            verified = _discord_verified_session_entry(client, entry)
+            if verified is not None:
+                channels.append(verified)
+    else:
+        # Preserve generic Hermes behavior when the privileged writer policy is
+        # disabled, including legacy session-discovered Discord targets.
+        channels.extend(session_entries)
     return channels
 
 

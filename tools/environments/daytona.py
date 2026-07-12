@@ -26,6 +26,9 @@ from tools.environments.file_sync import (
 
 logger = logging.getLogger(__name__)
 
+_TASK_LABEL = "hermes_task_id"
+_IMAGE_LABEL = "hermes_image"
+
 
 class DaytonaEnvironment(BaseEnvironment):
     """Daytona cloud sandbox execution backend.
@@ -83,45 +86,46 @@ class DaytonaEnvironment(BaseEnvironment):
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
 
-        labels = {"hermes_task_id": task_id}
+        lookup_labels = {_TASK_LABEL: task_id}
+        create_labels = {_TASK_LABEL: task_id, _IMAGE_LABEL: image}
         sandbox_name = f"hermes-{task_id}"
 
         if self._persistent:
+            named = None
             try:
-                self._sandbox = self._daytona.get(sandbox_name)
-                self._sandbox.start()
-                logger.info("Daytona: resumed sandbox %s for task %s",
-                            self._sandbox.id, task_id)
+                named = self._daytona.get(sandbox_name)
             except DaytonaError:
-                self._sandbox = None
+                pass
             except Exception as e:
-                logger.warning("Daytona: failed to resume sandbox for task %s: %s",
+                logger.warning("Daytona: failed to find sandbox for task %s: %s",
                                task_id, e)
-                self._sandbox = None
+            if named is not None:
+                self._sandbox = self._resume_if_image_matches(
+                    named, image=image, task_id=task_id, source="named"
+                )
 
-            if self._sandbox is None:
+            if self._sandbox is None and named is None:
+                legacy = None
                 try:
                     # Daytona SDK >=0.108.0 uses cursor-based pagination and
                     # list() returns an iterator. Offset-based pagination
                     # (page=1) is removed on June 10, 2026.
-                    results = self._daytona.list(labels=labels, limit=1)
+                    results = self._daytona.list(labels=lookup_labels, limit=1)
                     legacy = next(iter(results), None)
-                    if legacy is not None:
-                        self._sandbox = legacy
-                        self._sandbox.start()
-                        logger.info("Daytona: resumed legacy sandbox %s for task %s",
-                                    self._sandbox.id, task_id)
                 except Exception as e:
                     logger.debug("Daytona: no legacy sandbox found for task %s: %s",
                                  task_id, e)
-                    self._sandbox = None
+                if legacy is not None:
+                    self._sandbox = self._resume_if_image_matches(
+                        legacy, image=image, task_id=task_id, source="legacy"
+                    )
 
         if self._sandbox is None:
             self._sandbox = self._daytona.create(
                 CreateSandboxFromImageParams(
                     image=image,
                     name=sandbox_name,
-                    labels=labels,
+                    labels=create_labels,
                     auto_stop_interval=0,
                     resources=resources,
                 )
@@ -150,6 +154,34 @@ class DaytonaEnvironment(BaseEnvironment):
         )
         self._sync_manager.sync(force=True)
         self.init_session()
+
+    def _resume_if_image_matches(self, sandbox, *, image: str,
+                                 task_id: str, source: str):
+        """Resume a sandbox unless its Hermes image label proves it is stale."""
+        labels = getattr(sandbox, "labels", None)
+        recorded_image = labels.get(_IMAGE_LABEL) if isinstance(labels, dict) else None
+        if recorded_image is not None and recorded_image != image:
+            logger.warning(
+                "Daytona: deleting %s sandbox %s for task %s after image "
+                "changed from %s to %s",
+                source, sandbox.id, task_id, recorded_image, image,
+            )
+            self._daytona.delete(sandbox)
+            return None
+
+        sandbox.start()
+        if recorded_image is None:
+            logger.info(
+                "Daytona: resumed unlabeled %s sandbox %s for task %s; "
+                "use explicit teardown to recreate it with image tracking",
+                source, sandbox.id, task_id,
+            )
+        else:
+            logger.info(
+                "Daytona: resumed %s sandbox %s for task %s with image %s",
+                source, sandbox.id, task_id, recorded_image,
+            )
+        return sandbox
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via Daytona SDK."""
@@ -241,7 +273,7 @@ class DaytonaEnvironment(BaseEnvironment):
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
-    def cleanup(self):
+    def cleanup(self, *, force_remove: bool = False):
         with self._lock:
             if self._sandbox is None:
                 return
@@ -258,13 +290,16 @@ class DaytonaEnvironment(BaseEnvironment):
                     logger.warning("Daytona: sync_back failed: %s", e)
 
             try:
-                if self._persistent:
+                if self._persistent and not force_remove:
                     self._sandbox.stop()
                     logger.info("Daytona: stopped sandbox %s (filesystem preserved)",
                                 self._sandbox.id)
                 else:
                     self._daytona.delete(self._sandbox)
-                    logger.info("Daytona: deleted sandbox %s", self._sandbox.id)
+                    logger.info(
+                        "Daytona: deleted sandbox %s (force_remove=%s)",
+                        self._sandbox.id, force_remove,
+                    )
             except Exception as e:
                 logger.warning("Daytona: cleanup failed: %s", e)
             self._sandbox = None

@@ -1695,7 +1695,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* (default False) is forwarded to backends that accept it
-    — currently only ``DockerEnvironment``. The default of False matches
+    — currently Docker and Daytona. The default of False matches
     session-lifecycle semantics: this function is called from
     ``AIAgent.close()`` (TUI session close, gateway session teardown) and the
     per-turn cleanup branch for non-persistent envs, both of which should
@@ -1737,7 +1737,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     try:
         if hasattr(env, 'cleanup'):
             # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
+            # (DockerEnvironment and DaytonaEnvironment; other backends don't).
             import inspect
             sig = inspect.signature(env.cleanup)
             if "force_remove" in sig.parameters:

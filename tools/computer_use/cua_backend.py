@@ -1126,6 +1126,8 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     windows: List[Dict[str, Any]] = []
     for w in raw_windows:
+        if not isinstance(w, dict):
+            continue
         pid, window_id = w.get("pid"), w.get("window_id")
         if pid is None or window_id is None:
             continue
@@ -1133,13 +1135,19 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             pid_int, window_id_int = int(pid), int(window_id)
         except (TypeError, ValueError):
             continue
+        app_name = w.get("app_name", "")
+        title = w.get("title", "")
+        try:
+            z_index = int(w.get("z_index", 0))
+        except (TypeError, ValueError):
+            z_index = 0
         windows.append({
-            "app_name": w.get("app_name", ""),
+            "app_name": app_name if isinstance(app_name, str) else "",
             "pid": pid_int,
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
-            "title": w.get("title", ""),
-            "z_index": w.get("z_index", 0),
+            "title": title if isinstance(title, str) else "",
+            "z_index": z_index,
         })
     return windows
 
@@ -1760,32 +1768,37 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
-        data = out["data"]
         structured = out.get("structuredContent")
-        if isinstance(data, list):
+        data = out.get("data")
+
+        # structuredContent is the canonical MCP payload. Empty lists fall
+        # through so a populated compatibility envelope can still recover.
+        if isinstance(structured, dict):
+            apps = structured.get("apps")
+            if isinstance(apps, list) and apps:
+                return apps
+        if isinstance(data, list) and data:
             return data
         if isinstance(data, dict):
             apps = data.get("apps")
-            if isinstance(apps, list):
+            if isinstance(apps, list) and apps:
                 return apps
-            if isinstance(structured, dict):
-                structured_apps = structured.get("apps")
-                if isinstance(structured_apps, list):
-                    return structured_apps
-            return _apps_from_windows(_windows_from_tool_result(out))
-        if isinstance(structured, dict):
-            apps = structured.get("apps")
-            if isinstance(apps, list):
-                return apps
-            return _apps_from_windows(_windows_from_tool_result(out))
-        # list_apps returns plain text — parse app lines.
+        apps = out.get("apps")
+        if isinstance(apps, list) and apps:
+            return apps
+
+        derived = _apps_from_windows(_windows_from_tool_result(out))
+        if derived:
+            return derived
+
+        # Older list_apps builds return plain text — parse app lines last.
         if isinstance(data, str):
-            apps = []
+            parsed_apps = []
             for line in data.splitlines():
                 m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
                 if m:
-                    apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
-            return apps
+                    parsed_apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
+            return parsed_apps
         return []
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:

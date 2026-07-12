@@ -1493,6 +1493,27 @@ class TestCuaDriverWindowResultShapes:
             "data": {},
         }) == []
 
+    def test_ingest_windows_skips_malformed_members(self):
+        from tools.computer_use.cua_backend import _ingest_windows
+
+        valid = {"app_name": "Terminal", "pid": 100, "window_id": 7}
+
+        assert _ingest_windows([None, "bad", [], valid]) == [  # type: ignore[list-item]
+            {"app_name": "Terminal", "pid": 100, "window_id": 7,
+             "off_screen": False, "title": "", "z_index": 0},
+        ]
+
+    def test_ingest_windows_normalizes_untrusted_display_fields(self):
+        from tools.computer_use.cua_backend import _ingest_windows
+
+        assert _ingest_windows([{
+            "app_name": None, "pid": "100", "window_id": "7",
+            "title": ["bad"], "z_index": "bad",
+        }]) == [{
+            "app_name": "", "pid": 100, "window_id": 7,
+            "off_screen": False, "title": "", "z_index": 0,
+        }]
+
     def test_capture_uses_data_windows_shape(self):
         windows = [
             {"app_name": "Terminal", "pid": 100, "window_id": 7,
@@ -1533,6 +1554,42 @@ class TestCuaDriverWindowResultShapes:
         assert res.ok is True
         assert backend._active_pid == 100
         assert backend._active_window_id == 7
+
+    def test_list_apps_accepts_top_level_windows_without_data(self):
+        windows = [
+            {"app_name": "Terminal", "pid": 100, "window_id": 7},
+            {"app_name": "Notes", "pid": 200, "window_id": 9},
+        ]
+        backend = _make_cua_backend_with_tool_result({
+            "windows": windows,
+            "images": [],
+            "isError": False,
+        })
+
+        assert backend.list_apps() == [
+            {"name": "Terminal", "pid": 100},
+            {"name": "Notes", "pid": 200},
+        ]
+
+    def test_list_apps_accepts_top_level_legacy_windows_without_data(self):
+        windows = [{"app_name": "Terminal", "pid": 100, "window_id": 7}]
+        backend = _make_cua_backend_with_tool_result({
+            "_legacy_windows": windows,
+            "images": [],
+            "isError": False,
+        })
+
+        assert backend.list_apps() == [{"name": "Terminal", "pid": 100}]
+
+    def test_list_apps_prefers_structured_apps_over_data_apps(self):
+        backend = _make_cua_backend_with_tool_result({
+            "structuredContent": {"apps": [{"name": "Canonical", "pid": 1}]},
+            "data": {"apps": [{"name": "Stale", "pid": 2}]},
+            "images": [],
+            "isError": False,
+        })
+
+        assert backend.list_apps() == [{"name": "Canonical", "pid": 1}]
 
     def test_list_apps_derives_apps_from_data_windows_shape(self):
         windows = [

@@ -79,6 +79,25 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _finalize_retry_status_on_success(agent: Any) -> None:
+    """Surface fallback status without breaking a successfully recovered turn."""
+    for method_name in (
+        "_emit_pending_fallback_notice",
+        "_clear_status_buffer",
+    ):
+        method = getattr(agent, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            method()
+        except Exception:
+            logger.debug(
+                "Retry status finalizer %s failed",
+                method_name,
+                exc_info=True,
+            )
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -5093,8 +5112,7 @@ def run_conversation(
                 # switch notice (if a fallback activated this turn) before
                 # dropping the noisy retry buffer, so a provider/model switch
                 # stays visible even when the fallback succeeds.
-                agent._emit_pending_fallback_notice()
-                agent._clear_status_buffer()
+                _finalize_retry_status_on_success(agent)
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,

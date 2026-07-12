@@ -1694,9 +1694,19 @@ class APIServerAdapter(BasePlatformAdapter):
         return payload
 
     @staticmethod
-    def _normalize_session_source(value: Any, *, default: str = "api_server") -> Optional[str]:
+    def _normalize_session_source(
+        value: Any,
+        *,
+        default: str = "api_server",
+        session_id: str = "",
+    ) -> Optional[str]:
         """Accept the small public source taxonomy used by first-party clients."""
         if value is None:
+            normalized_id = str(session_id or "").strip().lower()
+            if normalized_id.startswith("hermes-web-"):
+                return "hermes_web"
+            if normalized_id.startswith("hermes-browser-"):
+                return "hermes_browser"
             return default
         source = str(value).strip().lower()
         if source in {"api_server", "hermes_browser", "hermes_web"}:
@@ -1792,7 +1802,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if db.get_session(session_id):
             return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
 
-        source = self._normalize_session_source(body.get("source"))
+        source = self._normalize_session_source(body.get("source"), session_id=session_id)
         if source is None:
             return web.json_response(
                 _openai_error("Invalid session source", code="invalid_session_source"),

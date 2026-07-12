@@ -181,6 +181,14 @@ async def test_session_api_preserves_hermes_web_source_and_allows_source_correct
         created_payload = await created.json()
         assert created_payload["session"]["source"] == "hermes_web"
 
+        stale_client = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-stale-client", "title": "Hermes Web stale client"},
+        )
+        assert stale_client.status == 201, await stale_client.text()
+        stale_payload = await stale_client.json()
+        assert stale_payload["session"]["source"] == "hermes_web"
+
         legacy_id = session_db.create_session("hermes-web-legacy-source", "api_server")
         corrected = await cli.patch(
             f"/api/sessions/{legacy_id}",

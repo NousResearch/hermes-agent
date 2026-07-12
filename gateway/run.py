@@ -7289,28 +7289,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
+        restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
         # a one-shot signal by the /restart redelivery guard so a missing
         # dedup marker only suppresses a /restart when we KNOW we just came out
         # of a restart cycle (see _is_stale_restart_redelivery).
-        if _restart_notification_pending() or planned_restart_notification_pending:
+        if restart_notification_pending or planned_restart_notification_pending:
             self._booted_from_restart = True
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        # channels for every gateway start EXCEPT chat-originated /restarts
+        # (those already have a precise reply target in .restart_notify.json,
+        # so we avoid leaking it to the home channel as well).
+        # Cold starts (first boot after stop) and terminal/service planned
+        # restarts both get the home-channel notification.
+        if not restart_notification_pending:
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,
                 )
             finally:
-                _clear_planned_restart_notification()
+                if planned_restart_notification_pending:
+                    _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

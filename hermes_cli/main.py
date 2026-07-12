@@ -10165,6 +10165,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                 except EOFError:
                     response = "n"
+                except UnicodeDecodeError:
+                    # input() can raise UnicodeDecodeError when the terminal
+                    # encoding cannot decode the byte sequence (e.g. a
+                    # non-UTF-8 locale on Linux or an embedded terminal).
+                    # Treat it as a skip: the user can run
+                    # 'hermes config migrate' manually.
+                    print(
+                        "  ⚠ Could not read input (UnicodeDecodeError). "
+                        "Run 'hermes config migrate' manually if needed."
+                    )
+                    response = "n"
 
             if response in {"", "y", "yes", "auto"}:
                 print()

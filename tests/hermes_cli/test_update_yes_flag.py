@@ -132,6 +132,48 @@ class TestUpdateYesConfigMigration:
             assert any("configure them now" in p for p in prompts)
 
 
+    def test_unicode_decode_error_in_tty_skips_and_prints_hint(
+        self,
+        mock_run,
+        _mock_which,
+        _mock_missing_env,
+        _mock_missing_cfg,
+        _mock_version,
+        mock_migrate,
+        capsys,
+    ):
+        """UnicodeDecodeError from input() in a TTY must not crash the update.
+
+        When the terminal encoding cannot decode the user's input (e.g. a
+        non-UTF-8 locale or an embedded terminal), input() raises
+        UnicodeDecodeError. Without the fix the exception propagates and
+        aborts the update; with it the command continues via the 'n' skip
+        branch and prints a manual-migration hint.
+        """
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+        mock_migrate.return_value = {"env_added": [], "config_added": []}
+
+        args = SimpleNamespace(yes=False)
+
+        import sys as _sys
+
+        with patch(
+            "builtins.input",
+            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+        ), patch.object(_sys.stdin, "isatty", return_value=True), patch.object(
+            _sys.stdout, "isatty", return_value=True
+        ):
+            # Must not raise; update continues through the skip branch.
+            cmd_update(args)
+
+        captured = capsys.readouterr()
+        assert "hermes config migrate" in captured.out, (
+            "Expected manual-migration hint in output when UnicodeDecodeError occurs"
+        )
+
+
 class TestUpdateYesStashRestore:
     """--yes auto-restores the pre-update autostash without prompting."""
 

@@ -5419,14 +5419,24 @@ def _(rid, params: dict) -> dict:
         # "no eligible session" answer.  ``session.list`` uses a
         # similar over-fetch strategy.
         rows = db.list_sessions_rich(source=None, limit=200, order_by_last_active=True, compact_rows=True)
+        archive_stale = getattr(
+            db, "archive_if_unreachable_local_endpoint", None
+        )
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
                 continue
+            session_id = row.get("id")
+            if (
+                session_id
+                and callable(archive_stale)
+                and archive_stale(session_id)
+            ):
+                continue
             return _ok(
                 rid,
                 {
-                    "session_id": row.get("id"),
+                    "session_id": session_id,
                     "title": row.get("title") or "",
                     "started_at": row.get("started_at") or 0,
                     "source": row.get("source") or "",

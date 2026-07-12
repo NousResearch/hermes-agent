@@ -15,15 +15,18 @@ Key design decisions:
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import random
 import re
+import socket
 import sqlite3
 import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
@@ -2191,6 +2194,77 @@ class SessionDB:
                 (session_id,),
             )
         self._execute_write(_do)
+
+    def archive_if_unreachable_local_endpoint(
+        self,
+        session_id: str,
+        *,
+        connect_timeout: float = 0.25,
+    ) -> bool:
+        """Archive an automatic-resume target whose loopback endpoint is down.
+
+        This is deliberately narrower than provider initialization: only an
+        unended, non-archived row with an explicit loopback ``base_url`` is
+        probed, using a bounded TCP connect. Non-local endpoints, malformed
+        metadata, and reachable local endpoints are left untouched. The row is
+        archived rather than deleted so an explicit resume remains possible.
+
+        Returns ``True`` only when this call archived the row.
+        """
+        if not session_id:
+            return False
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model_config FROM sessions "
+                "WHERE id = ? AND ended_at IS NULL AND archived = 0",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+
+        raw_config = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+        try:
+            config = json.loads(raw_config or "{}")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(config, dict):
+            return False
+
+        base_url = str(config.get("base_url") or "").strip()
+        try:
+            parsed = urlparse(base_url)
+            host = parsed.hostname
+            if parsed.scheme not in {"http", "https"} or not host:
+                return False
+            if host.lower() != "localhost":
+                try:
+                    if not ipaddress.ip_address(host).is_loopback:
+                        return False
+                except ValueError:
+                    return False
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return False
+
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                return False
+        except OSError:
+            pass
+
+        archived_at = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ?, "
+                "end_reason = 'archived_local_endpoint_stale', archived = 1 "
+                "WHERE id = ? AND ended_at IS NULL AND archived = 0",
+                (archived_at, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
 
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
@@ -5236,6 +5310,7 @@ class SessionDB:
         source: str = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
@@ -5252,16 +5327,22 @@ class SessionDB:
             ") m ON m.session_id = s.id "
         )
         with self._lock:
+            archived_clause = "" if include_archived else "s.archived = 0"
             if source:
+                where = "WHERE s.source = ?"
+                if archived_clause:
+                    where += f" AND {archived_clause}"
                 cursor = self._conn.execute(
                     f"{select_with_last_active}"
-                    "WHERE s.source = ? "
+                    f"{where} "
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (source, limit, offset),
                 )
             else:
+                where = f"WHERE {archived_clause} " if archived_clause else ""
                 cursor = self._conn.execute(
                     f"{select_with_last_active}"
+                    f"{where}"
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
@@ -5457,7 +5538,9 @@ class SessionDB:
         Export all sessions (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
         """
-        sessions = self.search_sessions(source=source, limit=100000)
+        sessions = self.search_sessions(
+            source=source, limit=100000, include_archived=True
+        )
         results = []
         for session in sessions:
             messages = self.get_messages(session["id"])

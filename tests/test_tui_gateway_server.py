@@ -6792,6 +6792,26 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     assert resp["result"]["session_id"] is None
 
 
+def test_session_most_recent_skips_archived_unreachable_local_row(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **_kwargs):
+            return [
+                {"id": "stale", "source": "tui", "started_at": 2},
+                {"id": "healthy", "source": "tui", "started_at": 1},
+            ]
+
+        def archive_if_unreachable_local_endpoint(self, session_id):
+            return session_id == "stale"
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "healthy"
+
+
 def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     """Per contract, errors are folded into the null-result shape so
     callers don't have to special-case JSON-RPC error envelopes for

@@ -79,10 +79,17 @@ def test_channel_reconnect_resumes_active_session_file(pty_client, monkeypatch):
     ws, client, token = pty_client
     captured = []
 
-    def fake_resolve(resume=None, sidecar_url=None, profile=None, active_session_file=None):
+    def fake_resolve(
+        resume=None,
+        sidecar_url=None,
+        profile=None,
+        active_session_file=None,
+        automatic_resume=False,
+    ):
         captured.append(
             {
                 "active_session_file": active_session_file,
+                "automatic_resume": automatic_resume,
                 "resume": resume,
                 "sidecar_url": sidecar_url,
             }
@@ -105,7 +112,39 @@ def test_channel_reconnect_resumes_active_session_file(pty_client, monkeypatch):
     assert captured[0]["resume"] is None
     assert captured[0]["active_session_file"]
     assert captured[1]["resume"] == "sess-live"
+    assert captured[1]["automatic_resume"] is True
     assert captured[1]["active_session_file"] == captured[0]["active_session_file"]
+
+
+def test_automatic_reconnect_drops_unreachable_local_resume(monkeypatch, tmp_path):
+    import hermes_cli.main as main_mod
+    import hermes_cli.web_server as ws
+
+    active_file = tmp_path / "active.json"
+    active_file.write_text('{"session_id":"stale"}', encoding="utf-8")
+
+    class _DB:
+        def archive_if_unreachable_local_endpoint(self, session_id):
+            return session_id == "stale"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ws, "_open_session_db_for_profile", lambda _profile: _DB())
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+    )
+
+    _argv, _cwd, env = ws._resolve_chat_argv(
+        resume="stale",
+        active_session_file=str(active_file),
+        automatic_resume=True,
+    )
+
+    assert "HERMES_TUI_RESUME" not in env
+    assert not active_file.exists()
 
 
 def test_fresh_param_ignores_channel_active_session_file(pty_client, monkeypatch):

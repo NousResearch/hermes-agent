@@ -14866,6 +14866,7 @@ def _resolve_chat_argv(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    automatic_resume: bool = False,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -14940,6 +14941,18 @@ def _resolve_chat_argv(
 
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
+
+    if resume and automatic_resume:
+        _resume_db = _open_session_db_for_profile(
+            requested if profile_dir is not None else None
+        )
+        try:
+            if _resume_db.archive_if_unreachable_local_endpoint(resume):
+                resume = None
+                if active_session_file:
+                    _forget_active_session_file(Path(active_session_file))
+        finally:
+            _resume_db.close()
 
     if resume:
         _resume_db = _open_session_db_for_profile(
@@ -15046,6 +15059,7 @@ async def _resolve_chat_argv_async(
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
+    automatic_resume: bool = False,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -15064,6 +15078,8 @@ async def _resolve_chat_argv_async(
     }
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if automatic_resume:
+        kwargs["automatic_resume"] = True
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
@@ -15814,6 +15830,7 @@ async def pty_ws(ws: WebSocket) -> None:
         "on",
     }
     active_session_file: Optional[Path] = None
+    automatic_resume = False
 
     if channel:
         active_session_file = _active_session_file_for_channel(ws.app, channel)
@@ -15822,6 +15839,7 @@ async def pty_ws(ws: WebSocket) -> None:
             _forget_active_session_file(active_session_file)
         elif not resume:
             resume = _read_active_session_file(active_session_file)
+            automatic_resume = bool(resume)
 
     resolve_kwargs = {
         "resume": resume,
@@ -15830,6 +15848,8 @@ async def pty_ws(ws: WebSocket) -> None:
     }
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+    if automatic_resume:
+        resolve_kwargs["automatic_resume"] = True
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)

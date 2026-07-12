@@ -1161,8 +1161,21 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
         from hermes_state import SessionDB
 
         db = SessionDB()
-        sessions = db.search_sessions(source=source, limit=1)
-        return sessions[0]["id"] if sessions else None
+        # A dead loopback provider left behind by an unclean TUI exit must not
+        # become an automatic resume target. Over-fetch a bounded candidate
+        # window so archiving one stale row can fall through to the next MRU.
+        sessions = db.search_sessions(source=source, limit=20)
+        archive_stale = getattr(
+            db, "archive_if_unreachable_local_endpoint", None
+        )
+        for session in sessions:
+            session_id = session.get("id")
+            if not session_id:
+                continue
+            if callable(archive_stale) and archive_stale(session_id):
+                continue
+            return session_id
+        return None
     except Exception:
         pass
     finally:

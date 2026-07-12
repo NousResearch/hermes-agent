@@ -355,6 +355,10 @@ export interface SessionInfo {
   /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
   handoff_state?: null | string
   handoff_error?: null | string
+  /** Gateway presentation path for messaging-born sessions — server/channel/
+   *  thread names (e.g. "Daemonarchy / #general / My Thread"). Searchable so
+   *  channel/thread names are findable like titles. */
+  display_name?: null | string
   /** Owning profile name, set by the cross-profile aggregator
    *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
    *  which the UI treats as the default profile. */
@@ -771,6 +775,9 @@ export interface SessionSearchResult {
   source: string | null
   /** Session title when the hit came from the title-match lane. */
   title?: string | null
+  /** Gateway presentation path (server/channel/thread names) when the hit
+   *  came from the title/channel-match lane. */
+  display_name?: string | null
 }
 
 export interface SessionSearchResponse {

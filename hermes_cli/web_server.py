@@ -4292,22 +4292,26 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                     },
                 )
 
-            # Title matches second: titles are human-assigned intent (`/title`
-            # on any platform, desktop rename, auto-titling), so a title hit
-            # outranks a message-content hit. This makes a session titled from
-            # another surface findable in desktop search even after it scrolls
-            # out of the sidebar's loaded window.
+            # Title/channel/platform matches second: titles are human-assigned
+            # intent (`/title` on any platform, desktop rename, auto-titling),
+            # and the display path carries the platform channel/thread names
+            # (e.g. "Daemonarchy / #general / My Thread"), so these hits
+            # outrank message-content hits. This is what makes "general
+            # discord" find that channel's sessions from the desktop app even
+            # when no title says so.
             for row in db.search_sessions_by_title(
                 q, limit=safe_limit, include_archived=True
             ):
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 title = (row.get("title") or "").strip()
+                display_name = (row.get("display_name") or "").strip()
                 add_lineage_result(
                     sid,
                     {
-                        "snippet": preview or title,
+                        "snippet": preview or title or display_name,
                         "title": title,
+                        "display_name": display_name or None,
                         "role": None,
                         "source": row.get("source"),
                         "model": row.get("model"),

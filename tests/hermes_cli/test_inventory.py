@@ -186,7 +186,18 @@ def test_build_models_payload_returns_expected_shape():
          "source": "built-in"},
     ]
     ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
-    with _list_auth_returning(rows):
+    raw_config = {
+        "moa": {
+            "presets": {
+                "default": {"enabled": True},
+            },
+        },
+    }
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value=raw_config),
+        patch("hermes_cli.config.load_config", return_value=raw_config),
+    ):
         payload = build_models_payload(ctx)
     assert set(payload.keys()) == {"providers", "model", "provider"}
     assert payload["model"] == "m1"
@@ -339,7 +350,8 @@ def test_pricing_can_force_fresh_nous_tier():
 def test_include_unconfigured_appends_canonical_skeletons():
     """include_unconfigured=True adds CANONICAL_PROVIDERS rows that
     list_authenticated_providers didn't emit. Skeleton rows have empty
-    models and source='canonical'."""
+    models and source='canonical'. MoA is a virtual routing mode, not a
+    canonical provider, so it is excluded — see issue #63353."""
     rows = [
         {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
          "total_models": 1, "is_current": True, "is_user_defined": False,
@@ -349,11 +361,13 @@ def test_include_unconfigured_appends_canonical_skeletons():
     with _list_auth_returning(rows):
         payload = build_models_payload(ctx, include_unconfigured=True)
     # All canonical providers other than openrouter should appear as
-    # skeleton rows.
+    # skeleton rows. MoA is virtual/opt-in and excluded from unconfigured.
     from hermes_cli.models import CANONICAL_PROVIDERS
 
     seen_slugs = {r["slug"] for r in payload["providers"]}
     for entry in CANONICAL_PROVIDERS:
+        if entry.slug == "moa":
+            continue  # virtual; only shown when explicitly configured
         assert entry.slug in seen_slugs, f"missing {entry.slug}"
     # Skeletons have empty models and source='canonical'.
     skeletons = [r for r in payload["providers"]
@@ -601,7 +615,8 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     """Combined picker call: include_unconfigured + picker_hints +
     canonical_order is the production TUI shape. Verify the result
     has CANONICAL_PROVIDERS in declaration order, hints applied,
-    custom rows trailing.
+    custom rows trailing. MoA is excluded from unconfigured skeletons
+    (virtual, opt-in only — issue #63353).
     """
     from hermes_cli.models import CANONICAL_PROVIDERS
 
@@ -621,8 +636,12 @@ def test_canonical_order_with_unconfigured_preserves_full_universe():
     slugs = [r["slug"] for r in payload["providers"]]
     # First row: first canonical provider in declaration order.
     assert slugs[0] == CANONICAL_PROVIDERS[0].slug
-    # Custom row trails canonical universe.
-    assert slugs.index("custom:Ollama") >= len(CANONICAL_PROVIDERS)
+    # Custom row trails all visible canonical rows. MoA is virtual/opt-in
+    # so it is excluded from the unconfigured skeleton set.
+    visible_canonical_count = sum(
+        1 for e in CANONICAL_PROVIDERS if e.slug != "moa"
+    )
+    assert slugs.index("custom:Ollama") >= visible_canonical_count
 
 
 # ─── Integration: end-to-end through real load_picker_context ──────────

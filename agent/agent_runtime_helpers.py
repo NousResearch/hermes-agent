@@ -2239,7 +2239,65 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             config_context_length=getattr(agent, "_config_context_length", None),
             custom_providers=_sm_custom_providers,
         )
-        agent.context_compressor.update_model(
+
+        # Set the new configured threshold BEFORE update_model(), which owns
+        # all derived budget recomputation. Direct callers that construct a
+        # bare agent remain compatible: their compressor's configured value is
+        # captured as the raw global threshold on the first switch.
+        from agent.context_compressor import ContextCompressor
+        _sm_compressor = agent.context_compressor
+        if isinstance(_sm_compressor, ContextCompressor):
+            _sm_global_threshold = getattr(
+                agent, "_compression_global_threshold", None,
+            )
+            if _sm_global_threshold is None:
+                _sm_global_threshold = getattr(
+                    _sm_compressor,
+                    "_configured_threshold_percent",
+                    _sm_compressor.threshold_percent,
+                )
+                agent._compression_global_threshold = _sm_global_threshold
+
+            _sm_effective_threshold = _sm_global_threshold
+            try:
+                from agent.agent_init import _resolve_compression_threshold
+                from agent.auxiliary_client import (
+                    _compression_threshold_for_model,
+                    _is_codex_gpt54_or_gpt55,
+                    _is_codex_spark,
+                )
+
+                _sm_model_threshold = _compression_threshold_for_model(
+                    agent.model,
+                    provider=agent.provider,
+                    allow_codex_gpt55_autoraise=getattr(
+                        agent, "_codex_gpt55_autoraise", True,
+                    ),
+                    api_mode=agent.api_mode,
+                    context_length=new_context_length,
+                )
+                _sm_effective_threshold, _ = _resolve_compression_threshold(
+                    _sm_global_threshold,
+                    _sm_model_threshold,
+                    model=agent.model,
+                    is_codex_autoraise=(
+                        _is_codex_gpt54_or_gpt55(
+                            agent.model,
+                            agent.provider,
+                            api_mode=agent.api_mode,
+                            context_length=new_context_length,
+                        )
+                        or _is_codex_spark(agent.model, agent.provider)
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "compression threshold resolution skipped on switch_model",
+                    exc_info=True,
+                )
+            _sm_compressor._configured_threshold_percent = _sm_effective_threshold
+
+        _sm_compressor.update_model(
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
@@ -2247,39 +2305,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
-        # Re-derive any per-model/route threshold auto-raise for the new
-        # model (gpt-5.4/5.5/5.6 family on codex_responses, Arcee
-        # Trinity, etc.) and update the compressor's configured threshold
-        # percent so a subsequent switch correctly drops back to the
-        # user's global threshold (if no auto-raise applies) rather than
-        # keeping a stale auto-raised value from the previous model.
-        try:
-            from agent.auxiliary_client import _compression_threshold_for_model
-            _sm_new_threshold = _compression_threshold_for_model(
-                agent.model, provider=agent.provider,
-                api_mode=agent.api_mode,
-            )
-            if _sm_new_threshold is not None:
-                agent.context_compressor._configured_threshold_percent = _sm_new_threshold
-                agent.context_compressor.threshold_percent = (
-                    agent.context_compressor._effective_threshold_percent(
-                        new_context_length, _sm_new_threshold,
-                    )
-                )
-                agent.context_compressor.threshold_tokens = (
-                    agent.context_compressor._compute_threshold_tokens(
-                        new_context_length,
-                        agent.context_compressor.threshold_percent,
-                        agent.context_compressor.max_tokens,
-                    )
-                )
-                _sm_target_tokens = int(
-                    agent.context_compressor.threshold_tokens
-                    * agent.context_compressor.summary_target_ratio
-                )
-                agent.context_compressor.tail_token_budget = _sm_target_tokens
-        except Exception:
-            pass
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read

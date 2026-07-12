@@ -115,7 +115,9 @@ def _make_direct_start_agent(
         )
 
 
-def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
+def _make_agent_with_compressor(
+    config_context_length=None, global_threshold=0.50,
+) -> AIAgent:
     """Build a minimal AIAgent with a context_compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
 
@@ -134,7 +136,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     # Context compressor with primary model values
     compressor = ContextCompressor(
         model="primary-model",
-        threshold_percent=0.50,
+        threshold_percent=global_threshold,
         base_url="https://openrouter.ai/api/v1",
         api_key="sk-primary",
         provider="openrouter",
@@ -1022,53 +1024,63 @@ def test_direct_start_runtime_first_provider_names_require_explicit_custom_prefi
         assert custom_agent.context_compressor.config_context_length == 1_048_576
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
-def test_switch_model_applies_codex_autoraise_to_custom_codex_responses(mock_ctx_len):
-    """Switching to gpt-5.6-sol on a codex_responses custom provider must
-    apply the 0.85 auto-raise AND update _configured_threshold_percent so
-    a subsequent switch to a non-Codex model drops back to the config
-    default."""
-    agent = _make_agent_with_compressor(config_context_length=None)
-    # Start with a non-Codex model (threshold 0.50)
-    agent.context_compressor.threshold_percent = 0.50
-    agent.context_compressor._configured_threshold_percent = 0.50
-    agent.context_compressor.threshold_tokens = int(128_000 * 0.50)
-    agent.context_compressor.tail_token_budget = int(agent.context_compressor.threshold_tokens * 0.50)
+@patch(
+    "agent.model_metadata.get_model_context_length",
+    side_effect=[272_000, 340_000],
+)
+def test_switch_model_threshold_round_trip(mock_ctx_len):
+    """A custom 272K Codex route raises, then GLM restores the global value."""
+    # Deliberately omit the new agent attributes: direct callers that construct
+    # a bare agent must capture the compressor's configured 0.75 on first use.
+    agent = _make_agent_with_compressor(
+        config_context_length=None, global_threshold=0.75,
+    )
 
-    # Switch to a codex_responses custom provider with gpt-5.6-sol
     agent.switch_model(
-        "gpt-5.6-sol", "custom",
-        api_key="sk-sudo", base_url="https://coding.sudoai.cc/v1",
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-sudo",
+        base_url="https://coding.sudoai.cc/v1",
         api_mode="codex_responses",
     )
 
-    # Compressor should now have the auto-raised 0.85 threshold
-    assert agent.context_compressor.threshold_percent >= 0.75  # floor applies
+    assert agent._compression_global_threshold == 0.75
     assert agent.context_compressor._configured_threshold_percent == 0.85
+    assert agent.context_compressor.threshold_percent == 0.85
     assert agent.context_compressor.threshold_tokens == int(272_000 * 0.85)
 
-
-@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
-def test_switch_model_drops_autoraise_on_non_codex_switch(mock_ctx_len):
-    """A non-Codex switch restores the configured threshold."""
-    agent = _make_agent_with_compressor(config_context_length=None)
-    # Start as if we were already on a Codex model with 0.85 auto-raise
-    agent.model = "gpt-5.6-sol"
-    agent.provider = "openai-codex"
-    agent.api_mode = "codex_responses"
-    agent.context_compressor.threshold_percent = 0.85
-    agent.context_compressor._configured_threshold_percent = 0.85
-    agent.context_compressor.threshold_tokens = 100_000
-
-    # Switch to GLM-5.2-heavy on chat_completions
     agent.switch_model(
-        "glm-5.2-heavy", "custom",
-        api_key="sk-sudo", base_url="https://coding.sudoai.cc/v1",
+        "glm-5.2-heavy",
+        "custom",
+        api_key="sk-sudo",
+        base_url="https://coding.sudoai.cc/v1",
         api_mode="chat_completions",
     )
 
-    # No model-specific override applies. update_model derives the new
-    # threshold from the raw configured value and applies only the existing
-    # small-context floor for this 272K model.
+    assert agent.context_compressor.context_length == 340_000
+    assert agent.context_compressor._configured_threshold_percent == 0.75
+    assert agent.context_compressor.threshold_percent == 0.75
+    assert agent.context_compressor.threshold_tokens == int(340_000 * 0.75)
+    assert mock_ctx_len.call_count == 2
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
+def test_switch_model_codex_autoraise_respects_opt_out(mock_ctx_len):
+    agent = _make_agent_with_compressor(
+        config_context_length=None, global_threshold=0.75,
+    )
+    agent._compression_global_threshold = 0.75
+    agent._codex_gpt55_autoraise = False
+
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-sudo",
+        base_url="https://coding.sudoai.cc/v1",
+        api_mode="codex_responses",
+    )
+
+    assert agent.context_compressor._configured_threshold_percent == 0.75
     assert agent.context_compressor.threshold_percent == 0.75
     assert agent.context_compressor.threshold_tokens == int(272_000 * 0.75)
+    mock_ctx_len.assert_called_once()

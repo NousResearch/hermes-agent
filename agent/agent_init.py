@@ -1756,6 +1756,10 @@ def init_agent(
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    # Preserve the user's raw global setting before any route-specific
+    # autoraise. Live model switches must always derive from this value rather
+    # than from the compressor's current (possibly raised or floored) value.
+    agent._compression_global_threshold = compression_threshold
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
     # raise to 85% (the Codex backend caps both families at 272K, so the
     # default 50% would compact at ~136K — half the usable context). Gated by
@@ -1767,40 +1771,11 @@ def init_agent(
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    agent._codex_gpt55_autoraise = _codex_gpt55_autoraise
     _codex_gpt55_autoraise_notice = str(
         _compression_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
     agent._compression_threshold_autoraised = None
-    try:
-        from agent.auxiliary_client import (
-            _compression_threshold_for_model as _cthresh_fn,
-            _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
-            _is_codex_spark as _is_codex_spark_fn,
-        )
-        _model_cthresh = _cthresh_fn(
-            agent.model,
-            agent.provider,
-            allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
-            api_mode=getattr(agent, "api_mode", None),
-        )
-        # The Codex autoraises (gpt-5.4/5.5 272K family and gpt-5.3-codex-spark)
-        # apply only when they RAISE (never lower a user's higher global
-        # threshold). The notice is populated only when it actually fires, and
-        # carries the model slug so the banner names the right family. Arcee
-        # Trinity keeps its long-standing unconditional behaviour.
-        compression_threshold, agent._compression_threshold_autoraised = (
-            _resolve_compression_threshold(
-                compression_threshold,
-                _model_cthresh,
-                model=agent.model,
-                is_codex_autoraise=(
-                    _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider, api_mode=getattr(agent, "api_mode", None))
-                    or _is_codex_spark_fn(agent.model, agent.provider)
-                ),
-            )
-        )
-    except Exception:
-        pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
@@ -2188,6 +2163,43 @@ def init_agent(
     agent._config_context_length = _config_context_length
 
     agent._ensure_lmstudio_runtime_loaded(_config_context_length)
+    # Resolve the startup override only after explicit custom-provider context
+    # capabilities have been loaded. ``codex_responses`` is a wire protocol,
+    # not proof that a custom endpoint has the 272K Codex cap.
+    try:
+        from agent.auxiliary_client import (
+            _compression_threshold_for_model as _cthresh_fn,
+            _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
+            _is_codex_spark as _is_codex_spark_fn,
+        )
+        _model_cthresh = _cthresh_fn(
+            agent.model,
+            agent.provider,
+            allow_codex_gpt55_autoraise=agent._codex_gpt55_autoraise,
+            api_mode=getattr(agent, "api_mode", None),
+            context_length=_config_context_length,
+        )
+        # The Codex autoraises apply only when they RAISE (never lower a
+        # user's higher global threshold). Arcee Trinity keeps its long-standing
+        # unconditional behaviour.
+        compression_threshold, agent._compression_threshold_autoraised = (
+            _resolve_compression_threshold(
+                agent._compression_global_threshold,
+                _model_cthresh,
+                model=agent.model,
+                is_codex_autoraise=(
+                    _is_codex_gpt54_or_gpt55_fn(
+                        agent.model,
+                        agent.provider,
+                        api_mode=getattr(agent, "api_mode", None),
+                        context_length=_config_context_length,
+                    )
+                    or _is_codex_spark_fn(agent.model, agent.provider)
+                ),
+            )
+        )
+    except Exception:
+        pass
 
 
 

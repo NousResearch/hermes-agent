@@ -366,16 +366,20 @@ _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
-def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None) -> bool:
-    """True for gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex OAuth / api_mode=codex_responses backends.
+def _is_codex_gpt54_or_gpt55(
+    model: Optional[str],
+    provider: Optional[str] = None,
+    *,
+    api_mode: Optional[str] = None,
+    context_length: Optional[int] = None,
+) -> bool:
+    """True for 272K-capped gpt-5.4 / gpt-5.5 / gpt-5.6 routes.
 
-    Matches (a) the Codex OAuth route (provider ``openai-codex``), and
-    (b) any custom provider whose ``api_mode`` is ``codex_responses``
-    (e.g. ``custom:sudo`` proxying gpt-5.6 via the Codex endpoint
-    family, which shares the same 272K cap).  Clients speaking
-    ``chat_completions`` or other API families keep the user's default
-    compaction threshold — those expose a larger context window for the
-    same slug.
+    The built-in ``openai-codex`` route is known to use the Codex OAuth
+    backend and remains authoritative without a separate capability hint.
+    Custom providers must both speak ``codex_responses`` and resolve an
+    explicit 272K context window; the wire protocol alone does not prove the
+    endpoint has the Codex cap.
 
     ``-pro`` variants and dated snapshots are matched via prefix so the
     override tracks every 272K-capped family (5.4, 5.5, 5.6 sol/terra/
@@ -384,12 +388,14 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
     ``compression.codex_gpt55_autoraise`` config key.)
     """
     prov = (provider or "").strip().lower()
-    # All codex_responses speakers (including custom:sudo proxying
-    # the Codex endpoint) share the same 272K Codex cap — give them
-    # the same auto-raise.  chat_completions speakers (OpenRouter,
-    # direct API, etc.) expose larger windows and must not match.
-    if prov != "openai-codex" and (api_mode or "").strip().lower() != "codex_responses":
-        return False
+    if prov != "openai-codex":
+        if (api_mode or "").strip().lower() != "codex_responses":
+            return False
+        try:
+            if int(context_length or 0) != 272_000:
+                return False
+        except (TypeError, ValueError):
+            return False
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     return (
         bare == "gpt-5.4"
@@ -447,6 +453,7 @@ def _compression_threshold_for_model(
     *,
     allow_codex_gpt55_autoraise: bool = True,
     api_mode: Optional[str] = None,
+    context_length: Optional[int] = None,
 ) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 
@@ -456,13 +463,11 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.4 / gpt-5.5 / gpt-5.6 on the Codex API family →
-        ``codex_responses`` (``openai-codex`` or custom provider with that
-        api_mode) → 0.85.  All codex_responses speakers share the 272K
-        cap; chat_completions speakers (OpenRouter, direct API) expose
-        larger windows and keep the user's default.  Gated by
-        ``allow_codex_gpt55_autoraise`` (historical config-key name kept
-        for backward compatibility).
+      - gpt-5.4 / gpt-5.5 / gpt-5.6 → 0.85 on the known ``openai-codex``
+        route, or on a custom ``codex_responses`` route whose explicit or
+        resolved context length is 272K. The protocol alone is not a
+        capability signal. Gated by ``allow_codex_gpt55_autoraise``
+        (historical config-key name kept for backward compatibility).
       - gpt-5.3-codex-spark on the Codex OAuth route → 0.70, because the model
         has a native 128K window and the default 50% trigger would compact at
         ~64K — wasting half the usable context. Not gated by the gpt-5.5
@@ -474,7 +479,12 @@ def _compression_threshold_for_model(
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider, api_mode=api_mode):
+    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(
+        model,
+        provider,
+        api_mode=api_mode,
+        context_length=context_length,
+    ):
         return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
     if _is_codex_spark(model, provider):
         return _CODEX_SPARK_COMPACTION_THRESHOLD

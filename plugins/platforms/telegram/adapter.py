@@ -3073,6 +3073,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # PTB uses a separate media_write_timeout for file-upload endpoints
+                # (sendDocument, sendPhoto, sendMediaGroup, etc.). Without this,
+                # large uploads die at PTB's 20s default regardless of write_timeout.
+                # A 36MB file needs ~30-120s on typical residential uplinks.
+                "media_write_timeout": _env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 180.0),
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's

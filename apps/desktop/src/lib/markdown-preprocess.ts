@@ -1,4 +1,5 @@
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
+import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
@@ -125,6 +126,38 @@ function isUrlOnlyBlock(lines: string[]): boolean {
   return nonEmpty.length > 0 && nonEmpty.every(line => URL_ONLY_LINE_RE.test(line))
 }
 
+// A complete markdown image embed: `![alt](src)`, `![alt](<src>)`, or either
+// with a trailing quoted title. `src` stays on one line; the bare (unbracketed)
+// form may contain spaces (common in Windows paths) but no parens — matching
+// stops at the first `)` like the markdown parser would.
+const IMAGE_EMBED_RE = /!\[[^\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^()\n]+?))(?:\s+"[^"\n]*")?\s*\)/g
+
+// Srcs that point at the local filesystem rather than the web: file:// URLs,
+// Windows drive paths (C:\ or C:/), UNC shares (\\server), POSIX absolute
+// paths, and ~/ home paths. Relative paths stay untouched — they have no
+// resolvable base in a chat transcript.
+const LOCAL_FILE_SRC_RE = /^(?:file:\/\/|[a-z]:[\\/]|\\\\|\/(?!\/)|~[\\/])/i
+
+// Markdown images whose src is a local file path can never render as <img>:
+// Streamdown's sanitize pass strips non-http(s)/data image srcs and its harden
+// pass then replaces the src-less node with an "[Image blocked: …]"
+// placeholder (issue #38786 — image_generate and other tools return host
+// paths, which models embed verbatim). Rewrite complete local-path image
+// embeds to the same `#media:` link form MEDIA: tags use; MarkdownLink renders
+// those as MediaAttachment, which loads the file through the desktop FS
+// bridge (and falls back to an open-file link for non-image files).
+function rewriteLocalImageEmbeds(text: string): string {
+  return text.replace(IMAGE_EMBED_RE, (match, angled: string | undefined, bare: string | undefined) => {
+    const src = (angled ?? bare ?? '').trim()
+
+    if (!LOCAL_FILE_SRC_RE.test(src)) {
+      return match
+    }
+
+    return `[${mediaDisplayLabel(src)}](${mediaMarkdownHref(src)})`
+  })
+}
+
 function autoLinkRawUrls(text: string): string {
   return text.replace(RAW_URL_RE, (url: string, index: number) => {
     const previous = text[index - 1] || ''
@@ -145,7 +178,9 @@ function normalizeVisibleProse(text: string): string {
       part.startsWith('`')
         ? part
         : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            rewriteLocalImageEmbeds(part.replace(/`{3,}/g, ''))
+              .replace(LOCAL_PREVIEW_URL_RE, '$1')
+              .replace(CITATION_MARKER_RE, '')
           )
     )
     .join('')

@@ -45,6 +45,13 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
+  // Windows drive paths (C:\… or C:/…) parse as URLs with a "c:" protocol,
+  // so the URL branch would return everything after the drive letter as the
+  // name — treat them as plain filesystem paths instead.
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
+
   try {
     const url = new URL(path)
 
@@ -55,7 +62,10 @@ export function mediaName(path: string): string {
 }
 
 export function mediaMarkdownHref(path: string): string {
-  return `#media:${encodeURIComponent(path)}`
+  // encodeURIComponent leaves ( and ) alone, but an unescaped paren ends a
+  // markdown link destination early — paths like "img (1).png" would split
+  // the link. %28/%29 still round-trip through decodeURIComponent.
+  return `#media:${encodeURIComponent(path).replace(/\(/g, '%28').replace(/\)/g, '%29')}`
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
@@ -104,7 +114,11 @@ export function filePathFromMediaPath(path: string): string {
   }
 
   try {
-    return decodeURIComponent(new URL(path).pathname)
+    const pathname = decodeURIComponent(new URL(path).pathname)
+
+    // Windows file URLs parse with a leading slash before the drive letter
+    // (file:///C:/… → /C:/…), which no Windows fs API accepts — strip it.
+    return /^\/[a-z]:[\\/]/i.test(pathname) ? pathname.slice(1) : pathname
   } catch {
     return path.replace(/^file:\/\//, '')
   }

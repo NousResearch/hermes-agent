@@ -202,6 +202,75 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
 
+  it('rewrites windows-path image embeds to media links', () => {
+    const output = preprocessMarkdown(
+      'Here you go!\n\n![cute kitten](C:\\Users\\me\\AppData\\Local\\hermes\\cache\\images\\generated.jpg)'
+    )
+
+    expect(output).toContain(
+      '[Image: generated.jpg](#media:C%3A%5CUsers%5Cme%5CAppData%5CLocal%5Chermes%5Ccache%5Cimages%5Cgenerated.jpg)'
+    )
+    expect(output).not.toContain('![cute kitten]')
+  })
+
+  it('rewrites windows-path image embeds containing spaces', () => {
+    const output = preprocessMarkdown('![shot](C:\\Users\\John Smith\\Pictures\\screen shot.png)')
+
+    expect(output).toContain(
+      '[Image: screen shot.png](#media:C%3A%5CUsers%5CJohn%20Smith%5CPictures%5Cscreen%20shot.png)'
+    )
+  })
+
+  it('rewrites posix, file://, UNC, and home-path image embeds', () => {
+    expect(preprocessMarkdown('![cat](/home/me/.hermes/cache/images/cat.png)')).toContain(
+      '[Image: cat.png](#media:%2Fhome%2Fme%2F.hermes%2Fcache%2Fimages%2Fcat.png)'
+    )
+    expect(preprocessMarkdown('![cat](file:///tmp/cat.png)')).toContain(
+      '[Image: cat.png](#media:file%3A%2F%2F%2Ftmp%2Fcat.png)'
+    )
+    expect(preprocessMarkdown('![cat](\\\\server\\share\\cat.png)')).toContain(
+      '[Image: cat.png](#media:%5C%5Cserver%5Cshare%5Ccat.png)'
+    )
+    expect(preprocessMarkdown('![cat](~/Pictures/cat.png)')).toContain(
+      '[Image: cat.png](#media:~%2FPictures%2Fcat.png)'
+    )
+  })
+
+  it('rewrites angle-bracketed local image srcs and drops quoted titles', () => {
+    expect(preprocessMarkdown('![cat](</tmp/my file.png>)')).toContain(
+      '[Image: my file.png](#media:%2Ftmp%2Fmy%20file.png)'
+    )
+    expect(preprocessMarkdown('![cat](/tmp/cat.png "a title")')).toContain('[Image: cat.png](#media:%2Ftmp%2Fcat.png)')
+  })
+
+  it('rewrites local non-image files in image position to file links', () => {
+    expect(preprocessMarkdown('![doc](C:\\files\\report.pdf)')).toContain(
+      '[File: report.pdf](#media:C%3A%5Cfiles%5Creport.pdf)'
+    )
+  })
+
+  it('leaves web, data, relative, and protocol-relative image embeds untouched', () => {
+    expect(preprocessMarkdown('![k](https://cdn.example/x.png)')).toContain('![k](https://cdn.example/x.png)')
+    expect(preprocessMarkdown('![k](data:image/png;base64,AAA)')).toContain('![k](data:image/png;base64,AAA)')
+    expect(preprocessMarkdown('![k](images/cat.png)')).toContain('![k](images/cat.png)')
+    expect(preprocessMarkdown('![k](//cdn.example/x.png)')).toContain('![k](//cdn.example/x.png)')
+  })
+
+  it('leaves local image embeds inside code untouched', () => {
+    expect(preprocessMarkdown('use `![k](C:\\x\\y.png)` syntax')).toContain('`![k](C:\\x\\y.png)`')
+
+    const fenced = preprocessMarkdown('```md\n![k](C:\\x\\y.png)\n```')
+
+    expect(fenced).toContain('![k](C:\\x\\y.png)')
+    expect(fenced).not.toContain('#media:')
+  })
+
+  it('does not rewrite an incomplete streaming image embed', () => {
+    const output = preprocessMarkdown('Here you go!\n\n![cute kitten](C:\\Users\\me\\AppData\\Local\\her')
+
+    expect(output).not.toContain('#media:')
+  })
+
   it('handles a fenced block larger than V8 spread-argument limit', () => {
     // A single huge code block (e.g. a logged minified bundle) used to throw
     // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.

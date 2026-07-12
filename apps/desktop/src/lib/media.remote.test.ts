@@ -9,7 +9,9 @@ import {
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isRemoteGateway,
-  mediaExternalUrl
+  mediaExternalUrl,
+  mediaMarkdownHref,
+  mediaName
 } from './media'
 
 describe('isRemoteGateway', () => {
@@ -40,6 +42,34 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
+
+  it('strips the leading slash from a Windows drive file:// URL', () => {
+    expect(filePathFromMediaPath('file:///C:/Users/me/cat.png')).toBe('C:/Users/me/cat.png')
+    expect(filePathFromMediaPath('file:///C:/Users/John%20Smith/cat.png')).toBe('C:/Users/John Smith/cat.png')
+  })
+
+  it('passes through a plain Windows path', () => {
+    expect(filePathFromMediaPath('C:\\Users\\me\\cat.png')).toBe('C:\\Users\\me\\cat.png')
+  })
+})
+
+describe('mediaName', () => {
+  it('takes the basename of a Windows drive path', () => {
+    expect(mediaName('C:\\Users\\me\\cache\\images\\generated.jpg')).toBe('generated.jpg')
+    expect(mediaName('C:/Users/me/cache/images/generated.jpg')).toBe('generated.jpg')
+  })
+
+  it('takes the basename of posix paths and URLs', () => {
+    expect(mediaName('/tmp/cat.png')).toBe('cat.png')
+    expect(mediaName('file:///tmp/cat.png')).toBe('cat.png')
+    expect(mediaName('https://cdn.example/a/b/cat.png')).toBe('cat.png')
+  })
+})
+
+describe('mediaMarkdownHref', () => {
+  it('percent-encodes parens so the markdown link destination stays intact', () => {
+    expect(mediaMarkdownHref('/tmp/img (1).png')).toBe('#media:%2Ftmp%2Fimg%20%281%29.png')
   })
 })
 

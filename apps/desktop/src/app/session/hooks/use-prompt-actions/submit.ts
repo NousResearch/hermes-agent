@@ -202,7 +202,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
-          startingStoredSessionId
+          expectedStoredSessionId
         )
 
       // After sync rewrites refs, refresh the optimistic message in place so the
@@ -214,7 +214,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             ...state,
             messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
-          startingStoredSessionId
+          expectedStoredSessionId
         )
 
       const dropOptimistic = (sid: null | string) => {
@@ -233,7 +233,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             awaitingResponse: false,
             pendingBranchGroup: null
           }),
-          startingStoredSessionId
+          expectedStoredSessionId
         )
       }
 

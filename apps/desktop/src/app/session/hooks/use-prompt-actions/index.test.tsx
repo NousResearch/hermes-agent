@@ -70,7 +70,7 @@ function Harness({
   busyRef?: MutableRefObject<boolean>
   getRouteToken?: () => string
   onReady: (handle: HarnessHandle) => void
-  onSeedState?: (state: Record<string, unknown>) => void
+  onSeedState?: (state: Record<string, unknown>, storedSessionId?: string | null) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -121,11 +121,11 @@ function Harness({
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
-    updateSessionState: (_sessionId, updater) => {
+    updateSessionState: (_sessionId, updater, storedSessionId) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
-      onSeedState?.(next)
+      onSeedState?.(next, storedSessionId)
 
       return next as never
     }
@@ -1433,6 +1433,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       return {} as never
     })
 
+    let seededStoredSessionId: string | null | undefined
     let handle: HarnessHandle | null = null
     render(
       <Harness
@@ -1441,6 +1442,9 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
         createBackendSessionForSend={createBackendSessionForSend}
         getRouteToken={() => routeToken}
         onReady={h => (handle = h)}
+        onSeedState={(_state, storedSessionId) => {
+          seededStoredSessionId = storedSessionId
+        }}
         refreshSessions={async () => undefined}
         requestGateway={requestGateway}
         selectedStoredSessionIdRef={selectedStoredSessionIdRef}
@@ -1454,6 +1458,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     releaseAttach()
 
     expect(await submitting).toBe(true)
+    expect(seededStoredSessionId).toBe(createdStoredSessionId)
     expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), 1_800_000)
   })
 

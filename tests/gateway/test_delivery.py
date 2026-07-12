@@ -421,3 +421,100 @@ async def test_save_failure_during_truncation_raises_for_non_chunking_adapter(tm
         await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
 
 
+# ---------------------------------------------------------------------------
+# Multi-agent delivery context (PR #62944 — single gateway, multiple agents)
+# ---------------------------------------------------------------------------
+
+
+class TestDeliveryActivatesAgentProfile:
+    """``DeliveryRouter.deliver`` must run each target's send inside that target's
+    routed ``AgentProfile`` so path getters, adapter context, and the credential
+    scope resolve to the right agent's home. A dropped/incorrect binding here is a
+    cross-agent leak class: agent A's output delivered from agent B's context.
+    """
+
+    def _profile(self, tmp_path, name):
+        from agent.profile import AgentProfile
+
+        home = tmp_path / name
+        home.mkdir()
+        return AgentProfile(id=name, home_dir=home)
+
+    @pytest.mark.asyncio
+    async def test_deliver_local_target_activates_routed_agent_profile(self, tmp_path):
+        """A LOCAL target stamped with ``agent_id`` delivers with that profile
+        active in the ContextVar."""
+        from agent.profile import get_active_profile
+
+        coder = self._profile(tmp_path, "coder")
+        router = DeliveryRouter(GatewayConfig(), adapters={}, registry={"coder": coder})
+
+        seen = {}
+
+        def _spy_local(content, job_id, job_name, metadata):
+            seen["profile"] = get_active_profile()
+            return {"path": "/tmp/x"}
+
+        router._deliver_local = _spy_local
+
+        target = DeliveryTarget(platform=Platform.LOCAL, agent_id="coder")
+        await router.deliver("hello", [target])
+
+        # The routed agent's profile was live for the send...
+        assert seen["profile"] is coder
+        # ...and it does not leak past the delivery loop.
+        assert get_active_profile() is None
+
+    @pytest.mark.asyncio
+    async def test_deliver_unknown_agent_id_falls_back_to_nullcontext(self, tmp_path):
+        """An ``agent_id`` absent from the registry must not crash — it delivers
+        under no profile (nullcontext), preserving single-agent behavior."""
+        from agent.profile import get_active_profile
+
+        coder = self._profile(tmp_path, "coder")
+        router = DeliveryRouter(GatewayConfig(), adapters={}, registry={"coder": coder})
+
+        seen = {}
+
+        def _spy_local(content, job_id, job_name, metadata):
+            seen["profile"] = get_active_profile()
+            return {"path": "/tmp/x"}
+
+        router._deliver_local = _spy_local
+
+        target = DeliveryTarget(platform=Platform.LOCAL, agent_id="ghost")
+        result = await router.deliver("hello", [target])
+
+        assert seen["profile"] is None  # nullcontext — no scope installed
+        assert result[target.to_string()]["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_deliver_no_registry_is_single_agent_noop(self, tmp_path):
+        """No registry at all (the default single-agent install) delivers under
+        no profile and never raises."""
+        from agent.profile import get_active_profile
+
+        router = DeliveryRouter(GatewayConfig(), adapters={})
+
+        seen = {}
+
+        def _spy_local(content, job_id, job_name, metadata):
+            seen["profile"] = get_active_profile()
+            return {"path": "/tmp/x"}
+
+        router._deliver_local = _spy_local
+
+        target = DeliveryTarget(platform=Platform.LOCAL, agent_id="coder")
+        await router.deliver("hi", [target])
+        assert seen["profile"] is None
+
+    def test_origin_target_copies_agent_id_from_source(self):
+        """``DeliveryTarget.parse('origin', origin=...)`` carries the source's
+        ``agent_id`` so a reply routes back under the same agent."""
+        origin = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="789", agent_id="coder"
+        )
+        target = DeliveryTarget.parse("origin", origin=origin)
+        assert target.agent_id == "coder"
+
+

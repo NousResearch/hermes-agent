@@ -2258,3 +2258,88 @@ class TestBuildSessionKeyAgentId:
         assert "agent_id" not in d
         restored = SessionSource.from_dict(d)
         assert restored.agent_id is None
+
+
+class TestSessionEntryAgentIdSerialization:
+    """SessionEntry.agent_id must persist through save→load and default to
+    ``"main"`` for legacy entries written before the multi-agent field shipped.
+    """
+
+    def _entry(self, **overrides):
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        base = dict(
+            session_key="agent:coder:telegram:dm:123",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        base.update(overrides)
+        return SessionEntry(**base)
+
+    def test_non_main_agent_id_survives_roundtrip(self):
+        """A non-"main" agent_id must survive to_dict→from_dict unchanged."""
+        from gateway.session import SessionEntry
+        entry = self._entry(agent_id="coder")
+        d = entry.to_dict()
+        assert d["agent_id"] == "coder"
+        restored = SessionEntry.from_dict(d)
+        assert restored.agent_id == "coder"
+
+    def test_default_agent_id_is_main(self):
+        """A freshly constructed entry defaults agent_id to "main"."""
+        entry = self._entry()
+        assert entry.agent_id == "main"
+        assert entry.to_dict()["agent_id"] == "main"
+
+    def test_legacy_dict_without_agent_id_defaults_to_main(self):
+        """A persisted entry dict predating the agent_id field (no key)
+        must deserialize back to "main" for back-compat."""
+        from gateway.session import SessionEntry
+        data = {
+            "session_key": "agent:main:telegram:dm:123",
+            "session_id": "s1",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+            # No agent_id key — legacy format.
+        }
+        assert "agent_id" not in data
+        restored = SessionEntry.from_dict(data)
+        assert restored.agent_id == "main"
+
+
+class TestBuildSessionKeyAgentIdProfilePrecedence:
+    """When both a non-main ``source.agent_id`` and a ``profile`` namespace arg
+    are supplied, the routing agent_id wins and the profile namespace is
+    ignored (the new branch in build_session_key)."""
+
+    def test_agent_id_takes_precedence_over_profile(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        )
+        source.agent_id = "coder"
+        # A profile namespace is ALSO supplied — it must be ignored because
+        # agent_id is a non-main routing identity.
+        key = build_session_key(source, profile="teamB")
+        assert key == "agent:coder:telegram:dm:123"
+        # Non-tautological guard: the profile namespace must NOT appear.
+        assert "teamB" not in key
+
+    def test_main_agent_id_falls_back_to_profile_namespace(self):
+        """With the default "main" agent_id, the profile namespace param is
+        honored — confirming precedence only fires for a non-main agent."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        )
+        source.agent_id = "main"
+        key = build_session_key(source, profile="teamB")
+        assert key == "agent:teamB:telegram:dm:123"
+
+    def test_unset_agent_id_falls_back_to_profile_namespace(self):
+        """agent_id unset (None) also defers to the profile namespace."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="123", chat_type="dm",
+        )
+        assert source.agent_id is None
+        key = build_session_key(source, profile="teamB")
+        assert key == "agent:teamB:telegram:dm:123"

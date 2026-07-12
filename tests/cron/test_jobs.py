@@ -2163,3 +2163,209 @@ class TestJobsJsonUtf8Bom:
         loaded = load_jobs()
         assert [j["id"] for j in loaded] == ["ctrlbom01"]
         assert "newline" in loaded[0]["name"]
+
+# =========================================================================
+# Multi-agent job loading (load_all_jobs / get_all_due_jobs) — per-profile
+# agent_id stamping for the gateway-wide tick.
+# =========================================================================
+
+class TestLoadAllJobs:
+    """load_all_jobs stamps each job with the agent_id of the profile it came
+    from, iterating every profile in the registry under use_profile()."""
+
+    def test_single_profile_backcompat_defaults_agent_id_main(self, tmp_cron_dir):
+        """registry=None (legacy single-agent path): loads the current profile's
+        jobs and defaults a MISSING agent_id to 'main' while leaving any
+        pre-existing agent_id untouched."""
+        from cron.jobs import load_all_jobs
+
+        save_jobs([
+            {"id": "j1", "name": "no-agent-id",
+             "schedule": {"kind": "interval", "minutes": 5}},
+            {"id": "j2", "name": "preset-agent-id", "agent_id": "custom",
+             "schedule": {"kind": "interval", "minutes": 5}},
+        ])
+
+        jobs = load_all_jobs()  # registry defaults to None
+        by_id = {j["id"]: j for j in jobs}
+        assert by_id["j1"]["agent_id"] == "main"
+        assert by_id["j2"]["agent_id"] == "custom"
+
+    def test_multi_profile_stamps_each_job_with_its_profile_agent_id(self, tmp_path):
+        """A multi-profile registry: each profile's jobs.json is loaded under
+        use_profile(profile) and every job is stamped with THAT profile's
+        agent_id (the registry key), not another profile's."""
+        from agent.profile import AgentProfile, use_profile
+        from cron.jobs import load_all_jobs
+
+        pa = AgentProfile(id="alpha", home_dir=tmp_path / "alpha")
+        pb = AgentProfile(id="beta", home_dir=tmp_path / "beta")
+        registry = {"alpha": pa, "beta": pb}
+
+        with use_profile(pa):
+            save_jobs([{"id": "a1", "name": "a1",
+                        "schedule": {"kind": "interval", "minutes": 5}}])
+        with use_profile(pb):
+            save_jobs([
+                {"id": "b1", "name": "b1",
+                 "schedule": {"kind": "interval", "minutes": 5}},
+                # A job that already carries an agent_id must be preserved,
+                # not overwritten with the profile key.
+                {"id": "b2", "name": "b2", "agent_id": "preset",
+                 "schedule": {"kind": "interval", "minutes": 5}},
+            ])
+
+        all_jobs = load_all_jobs(registry)
+        by_id = {j["id"]: j for j in all_jobs}
+
+        # Every profile's jobs came back, isolated to their own store.
+        assert set(by_id) == {"a1", "b1", "b2"}
+        assert by_id["a1"]["agent_id"] == "alpha"
+        assert by_id["b1"]["agent_id"] == "beta"
+        assert by_id["b2"]["agent_id"] == "preset"
+
+    def test_one_agent_load_failure_does_not_starve_siblings(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Resilience (the except -> logger.warning branch): if loading one
+        agent's jobs raises, the other agents' jobs still come back."""
+        import cron.jobs as jobs_mod
+        from agent.profile import AgentProfile, use_profile, get_active_profile
+        from cron.jobs import load_all_jobs
+
+        pg = AgentProfile(id="good", home_dir=tmp_path / "good")
+        pb = AgentProfile(id="bad", home_dir=tmp_path / "bad")
+        registry = {"good": pg, "bad": pb}
+
+        def fake_load_jobs():
+            prof = get_active_profile()
+            if prof is not None and prof.id == "bad":
+                raise RuntimeError("boom loading bad agent")
+            return [{"id": "g1", "name": "g1",
+                     "schedule": {"kind": "interval", "minutes": 5}}]
+
+        monkeypatch.setattr(jobs_mod, "load_jobs", fake_load_jobs)
+
+        with caplog.at_level("WARNING"):
+            all_jobs = load_all_jobs(registry)
+
+        ids = {j["id"] for j in all_jobs}
+        assert ids == {"g1"}, "the healthy sibling's jobs were starved by the failing agent"
+        assert all(j["agent_id"] == "good" for j in all_jobs)
+        assert any("bad" in rec.getMessage() for rec in caplog.records)
+
+
+class TestGetAllDueJobs:
+    """get_all_due_jobs iterates every profile, runs get_due_jobs() inside its
+    context, and stamps the combined list with each job's agent_id."""
+
+    def test_multi_profile_stamps_due_jobs_per_profile(self, tmp_path):
+        from agent.profile import AgentProfile, use_profile
+        from cron.jobs import get_all_due_jobs
+
+        pa = AgentProfile(id="alpha", home_dir=tmp_path / "alpha")
+        pb = AgentProfile(id="beta", home_dir=tmp_path / "beta")
+        registry = {"alpha": pa, "beta": pb}
+
+        past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        with use_profile(pa):
+            save_jobs([{"id": "a-due", "name": "a", "enabled": True,
+                        "schedule": {"kind": "interval", "minutes": 5},
+                        "next_run_at": past}])
+        with use_profile(pb):
+            save_jobs([{"id": "b-due", "name": "b", "enabled": True,
+                        "schedule": {"kind": "interval", "minutes": 5},
+                        "next_run_at": past}])
+
+        due = get_all_due_jobs(registry)
+        by_id = {j["id"]: j for j in due}
+        assert set(by_id) == {"a-due", "b-due"}
+        assert by_id["a-due"]["agent_id"] == "alpha"
+        assert by_id["b-due"]["agent_id"] == "beta"
+
+    def test_one_agent_failure_does_not_starve_siblings(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The get_all_due_jobs except -> logger.warning branch: one agent's
+        get_due_jobs() raising must not drop the other agents' due jobs."""
+        import cron.jobs as jobs_mod
+        from agent.profile import AgentProfile, get_active_profile
+        from cron.jobs import get_all_due_jobs
+
+        pg = AgentProfile(id="good", home_dir=tmp_path / "good")
+        pb = AgentProfile(id="bad", home_dir=tmp_path / "bad")
+        registry = {"good": pg, "bad": pb}
+
+        def fake_get_due_jobs():
+            prof = get_active_profile()
+            if prof is not None and prof.id == "bad":
+                raise RuntimeError("boom due for bad agent")
+            return [{"id": "g-due", "name": "g",
+                     "schedule": {"kind": "interval", "minutes": 5}}]
+
+        monkeypatch.setattr(jobs_mod, "get_due_jobs", fake_get_due_jobs)
+
+        with caplog.at_level("WARNING"):
+            due = get_all_due_jobs(registry)
+
+        assert {j["id"] for j in due} == {"g-due"}
+        assert all(j["agent_id"] == "good" for j in due)
+        assert any("bad" in rec.getMessage() for rec in caplog.records)
+
+
+# =========================================================================
+# Profile-dynamic cron-dir resolution (_get_cron_dir / _CRON_DIR_IMPORT_DEFAULT)
+# =========================================================================
+
+class TestCronDirResolution:
+    """The dynamic cron-dir getters resolve via the active profile's
+    get_hermes_home(), but still honour a test-monkeypatched module-level
+    CRON_DIR (detected by mismatch with its frozen import-time default)."""
+
+    def test_no_override_resolves_via_active_profile_home(self, tmp_path):
+        from agent.profile import AgentProfile, use_profile
+        from cron.jobs import (
+            _get_cron_dir, _get_jobs_file, _get_output_dir,
+            CRON_DIR, _CRON_DIR_IMPORT_DEFAULT,
+        )
+
+        # Precondition for the dynamic branch: the module constant must still
+        # equal its frozen import-time snapshot (i.e. not monkeypatched).
+        assert CRON_DIR == _CRON_DIR_IMPORT_DEFAULT
+
+        home = tmp_path / "profhome"
+        with use_profile(AgentProfile(id="p", home_dir=home)):
+            assert _get_cron_dir() == home / "cron"
+            assert _get_jobs_file() == home / "cron" / "jobs.json"
+            assert _get_output_dir() == home / "cron" / "output"
+
+        # A different active profile resolves dynamically to its own home —
+        # proving the getter re-evaluates the profile, not a frozen path.
+        home2 = tmp_path / "otherhome"
+        with use_profile(AgentProfile(id="p2", home_dir=home2)):
+            assert _get_cron_dir() == home2 / "cron"
+
+    def test_monkeypatched_cron_dir_wins_over_active_profile(self, tmp_path, monkeypatch):
+        """A monkeypatched module-level CRON_DIR (differing from the frozen
+        _CRON_DIR_IMPORT_DEFAULT) is honoured as the test-override path — it is
+        NOT overridden by a live get_hermes_home() re-eval of the active
+        profile."""
+        import cron.jobs as jobs_mod
+        from agent.profile import AgentProfile, use_profile
+
+        patched = tmp_path / "patched" / "cron"
+        monkeypatch.setattr(jobs_mod, "CRON_DIR", patched)
+        # Sanity: the patch really differs from the frozen default, so the
+        # mismatch-detection branch is what we are exercising.
+        assert jobs_mod.CRON_DIR != jobs_mod._CRON_DIR_IMPORT_DEFAULT
+
+        # Even under an active profile whose home is elsewhere, the test
+        # override wins (a live get_hermes_home() would have returned the
+        # profile home / cron and leaked past the patch).
+        with use_profile(AgentProfile(id="p", home_dir=tmp_path / "profhome")):
+            assert jobs_mod._get_cron_dir() == patched
+            assert jobs_mod._get_jobs_file() == patched / "jobs.json"
+            assert jobs_mod._get_output_dir() == patched / "output"
+
+        # And outside any profile too.
+        assert jobs_mod._get_cron_dir() == patched

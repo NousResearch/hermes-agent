@@ -1153,19 +1153,35 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
-        if _tg_proxy:
+
+        # Match the gateway adapter's HTTP timeouts (plugins/platforms/
+        # telegram/adapter.py). PTB's Bot() default is 5s read/write, which
+        # times out on full 4096-char chunks with many link entities, and
+        # timeouts are deliberately not retried to avoid double-sends — so
+        # the standalone path needs the same generous, env-tunable budget.
+        def _env_float(name: str, default: float) -> float:
             try:
-                from telegram.request import HTTPXRequest
-                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
-                bot = Bot(
-                    token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
-                )
-            except Exception as _proxy_err:
-                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
-        else:
+                return float(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        _tg_request_kwargs = {
+            "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+            "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+        }
+        if _tg_proxy:
+            _tg_request_kwargs["proxy"] = _tg_proxy
+            logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
+        try:
+            from telegram.request import HTTPXRequest
+            bot = Bot(
+                token=token,
+                request=HTTPXRequest(**_tg_request_kwargs),
+                get_updates_request=HTTPXRequest(**_tg_request_kwargs),
+            )
+        except Exception as _req_err:
+            logger.warning("send_message: failed to build Telegram request with timeouts/proxy (%s), falling back to defaults", _req_err)
             bot = Bot(token=token)
         from plugins.platforms.telegram.telegram_ids import (
             normalize_telegram_chat_id,

@@ -777,6 +777,8 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
             task_ids.append(tid)
         conn.commit()
+        for i in range(2):
+            _kb._record_worker_exit(80000 + i, 256)
 
         crashed = kb.detect_crashed_workers(conn)
         assert len(crashed) == 2

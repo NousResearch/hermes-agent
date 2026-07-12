@@ -5983,6 +5983,73 @@ _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
 
+@dataclass
+class _WorkerProcess:
+    """Gateway-lifetime ownership record for one dispatcher child."""
+
+    pid: int
+    task_id: str
+    run_id: Optional[int]
+    board: str
+    proc: Any
+    started_at: float
+    process_group: Optional[int]
+    log_path: str
+    route: dict[str, str]
+
+
+# PID alone is not ownership proof: PIDs may be reused after a gateway restart.
+# Retaining Popen lets this gateway obtain the child's actual return status.
+_worker_registry: "dict[int, _WorkerProcess]" = {}
+_worker_exit_context: "dict[int, _WorkerProcess]" = {}
+
+
+def _register_worker_process(
+    proc: Any,
+    task: Task,
+    *,
+    board: Optional[str],
+    log_path: str,
+    route: Optional[dict[str, str]] = None,
+) -> None:
+    pid = int(proc.pid)
+    process_group = None
+    if os.name != "nt":
+        try:
+            process_group = os.getpgid(pid)
+        except OSError:
+            pass
+    _worker_registry[pid] = _WorkerProcess(
+        pid=pid, task_id=task.id, run_id=task.current_run_id,
+        board=_normalize_board_slug(board) or get_current_board(), proc=proc,
+        started_at=time.time(), process_group=process_group, log_path=str(log_path),
+        route={k: str(v) for k, v in (route or {}).items()
+               if k in {"profile", "provider", "model"} and v},
+    )
+
+
+def _record_worker_returncode(pid: int, returncode: int) -> None:
+    """Normalize Popen's return-code convention to a raw wait status."""
+    _record_worker_exit(pid, -returncode if returncode < 0 else returncode << 8)
+
+
+def _poll_registered_workers() -> list[int]:
+    """Reap children still owned by this gateway deterministically."""
+    reaped: list[int] = []
+    for pid, record in list(_worker_registry.items()):
+        try:
+            returncode = record.proc.poll()
+        except Exception:
+            continue
+        if returncode is None:
+            continue
+        _record_worker_returncode(pid, int(returncode))
+        _worker_exit_context[pid] = record
+        _worker_registry.pop(pid, None)
+        reaped.append(pid)
+    return reaped
+
+
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
 
@@ -6055,7 +6122,7 @@ def reap_worker_zombies() -> "list[int]":
     Returns the list of reaped PIDs. Safe to call when there are no
     children (returns []). No-op on Windows.
     """
-    reaped: "list[int]" = []
+    reaped: "list[int]" = _poll_registered_workers()
     if os.name != "nt":
         try:
             while True:
@@ -6167,8 +6234,26 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    group_signalled = False
+    record = _worker_registry.get(int(pid))
+    # Only kill a process group when this gateway still owns the exact Popen
+    # child and its current group matches the launch-time group. This avoids
+    # signalling an unrelated process after PID reuse.
+    if (
+        signal_fn is None and os.name != "nt" and record is not None
+        and record.process_group is not None
+    ):
+        try:
+            if os.getpgid(int(pid)) == record.process_group:
+                os.killpg(record.process_group, signal.SIGTERM)
+                info["process_group"] = record.process_group
+                group_signalled = True
+        except (ProcessLookupError, OSError):
+            info["terminated"] = True
+            return info
     try:
-        kill(int(pid), signal.SIGTERM)
+        if not group_signalled:
+            kill(int(pid), signal.SIGTERM)
     except ProcessLookupError:
         # Process is already gone — that's a successful termination, not a
         # survival. Leaving terminated=False here would make the reclaim guard
@@ -6189,7 +6274,14 @@ def _terminate_reclaimed_worker(
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
             _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+            if group_signalled and record is not None and record.process_group is not None:
+                # Revalidate the leader/group association before escalating.
+                if os.getpgid(int(pid)) == record.process_group:
+                    os.killpg(record.process_group, _sigkill)
+                else:
+                    kill(int(pid), _sigkill)
+            else:
+                kill(int(pid), _sigkill)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -6606,7 +6698,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id, "
+            "last_heartbeat_at, workspace_path, workspace_kind, branch_name "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6628,6 +6722,31 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
+            record = _worker_exit_context.get(pid)
+            # Retained evidence is valid only for the exact task/run we own.
+            # A stale record after gateway restart or PID reuse must not be
+            # attributed to the newly claimed task.
+            if record is not None and (
+                record.task_id != row["id"] or record.run_id != row["current_run_id"]
+            ):
+                kind, code, record = "unknown", None, None
+            envelope = {
+                "exit": {"kind": kind, "code": code, "pid": pid},
+                "worker": {
+                    "board": record.board if record else None,
+                    "started_at": int(record.started_at) if record else None,
+                    "process_group": record.process_group if record else None,
+                    "log_path": record.log_path if record else None,
+                },
+                "route": dict(record.route) if record else {},
+                "heartbeat_at": row["last_heartbeat_at"],
+                "salvage": {
+                    "workspace_kind": row["workspace_kind"],
+                    "workspace_path": row["workspace_path"],
+                    "branch_name": row["branch_name"],
+                    "preserved": row["workspace_kind"] != "scratch",
+                },
+            }
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -6669,34 +6788,43 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 protocol_violation = False
                 if kind == "nonzero_exit":
                     error_text = f"pid {pid} exited with code {code}"
+                    event_kind = "crashed"
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
+                    event_kind = "crashed"
                 else:
-                    error_text = f"pid {pid} not alive"
-                event_kind = "crashed"
+                    # Unknown disappearance is not safe to retry: preserve the
+                    # workspace and surface an analyzable block instead.
+                    error_text = f"worker pid {pid} vanished with unknown exit evidence"
+                    event_kind = "worker_exit_unknown"
                 event_payload = {"pid": pid, "claimer": row["claim_lock"]}
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            terminal_status = "blocked" if kind == "unknown" else "ready"
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
+                (terminal_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                _run_outcome = (
+                    "rate_limited" if rate_limited_exit else
+                    "unknown_exit" if kind == "unknown" else "crashed"
+                )
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
                     error=error_text,
-                    metadata=dict(event_payload),
+                    metadata=envelope,
                 )
+                event_payload["evidence"] = envelope
                 _append_event(
                     conn, row["id"], event_kind,
                     event_payload,
@@ -6713,6 +6841,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif kind == "unknown":
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    crashed.append(row["id"])
                 else:
                     crashed.append(row["id"])
                     crash_details.append(
@@ -7517,6 +7651,12 @@ def _dispatch_once_locked(
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        if _spawn is _default_spawn:
+            preflight = _preflight_worker_spawn(claimed, str(workspace), board=board)
+            if not preflight["ok"]:
+                _block_preflight_failure(conn, claimed.id, preflight)
+                result.auto_blocked.append(claimed.id)
+                continue
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -7615,6 +7755,12 @@ def _dispatch_once_locked(
         # review agent needs.
         claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        if _spawn is _default_spawn:
+            preflight = _preflight_worker_spawn(claimed, str(workspace), board=board)
+            if not preflight["ok"]:
+                _block_preflight_failure(conn, claimed.id, preflight)
+                result.auto_blocked.append(claimed.id)
+                continue
         try:
             import inspect
             try:
@@ -7901,6 +8047,66 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, Any]:
+    """Validate deterministic worker-launch prerequisites without spawning.
+
+    The route is intentionally credential-free. Credentials remain in the
+    profile auth store and are never persisted into events or run metadata.
+    """
+    if not workspace or not os.path.isabs(workspace) or not os.path.isdir(workspace):
+        return {"ok": False, "code": "workspace_invalid", "detail": "workspace must be an existing absolute directory"}
+    if not task.assignee:
+        return {"ok": False, "code": "profile_invalid", "detail": "task has no assignee"}
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists, resolve_profile_env
+        profile = normalize_profile_name(task.assignee)
+        if not profile_exists(profile):
+            return {"ok": False, "code": "profile_invalid", "detail": f"profile {profile!r} does not exist"}
+        profile_home = resolve_profile_env(profile)
+    except Exception as exc:
+        return {"ok": False, "code": "profile_invalid", "detail": str(exc)[:200]}
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+        token = set_hermes_home_override(profile_home)
+        try:
+            cfg = load_config()
+        finally:
+            reset_hermes_home_override(token)
+        model_cfg = cfg.get("model") or {}
+        provider = str(model_cfg.get("provider") or "").strip()
+        model = str(task.model_override or model_cfg.get("default") or "").strip()
+        if not provider or not model:
+            return {"ok": False, "code": "route_invalid", "detail": "profile must resolve non-empty provider and model"}
+    except Exception as exc:
+        return {"ok": False, "code": "route_invalid", "detail": str(exc)[:200]}
+    return {
+        "ok": True,
+        "board": _normalize_board_slug(board) or get_current_board(),
+        "route": {"profile": profile, "provider": provider, "model": model},
+    }
+
+
+def _block_preflight_failure(
+    conn: sqlite3.Connection, task_id: str, preflight: dict[str, Any],
+) -> None:
+    """Close a claimed run as an analyzable, non-retryable launch failure."""
+    code = str(preflight.get("code") or "preflight_failed")
+    detail = str(preflight.get("detail") or "worker launch preflight failed")[:500]
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status='blocked', claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL, last_failure_error=? WHERE id=? AND status='running'",
+            (f"preflight {code}: {detail}"[:500], task_id),
+        )
+        if cur.rowcount != 1:
+            return
+        metadata = {"preflight": {"code": code, "detail": detail}}
+        run_id = _end_run(conn, task_id, outcome="preflight_failed", status="preflight_failed",
+                          error=f"preflight {code}: {detail}", metadata=metadata)
+        _append_event(conn, task_id, "preflight_failed", metadata, run_id=run_id)
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8082,6 +8288,10 @@ def _default_spawn(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
+    _register_worker_process(
+        proc, task, board=board, log_path=str(log_path),
+        route={"profile": profile_arg, "model": task.model_override or ""},
+    )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's

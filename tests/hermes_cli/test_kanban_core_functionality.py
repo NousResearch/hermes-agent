@@ -1493,6 +1493,9 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
         # Attempt 2: claim then crash (simulated: pid dead).
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
+        # A classified non-zero exit is transient and may be retried;
+        # unknown PID loss is deliberately blocked by the v2 contract.
+        _kb._record_worker_exit(98765, 256)
         original_alive = _kb._pid_alive
         _kb._pid_alive = lambda pid: False
         try:
@@ -1524,6 +1527,7 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
+        _kb._record_worker_exit(98765, 256)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -1565,6 +1569,7 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
+        _kb._record_worker_exit(98765, 256)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -4388,6 +4393,8 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
         tid = kb.create_task(conn, title="crashy", assignee="worker")
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, 99999)  # fake pid — not alive
+        # A known non-zero status follows the normal retry/counter path.
+        kb._record_worker_exit(99999, 256)
 
         kb.detect_crashed_workers(conn)
 

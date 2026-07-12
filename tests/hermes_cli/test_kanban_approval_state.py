@@ -426,6 +426,81 @@ def test_pending_request_rejects_manual_ready_claim(kanban_home):
         assert kb.get_task(conn, task.id).status == "blocked"
 
 
+def test_old_request_cannot_release_a_new_block_generation(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        assert request is not None
+        assert kb.get_task(conn, task.id).active_approval_id == request["id"]
+
+        assert kb.unblock_task(conn, task.id) is True
+        assert kb.block_task(
+            conn,
+            task.id,
+            reason="credentials are unavailable",
+            kind="capability",
+        ) is True
+
+        assert kb.decide_task_approval(
+            conn,
+            request["id"],
+            "approve",
+            **_DEFAULT_ROUTE,
+        ) is None
+        stored = kb.get_task_approval(conn, request["id"])
+        blocked = kb.get_task(conn, task.id)
+        assert stored["status"] == "cancelled"
+        assert blocked.status == "blocked"
+        assert blocked.block_kind == "capability"
+        assert blocked.active_approval_id is None
+
+
+def test_reassignment_aba_cancels_unbound_approval_grant(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        approved = kb.decide_task_approval(
+            conn,
+            request["id"],
+            "approve",
+            **_DEFAULT_ROUTE,
+        )
+        assert approved is not None and approved["status"] == "approved"
+        assert kb.get_task(conn, task.id).active_approval_id == request["id"]
+
+        assert kb.assign_task(conn, task.id, "other-worker") is True
+        assert kb.assign_task(conn, task.id, "worker") is True
+
+        stored = kb.get_task_approval(conn, request["id"])
+        rebound = kb.get_task(conn, task.id)
+        assert stored["status"] == "cancelled"
+        assert stored["grant_nonce"] is None
+        assert rebound.status == "ready"
+        assert rebound.active_approval_id is None
+        claimed = kb.claim_task(conn, task.id, claimer="test:after-aba")
+        assert claimed is not None
+        assert claimed.approval_request_id is None
+
+
+def test_reassignment_cancels_expiry_side_effect_on_new_principal(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+        assert approved is not None
+        assert kb.assign_task(conn, task.id, "other-worker") is True
+        conn.execute(
+            "UPDATE kanban_approval_requests SET expires_at = 1 WHERE id = ?",
+            (request["id"],),
+        )
+
+        assert kb.expire_task_approvals(conn, now=2) == 0
+        reassigned = kb.get_task(conn, task.id)
+        assert reassigned.assignee == "other-worker"
+        assert reassigned.status == "ready"
+        assert reassigned.active_approval_id is None
+
+
 def test_route_bound_decision_requeues_binds_and_consumes_once(kanban_home):
     with kb.connect() as conn:
         task = _claimed_task(
@@ -562,6 +637,31 @@ def test_expired_unbound_review_grant_blocks_review_dispatch(kanban_home):
 
         assert kb.get_task(conn, task_id).status == "blocked"
         assert kb.claim_review_task(conn, task_id, claimer="must:not-spawn") is None
+        assert kb.get_task_approval(conn, request["id"])["status"] == "expired"
+
+
+def test_expired_bound_grant_clears_active_generation_without_rewriting_run(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+        assert approved is not None
+        resumed = kb.claim_task(conn, task.id, claimer="test:bound-expiry")
+        assert resumed is not None
+        assert kb.get_task(conn, task.id).active_approval_id == request["id"]
+        conn.execute(
+            "UPDATE kanban_approval_requests SET expires_at = 1 WHERE id = ?",
+            (request["id"],),
+        )
+
+        assert kb.expire_task_approvals(conn, now=2) == 1
+
+        running = kb.get_task(conn, task.id)
+        assert running.status == "running"
+        assert running.current_run_id == resumed.current_run_id
+        assert running.active_approval_id is None
         assert kb.get_task_approval(conn, request["id"])["status"] == "expired"
 
 
@@ -761,6 +861,60 @@ def test_stale_dispatch_failure_cannot_mutate_successor_run(
             and event.run_id == claimed_b.current_run_id
             for event in kb.list_events(conn, task_id)
         )
+
+
+def test_stale_iteration_failure_cannot_cancel_successor_approval_grant(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        stale_a = _claimed_task(conn, title="stale iteration finalizer")
+        stale_run_id = stale_a.current_run_id
+        stale_claim_lock = stale_a.claim_lock
+
+        assert kb.reclaim_task(
+            conn,
+            stale_a.id,
+            reason="synthetic stale worker",
+        )
+        run_b = kb.claim_task(conn, stale_a.id, claimer="successor:B")
+        assert run_b is not None
+        request = _request(conn, run_b)
+        assert request is not None and request["status"] == "pending"
+        approved = kb.decide_task_approval(
+            conn,
+            request["id"],
+            "approve",
+            **_DEFAULT_ROUTE,
+        )
+        assert approved is not None and approved["grant_nonce"]
+
+        successor_c = kb.claim_task(conn, stale_a.id, claimer="successor:C")
+        assert successor_c is not None
+        assert successor_c.approval_request_id == request["id"]
+        assert successor_c.approval_grant_nonce == approved["grant_nonce"]
+
+        kb._record_task_failure(
+            conn,
+            stale_a.id,
+            error="late iteration exhaustion from run A",
+            outcome="timed_out",
+            release_claim=True,
+            end_run=True,
+            expected_run_id=stale_run_id,
+            expected_claim_lock=stale_claim_lock,
+        )
+
+        after = kb.get_task(conn, stale_a.id)
+        successor_run = kb.get_run(conn, successor_c.current_run_id)
+        stored_approval = kb.get_task_approval(conn, request["id"])
+        assert after.status == "running"
+        assert after.current_run_id == successor_c.current_run_id
+        assert after.claim_lock == "successor:C"
+        assert successor_run.status == "running"
+        assert successor_run.ended_at is None
+        assert stored_approval["status"] == "approved"
+        assert stored_approval["grant_nonce"] == approved["grant_nonce"]
+        assert stored_approval["resume_run_id"] == successor_c.current_run_id
 
 
 @pytest.mark.parametrize("max_retries", [1, 5])
@@ -1088,7 +1242,42 @@ def test_dispatch_spawn_failure_unbinds_and_rotates_grant(kanban_home):
         assert after["status"] == "approved"
         assert after["resume_run_id"] is None
         assert after["grant_nonce"] != approved["grant_nonce"]
-        assert kb.get_task(conn, task.id).consecutive_failures == 1
+        requeued = kb.get_task(conn, task.id)
+        assert requeued.consecutive_failures == 1
+        assert requeued.active_approval_id == request["id"]
+
+
+def test_operator_reclaim_cancels_unbound_spawn_window_grant(kanban_home):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        request = _request(conn, task)
+        approved = kb.decide_task_approval(conn, request["id"], "approve")
+        assert approved is not None
+        resumed = kb.claim_task(conn, task.id, claimer="test:spawn-window")
+        assert resumed is not None
+        assert kb.cancel_bound_task_approval(
+            conn,
+            task_id=task.id,
+            resume_run_id=resumed.current_run_id,
+            request_id=request["id"],
+            reason="synthetic pre-spawn failure window",
+        ) is True
+
+        assert kb.reclaim_task(
+            conn,
+            task.id,
+            reason="operator intervened during spawn failure",
+            signal_fn=lambda *_args, **_kwargs: None,
+        ) is True
+
+        stored = kb.get_task_approval(conn, request["id"])
+        reclaimed = kb.get_task(conn, task.id)
+        assert stored["status"] == "cancelled"
+        assert stored["grant_nonce"] is None
+        assert reclaimed.active_approval_id is None
+        next_claim = kb.claim_task(conn, task.id, claimer="test:after-reclaim")
+        assert next_claim is not None
+        assert next_claim.approval_request_id is None
 
 
 def test_approved_resume_bypasses_generic_respawn_heuristics(kanban_home):
@@ -1166,7 +1355,6 @@ def test_default_spawn_scrubs_parent_authority_and_resumes_session(
         approval_request_id="ka_request",
         approval_grant_nonce="opaque-nonce",
         approval_worker_session_id="20260712_120000_abcdef",
-        owner_bootstrap_nonce="owner-bootstrap",
     )
 
     kb._default_spawn(task, str(workspace))
@@ -1184,8 +1372,10 @@ def test_default_spawn_scrubs_parent_authority_and_resumes_session(
         "HERMES_TUI_QUERY",
     ):
         assert key not in env
-    assert env["HERMES_KANBAN_SESSION"] == "1"
-    assert env["HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE"] == "owner-bootstrap"
+    assert env["HERMES_KANBAN_DELEGATE_SESSION"] == "1"
+    assert "HERMES_KANBAN_SESSION" not in env
+    assert "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE" not in env
+    assert "_HERMES_KANBAN_BOOTSTRAP_STDIN" not in env
     assert env["HERMES_KANBAN_APPROVAL_ID"] == "ka_request"
     assert env["HERMES_KANBAN_APPROVAL_NONCE"] == "opaque-nonce"
     cmd = captured["cmd"]

@@ -32,6 +32,7 @@ Usage:
 """
 
 import importlib.util
+import hashlib
 import json
 import logging
 import os
@@ -269,21 +270,45 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
     )
 
 
-def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
+def _docker_has_host_access(
+    config: Dict[str, Any],
+    resolved_implicit_mounts: Optional[List[str]] = None,
+) -> bool:
+    """Return True when Docker may expose authority outside its sandbox.
+
+    In addition to configured bind mounts, Hermes automatically mounts
+    credentials, skills, and caches. Arbitrary ``docker_extra_args`` can add
+    mounts, host networking, devices, or privilege, so treat any such flag as
+    host access rather than trying to maintain a fragile option parser.
+    """
     if config.get("env_type") != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    if any(
+        _docker_volume_uses_host_path(vol)
+        for vol in config.get("docker_volumes", [])
+    ):
+        return True
+    if config.get("docker_extra_args"):
+        return True
+    if resolved_implicit_mounts is None:
+        from tools.environments.docker import resolve_docker_implicit_mount_specs
+
+        resolved_implicit_mounts = resolve_docker_implicit_mount_specs()
+    return bool(resolved_implicit_mounts)
 
 
 def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
+                      has_host_access: bool = False,
+                      workdir: Optional[str] = None,
+                      execution_context: Optional[dict] = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
-                                  has_host_access=has_host_access)
+                                  has_host_access=has_host_access,
+                                  workdir=workdir,
+                                  execution_context=execution_context)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
@@ -981,6 +1006,10 @@ Do NOT use vim/nano/interactive tools without pty=true — they hang without a p
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+# Environments displaced by a runtime/config change remain reachable here.
+# They may still serve an in-flight sibling call, so mismatch handling cannot
+# synchronously tear them down; the idle reaper and atexit clean them later.
+_retired_environments: Dict[int, tuple[str, Any, float]] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -992,6 +1021,23 @@ _cleanup_running = False
 # calls for parallel subagents won't re-trigger the sweep.
 _docker_orphan_reaper_ran = False
 _docker_orphan_reaper_lock = threading.Lock()
+
+
+def _retire_environment_locked(task_id: str, env: Any) -> None:
+    """Detach *env* from active keys and retain it for deferred cleanup.
+
+    Caller must hold ``_env_lock``. Keeping the object tracked avoids leaking
+    billable/nonpersistent runtimes while also avoiding a teardown race with a
+    sibling command that already holds the old object.
+    """
+
+    if env is None:
+        return
+    for key, candidate in list(_active_environments.items()):
+        if candidate is env:
+            _active_environments.pop(key, None)
+            _last_activity.pop(key, None)
+    _retired_environments[id(env)] = (task_id, env, time.time())
 
 
 def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
@@ -1268,6 +1314,145 @@ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 _CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
 
 
+def _environment_backend_type(env: Any) -> Optional[str]:
+    """Infer the built-in backend represented by a cached environment."""
+
+    if env is None:
+        return None
+    name = env.__class__.__name__.lower()
+    for backend in ("local", "ssh", "docker", "singularity", "modal", "daytona"):
+        if backend in name:
+            return backend
+    return None
+
+
+def _requested_environment_runtime_identity(
+    *,
+    config: Dict[str, Any],
+    image: Any,
+    cwd: str,
+    task_id: str,
+    docker_runtime_fingerprint: Optional[str] = None,
+) -> tuple:
+    """Build the immutable runtime identity required by the current config.
+
+    Approval binds the configured target, so cache reuse must bind the same
+    target. Backend class alone is insufficient: an SSHEnvironment for host A
+    must never satisfy a request approved for host B, and cloud/container image
+    or resource changes must not silently reuse the previous sandbox.
+    """
+
+    env_type = str(config.get("env_type") or "local").lower()
+    if env_type == "ssh":
+        return (
+            "ssh",
+            str(config.get("ssh_host") or ""),
+            str(config.get("ssh_user") or ""),
+            int(config.get("ssh_port") or 22),
+            str(config.get("ssh_key") or ""),
+            bool(config.get("ssh_persistent", False)),
+        )
+    if env_type == "docker":
+        return ("docker", str(docker_runtime_fingerprint or ""))
+    if env_type in {"singularity", "modal", "daytona"}:
+        selected_modal_backend = ""
+        if env_type == "modal":
+            selected_modal_backend = str(
+                _get_modal_backend_state(config.get("modal_mode")).get(
+                    "selected_backend"
+                )
+                or ""
+            )
+        return (
+            env_type,
+            str(image),
+            str(cwd),
+            str(task_id),
+            config.get("container_cpu", 1),
+            config.get("container_memory", 5120),
+            config.get("container_disk", 51200),
+            bool(config.get("container_persistent", True)),
+            str(config.get("modal_mode") or "") if env_type == "modal" else "",
+            selected_modal_backend,
+        )
+    # Local persistence changes lifecycle/reuse policy, not the execution
+    # target. Binding it into runtime identity would needlessly retire and
+    # recreate the same host runtime when that policy is toggled.
+    return ("local",)
+
+
+def _stamp_environment_runtime_identity(env: Any, identity: tuple) -> Any:
+    """Attach the exact requested identity to a newly-created environment."""
+
+    try:
+        env._hermes_runtime_identity = identity
+    except Exception:
+        pass
+    return env
+
+
+def _runtime_identity_token(identity: tuple) -> str:
+    """Return a short stable token suitable for backend persistence keys."""
+
+    encoded = json.dumps(identity, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _environment_runtime_identity_from_instance(env: Any) -> Optional[tuple]:
+    """Return a stamped/fallback identity for a live environment."""
+
+    stamped = getattr(env, "_hermes_runtime_identity", None)
+    if isinstance(stamped, tuple):
+        return stamped
+    fingerprint = getattr(env, "runtime_fingerprint", None)
+    if isinstance(fingerprint, str):
+        return ("docker", fingerprint)
+    backend = _environment_backend_type(env)
+    if backend == "docker":
+        return None
+    if backend == "ssh":
+        return (
+            "ssh",
+            str(getattr(env, "host", "") or ""),
+            str(getattr(env, "user", "") or ""),
+            int(getattr(env, "port", 22) or 22),
+            str(getattr(env, "key_path", "") or ""),
+            bool(getattr(env, "_persistent", False)),
+        )
+    if backend == "local":
+        return ("local",)
+    return None
+
+
+def _environment_matches_runtime(
+    env: Any,
+    env_type: str,
+    runtime_identity: Optional[tuple] = None,
+) -> bool:
+    """Return whether a cached environment implements the requested runtime."""
+
+    active_backend = _environment_backend_type(env)
+    if active_backend is not None and active_backend != env_type:
+        return False
+    if runtime_identity is None:
+        return True
+    if env_type == "docker" and isinstance(runtime_identity, str):
+        runtime_identity = ("docker", runtime_identity)
+    actual_identity = _environment_runtime_identity_from_instance(env)
+    if actual_identity is not None:
+        if env_type == "ssh" and not isinstance(
+            getattr(env, "_hermes_runtime_identity", None), tuple
+        ):
+            # Legacy/directly-constructed SSH environments lack the lifecycle
+            # bit, but their security-critical connection target is explicit.
+            return actual_identity[:5] == runtime_identity[:5]
+        return actual_identity == runtime_identity
+    # Unknown test/plugin environments retain the historical class-only
+    # compatibility. Built-in remote/container classes are always stamped by
+    # _create_environment and therefore fail closed above when identity drifts.
+    return active_backend is None
+
+
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
     """Return True when *cwd* is a tilde path that the remote SSH shell must
     expand itself, so the Hermes host/container must NOT ``expanduser`` it.
@@ -1485,7 +1670,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
                         task_id: str = "default",
-                        host_cwd: str = None):
+                        host_cwd: str = None,
+                        resolved_docker_init_env: Optional[Dict[str, str]] = None,
+                        resolved_docker_implicit_mounts: Optional[List[str]] = None):
     """
     Create an execution environment for sandboxed command execution.
     
@@ -1499,6 +1686,11 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         container_config: Resource config for container backends (cpu, memory, disk, persistent)
         task_id: Task identifier for environment reuse and snapshot keying
         host_cwd: Optional host working directory to bind into Docker when explicitly enabled
+        resolved_docker_init_env: Frozen, pre-approval Docker environment
+            snapshot. When supplied, container creation must use these exact
+            values rather than re-reading the live process environment.
+        resolved_docker_implicit_mounts: Frozen, pre-approval set of automatic
+            credential/skill/cache mounts used for creation and identity.
         
     Returns:
         Environment instance with execute() method
@@ -1514,8 +1706,48 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_extra_args = cc.get("docker_extra_args", [])
     docker_network = cc.get("docker_network", True)
 
+    identity_config = dict(cc)
+    identity_config["env_type"] = env_type
+    if env_type == "ssh":
+        ssh_identity = ssh_config or {}
+        identity_config.update(
+            {
+                "ssh_host": ssh_identity.get("host", ""),
+                "ssh_user": ssh_identity.get("user", ""),
+                "ssh_port": ssh_identity.get("port", 22),
+                "ssh_key": ssh_identity.get("key", ""),
+                "ssh_persistent": ssh_identity.get("persistent", False),
+            }
+        )
+    elif env_type == "local":
+        identity_config["local_persistent"] = bool(
+            (local_config or {}).get("persistent", False)
+        )
+
+    requested_identity = _requested_environment_runtime_identity(
+        config=identity_config,
+        image=image,
+        cwd=cwd,
+        task_id=task_id,
+    )
+    runtime_identity_token = _runtime_identity_token(requested_identity)
+
+    def _finish(created_env):
+        identity = _requested_environment_runtime_identity(
+            config=identity_config,
+            image=image,
+            cwd=cwd,
+            task_id=task_id,
+            docker_runtime_fingerprint=(
+                getattr(created_env, "runtime_fingerprint", None)
+                if env_type == "docker"
+                else None
+            ),
+        )
+        return _stamp_environment_runtime_identity(created_env, identity)
+
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        return _finish(_LocalEnvironment(cwd=cwd, timeout=timeout))
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -1525,7 +1757,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         # subagents, RL benchmarks) don't run the reaper N times.
         # Disable via ``terminal.docker_orphan_reaper: false`` (issue #20561).
         _maybe_reap_docker_orphans(cc)
-        return _DockerEnvironment(
+        return _finish(_DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
@@ -1538,14 +1770,17 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             network=docker_network,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
-        )
+            resolved_init_env=resolved_docker_init_env,
+            resolved_implicit_mounts=resolved_docker_implicit_mounts,
+        ))
     
     elif env_type == "singularity":
-        return _SingularityEnvironment(
+        return _finish(_SingularityEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-        )
+            runtime_identity=runtime_identity_token,
+        ))
     
     elif env_type == "modal":
         sandbox_kwargs = {}
@@ -1564,11 +1799,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         modal_state = _get_modal_backend_state(cc.get("modal_mode"))
 
         if modal_state["selected_backend"] == "managed":
-            return _ManagedModalEnvironment(
+            return _finish(_ManagedModalEnvironment(
                 image=image, cwd=cwd, timeout=timeout,
                 modal_sandbox_kwargs=sandbox_kwargs,
                 persistent_filesystem=persistent, task_id=task_id,
-            )
+                runtime_identity=runtime_identity_token,
+            ))
 
         if modal_state["selected_backend"] != "direct":
             if modal_state["managed_mode_blocked"]:
@@ -1599,32 +1835,34 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 )
             raise ValueError(message)
 
-        return _ModalEnvironment(
+        return _finish(_ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
             persistent_filesystem=persistent, task_id=task_id,
-        )
+            runtime_identity=runtime_identity_token,
+        ))
     
     elif env_type == "daytona":
         # Lazy import so daytona SDK is only required when backend is selected.
         from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
-        return _DaytonaEnvironment(
+        return _finish(_DaytonaEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-        )
+            runtime_identity=runtime_identity_token,
+        ))
 
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
-        return _SSHEnvironment(
+        return _finish(_SSHEnvironment(
             host=ssh_config["host"],
             user=ssh_config["user"],
             port=ssh_config.get("port", 22),
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
-        )
+        ))
 
     else:
         raise ValueError(
@@ -1652,6 +1890,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # Docker teardown can block for 10-15s, which would stall every concurrent
     # terminal/file tool call waiting on _env_lock.
     envs_to_stop = []  # list of (task_id, env) pairs
+    retired_to_stop = []  # displaced runtimes; do not invalidate new file cache
 
     with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
@@ -1660,6 +1899,13 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 _last_activity.pop(task_id, None)
                 if env is not None:
                     envs_to_stop.append((task_id, env))
+
+        for retired_id, (task_id, env, retired_at) in list(
+            _retired_environments.items()
+        ):
+            if current_time - retired_at > lifetime_seconds:
+                _retired_environments.pop(retired_id, None)
+                retired_to_stop.append((task_id, env))
 
         # Also purge per-task creation locks for cleaned-up tasks
         with _creation_locks_lock:
@@ -1693,6 +1939,29 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
                 logger.info("Environment for task %s already cleaned up", task_id)
             else:
                 logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+
+    for task_id, env in retired_to_stop:
+        try:
+            if hasattr(env, "cleanup"):
+                env.cleanup()
+            elif hasattr(env, "stop"):
+                env.stop()
+            elif hasattr(env, "terminate"):
+                env.terminate()
+            logger.info("Cleaned up retired environment for task: %s", task_id)
+        except Exception as e:
+            error_str = str(e)
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.info(
+                    "Retired environment for task %s already cleaned up",
+                    task_id,
+                )
+            else:
+                logger.warning(
+                    "Error cleaning up retired environment for task %s: %s",
+                    task_id,
+                    e,
+                )
 
 
 def _cleanup_thread_worker():
@@ -1769,6 +2038,26 @@ def cleanup_all_environments():
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
+
+    with _env_lock:
+        retired = list(_retired_environments.values())
+        _retired_environments.clear()
+    for task_id, env, _retired_at in retired:
+        try:
+            if hasattr(env, "cleanup"):
+                env.cleanup()
+            elif hasattr(env, "stop"):
+                env.stop()
+            elif hasattr(env, "terminate"):
+                env.terminate()
+            cleaned += 1
+        except Exception as e:
+            logger.error(
+                "Error cleaning retired environment %s: %s",
+                task_id,
+                e,
+                exc_info=True,
+            )
     
     # Also clean any orphaned directories
     scratch_dir = _get_scratch_dir()
@@ -1856,13 +2145,15 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
 def _atexit_cleanup():
     """Stop cleanup thread and shut down all remaining sandboxes on exit."""
     _stop_cleanup_thread()
-    if _active_environments:
-        count = len(_active_environments)
+    if _active_environments or _retired_environments:
+        count = len(_active_environments) + len(_retired_environments)
         logger.info("Shutting down %d remaining sandbox(es)...", count)
         # Snapshot the env objects BEFORE cleanup_all_environments empties
         # the dict; we need them to wait on docker cleanup threads after the
         # registry has been cleared.
-        envs_to_wait = list(_active_environments.values())
+        envs_to_wait = list(_active_environments.values()) + [
+            item[1] for item in _retired_environments.values()
+        ]
         cleanup_all_environments()
         # Block briefly so docker stop/rm actually completes before the
         # interpreter exits. Issue #20561 — without this join, the daemon
@@ -2097,6 +2388,211 @@ def _resolve_command_cwd(
     return get_session_cwd(session_key) or default_cwd
 
 
+def _terminal_approval_execution_context(
+    *,
+    config: Dict[str, Any],
+    image: str,
+    resolved_workdir: str,
+    effective_timeout: int,
+    background: bool,
+    effective_pty: bool,
+    notify_on_complete: bool,
+    watch_patterns: Optional[List[str]],
+    resolved_docker_init_env_digest: Optional[str] = None,
+    docker_runtime_fingerprint: Optional[str] = None,
+) -> dict:
+    """Return log-safe execution identity bound into a one-use grant."""
+
+    env_type = str(config.get("env_type") or "local")
+    target: Dict[str, Any] = {}
+    target_label = env_type
+    if env_type == "ssh":
+        host = str(config.get("ssh_host") or "")
+        user = str(config.get("ssh_user") or "")
+        port = int(config.get("ssh_port") or 22)
+        target = {
+            "host": host,
+            "user": user,
+            "port": port,
+            "key_path": str(config.get("ssh_key") or ""),
+            "persistent": bool(config.get("ssh_persistent")),
+        }
+        target_label = f"ssh {user + '@' if user else ''}{host}:{port}"
+    elif env_type == "docker":
+        if not resolved_docker_init_env_digest:
+            from tools.environments.docker import (
+                docker_init_env_digest,
+                resolve_docker_init_env,
+            )
+
+            resolved_docker_init_env_digest = docker_init_env_digest(
+                resolve_docker_init_env(
+                    env=config.get("docker_env"),
+                    forward_env=config.get("docker_forward_env"),
+                )
+            )
+        target = {
+            "image": image,
+            "host_cwd": str(config.get("host_cwd") or ""),
+            "mount_cwd": bool(config.get("docker_mount_cwd_to_workspace")),
+            "volumes": list(config.get("docker_volumes") or []),
+            "init_env_digest": resolved_docker_init_env_digest,
+            "runtime_fingerprint": docker_runtime_fingerprint or "",
+            "run_as_host_user": bool(config.get("docker_run_as_host_user")),
+            "network": bool(config.get("docker_network", True)),
+            "extra_args": list(config.get("docker_extra_args") or []),
+            "persistent": bool(config.get("docker_persist_across_processes")),
+            "cpu": config.get("container_cpu"),
+            "memory": config.get("container_memory"),
+            "disk": config.get("container_disk"),
+        }
+        target_label = f"docker image={image}"
+    elif env_type in {"singularity", "modal", "daytona"}:
+        selected_backend = None
+        if env_type == "modal":
+            selected_backend = _get_modal_backend_state(
+                config.get("modal_mode")
+            ).get("selected_backend")
+        target = {
+            "image": image,
+            "modal_mode": str(config.get("modal_mode") or ""),
+            "selected_backend": selected_backend,
+            "persistent": bool(config.get("container_persistent", True)),
+            "cpu": config.get("container_cpu"),
+            "memory": config.get("container_memory"),
+            "disk": config.get("container_disk"),
+        }
+        target_label = f"{env_type} image={image}"
+        if selected_backend:
+            target_label += f" backend={selected_backend}"
+    else:
+        target = {"persistent": bool(config.get("local_persistent"))}
+
+    mode = "background" if background else "foreground"
+    return {
+        "background": bool(background),
+        "display": (
+            f"{target_label} cwd={resolved_workdir} {mode} "
+            f"timeout={int(effective_timeout)}s pty={bool(effective_pty)}"
+        ),
+        "notify_on_complete": bool(notify_on_complete),
+        "pty": bool(effective_pty),
+        "target": target,
+        "timeout": int(effective_timeout),
+        "watch_patterns": list(watch_patterns or []),
+    }
+
+
+def _resolve_docker_runtime_identity(
+    *,
+    config: Dict[str, Any],
+    image: str,
+    cwd: str,
+    task_id: str,
+    resolved_init_env: Optional[Dict[str, str]] = None,
+) -> tuple[Dict[str, str], str, str, List[str]]:
+    """Freeze the Docker environment and derive its exact reuse identity."""
+
+    from tools.environments.docker import (
+        docker_init_env_digest,
+        docker_runtime_fingerprint,
+        resolve_docker_init_env,
+        resolve_docker_implicit_mount_specs,
+        resolve_docker_persistent_mount_specs,
+        _resolve_host_user_spec,
+    )
+
+    snapshot = (
+        dict(resolved_init_env)
+        if resolved_init_env is not None
+        else resolve_docker_init_env(
+            env=config.get("docker_env"),
+            forward_env=config.get("docker_forward_env"),
+        )
+    )
+    init_env_digest = docker_init_env_digest(snapshot)
+    implicit_mounts = resolve_docker_implicit_mount_specs()
+    volumes = [
+        value.strip()
+        for value in (config.get("docker_volumes") or [])
+        if isinstance(value, str) and value.strip() and ":" in value
+    ]
+    workspace_explicitly_mounted = any(
+        ":/workspace" in value for value in volumes
+    )
+    host_cwd = str(config.get("host_cwd") or "")
+    host_cwd_abs = (
+        os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+    )
+    bind_host_cwd = bool(
+        config.get("docker_mount_cwd_to_workspace")
+        and host_cwd_abs
+        and os.path.isdir(host_cwd_abs)
+        and not workspace_explicitly_mounted
+    )
+    host_user_spec = (
+        _resolve_host_user_spec()
+        if config.get("docker_run_as_host_user")
+        else None
+    )
+    run_as_host_user = host_user_spec is not None
+    persistent_mounts = resolve_docker_persistent_mount_specs(
+        persistent_filesystem=bool(config.get("container_persistent", True)),
+        task_id=task_id,
+        bind_host_cwd=bind_host_cwd,
+        workspace_explicitly_mounted=workspace_explicitly_mounted,
+    )
+    fingerprint = docker_runtime_fingerprint(
+        image=image,
+        cwd=cwd,
+        cpu=config.get("container_cpu", 1),
+        memory=config.get("container_memory", 5120),
+        disk=config.get("container_disk", 51200),
+        persistent_filesystem=bool(config.get("container_persistent", True)),
+        task_id=task_id,
+        volumes=volumes + implicit_mounts,
+        network=bool(config.get("docker_network", True)),
+        host_cwd=host_cwd_abs,
+        auto_mount_cwd=bind_host_cwd,
+        run_as_host_user=run_as_host_user,
+        extra_args=config.get("docker_extra_args") or [],
+        persist_across_processes=bool(
+            config.get("docker_persist_across_processes", True)
+        ),
+        init_env_digest=init_env_digest,
+        host_user_spec=host_user_spec,
+        persistent_mounts=persistent_mounts,
+    )
+    return snapshot, init_env_digest, fingerprint, implicit_mounts
+
+
+def _container_creation_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy the terminal settings consumed by container constructors."""
+
+    return {
+        "container_cpu": config.get("container_cpu", 1),
+        "container_memory": config.get("container_memory", 5120),
+        "container_disk": config.get("container_disk", 51200),
+        "container_persistent": config.get("container_persistent", True),
+        "modal_mode": config.get("modal_mode", "auto"),
+        "docker_volumes": config.get("docker_volumes", []),
+        "docker_mount_cwd_to_workspace": config.get(
+            "docker_mount_cwd_to_workspace", False
+        ),
+        "docker_forward_env": config.get("docker_forward_env", []),
+        "docker_env": config.get("docker_env", {}),
+        "docker_run_as_host_user": config.get(
+            "docker_run_as_host_user", False
+        ),
+        "docker_extra_args": config.get("docker_extra_args", []),
+        "docker_network": config.get("docker_network", True),
+        "docker_persist_across_processes": config.get(
+            "docker_persist_across_processes", True
+        ),
+        "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+    }
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -2205,6 +2701,43 @@ def terminal_tool(
             cwd = config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+        resolved_docker_init_env: Optional[Dict[str, str]] = None
+        resolved_docker_implicit_mounts: Optional[List[str]] = None
+        resolved_docker_init_env_digest: Optional[str] = None
+        requested_docker_runtime_fingerprint: Optional[str] = None
+        # A session's recorded cwd is mutable command state, not part of a
+        # shared container's immutable identity. Seed shared containers from
+        # stable config and isolated containers from their declared
+        # override/config; the per-command cwd remains separately
+        # approval-bound and is passed to env.execute().
+        creation_cwd = cwd
+        if env_type in _CONTAINER_BACKENDS:
+            creation_cwd = (
+                config["cwd"]
+                if effective_task_id == "default"
+                else overrides.get("cwd") or config["cwd"]
+            )
+            if _is_unusable_container_cwd(creation_cwd):
+                creation_cwd = config["cwd"]
+        if env_type == "docker":
+            (
+                resolved_docker_init_env,
+                resolved_docker_init_env_digest,
+                requested_docker_runtime_fingerprint,
+                resolved_docker_implicit_mounts,
+            ) = _resolve_docker_runtime_identity(
+                config=config,
+                image=image,
+                cwd=creation_cwd,
+                task_id=effective_task_id,
+            )
+        requested_runtime_identity = _requested_environment_runtime_identity(
+            config=config,
+            image=image,
+            cwd=creation_cwd,
+            task_id=effective_task_id,
+            docker_runtime_fingerprint=requested_docker_runtime_fingerprint,
+        )
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
@@ -2250,11 +2783,23 @@ def terminal_tool(
             if _existing_key is not None:
                 _last_activity[_existing_key] = time.time()
                 env = _active_environments[_existing_key]
-                needs_creation = False
+                needs_creation = not _environment_matches_runtime(
+                    env,
+                    env_type,
+                    requested_runtime_identity,
+                )
+                stale_env = env if needs_creation else None
+                if needs_creation:
+                    env = None
             else:
                 needs_creation = True
+                stale_env = None
+                env = None
 
-        if needs_creation:
+        # Docker creation is deferred until after the approval decision. This
+        # avoids attaching host mounts, capturing forwarded credentials, or
+        # starting a billable container for an action the guard will halt.
+        if needs_creation and env_type != "docker":
             # Per-task lock: only one thread creates the sandbox, others wait
             with _creation_locks_lock:
                 if effective_task_id not in _creation_locks:
@@ -2268,10 +2813,19 @@ def terminal_tool(
                         effective_task_id if effective_task_id in _active_environments
                         else (task_id if task_id and task_id in _active_environments else None)
                     )
-                    if _existing_key is not None:
+                    if _existing_key is not None and _environment_matches_runtime(
+                        _active_environments[_existing_key],
+                        env_type,
+                        requested_runtime_identity,
+                    ):
                         _last_activity[_existing_key] = time.time()
                         env = _active_environments[_existing_key]
                         needs_creation = False
+                    elif _existing_key is not None:
+                        # Config may have changed while this caller waited for
+                        # the creation lock. Retire the exact candidate we are
+                        # about to replace, not merely the pre-lock snapshot.
+                        stale_env = _active_environments[_existing_key]
 
                 if needs_creation:
                     if env_type == "singularity":
@@ -2290,22 +2844,7 @@ def terminal_tool(
 
                         container_config = None
                         if env_type in {"docker", "singularity", "modal", "daytona"}:
-                            container_config = {
-                                "container_cpu": config.get("container_cpu", 1),
-                                "container_memory": config.get("container_memory", 5120),
-                                "container_disk": config.get("container_disk", 51200),
-                                "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
-                                "docker_network": config.get("docker_network", True),
-                                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
-                                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
-                            }
+                            container_config = _container_creation_config(config)
 
                         local_config = None
                         if env_type == "local":
@@ -2316,7 +2855,7 @@ def terminal_tool(
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
-                            cwd=cwd,
+                            cwd=creation_cwd,
                             timeout=effective_timeout,
                             ssh_config=ssh_config,
                             container_config=container_config,
@@ -2324,6 +2863,19 @@ def terminal_tool(
                             task_id=effective_task_id,
                             host_cwd=config.get("host_cwd"),
                         )
+                        if not _environment_matches_runtime(
+                            new_env,
+                            env_type,
+                            requested_runtime_identity,
+                        ):
+                            try:
+                                new_env.cleanup()
+                            except Exception:
+                                pass
+                            raise RuntimeError(
+                                f"{env_type} runtime identity changed during "
+                                "environment creation"
+                            )
                     except ImportError as e:
                         return json.dumps({
                             "output": "",
@@ -2333,12 +2885,17 @@ def terminal_tool(
                         }, ensure_ascii=False)
 
                     with _env_lock:
+                        if stale_env is not None and stale_env is not new_env:
+                            _retire_environment_locked(
+                                effective_task_id,
+                                stale_env,
+                            )
                         _active_environments[effective_task_id] = new_env
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        if env is None:
+        if env is None and env_type != "docker":
             # Unreachable in practice (either the cached branch or the creation
             # branch assigned env above); guard for type-safety and so a future
             # refactor of the branches can't fall through to an AttributeError.
@@ -2371,6 +2928,76 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
+        # Validate and resolve the execution directory before approval. The
+        # same resolved value is bound into a detached Kanban grant and used
+        # for execution, avoiding a cwd time-of-check/time-of-use gap.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+        resolved_workdir = _resolve_command_cwd(
+            workdir=workdir,
+            default_cwd=cwd,
+            session_key=session_key,
+        )
+        pty_disabled_reason = None
+        effective_pty = pty
+        if pty and _command_requires_pipe_stdin(command):
+            effective_pty = False
+            pty_disabled_reason = (
+                "PTY disabled for this command because it expects piped stdin/EOF "
+                "(for example gh auth login --with-token). For local background "
+                "processes, call process(action='close') after writing so it receives "
+                "EOF."
+            )
+        effective_watch_patterns, notification_conflict_note = (
+            _resolve_notification_flag_conflict(
+                notify_on_complete=bool(notify_on_complete),
+                watch_patterns=watch_patterns,
+                background=bool(background),
+            )
+        )
+        approval_execution_context = _terminal_approval_execution_context(
+            config=config,
+            image=image,
+            resolved_workdir=resolved_workdir,
+            effective_timeout=effective_timeout,
+            background=background,
+            effective_pty=effective_pty,
+            notify_on_complete=notify_on_complete,
+            watch_patterns=effective_watch_patterns,
+            resolved_docker_init_env_digest=(
+                getattr(env, "init_env_digest", None)
+                if env_type == "docker" and env is not None
+                else resolved_docker_init_env_digest
+            ),
+            docker_runtime_fingerprint=(
+                getattr(env, "runtime_fingerprint", None)
+                if env_type == "docker" and env is not None
+                else requested_docker_runtime_fingerprint
+            ),
+        )
+        effective_docker_host_access = (
+            bool(getattr(env, "has_host_access"))
+            if env_type == "docker"
+            and env is not None
+            and hasattr(env, "has_host_access")
+            else _docker_has_host_access(
+                config,
+                resolved_docker_implicit_mounts,
+            )
+        )
+
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
@@ -2382,19 +3009,21 @@ def terminal_tool(
         if not force:
             approval = _check_all_guards(
                 command, env_type,
-                has_host_access=_docker_has_host_access(config),
+                has_host_access=effective_docker_host_access,
+                workdir=resolved_workdir,
+                execution_context=approval_execution_context,
             )
             if not approval["approved"]:
                 # Detached Kanban card owners cannot wait on the gateway's
-                # process-local approval callback.  The approval layer parks
-                # the card in its durable broker and returns this marker; keep
-                # it at the top level so the agent loop can persist the tool
-                # result and stop cleanly without another model call.
+                # process-local approval callback. Trusted approval control
+                # returns this signed marker after either a durable transition
+                # or a fail-closed persistence error; keep it at the top level
+                # so the loop stops without another model call.
                 if (
                     approval.get("status") == "kanban_approval_pending"
                     and approval.get("kanban_approval_pending") is True
                 ):
-                    return json.dumps({
+                    pending_result = {
                         "output": "",
                         "exit_code": -1,
                         "error": "",
@@ -2405,7 +3034,14 @@ def terminal_tool(
                         "description": approval.get(
                             "description", "command requires approval"
                         ),
-                    }, ensure_ascii=False)
+                        "outcome": approval.get(
+                            "outcome", "approval_pending"
+                        ),
+                    }
+                    pause_token = approval.get("_hermes_kanban_pause_token")
+                    if isinstance(pause_token, str) and pause_token:
+                        pending_result["_hermes_kanban_pause_token"] = pause_token
+                    return json.dumps(pending_result, ensure_ascii=False)
                 # Check if this is an approval_required (gateway ask mode)
                 if approval.get("status") == "pending_approval":
                     return json.dumps({
@@ -2441,38 +3077,73 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
+        if env_type == "docker" and env is None:
+            # Approval (including a resumed one-use grant) is now final. Create
+            # exactly the runtime whose frozen fingerprint was displayed and
+            # bound above; never re-read forwarded env values after consent.
+            with _creation_locks_lock:
+                if effective_task_id not in _creation_locks:
+                    _creation_locks[effective_task_id] = threading.Lock()
+                task_lock = _creation_locks[effective_task_id]
+            with task_lock:
+                with _env_lock:
+                    candidate = _active_environments.get(effective_task_id)
+                    if candidate is None and task_id:
+                        candidate = _active_environments.get(task_id)
+                if candidate is not None and _environment_matches_runtime(
+                    candidate,
+                    env_type,
+                    requested_runtime_identity,
+                ):
+                    env = candidate
+                else:
+                    stale_env = candidate or stale_env
+                    if stale_env is not None:
+                        # A persisted container may be serving another session
+                        # or Hermes process. Detach this cache key and leave the
+                        # old runtime to its owner/orphan lifecycle; deleting it
+                        # here can kill a live sibling command.
+                        with _env_lock:
+                            _retire_environment_locked(
+                                effective_task_id,
+                                stale_env,
+                            )
+                    new_env = _create_environment(
+                        env_type=env_type,
+                        image=image,
+                        cwd=creation_cwd,
+                        timeout=effective_timeout,
+                        container_config=_container_creation_config(config),
+                        task_id=effective_task_id,
+                        host_cwd=config.get("host_cwd"),
+                        resolved_docker_init_env=resolved_docker_init_env,
+                        resolved_docker_implicit_mounts=(
+                            resolved_docker_implicit_mounts
+                        ),
+                    )
+                    if (
+                        getattr(new_env, "runtime_fingerprint", None)
+                        != requested_docker_runtime_fingerprint
+                    ):
+                        try:
+                            new_env.cleanup(force_remove=True)
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            "Docker runtime identity changed between approval "
+                            "and container creation"
+                        )
+                    with _env_lock:
+                        _active_environments[effective_task_id] = new_env
+                        _last_activity[effective_task_id] = time.time()
+                    env = new_env
 
-        # Prepare command for execution
-        pty_disabled_reason = None
-        effective_pty = pty
-        if pty and _command_requires_pipe_stdin(command):
-            effective_pty = False
-            pty_disabled_reason = (
-                "PTY disabled for this command because it expects piped stdin/EOF "
-                "(for example gh auth login --with-token). For local background "
-                "processes, call process(action='close') after writing so it receives "
-                "EOF."
-            )
-
-        # The session key that drives cwd records: get_current_session_key()'s
-        # contextvar doesn't cross tool-worker threads, so fall back to the raw
-        # task_id (which IS the session_key for the top-level agent) — a
-        # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
+        if env is None:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "Terminal environment unavailable (creation raced cleanup)",
+            }, ensure_ascii=False)
 
         if background:
             # Spawn a tracked background process via the process registry.
@@ -2480,11 +3151,7 @@ def terminal_tool(
             # For non-local backends: runs inside the sandbox via env.execute().
             from tools.process_registry import process_registry
 
-            effective_cwd = _resolve_command_cwd(
-                workdir=workdir,
-                default_cwd=cwd,
-                session_key=session_key,
-            )
+            effective_cwd = resolved_workdir
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2677,11 +3344,8 @@ def terminal_tool(
                 # notify_on_complete is the more useful signal for "let me know
                 # when the task finishes"; watch_patterns should be reserved for
                 # standalone mid-process signals on long-lived processes.
-                watch_patterns, conflict_note = _resolve_notification_flag_conflict(
-                    notify_on_complete=bool(notify_on_complete),
-                    watch_patterns=watch_patterns,
-                    background=bool(background),
-                )
+                watch_patterns = effective_watch_patterns
+                conflict_note = notification_conflict_note
                 if conflict_note:
                     logger.warning("background proc %s: %s", proc_session.id, conflict_note)
                     result_data["watch_patterns_ignored"] = conflict_note
@@ -2726,7 +3390,7 @@ def terminal_tool(
             max_retries = 3
             retry_count = 0
             result = None
-            command_cwd = None
+            command_cwd = resolved_workdir
 
             # Clean interrupt slate for an approved command, ONCE before the
             # retry loop: drop a stale bit that landed on this thread during the
@@ -2740,11 +3404,6 @@ def terminal_tool(
 
             while retry_count <= max_retries:
                 try:
-                    command_cwd = _resolve_command_cwd(
-                        workdir=workdir,
-                        default_cwd=cwd,
-                        session_key=session_key,
-                    )
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,

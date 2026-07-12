@@ -1950,6 +1950,8 @@ Control how Hermes handles potentially dangerous commands:
 ```yaml
 approvals:
   mode: smart   # smart | manual | off
+  kanban_mode: ask       # ask | deny | approve
+  kanban_timeout: 900    # durable card-approval expiry in seconds
 ```
 
 | Mode | Behavior |
@@ -1959,6 +1961,17 @@ approvals:
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
+
+Detached Kanban card owners use `kanban_mode`. In `ask` mode, an escalated
+action atomically parks the card and releases the worker slot. Approving it
+from the originating gateway chat resumes the same worker session with a
+task-, run-, profile-, nonce-, expiry-, and exact-action-bound one-use grant.
+The exact action includes the resolved working directory, backend target
+(such as the SSH host or container image), and execution mode/timeout; that
+context is shown in the approval notice. Changing any of it requires a fresh
+decision.
+If no authorized gateway route exists, the card remains blocked instead of
+falling through to headless auto-approval.
 
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.

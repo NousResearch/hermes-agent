@@ -102,8 +102,10 @@ class TestOverrideCwdSanitizedAtCallSite:
 
         class _DummyEnv:
             cwd = config_cwd
+            runtime_fingerprint = "test-runtime"
 
             def execute(self, *a, **k):
+                captured["execute_cwd"] = k.get("cwd")
                 return {"output": "", "exit_code": 0}
 
         def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
@@ -114,9 +116,15 @@ class TestOverrideCwdSanitizedAtCallSite:
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
         monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
         monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr(
+            tt,
+            "_resolve_docker_runtime_identity",
+            lambda **kwargs: ({}, "sha256:test", "test-runtime", []),
+        )
         # Force a fresh environment build so _create_environment is invoked.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
+        monkeypatch.setattr(tt, "_session_cwd", {})
 
         task_id = "sess-host-cwd"
         tt.register_task_env_overrides(task_id, {"cwd": override_cwd})
@@ -126,6 +134,7 @@ class TestOverrideCwdSanitizedAtCallSite:
             tt.clear_task_env_overrides(task_id)
             tt._active_environments.pop(task_id, None)
             tt._active_environments.pop("default", None)
+        self._last_execute_cwd = captured.get("execute_cwd")
         return captured.get("cwd")
 
     def test_windows_host_override_does_not_reach_container(self, monkeypatch):
@@ -140,10 +149,15 @@ class TestOverrideCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(monkeypatch, "/home/someuser/project")
         assert cwd == "/root"
 
-    def test_valid_container_override_is_preserved(self, monkeypatch):
-        # RL/benchmark envs set an in-container path; it must pass through.
+    def test_cwd_only_override_uses_stable_runtime_and_requested_command_cwd(
+        self, monkeypatch
+    ):
+        # CWD-only sessions share the default runtime, so docker run uses the
+        # stable configured cwd while the command itself uses the approved
+        # in-container override.
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
-        assert cwd == "/workspace/task42"
+        assert cwd == "/root"
+        assert self._last_execute_cwd == "/workspace/task42"
 
 
 class TestFileOpsCwdSanitizedAtCallSite:
@@ -154,8 +168,14 @@ class TestFileOpsCwdSanitizedAtCallSite:
     ``docker run -w`` and ``search_files`` returns an empty workspace (#54447).
     """
 
-    def _run_and_capture_cwd(self, monkeypatch, override_cwd, env_type="docker",
-                             config_cwd="/workspace"):
+    def _run_and_capture_cwd(
+        self,
+        monkeypatch,
+        override_cwd,
+        env_type="docker",
+        config_cwd="/workspace",
+        isolated=False,
+    ):
         """Drive ``_get_file_ops()`` on a container backend with a host-path cwd
         override registered, and return the cwd that reached
         ``_create_environment`` (i.e. the cwd passed to ``docker run -w``).
@@ -196,15 +216,36 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
         class _DummyEnv:
             cwd = config_cwd
+            runtime_fingerprint = "v1-file-ops-cwd-test"
 
             def execute(self, *a, **k):
                 return {"output": "", "exit_code": 0}
 
         def fake_create_environment(env_type, image, cwd, timeout, **kwargs):
             captured["cwd"] = cwd
-            return _DummyEnv()
+            env = _DummyEnv()
+            identity = tt._requested_environment_runtime_identity(
+                config=config,
+                image=image,
+                cwd=cwd,
+                task_id=kwargs.get("task_id", "default"),
+                docker_runtime_fingerprint=(
+                    env.runtime_fingerprint if env_type == "docker" else None
+                ),
+            )
+            return tt._stamp_environment_runtime_identity(env, identity)
 
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(
+            tt,
+            "_resolve_docker_runtime_identity",
+            lambda **kwargs: (
+                {},
+                "sha256:file-ops-cwd-test",
+                "v1-file-ops-cwd-test",
+                [],
+            ),
+        )
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
         monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
         # Force a fresh environment build.
@@ -214,7 +255,10 @@ class TestFileOpsCwdSanitizedAtCallSite:
         monkeypatch.setattr(tt, "_session_cwd", {})
 
         task_id = "sess-fileops-host-cwd"
-        tt.register_task_env_overrides(task_id, {"cwd": override_cwd})
+        overrides = {"cwd": override_cwd}
+        if isolated:
+            overrides["docker_image"] = config["docker_image"]
+        tt.register_task_env_overrides(task_id, overrides)
         try:
             ft._get_file_ops(task_id)
         finally:
@@ -243,8 +287,14 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.
-        cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
+        cwd = self._run_and_capture_cwd(
+            monkeypatch, "/workspace/task42", isolated=True
+        )
         assert cwd == "/workspace/task42"
+
+    def test_cwd_only_override_uses_stable_shared_docker_runtime(self, monkeypatch):
+        cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
+        assert cwd == "/workspace"
 
     def test_host_override_sanitized_on_singularity(self, monkeypatch):
         cwd = self._run_and_capture_cwd(
@@ -255,3 +305,128 @@ class TestFileOpsCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(
             monkeypatch, "/Users/me/workspace", env_type="modal")
         assert cwd == "/workspace"
+
+
+class TestFileOpsHostPathDispatch:
+    @staticmethod
+    def _exercise_read(monkeypatch, requested_path, registered_cwd):
+        import json
+
+        import tools.file_tools as ft
+        from tools.file_operations import ShellFileOperations
+
+        commands = []
+
+        class DockerEnvironment:
+            cwd = "/workspace"
+            _runtime_cwd = "/workspace"
+
+            def execute(self, command, **_kwargs):
+                commands.append(command)
+                if command.startswith("wc -c"):
+                    output = "6\n"
+                elif command.startswith("wc -l"):
+                    output = "1\n"
+                else:
+                    output = "hello\n"
+                return {"output": output, "returncode": 0}
+
+        env = DockerEnvironment()
+        config = {
+            "env_type": "docker",
+            "cwd": "/workspace",
+            "docker_image": "python:3.11",
+        }
+        monkeypatch.setattr(tt, "_get_env_config", lambda: config)
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+        monkeypatch.setattr(tt, "_session_cwd", {})
+        monkeypatch.setattr(tt, "_active_environments", {"default": env})
+        monkeypatch.setattr(ft, "_file_ops_cache", {})
+        monkeypatch.setattr(ft, "_read_tracker", {})
+        tt.register_task_env_overrides(
+            "desktop-session",
+            {"cwd": registered_cwd},
+        )
+        monkeypatch.setattr(
+            ft,
+            "_get_file_ops",
+            lambda _task_id: ShellFileOperations(env),
+        )
+
+        result = json.loads(
+            ft.read_file_tool(requested_path, task_id="desktop-session")
+        )
+        return result, commands
+
+    def test_relative_host_workspace_path_dispatches_inside_docker(
+        self, monkeypatch,
+    ):
+        result, commands = self._exercise_read(
+            monkeypatch,
+            "notes.txt",
+            "/Users/me/workspace",
+        )
+
+        assert "error" not in result
+        assert commands
+        assert all("/Users/me/workspace" not in command for command in commands)
+        assert all("/workspace/notes.txt" in command for command in commands)
+
+    def test_absolute_registered_host_path_maps_inside_docker(
+        self, monkeypatch,
+    ):
+        result, commands = self._exercise_read(
+            monkeypatch,
+            "/Users/me/workspace/notes.txt",
+            "/Users/me/workspace",
+        )
+
+        assert "error" not in result
+        assert commands
+        assert all("/workspace/notes.txt" in command for command in commands)
+
+    def test_windows_registered_host_path_maps_inside_docker(
+        self, monkeypatch,
+    ):
+        result, commands = self._exercise_read(
+            monkeypatch,
+            r"C:\Users\me\workspace\notes.txt",
+            r"C:\Users\me\workspace",
+        )
+
+        assert "error" not in result
+        assert commands
+        assert all("/workspace/notes.txt" in command for command in commands)
+
+    def test_valid_isolated_container_override_remains_absolute(
+        self, monkeypatch,
+    ):
+        import tools.file_tools as ft
+
+        class DockerEnvironment:
+            cwd = "/workspace"
+            _runtime_cwd = "/workspace"
+
+        monkeypatch.setattr(
+            tt,
+            "_get_env_config",
+            lambda: {"env_type": "docker", "cwd": "/workspace"},
+        )
+        monkeypatch.setattr(tt, "_task_env_overrides", {})
+        monkeypatch.setattr(tt, "_session_cwd", {})
+        monkeypatch.setattr(
+            tt,
+            "_active_environments",
+            {"isolated-task": DockerEnvironment()},
+        )
+        tt.register_task_env_overrides(
+            "isolated-task",
+            {
+                "cwd": "/workspace/task42",
+                "docker_image": "python:3.11",
+            },
+        )
+
+        assert str(
+            ft._resolve_path_for_task("notes.txt", task_id="isolated-task")
+        ) == "/workspace/task42/notes.txt"

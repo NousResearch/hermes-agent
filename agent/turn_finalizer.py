@@ -110,44 +110,79 @@ def finalize_turn(
         # We route through ``_record_task_failure(outcome="timed_out")``
         # rather than ``kanban_block`` so this counts toward the dispatcher's
         # consecutive-failure circuit breaker (#29747 gap 2).
-        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
-        if _kanban_task:
+        _kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        try:
+            from agent.execution_context import is_kanban_owner_context
+
+            _is_kanban_owner = bool(is_kanban_owner_context())
+        except Exception:
+            _is_kanban_owner = False
+        if _kanban_task and not _is_kanban_owner:
+            logger.warning(
+                "Skipped budget-exhausted Kanban failure for task %s: "
+                "current execution role is not the card owner",
+                _kanban_task,
+            )
+        elif _kanban_task:
+            _run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+            _claim_lock = os.environ.get(
+                "HERMES_KANBAN_CLAIM_LOCK", ""
+            ).strip()
             try:
-                from hermes_cli import kanban_db as _kb
-                _conn = _kb.connect()
-                try:
-                    _kb._record_task_failure(
-                        _conn,
-                        _kanban_task,
-                        error=(
-                            f"Iteration budget exhausted "
-                            f"({api_call_count}/{agent.max_iterations}) — "
-                            "task could not complete within the allowed "
-                            "iterations"
-                        ),
-                        outcome="timed_out",
-                        release_claim=True,
-                        end_run=True,
-                        event_payload_extra={
-                            "budget_used": api_call_count,
-                            "budget_max": agent.max_iterations,
-                        },
-                    )
-                    logger.info(
-                        "recorded budget-exhausted failure for task %s (%d/%d)",
-                        _kanban_task, api_call_count, agent.max_iterations,
-                    )
-                finally:
-                    try:
-                        _conn.close()
-                    except Exception:
-                        pass
-            except Exception:
+                _expected_run_id = int(_run_raw)
+            except (TypeError, ValueError):
+                _expected_run_id = None
+            if _expected_run_id is None or not _claim_lock:
                 logger.warning(
-                    "Failed to record budget-exhausted failure for task %s",
+                    "Skipped budget-exhausted Kanban failure for task %s: "
+                    "missing or malformed exact run/claim identity",
                     _kanban_task,
-                    exc_info=True,
                 )
+            else:
+                try:
+                    from hermes_cli import kanban_db as _kb
+                    _conn = _kb.connect()
+                    try:
+                        _kb._record_task_failure(
+                            _conn,
+                            _kanban_task,
+                            error=(
+                                f"Iteration budget exhausted "
+                                f"({api_call_count}/{agent.max_iterations}) — "
+                                "task could not complete within the allowed "
+                                "iterations"
+                            ),
+                            outcome="timed_out",
+                            release_claim=True,
+                            end_run=True,
+                            expected_run_id=_expected_run_id,
+                            expected_claim_lock=_claim_lock,
+                            event_payload_extra={
+                                "budget_used": api_call_count,
+                                "budget_max": agent.max_iterations,
+                            },
+                        )
+                        logger.info(
+                            "recorded budget-exhausted failure for task %s "
+                            "run %s (%d/%d)",
+                            _kanban_task,
+                            _expected_run_id,
+                            api_call_count,
+                            agent.max_iterations,
+                        )
+                    finally:
+                        try:
+                            _conn.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    logger.warning(
+                        "Failed to record budget-exhausted failure for task %s "
+                        "run %s",
+                        _kanban_task,
+                        _expected_run_id,
+                        exc_info=True,
+                    )
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")

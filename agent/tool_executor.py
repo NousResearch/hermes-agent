@@ -196,8 +196,28 @@ def _kanban_approval_pause(tool_name: str, result: Any) -> Optional[dict[str, An
     return kanban_approval_pending_metadata(result)
 
 
-def _skipped_for_kanban_approval(tool_name: str, request_id: Any) -> str:
-    """Build the matching result for a sibling call not started after pause."""
+def _skipped_for_kanban_approval(
+    tool_name: str,
+    request_id: Any,
+    outcome: Any = "approval_pending",
+) -> str:
+    """Build a matching result for a sibling skipped after approval control halt."""
+
+    if outcome == "approval_persistence_failed":
+        message = (
+            f"{tool_name} was not started because approval state could not be "
+            "durably persisted or verified; this Kanban worker is stopping."
+        )
+    elif outcome == "approval_unavailable":
+        message = (
+            f"{tool_name} was not started because this Kanban card was blocked "
+            "without an authorized approval route."
+        )
+    else:
+        message = (
+            f"{tool_name} was not started because this Kanban card is "
+            "paused pending approval."
+        )
 
     return json.dumps(
         {
@@ -205,10 +225,7 @@ def _skipped_for_kanban_approval(tool_name: str, request_id: Any) -> str:
             "error": "",
             "reason": "kanban_approval_pending",
             "request_id": request_id,
-            "message": (
-                f"{tool_name} was not started because this Kanban card is "
-                "paused pending approval."
-            ),
+            "message": message,
         },
         ensure_ascii=False,
     )
@@ -392,9 +409,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         function_name = tool_call.function.name
 
         if _batch_kanban_pause is not None:
-            # A prior pre_tool hook durably parked the card. Do not run more
-            # middleware/hooks (which could create additional requests) and do
-            # not submit this sibling to the executor.
+            # A prior pre_tool hook entered trusted approval-control halt. Do
+            # not run more middleware/hooks (which could create additional
+            # requests) and do not submit this sibling to the executor. The
+            # persistence-failure outcome deliberately does not attest parking.
             function_args, _ = _parse_tool_arguments(tool_call.function.arguments)
             parsed_calls.append(
                 (
@@ -403,7 +421,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_args,
                     [],
                     _skipped_for_kanban_approval(
-                        function_name, _batch_kanban_pause.get("request_id")
+                        function_name,
+                        _batch_kanban_pause.get("request_id"),
+                        _batch_kanban_pause.get("outcome"),
                     ),
                     False,
                 )
@@ -583,16 +603,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
 
     if _batch_kanban_pause is not None:
-        # A pause may appear after earlier siblings were prepared. Nothing in
-        # the batch may execute once the card has been parked, so replace every
-        # still-runnable sibling with a matched synthetic tool result before
-        # the executor is created. Keep ordinary plugin/guardrail blocks and
-        # the one durable pending result unchanged.
+        # A halt may appear after earlier siblings were prepared. Nothing in
+        # the batch may execute after trusted approval control stops the worker,
+        # so replace every still-runnable sibling before the executor is created.
+        # Keep ordinary plugin/guardrail blocks and the signed control result.
         _rewritten_calls = []
         for tc, name, args, trace, block_result, blocked_by_guardrail in parsed_calls:
             if block_result is None:
                 block_result = _skipped_for_kanban_approval(
-                    name, _batch_kanban_pause.get("request_id")
+                    name,
+                    _batch_kanban_pause.get("request_id"),
+                    _batch_kanban_pause.get("outcome"),
                 )
             _rewritten_calls.append(
                 (tc, name, args, trace, block_result, blocked_by_guardrail)
@@ -963,10 +984,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
             _kanban_pause = _kanban_approval_pause(function_name, function_result)
+            if _kanban_pause is not None:
+                # Strip the process-local capability before callbacks,
+                # persistence, or model-visible conversation history.
+                function_result = json.dumps(_kanban_pause, ensure_ascii=False)
             if blocked:
                 effect_disposition = "none"
             elif _kanban_pause is not None:
-                # The durable broker parked the card before any side effect.
+                # The approval guard blocked this tool before any side effect.
+                # Persistence-failure does not assert a durable card transition.
                 effect_disposition = "none"
 
             if not blocked and _kanban_pause is None:
@@ -1098,6 +1124,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
+
+    if (
+        _batch_kanban_pause is not None
+        and getattr(agent, "_kanban_approval_pending", None) is None
+    ):
+        # Pre-tool plugin blocks are sanitized before they enter the
+        # transcript. Preserve their already-verified control metadata until
+        # every sibling tool_call has a matching result, then halt the turn.
+        agent._kanban_approval_pending = _batch_kanban_pause
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools = len(parsed_calls)
@@ -1300,6 +1335,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
+        _plugin_pause: Optional[dict[str, Any]] = None
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             _plugin_pause = _kanban_approval_pause(function_name, _block_msg)
@@ -1657,7 +1693,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
-        _kanban_pause = _kanban_approval_pause(function_name, function_result)
+        _kanban_pause = _plugin_pause or _kanban_approval_pause(
+            function_name,
+            function_result,
+        )
+        if _kanban_pause is not None:
+            # The signed marker is internal control data; only the normalized
+            # redacted metadata belongs in callbacks and the transcript.
+            function_result = json.dumps(_kanban_pause, ensure_ascii=False)
 
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
@@ -1802,9 +1845,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
         if _kanban_pause is not None:
-            # The approval broker has already atomically parked the card. Stop
-            # this tool batch, but first answer every remaining tool_call_id so
-            # strict providers never see an orphaned assistant tool-call turn.
+            # Trusted approval control flow has halted this worker. Persisted
+            # outcomes parked the card; persistence-failure explicitly did not
+            # attest that. In either case, answer every remaining tool_call_id
+            # so strict providers never see an orphaned assistant tool-call turn.
             agent._kanban_approval_pending = _kanban_pause
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
@@ -1812,7 +1856,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     make_tool_result_message(
                         skipped_name,
                         _skipped_for_kanban_approval(
-                            skipped_name, _kanban_pause.get("request_id")
+                            skipped_name,
+                            _kanban_pause.get("request_id"),
+                            _kanban_pause.get("outcome"),
                         ),
                         skipped_tc.id,
                         effect_disposition="none",
@@ -1900,6 +1946,34 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
     for kind, calls in segments:
+        _kanban_pause = getattr(agent, "_kanban_approval_pending", None)
+        if _kanban_pause is not None:
+            # A prior segment parked this Kanban card. Do not enter either
+            # executor for later segments: both paths run request middleware,
+            # plugin hooks, guardrails, and other pre-dispatch side effects.
+            # Answer every remaining tool_call_id directly so strict providers
+            # still receive a complete, ordered assistant/tool-call turn.
+            for skipped_tc in calls:
+                skipped_name = skipped_tc.function.name
+                messages.append(
+                    make_tool_result_message(
+                        skipped_name,
+                        _skipped_for_kanban_approval(
+                            skipped_name,
+                            _kanban_pause.get("request_id"),
+                            _kanban_pause.get("outcome"),
+                        ),
+                        skipped_tc.id,
+                        effect_disposition="none",
+                    )
+                )
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"approval-paused tool result {skipped_name}",
+                )
+            continue
+
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":
             execute_tool_calls_concurrent(

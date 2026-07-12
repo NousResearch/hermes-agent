@@ -345,6 +345,16 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
+# Command Approval Policies
+# =============================================================================
+# approvals:
+#   mode: smart          # smart | manual | off for interactive/gateway sessions
+#   timeout: 60          # interactive prompt timeout in seconds
+#   cron_mode: deny      # deny | approve for unattended cron jobs
+#   kanban_mode: ask     # ask | deny | approve for detached Kanban card owners
+#   kanban_timeout: 900  # durable Kanban request/grant expiry in seconds
+
+# =============================================================================
 # Security Scanning (tirith)
 # =============================================================================
 # Optional pre-exec command security scanning via tirith.

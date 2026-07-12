@@ -60,8 +60,11 @@ class SSHEnvironment(BaseEnvironment):
         # deeply-nested $TMPDIR (e.g. /var/folders/xx/yy/T/). Hashing the
         # triple keeps the path stable across reconnects so ControlMaster
         # reuse still works.
+        # Include the configured identity file. Recreating an environment
+        # after key rotation must not attach to a ControlMaster connection
+        # authenticated with the previous key merely because host/user match.
         _socket_id = hashlib.sha256(
-            f"{user}@{host}:{port}".encode()
+            f"{user}@{host}:{port}|{key_path}".encode()
         ).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
         _ensure_ssh_available()

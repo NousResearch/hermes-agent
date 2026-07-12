@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 _OWNER_ENV = {
+    "_HERMES_KANBAN_BOOTSTRAP_STDIN": "1",
     "HERMES_KANBAN_SESSION": "1",
     "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE": "bootstrap-secret",
     "HERMES_KANBAN_CLAIM_LOCK": "claim-secret",

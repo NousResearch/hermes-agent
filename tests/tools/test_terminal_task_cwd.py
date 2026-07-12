@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 import tools.terminal_tool as terminal_tool
 
 
@@ -29,6 +31,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     task_id = "acp-session-1"
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/acp"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
     monkeypatch.setattr(
@@ -45,6 +48,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     calls = []
+    guard_calls = []
 
     class FakeEnv:
         env = {}
@@ -56,13 +60,14 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     task_id = "acp-session-1"
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/acp"}})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config())
-    monkeypatch.setattr(
-        terminal_tool,
-        "_check_all_guards",
-        lambda command, env_type, **kwargs: {"approved": True},
-    )
+    def approve(command, env_type, **kwargs):
+        guard_calls.append((command, env_type, kwargs))
+        return {"approved": True}
+
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", approve)
 
     result = json.loads(
         terminal_tool.terminal_tool(
@@ -74,6 +79,14 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
 
     assert result["exit_code"] == 0
     assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True}]
+    assert len(guard_calls) == 1
+    command, env_type, guard_kwargs = guard_calls[0]
+    assert command == "pwd" and env_type == "local"
+    assert guard_kwargs["has_host_access"] is False
+    assert guard_kwargs["workdir"] == "/explicit/workdir"
+    assert guard_kwargs["execution_context"]["background"] is False
+    assert guard_kwargs["execution_context"]["pty"] is False
+    assert guard_kwargs["execution_context"]["timeout"] == 60
 
 
 def test_foreground_command_prefers_recorded_session_cwd_over_init_time_cwd(monkeypatch):
@@ -204,6 +217,7 @@ def test_registering_cwd_override_noop_when_no_live_env(monkeypatch):
     is applied at env creation time instead."""
     monkeypatch.setattr(terminal_tool, "_active_environments", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
 
     # Should not raise even though no env is cached yet.
     terminal_tool.register_task_env_overrides("acp-session-pending", {"cwd": "/workspace/new"})
@@ -223,6 +237,7 @@ def test_registering_non_cwd_override_leaves_live_env_cwd_untouched(monkeypatch)
     fake_env = FakeEnv()
     monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: fake_env})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
 
     terminal_tool.register_task_env_overrides(task_id, {"modal_image": "custom:latest"})
 
@@ -230,20 +245,17 @@ def test_registering_non_cwd_override_leaves_live_env_cwd_untouched(monkeypatch)
 
 
 def test_stale_env_cwd_from_different_session_is_ignored(monkeypatch):
-    """A different session's `cd` left env.cwd pointing at its checkout.
+    """A different session's ``cd`` left the shared env in its checkout.
 
-    The terminal env is shared (collapsed to "default"), so env.cwd tracks the
-    LAST session that ran a command.  When session B claims the env after
-    session A left it in A's worktree, the first command must NOT run in A's
-    leftover cwd — it must fall through to the config/override cwd (this
-    session's own workspace).
+    Session cwd records are keyed by raw session id, so session B must ignore
+    the shared environment's mutable ``cwd`` and fall through to its own
+    config/override cwd.
     """
     calls = []
 
     class FakeEnv:
         env = {}
         cwd = "/home/user/src/hermes-desktop-tipc/apps/desktop"
-        cwd_owner = "session-A-key"
 
         def execute(self, command, **kwargs):
             calls.append((command, kwargs))
@@ -253,6 +265,7 @@ def test_stale_env_cwd_from_different_session_is_ignored(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_active_environments", {"default": FakeEnv()})
     monkeypatch.setattr(terminal_tool, "_last_activity", {})
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/home/user/src/hermes-agent"))
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: "default")
@@ -309,6 +322,295 @@ def test_same_session_recorded_cwd_survives_across_commands(monkeypatch):
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
     assert result["exit_code"] == 0
     assert calls[1] == ("pwd", {"timeout": 60, "cwd": "/workspace/deep", "bounded_capture": True})
+
+
+def test_shared_docker_cwd_overrides_reuse_stable_runtime(monkeypatch):
+    """Two cwd-only sessions must not replace the shared default container."""
+    created = []
+    executed = []
+    approved_workdirs = []
+
+    config = {
+        "env_type": "docker",
+        "docker_image": "python:3.11",
+        "cwd": "/root",
+        "host_cwd": None,
+        "timeout": 60,
+        "lifetime_seconds": 3600,
+        "container_cpu": 1,
+        "container_memory": 5120,
+        "container_disk": 51200,
+        "container_persistent": True,
+        "docker_volumes": [],
+        "docker_env": {},
+        "docker_forward_env": [],
+        "docker_extra_args": [],
+        "docker_mount_cwd_to_workspace": False,
+        "docker_run_as_host_user": False,
+        "docker_network": True,
+        "docker_persist_across_processes": True,
+    }
+
+    class FakeEnv:
+        runtime_fingerprint = "stable-default-runtime"
+        init_env_digest = "sha256:test"
+        has_host_access = False
+
+        def __init__(self, cwd):
+            self.cwd = cwd
+
+        def execute(self, command, **kwargs):
+            executed.append((command, kwargs["cwd"]))
+            return {"output": "ok", "returncode": 0}
+
+    def create_environment(*, cwd, **kwargs):
+        created.append(cwd)
+        return FakeEnv(cwd)
+
+    def approve(command, env_type, **kwargs):
+        approved_workdirs.append(kwargs["workdir"])
+        return {"approved": True}
+
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_task_env_overrides",
+        {
+            "session-a": {"cwd": "/workspace/a"},
+            "session-b": {"cwd": "/workspace/b"},
+        },
+    )
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_create_environment", create_environment)
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", approve)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_resolve_docker_runtime_identity",
+        lambda **kwargs: (
+            {},
+            "sha256:test",
+            "stable-default-runtime",
+            [],
+        ),
+    )
+
+    first = json.loads(
+        terminal_tool.terminal_tool(command="pwd", task_id="session-a")
+    )
+    second = json.loads(
+        terminal_tool.terminal_tool(command="pwd", task_id="session-b")
+    )
+
+    assert first["exit_code"] == second["exit_code"] == 0
+    assert created == ["/root"]
+    assert approved_workdirs == ["/workspace/a", "/workspace/b"]
+    assert executed == [
+        ("pwd", "/workspace/a"),
+        ("pwd", "/workspace/b"),
+    ]
+
+
+@pytest.mark.parametrize("backend", ["singularity", "modal", "daytona"])
+def test_recorded_cwd_does_not_replace_shared_container_runtime(
+    monkeypatch,
+    backend,
+):
+    """A session `cd` is command state, not immutable sandbox identity."""
+    task_id = f"{backend}-session"
+    image = f"example/{backend}:latest"
+    config = {
+        "env_type": backend,
+        "cwd": "/root",
+        "timeout": 60,
+        "lifetime_seconds": 3600,
+        "singularity_image": image,
+        "modal_image": image,
+        "daytona_image": image,
+        "modal_mode": "direct",
+        "container_cpu": 1,
+        "container_memory": 5120,
+        "container_disk": 51200,
+        "container_persistent": True,
+    }
+    executed = []
+    approved_workdirs = []
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_modal_backend_state",
+        lambda _mode: {"selected_backend": "direct"},
+    )
+
+    class FakeContainer:
+        env = {}
+        cwd = "/root"
+
+        def execute(self, command, **kwargs):
+            executed.append((command, kwargs))
+            self.cwd = kwargs["cwd"]
+            return {"output": "ok", "returncode": 0}
+
+    env_class = type(f"{backend.title()}Environment", (FakeContainer,), {})
+    env = env_class()
+    env._hermes_runtime_identity = (
+        terminal_tool._requested_environment_runtime_identity(
+            config=config,
+            image=image,
+            cwd="/root",
+            task_id="default",
+        )
+    )
+
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"default": env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_task_env_overrides",
+        {task_id: {"cwd": "/workspace/declared"}},
+    )
+    monkeypatch.setattr(terminal_tool, "_retired_environments", {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_create_environment",
+        lambda **_kwargs: pytest.fail("recorded cwd replaced the cached runtime"),
+    )
+
+    def approve(_command, _env_type, **kwargs):
+        approved_workdirs.append(kwargs["workdir"])
+        return {"approved": True}
+
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", approve)
+    terminal_tool.record_session_cwd(task_id, "/workspace/after-cd")
+
+    result = json.loads(
+        terminal_tool.terminal_tool(command="pwd", task_id=task_id)
+    )
+
+    assert result["exit_code"] == 0
+    assert terminal_tool._active_environments["default"] is env
+    assert approved_workdirs == ["/workspace/after-cd"]
+    assert executed == [
+        (
+            "pwd",
+            {
+                "timeout": 60,
+                "cwd": "/workspace/after-cd",
+                "bounded_capture": True,
+            },
+        )
+    ]
+
+
+def test_cached_environment_must_match_backend_and_docker_fingerprint():
+    class DockerEnvironment:
+        runtime_fingerprint = "v1-current"
+
+    env = DockerEnvironment()
+
+    assert terminal_tool._environment_matches_runtime(
+        env, "docker", "v1-current"
+    )
+    assert not terminal_tool._environment_matches_runtime(
+        env, "docker", "v1-changed"
+    )
+    assert not terminal_tool._environment_matches_runtime(env, "local")
+
+
+def test_cached_ssh_target_change_recreates_before_approval_and_execution(
+    monkeypatch,
+):
+    config = {
+        "env_type": "ssh",
+        "cwd": "~",
+        "timeout": 60,
+        "lifetime_seconds": 3600,
+        "ssh_host": "host-b.example",
+        "ssh_user": "deploy-b",
+        "ssh_port": 2202,
+        "ssh_key": "/keys/b",
+        "ssh_persistent": True,
+        "local_persistent": False,
+    }
+    old_calls = []
+    new_calls = []
+    approvals = []
+    created = []
+
+    class SSHEnvironment:
+        def __init__(self, host, user, port, key_path, calls):
+            self.host = host
+            self.user = user
+            self.port = port
+            self.key_path = key_path
+            self.cwd = "~"
+            self._persistent = True
+            self.calls = calls
+
+        def execute(self, command, **kwargs):
+            self.calls.append((command, kwargs))
+            return {"output": "ok", "returncode": 0}
+
+        def cleanup(self):
+            pass
+
+    old_env = SSHEnvironment(
+        "host-a.example",
+        "deploy-a",
+        22,
+        "/keys/a",
+        old_calls,
+    )
+
+    def create_environment(**kwargs):
+        created.append(kwargs)
+        ssh = kwargs["ssh_config"]
+        return SSHEnvironment(
+            ssh["host"],
+            ssh["user"],
+            ssh["port"],
+            ssh["key"],
+            new_calls,
+        )
+
+    def approve(_command, _env_type, **kwargs):
+        approvals.append(kwargs["execution_context"])
+        return {"approved": True}
+
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"default": old_env})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {"default": 1.0})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_retired_environments", {})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_create_environment", create_environment)
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", approve)
+
+    result = json.loads(terminal_tool.terminal_tool(command="pwd"))
+
+    assert result["exit_code"] == 0
+    assert old_calls == []
+    assert len(new_calls) == 1
+    assert created[0]["ssh_config"] == {
+        "host": "host-b.example",
+        "user": "deploy-b",
+        "port": 2202,
+        "key": "/keys/b",
+        "persistent": True,
+    }
+    assert approvals[0]["target"] == {
+        "host": "host-b.example",
+        "user": "deploy-b",
+        "port": 2202,
+        "key_path": "/keys/b",
+        "persistent": True,
+    }
+    assert any(item[1] is old_env for item in terminal_tool._retired_environments.values())
 
 
 def test_safe_getcwd_returns_real_cwd(monkeypatch):

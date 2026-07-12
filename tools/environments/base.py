@@ -190,6 +190,10 @@ def get_sandbox_dir() -> Path:
         p = Path(custom)
     else:
         p = get_hermes_home() / "sandboxes"
+    # Docker approval fingerprints freeze the host bind target before
+    # container creation. Normalize here as well so a relative or tilde-based
+    # TERMINAL_SANDBOX_DIR cannot resolve to a different mount after consent.
+    p = p.expanduser().absolute()
     p.mkdir(parents=True, exist_ok=True)
     return p
 

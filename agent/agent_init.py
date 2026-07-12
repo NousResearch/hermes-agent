@@ -347,6 +347,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    _claim_kanban_owner: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -397,6 +398,14 @@ def init_agent(
             identity even when skip_context_files=True. Project context files from the cwd
             remain skipped.
     """
+    # Claim execution identity before any setup path can import plugins or
+    # construct auxiliary agents. Only the CLI's narrow primary-worker
+    # construction context can consume a validated Kanban owner handoff.
+    agent._execution_role = execution_role_for_new_agent(
+        claim_kanban_owner=_claim_kanban_owner,
+    )
+    agent._kanban_approval_pending: Optional[dict[str, Any]] = None
+
     _install_safe_stdio()
 
     agent.model = model
@@ -613,13 +622,6 @@ def init_agent(
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
 
-    # Capture execution authority once, at agent construction.  The value is
-    # rebound through a ContextVar for each run_conversation() call so tools
-    # never infer authority from ambient process state. Delegated children are
-    # downgraded at bind time after _delegate_depth has been assigned.
-    agent._execution_role = execution_role_for_new_agent()
-    agent._kanban_approval_pending: Optional[dict[str, Any]] = None
-    
     # Store OpenRouter provider preferences
     agent.providers_allowed = providers_allowed
     agent.providers_ignored = providers_ignored

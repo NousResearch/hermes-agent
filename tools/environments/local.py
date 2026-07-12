@@ -421,6 +421,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 
 _KANBAN_CHILD_AUTHORITY_VARS = (
+    "_HERMES_KANBAN_BOOTSTRAP_STDIN",
     "HERMES_KANBAN_SESSION",
     "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE",
     "HERMES_KANBAN_CLAIM_LOCK",
@@ -433,6 +434,7 @@ def _scrub_kanban_child_authority(env: dict) -> None:
     """Downgrade every subprocess spawned beneath a Kanban card owner."""
     is_delegate = (
         env.get("HERMES_KANBAN_SESSION") == "1"
+        or env.get("_HERMES_KANBAN_BOOTSTRAP_STDIN") == "1"
         or env.get("HERMES_KANBAN_DELEGATE_SESSION") == "1"
     )
     for key in _KANBAN_CHILD_AUTHORITY_VARS:

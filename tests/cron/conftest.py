@@ -26,7 +26,9 @@ def _isolated_cron_test_home(monkeypatch, tmp_path):
     """Keep real AIAgent bootstrap/log writes out of the user's Hermes home."""
 
     home = tmp_path / ".hermes"
-    home.mkdir()
+    # Do not pre-create this path: many cron modules own a fixture that creates
+    # the same per-test home. Production code creates its required subdirs on
+    # demand, so setting the path is sufficient and keeps fixtures composable.
     monkeypatch.setenv("HERMES_HOME", str(home))
     import run_agent
 

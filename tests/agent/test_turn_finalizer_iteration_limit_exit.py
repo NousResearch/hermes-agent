@@ -269,7 +269,13 @@ def test_pending_response_does_not_mask_later_terminal_exit(
 
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        "agent.execution_context.is_kanban_owner_context",
+        lambda: True,
+    )
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:claim")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
@@ -294,5 +300,65 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         outcome="timed_out",
         release_claim=True,
         end_run=True,
+        expected_run_id=7,
+        expected_claim_lock="host:claim",
         event_payload_extra={"budget_used": 60, "budget_max": 60},
     )
+
+
+def test_kanban_delegate_budget_exhaustion_cannot_end_owner_run(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        "agent.execution_context.is_kanban_owner_context",
+        lambda: False,
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "7")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:claim")
+    connect = MagicMock(name="connect")
+    record = MagicMock(name="record_task_failure")
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", connect)
+    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+
+    result = _finalize(
+        _LimitAgent(),
+        final_response=None,
+        exit_reason="unknown",
+        pending_verification_response="delegate report",
+    )
+
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    connect.assert_not_called()
+    record.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("run_id", "claim_lock"),
+    [("", "host:claim"), ("not-an-int", "host:claim"), ("7", "")],
+)
+def test_kanban_timeout_without_exact_identity_does_not_mutate(
+    monkeypatch, run_id, claim_lock,
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        "agent.execution_context.is_kanban_owner_context",
+        lambda: True,
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", run_id)
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claim_lock)
+    connect = MagicMock(name="connect")
+    record = MagicMock(name="record_task_failure")
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", connect)
+    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+
+    result = _finalize(
+        _LimitAgent(),
+        final_response=None,
+        exit_reason="unknown",
+        pending_verification_response="composed report",
+    )
+
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    connect.assert_not_called()
+    record.assert_not_called()

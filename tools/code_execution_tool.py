@@ -268,9 +268,11 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     # fail-open behavior.
     _kanban_child_is_delegate = (
         source_env.get("HERMES_KANBAN_SESSION") == "1"
+        or source_env.get("_HERMES_KANBAN_BOOTSTRAP_STDIN") == "1"
         or source_env.get("HERMES_KANBAN_DELEGATE_SESSION") == "1"
     )
     for _sensitive_marker in (
+        "_HERMES_KANBAN_BOOTSTRAP_STDIN",
         "HERMES_KANBAN_SESSION",
         "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE",
         "HERMES_KANBAN_CLAIM_LOCK",
@@ -478,9 +480,17 @@ def _call(tool_name, args):
     result = json.loads(raw)
     if isinstance(result, str):
         try:
-            return json.loads(result)
+            result = json.loads(result)
         except (json.JSONDecodeError, TypeError):
             return result
+    if (isinstance(result, dict)
+            and result.get("status") == "kanban_approval_pending"
+            and result.get("kanban_approval_pending") is True):
+        # Trusted parent approval control halted this worker. Persisted outcomes
+        # released the claim; persistence-failure does not attest that, but must
+        # still terminate without a catchable exception so model-authored
+        # ``except BaseException`` cannot continue side effects.
+        os._exit(86)
     return result
 
 '''
@@ -544,9 +554,13 @@ def _call(tool_name, args):
     result = json.loads(raw)
     if isinstance(result, str):
         try:
-            return json.loads(result)
+            result = json.loads(result)
         except (json.JSONDecodeError, TypeError):
             return result
+    if (isinstance(result, dict)
+            and result.get("status") == "kanban_approval_pending"
+            and result.get("kanban_approval_pending") is True):
+        os._exit(86)
     return result
 
 '''
@@ -569,6 +583,7 @@ def _rpc_server_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    approval_pause: Optional[list] = None,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -674,6 +689,14 @@ def _rpc_server_loop(
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = tool_error(str(exc))
 
+                from agent.execution_context import kanban_approval_pending_metadata
+
+                pause = kanban_approval_pending_metadata(result)
+                if pause is not None:
+                    if approval_pause is not None:
+                        approval_pause[:] = [pause]
+                    result = json.dumps(pause, ensure_ascii=False)
+
                 tool_call_counter[0] += 1
                 call_duration = time.monotonic() - call_start
 
@@ -686,6 +709,9 @@ def _rpc_server_loop(
                 })
 
                 conn.sendall((result + "\n").encode())
+                if pause is not None:
+                    stop_event.set()
+                    return
 
     except socket.timeout:
         logger.debug("RPC listener socket timeout")
@@ -703,7 +729,12 @@ def _rpc_server_loop(
 # Remote execution support (file-based RPC via terminal backend)
 # ---------------------------------------------------------------------------
 
-def _get_or_create_env(task_id: str):
+def _get_or_create_env(
+    task_id: str,
+    *,
+    runtime_snapshot: Optional[dict[str, Any]] = None,
+    docker_runtime: Optional[dict[str, Any]] = None,
+):
     """Get or create the terminal environment for *task_id*.
 
     Reuses the same environment (container/sandbox/SSH session) that the
@@ -713,17 +744,95 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
+        _creation_locks, _creation_locks_lock, _resolve_container_task_id,
+        _container_creation_config, _environment_matches_runtime,
+        _requested_environment_runtime_identity,
+        _resolve_docker_runtime_identity, _is_unusable_container_cwd,
+        _CONTAINER_BACKENDS, _retire_environment_locked,
+        resolve_task_overrides,
     )
 
+    # ``docker_runtime`` is the pre-generalization keyword retained for
+    # compatibility with callers/tests across an upgrade boundary.
+    if runtime_snapshot is None:
+        runtime_snapshot = docker_runtime
+
     effective_task_id = _resolve_container_task_id(task_id)
+    config = (
+        dict(runtime_snapshot["config"])
+        if runtime_snapshot is not None
+        else _get_env_config()
+    )
+    env_type = config["env_type"]
+    expected_fingerprint = (
+        str(runtime_snapshot.get("fingerprint") or "")
+        if runtime_snapshot is not None and env_type == "docker"
+        else ""
+    )
+    overrides = resolve_task_overrides(task_id)
+    if runtime_snapshot is not None:
+        image = str(runtime_snapshot.get("image") or "")
+        cwd = str(runtime_snapshot.get("cwd") or config["cwd"])
+    elif env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+        cwd = overrides.get("cwd") or config["cwd"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+        cwd = overrides.get("cwd") or config["cwd"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+        cwd = overrides.get("cwd") or config["cwd"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+        cwd = overrides.get("cwd") or config["cwd"]
+    else:
+        image = ""
+        cwd = overrides.get("cwd") or config["cwd"]
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        cwd = config["cwd"]
+    docker_creation_cwd = (
+        config["cwd"]
+        if env_type == "docker" and effective_task_id == "default"
+        else cwd
+    )
+    if env_type == "docker" and not expected_fingerprint:
+        (
+            _resolved_init_env,
+            _init_env_digest,
+            expected_fingerprint,
+            _resolved_implicit_mounts,
+        ) = _resolve_docker_runtime_identity(
+            config=config,
+            image=image,
+            cwd=docker_creation_cwd,
+            task_id=effective_task_id,
+        )
+    expected_runtime_identity = (
+        tuple(runtime_snapshot["runtime_identity"])
+        if runtime_snapshot is not None
+        and runtime_snapshot.get("runtime_identity") is not None
+        else _requested_environment_runtime_identity(
+            config=config,
+            image=image,
+            cwd=(docker_creation_cwd if env_type == "docker" else cwd),
+            task_id=effective_task_id,
+            docker_runtime_fingerprint=expected_fingerprint,
+        )
+    )
+    stale_env = None
 
     # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            candidate = _active_environments[effective_task_id]
+            if _environment_matches_runtime(
+                candidate,
+                env_type,
+                expected_runtime_identity,
+            ):
+                _last_activity[effective_task_id] = time.time()
+                return candidate, env_type
+            stale_env = candidate
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -734,37 +843,19 @@ def _get_or_create_env(task_id: str):
     with task_lock:
         with _env_lock:
             if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
-
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
-
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
+                candidate = _active_environments[effective_task_id]
+                if _environment_matches_runtime(
+                    candidate,
+                    env_type,
+                    expected_runtime_identity,
+                ):
+                    _last_activity[effective_task_id] = time.time()
+                    return candidate, env_type
+                stale_env = candidate
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_network": config.get("docker_network", True),
-            }
+            container_config = _container_creation_config(config)
 
         ssh_config = None
         if env_type == "ssh":
@@ -784,17 +875,49 @@ def _get_or_create_env(task_id: str):
 
         logger.info("Creating new %s environment for execute_code task %s...",
                      env_type, effective_task_id[:8])
+        if stale_env is not None:
+            # A persisted Docker runtime may still serve another session or
+            # process. Drop only this process's stale cache reference; never
+            # force-remove a potentially active sibling runtime.
+            with _env_lock:
+                _retire_environment_locked(effective_task_id, stale_env)
         env = _create_environment(
             env_type=env_type,
             image=image,
-            cwd=cwd,
+            cwd=(docker_creation_cwd if env_type == "docker" else cwd),
             timeout=config["timeout"],
             ssh_config=ssh_config,
             container_config=container_config,
             local_config=local_config,
             task_id=effective_task_id,
             host_cwd=config.get("host_cwd"),
+            resolved_docker_init_env=(
+                runtime_snapshot.get("resolved_init_env")
+                if runtime_snapshot is not None and env_type == "docker"
+                else None
+            ),
+            resolved_docker_implicit_mounts=(
+                runtime_snapshot.get("resolved_implicit_mounts")
+                if runtime_snapshot is not None and env_type == "docker"
+                else None
+            ),
         )
+        if not _environment_matches_runtime(
+            env,
+            env_type,
+            expected_runtime_identity,
+        ):
+            try:
+                if env_type == "docker":
+                    env.cleanup(force_remove=True)
+                else:
+                    env.cleanup()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"{env_type} runtime identity changed between execute_code "
+                "approval and environment creation"
+            )
 
         with _env_lock:
             _active_environments[effective_task_id] = env
@@ -849,6 +972,7 @@ def _rpc_poll_loop(
     allowed_tools: frozenset,
     stop_event: threading.Event,
     rpc_token: str,
+    approval_pause: Optional[list] = None,
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -918,6 +1042,7 @@ def _rpc_poll_loop(
                 seq_str = f"{seq:06d}"
                 res_file = f"{rpc_dir}/res_{seq_str}"
                 quoted_res_file = shlex.quote(res_file)
+                pause = None
 
                 # Enforce allow-list
                 if tool_name not in allowed_tools:
@@ -960,6 +1085,14 @@ def _rpc_poll_loop(
                                      exc, exc_info=True)
                         tool_result = tool_error(str(exc))
 
+                    from agent.execution_context import kanban_approval_pending_metadata
+
+                    pause = kanban_approval_pending_metadata(tool_result)
+                    if pause is not None:
+                        if approval_pause is not None:
+                            approval_pause[:] = [pause]
+                        tool_result = json.dumps(pause, ensure_ascii=False)
+
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start
                     tool_call_log.append({
@@ -983,6 +1116,9 @@ def _rpc_poll_loop(
 
                 # Remove the request file
                 env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                if pause is not None:
+                    stop_event.set()
+                    return
 
         except Exception as e:
             if not stop_event.is_set():
@@ -992,10 +1128,38 @@ def _rpc_poll_loop(
             stop_event.wait(poll_interval)
 
 
+def _serialize_kanban_approval_pause(
+    pause: dict,
+    *,
+    tool_calls_made: int,
+    duration_seconds: float,
+) -> str:
+    """Re-sign an inner RPC pause for the outer execute_code boundary."""
+
+    from agent.execution_context import issue_kanban_approval_pause_token
+
+    result = dict(pause)
+    result["tool_calls_made"] = int(tool_calls_made)
+    result["duration_seconds"] = duration_seconds
+    result["_hermes_kanban_pause_token"] = issue_kanban_approval_pause_token(
+        request_id=result.get("request_id"),
+        task_id=os.environ.get("HERMES_KANBAN_TASK", ""),
+        run_id=os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+        profile=os.environ.get("HERMES_PROFILE", ""),
+        display_target=result.get("display_target", ""),
+        description=result.get("description", "approval required"),
+        outcome=result.get("outcome", "approval_pending"),
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _execute_remote(
     code: str,
     task_id: Optional[str],
     enabled_tools: Optional[List[str]],
+    *,
+    runtime_snapshot: Optional[dict[str, Any]] = None,
+    docker_runtime: Optional[dict[str, Any]] = None,
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -1004,7 +1168,13 @@ def _execute_remote(
     thread that communicates via request/response files.
     """
 
-    _cfg = _load_config()
+    if runtime_snapshot is None:
+        runtime_snapshot = docker_runtime
+    _cfg = (
+        dict(runtime_snapshot.get("code_config") or {})
+        if runtime_snapshot is not None
+        else _load_config()
+    )
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
@@ -1014,7 +1184,10 @@ def _execute_remote(
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
 
     effective_task_id = task_id or "default"
-    env, env_type = _get_or_create_env(effective_task_id)
+    env, env_type = _get_or_create_env(
+        effective_task_id,
+        runtime_snapshot=runtime_snapshot,
+    )
 
     sandbox_id = uuid.uuid4().hex[:12]
     temp_dir = _env_temp_dir(env)
@@ -1024,6 +1197,7 @@ def _execute_remote(
 
     tool_call_log: list = []
     tool_call_counter = [0]
+    approval_pause = [None]
     exec_start = time.monotonic()
     stop_event = threading.Event()
     rpc_thread = None
@@ -1068,7 +1242,7 @@ def _execute_remote(
             args=(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event, rpc_token,
+                sandbox_tools, stop_event, rpc_token, approval_pause,
             ),
             daemon=True,
         )
@@ -1131,6 +1305,13 @@ def _execute_remote(
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
 
     duration = round(time.monotonic() - exec_start, 2)
+
+    if approval_pause[0] is not None:
+        return _serialize_kanban_approval_pause(
+            approval_pause[0],
+            tool_calls_made=tool_call_counter[0],
+            duration_seconds=duration,
+        )
 
     # --- Post-process output (same as local path) ---
 
@@ -1215,9 +1396,127 @@ def execute_code(
         return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    from tools.terminal_tool import (
+        _active_environments,
+        _docker_has_host_access,
+        _env_lock,
+        _get_env_config,
+        _environment_matches_runtime,
+        _is_unusable_container_cwd,
+        _requested_environment_runtime_identity,
+        _resolve_container_task_id,
+        _resolve_docker_runtime_identity,
+        _terminal_approval_execution_context,
+        resolve_task_overrides,
+    )
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]
+    _code_config = _load_config()
+    _execution_mode = _get_execution_mode()
+    _effective_task_id = _resolve_container_task_id(task_id)
+    _overrides = resolve_task_overrides(task_id)
+    _image_key = f"{env_type}_image"
+    _image = str(
+        _overrides.get(_image_key) or _env_config.get(_image_key) or ""
+    )
+    _resolved_workdir = str(
+        _overrides.get("cwd") or _env_config.get("cwd") or ""
+    )
+    if env_type in {"docker", "singularity", "modal", "daytona"}:
+        if _is_unusable_container_cwd(_resolved_workdir):
+            _resolved_workdir = str(_env_config["cwd"])
+    _runtime_creation_cwd = (
+        str(_env_config["cwd"])
+        if env_type == "docker" and _effective_task_id == "default"
+        else _resolved_workdir
+    )
+    _remote_runtime: Optional[dict[str, Any]] = None
+    _docker_init_env_digest: Optional[str] = None
+    _docker_runtime_fingerprint: Optional[str] = None
+    _resolved_implicit_mounts: Optional[List[str]] = None
+    _resolved_init_env: Optional[dict[str, str]] = None
+    _has_host_access = False
+    if env_type == "docker":
+        (
+            _resolved_init_env,
+            _docker_init_env_digest,
+            _docker_runtime_fingerprint,
+            _resolved_implicit_mounts,
+        ) = _resolve_docker_runtime_identity(
+            config=_env_config,
+            image=_image,
+            cwd=_runtime_creation_cwd,
+            task_id=_effective_task_id,
+        )
+        _has_host_access = _docker_has_host_access(
+            _env_config,
+            _resolved_implicit_mounts,
+        )
+    _runtime_identity = _requested_environment_runtime_identity(
+        config=_env_config,
+        image=_image,
+        cwd=_runtime_creation_cwd,
+        task_id=_effective_task_id,
+        docker_runtime_fingerprint=_docker_runtime_fingerprint,
+    )
+    with _env_lock:
+        _active_env = _active_environments.get(_effective_task_id)
+    if _active_env is not None and _environment_matches_runtime(
+        _active_env,
+        env_type,
+        _runtime_identity,
+    ):
+        if env_type == "docker":
+            _docker_init_env_digest = getattr(
+                _active_env,
+                "init_env_digest",
+                _docker_init_env_digest,
+            )
+            _docker_runtime_fingerprint = getattr(
+                _active_env,
+                "runtime_fingerprint",
+                _docker_runtime_fingerprint,
+            )
+            _has_host_access = bool(
+                getattr(_active_env, "has_host_access", _has_host_access)
+            )
+    if env_type != "local":
+        _remote_runtime = {
+            "code_config": dict(_code_config),
+            "config": dict(_env_config),
+            "cwd": _runtime_creation_cwd,
+            "fingerprint": _docker_runtime_fingerprint,
+            "image": _image,
+            "runtime_identity": _runtime_identity,
+            "resolved_init_env": _resolved_init_env,
+            "resolved_implicit_mounts": _resolved_implicit_mounts,
+        }
+
+    _approval_execution_context = _terminal_approval_execution_context(
+        config=_env_config,
+        image=_image,
+        resolved_workdir=_resolved_workdir,
+        effective_timeout=int(_code_config.get("timeout", DEFAULT_TIMEOUT)),
+        background=False,
+        effective_pty=False,
+        notify_on_complete=False,
+        watch_patterns=None,
+        resolved_docker_init_env_digest=_docker_init_env_digest,
+        docker_runtime_fingerprint=_docker_runtime_fingerprint,
+    )
+    _approval_execution_context.update(
+        {
+            "display": (
+                "execute_code "
+                + str(_approval_execution_context.get("display") or "")
+                + f" mode={_execution_mode}"
+            ).strip(),
+            "execution_mode": _execution_mode,
+            "max_tool_calls": int(
+                _code_config.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+            ),
+        }
+    )
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
@@ -1228,14 +1527,15 @@ def execute_code(
     from tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(
         code, env_type,
-        has_host_access=_docker_has_host_access(_env_config),
+        has_host_access=_has_host_access,
+        execution_context=_approval_execution_context,
     )
     if not _guard.get("approved", False):
         if (
             _guard.get("status") == "kanban_approval_pending"
             and _guard.get("kanban_approval_pending") is True
         ):
-            return json.dumps({
+            pending_result = {
                 "status": "kanban_approval_pending",
                 "kanban_approval_pending": True,
                 "request_id": _guard.get("request_id"),
@@ -1243,10 +1543,15 @@ def execute_code(
                 "description": _guard.get(
                     "description", "execute_code requires approval"
                 ),
+                "outcome": _guard.get("outcome", "approval_pending"),
                 "error": "",
                 "tool_calls_made": 0,
                 "duration_seconds": 0,
-            }, ensure_ascii=False)
+            }
+            pause_token = _guard.get("_hermes_kanban_pause_token")
+            if isinstance(pause_token, str) and pause_token:
+                pending_result["_hermes_kanban_pause_token"] = pause_token
+            return json.dumps(pending_result, ensure_ascii=False)
         return json.dumps({
             "status": "error",
             "error": _guard.get("message") or "execute_code blocked by approval guard.",
@@ -1265,7 +1570,12 @@ def execute_code(
         clear_current_thread_interrupt()
 
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
+        return _execute_remote(
+            code,
+            task_id,
+            enabled_tools,
+            runtime_snapshot=_remote_runtime,
+        )
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
@@ -1273,7 +1583,7 @@ def execute_code(
     from tools.interrupt import is_interrupted as _is_interrupted
 
     # Resolve config
-    _cfg = _load_config()
+    _cfg = _code_config
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
@@ -1308,6 +1618,7 @@ def execute_code(
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
+    approval_pause = [None]
     exec_start = time.monotonic()
     server_sock = None
     stop_event = threading.Event()
@@ -1359,7 +1670,8 @@ def execute_code(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+                tool_call_counter, max_tool_calls, sandbox_tools, stop_event,
+                rpc_token, approval_pause,
             ),
             daemon=True,
         )
@@ -1425,7 +1737,7 @@ def execute_code(
         #   - project: user's venv python + session's working directory, so
         #              project deps like pandas and user files resolve.
         # Env scrubbing and tool whitelist apply identically in both modes.
-        _mode = _get_execution_mode()
+        _mode = _execution_mode
         _child_python = _resolve_child_python(_mode)
         _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
         _script_path = os.path.join(tmpdir, "script.py")
@@ -1527,6 +1839,10 @@ def execute_code(
             touch_activity_if_due = None
         poll_interval = 0.005
         while proc.poll() is None:
+            if approval_pause[0] is not None:
+                _kill_process_group(proc)
+                status = "kanban_approval_pending"
+                break
             if _is_interrupted():
                 _kill_process_group(proc)
                 status = "interrupted"
@@ -1569,6 +1885,13 @@ def execute_code(
         server_sock.close()  # break accept() so thread exits promptly
         server_sock = None  # prevent double close in finally
         rpc_thread.join(timeout=3)
+
+        if approval_pause[0] is not None:
+            return _serialize_kanban_approval_pause(
+                approval_pause[0],
+                tool_calls_made=tool_call_counter[0],
+                duration_seconds=duration,
+            )
 
         # Strip ANSI escape sequences so the model never sees terminal
         # formatting — prevents it from copying escapes into file writes.

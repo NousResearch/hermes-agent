@@ -43,6 +43,7 @@ def conn(kanban_home):
         yield c
 
 
+@pytest.mark.live_system_guard_bypass
 def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     """A reset carrying an OLD worker's claim_lock must NOT clobber a task
     that has since been re-claimed by a new worker."""

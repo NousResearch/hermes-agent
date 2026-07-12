@@ -226,6 +226,30 @@ def test_legacy_runs_gain_owner_bootstrap_nonce(tmp_path, monkeypatch):
     assert "owner_bootstrap_nonce" in columns
 
 
+def test_legacy_tasks_gain_null_active_approval_generation(tmp_path, monkeypatch):
+    db_path = _setup_home(tmp_path, monkeypatch)
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(kb.SCHEMA_SQL)
+    conn.execute("ALTER TABLE tasks DROP COLUMN active_approval_id")
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy-task', 'legacy', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        columns = {
+            row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")
+        }
+        marker = migrated.execute(
+            "SELECT active_approval_id FROM tasks WHERE id = 'legacy-task'"
+        ).fetchone()["active_approval_id"]
+
+    assert "active_approval_id" in columns
+    assert marker is None
+
+
 def test_unseen_events_for_sub_survives_migrated_db(tmp_path, monkeypatch):
     """The crash that motivated #35096 — ``int(None)`` on a NULL cursor — is
     gone after migration; the notifier query returns an integer cursor."""

@@ -1201,6 +1201,11 @@ def handle_function_call(
                 _kanban_pause = kanban_approval_pending_metadata(block_message)
                 if _kanban_pause is not None:
                     result = json.dumps(_kanban_pause, ensure_ascii=False)
+                    control_result = (
+                        block_message
+                        if isinstance(block_message, str)
+                        else json.dumps(block_message, ensure_ascii=False)
+                    )
                     _block_error_type = "kanban_approval_pending"
                     _block_error_message = str(
                         _kanban_pause.get("description")
@@ -1224,7 +1229,7 @@ def handle_function_call(
                     error_message=_block_error_message,
                     middleware_trace=list(_tool_middleware_trace),
                 )
-                return result
+                return control_result if _kanban_pause is not None else result
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
@@ -1257,6 +1262,24 @@ def handle_function_call(
         # to wrap every tool manually.  We use monotonic() so the value is
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
+        _kanban_control_pause = None
+        _kanban_control_result = None
+
+        def _capture_control_result(dispatch_result: Any) -> Any:
+            nonlocal _kanban_control_pause, _kanban_control_result
+            if _kanban_control_pause is None:
+                from agent.execution_context import kanban_approval_pending_metadata
+
+                pause = kanban_approval_pending_metadata(dispatch_result)
+                if pause is not None:
+                    _kanban_control_pause = pause
+                    _kanban_control_result = dispatch_result
+                    # Execution middleware may inspect or transform the
+                    # downstream result. Give it only normalized metadata;
+                    # the raw capability is retained locally for the executor.
+                    return json.dumps(pause, ensure_ascii=False)
+            return dispatch_result
+
         _approval_tokens = None
         try:
             from tools.approval import (
@@ -1275,19 +1298,23 @@ def handle_function_call(
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        enabled_tools=sandbox_enabled,
+                    return _capture_control_result(
+                        registry.dispatch(
+                            function_name, next_args,
+                            task_id=task_id,
+                            session_id=session_id,
+                            enabled_tools=sandbox_enabled,
+                        )
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        user_task=user_task,
+                    return _capture_control_result(
+                        registry.dispatch(
+                            function_name, next_args,
+                            task_id=task_id,
+                            session_id=session_id,
+                            user_task=user_task,
+                        )
                     )
             from hermes_cli.middleware import run_tool_execution_middleware
 
@@ -1309,6 +1336,34 @@ def handle_function_call(
                 except Exception:
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        if _kanban_control_pause is not None:
+            observer_result = json.dumps(
+                _kanban_control_pause,
+                ensure_ascii=False,
+            )
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=observer_result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                duration_ms=duration_ms,
+                status="blocked",
+                error_type="kanban_approval_pending",
+                error_message=str(
+                    _kanban_control_pause.get("description")
+                    or "Kanban approval required"
+                ),
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            # Do not expose the capability to observer/transform hooks, and do
+            # not let a result transformer erase trusted control flow. The
+            # executor verifies and strips this raw signed result immediately.
+            return _kanban_control_result
 
         _emit_post_tool_call_hook(
             function_name=function_name,

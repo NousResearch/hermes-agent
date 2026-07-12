@@ -45,12 +45,16 @@ def _make_dummy_env(**kwargs):
         persistent_filesystem=kwargs.get("persistent_filesystem", False),
         task_id=kwargs.get("task_id", "test-task"),
         volumes=kwargs.get("volumes", []),
+        forward_env=kwargs.get("forward_env"),
         network=kwargs.get("network", True),
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
         run_as_host_user=kwargs.get("run_as_host_user", False),
+        extra_args=kwargs.get("extra_args"),
         persist_across_processes=kwargs.get("persist_across_processes", True),
+        resolved_init_env=kwargs.get("resolved_init_env"),
+        resolved_implicit_mounts=kwargs.get("resolved_implicit_mounts"),
     )
 
 
@@ -403,6 +407,68 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     assert "TOKEN=secret123" in args_str
 
 
+def test_resolved_init_env_digest_binds_explicit_forwarded_and_implicit_values(
+    monkeypatch,
+):
+    """Every value Docker captures must affect the durable approval binding."""
+    from tools import env_passthrough
+
+    monkeypatch.setattr(
+        env_passthrough,
+        "get_all_passthrough",
+        lambda: frozenset({"SKILL_TARGET"}),
+    )
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setenv("FORWARDED_TARGET", "/workspace/forwarded-a")
+    monkeypatch.setenv("SKILL_TARGET", "/workspace/implicit-a")
+
+    base = docker_env.resolve_docker_init_env(
+        env={"EXPLICIT_TARGET": "/workspace/explicit-a"},
+        forward_env=["FORWARDED_TARGET"],
+    )
+    base_digest = docker_env.docker_init_env_digest(base)
+
+    explicit_changed = docker_env.resolve_docker_init_env(
+        env={"EXPLICIT_TARGET": "/workspace/explicit-b"},
+        forward_env=["FORWARDED_TARGET"],
+    )
+    assert docker_env.docker_init_env_digest(explicit_changed) != base_digest
+
+    monkeypatch.setenv("FORWARDED_TARGET", "/workspace/forwarded-b")
+    forwarded_changed = docker_env.resolve_docker_init_env(
+        env={"EXPLICIT_TARGET": "/workspace/explicit-a"},
+        forward_env=["FORWARDED_TARGET"],
+    )
+    assert docker_env.docker_init_env_digest(forwarded_changed) != base_digest
+
+    monkeypatch.setenv("FORWARDED_TARGET", "/workspace/forwarded-a")
+    monkeypatch.setenv("SKILL_TARGET", "/workspace/implicit-b")
+    implicit_changed = docker_env.resolve_docker_init_env(
+        env={"EXPLICIT_TARGET": "/workspace/explicit-a"},
+        forward_env=["FORWARDED_TARGET"],
+    )
+    assert docker_env.docker_init_env_digest(implicit_changed) != base_digest
+
+
+def test_init_env_args_and_approval_digest_share_frozen_snapshot(monkeypatch):
+    from tools import env_passthrough
+
+    monkeypatch.setattr(env_passthrough, "get_all_passthrough", lambda: frozenset())
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setenv("FORWARDED_TARGET", "/workspace/original")
+    env = _make_execute_only_env(forward_env=["FORWARDED_TARGET"])
+    env._resolved_init_env = docker_env.resolve_docker_init_env(
+        env=env._env,
+        forward_env=env._forward_env,
+    )
+
+    expected_digest = docker_env.docker_init_env_digest(env._resolved_init_env)
+    monkeypatch.setenv("FORWARDED_TARGET", "/workspace/changed-after-freeze")
+
+    assert "FORWARDED_TARGET=/workspace/original" in env._build_init_env_args()
+    assert env.init_env_digest == expected_digest
+
+
 
 def test_normalize_env_dict_filters_invalid_keys():
     """_normalize_env_dict should reject invalid variable names."""
@@ -679,6 +745,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
+        "hermes-runtime-fingerprint": env.runtime_fingerprint,
     }
 
 
@@ -725,6 +792,181 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
     return calls
+
+
+def _runtime_fingerprint(*, image="python:3.11", host_cwd=None,
+                         auto_mount_cwd=False, init_env=None):
+    return docker_env.docker_runtime_fingerprint(
+        image=image,
+        cwd="/workspace" if auto_mount_cwd else "/root",
+        cpu=0,
+        memory=0,
+        disk=0,
+        persistent_filesystem=False,
+        task_id="reuse-exact",
+        volumes=[],
+        network=True,
+        host_cwd=str(host_cwd or ""),
+        auto_mount_cwd=auto_mount_cwd,
+        run_as_host_user=False,
+        extra_args=[],
+        persist_across_processes=True,
+        init_env_digest=docker_env.docker_init_env_digest(init_env or {}),
+    )
+
+
+def _mock_existing_runtime(monkeypatch, existing_fingerprint):
+    """Return the old container only when Docker's exact label filter matches."""
+
+    docker_env._cgroup_limits_ok = True
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            if cmd[1] == "ps":
+                expected = (
+                    "label=hermes-runtime-fingerprint="
+                    + existing_fingerprint
+                )
+                output = (
+                    "old-runtime\trunning\n" if expected in cmd else ""
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="fresh-runtime\n", stderr=""
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
+
+
+def test_runtime_fingerprint_rejects_old_host_mounted_container(
+    monkeypatch, tmp_path,
+):
+    host_cwd = tmp_path / "host-project"
+    host_cwd.mkdir()
+    old_fingerprint = _runtime_fingerprint(
+        host_cwd=host_cwd,
+        auto_mount_cwd=True,
+    )
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_existing_runtime(monkeypatch, old_fingerprint)
+
+    env = _make_dummy_env(
+        task_id="reuse-exact",
+        image="python:3.11",
+        cwd="/root",
+        host_cwd=str(host_cwd),
+        auto_mount_cwd=False,
+    )
+
+    assert env.runtime_fingerprint != old_fingerprint
+    assert env._container_id == "fresh-runtime"
+    assert any(
+        isinstance(call[0], list) and call[0][1:2] == ["run"]
+        for call in calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("image", "resolved_init_env"),
+    [
+        ("python:3.12", {"TARGET": "one"}),
+        ("python:3.11", {"TARGET": "two"}),
+    ],
+)
+def test_runtime_fingerprint_rejects_image_or_environment_mismatch(
+    monkeypatch,
+    image,
+    resolved_init_env,
+):
+    old_fingerprint = _runtime_fingerprint(
+        image="python:3.11",
+        init_env={"TARGET": "one"},
+    )
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_existing_runtime(monkeypatch, old_fingerprint)
+
+    env = _make_dummy_env(
+        task_id="reuse-exact",
+        image=image,
+        resolved_init_env=resolved_init_env,
+    )
+
+    assert env.runtime_fingerprint != old_fingerprint
+    assert env._container_id == "fresh-runtime"
+
+
+def test_runtime_fingerprint_never_exposes_raw_environment_values(
+    monkeypatch,
+    caplog,
+):
+    secret_value = "private-runtime-value-123"
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG):
+        env = _make_dummy_env(
+            task_id="label-secret-test",
+            resolved_init_env={"PRIVATE_TARGET": secret_value},
+        )
+
+    run_args = _run_args_from_calls(calls)
+    labels = _labels_in_run_args(run_args)
+    assert any(label.startswith("hermes-runtime-fingerprint=v1-") for label in labels)
+    assert all(secret_value not in label for label in labels)
+    assert secret_value not in caplog.text
+    assert secret_value not in env.runtime_fingerprint
+
+
+def test_resolved_implicit_mounts_are_fingerprinted_and_mark_host_access(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    mounted = _make_dummy_env(
+        task_id="implicit-mount-test",
+        resolved_implicit_mounts=[f"{tmp_path}:/root/.hermes/cache:ro"],
+    )
+    isolated = _make_dummy_env(
+        task_id="implicit-mount-test",
+        resolved_implicit_mounts=[],
+    )
+
+    assert mounted.runtime_fingerprint != isolated.runtime_fingerprint
+    assert mounted.has_host_access is True
+    assert isolated.has_host_access is False
+
+
+def test_persistent_mount_resolver_matches_normalized_sandbox_root(
+    monkeypatch, tmp_path,
+):
+    from tools.environments.base import get_sandbox_dir
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", "~/relative-sandboxes")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    root = get_sandbox_dir()
+    mounts = docker_env.resolve_docker_persistent_mount_specs(
+        persistent_filesystem=True,
+        task_id="task-1",
+        bind_host_cwd=False,
+        workspace_explicitly_mounted=False,
+    )
+
+    assert root == (tmp_path / "relative-sandboxes").absolute()
+    assert mounts == [
+        f"{root / 'docker' / 'task-1' / 'home'}:/root",
+        f"{root / 'docker' / 'task-1' / 'workspace'}:/workspace",
+    ]
 
 
 def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):

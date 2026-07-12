@@ -193,8 +193,10 @@ class TestHandleFunctionCall:
         )
 
         assert seen["execution_args"] == {"q": "test", "rewritten": True}
-        assert seen["dispatch"][1] == {"q": "test", "rewritten": True, "wrapped": True}
-        assert result["args"] == {"q": "test", "rewritten": True, "wrapped": True}
+        # Request middleware rewrites before approval/hooks and is honored.
+        # Execution middleware runs after approval and cannot change args.
+        assert seen["dispatch"][1] == {"q": "test", "rewritten": True}
+        assert result["args"] == {"q": "test", "rewritten": True}
         expected_trace = [{"source": "test-middleware", "reason": "rewrite"}]
         pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")

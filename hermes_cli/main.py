@@ -2252,6 +2252,47 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _initialize_kanban_worker_bootstrap(args) -> None:
+    """Consume the dispatcher handoff before plugin discovery.
+
+    Requiring both the hidden CLI capability-negotiation flag and the launch
+    marker makes old runtimes reject the argv and makes a copied environment
+    insufficient on current runtimes. All failures continue as delegates.
+    """
+
+    requested = bool(
+        getattr(args, "kanban_owner_bootstrap_stdin", False)
+    )
+    marked = os.environ.get("_HERMES_KANBAN_BOOTSTRAP_STDIN") == "1"
+    if requested and marked:
+        try:
+            from agent.execution_context import (
+                initialize_kanban_owner_launch_from_stream,
+            )
+
+            if not initialize_kanban_owner_launch_from_stream():
+                sys.stderr.write(
+                    "Kanban worker owner bootstrap was rejected; "
+                    "continuing with delegate authority.\n"
+                )
+        except Exception:
+            os.environ.pop("_HERMES_KANBAN_BOOTSTRAP_STDIN", None)
+            os.environ.pop("HERMES_KANBAN_SESSION", None)
+            os.environ["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
+            sys.stderr.write(
+                "Kanban worker owner bootstrap failed closed; "
+                "continuing with delegate authority.\n"
+            )
+    elif requested or marked:
+        os.environ.pop("_HERMES_KANBAN_BOOTSTRAP_STDIN", None)
+        os.environ.pop("HERMES_KANBAN_SESSION", None)
+        os.environ["HERMES_KANBAN_DELEGATE_SESSION"] = "1"
+        sys.stderr.write(
+            "Kanban worker owner bootstrap was incomplete; "
+            "continuing with delegate authority.\n"
+        )
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
@@ -2453,6 +2494,9 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
+        "_claim_kanban_owner": bool(
+            getattr(args, "kanban_owner_bootstrap_stdin", False)
+        ),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -15044,6 +15088,10 @@ def main():
     if args.version:
         cmd_version(args)
         return
+
+    # Detached Kanban workers must consume their one-shot launch handoff
+    # before plugin discovery can import user code or construct helper agents.
+    _initialize_kanban_worker_bootstrap(args)
 
     # --yolo: set HERMES_YOLO_MODE *before* plugin discovery.  The call to
     # _prepare_agent_startup() below triggers discover_plugins() → tool

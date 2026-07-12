@@ -1413,6 +1413,9 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "_hermes_home", home)
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -1441,6 +1444,9 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
 
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "_hermes_home", home)
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",

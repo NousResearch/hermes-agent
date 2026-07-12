@@ -2241,7 +2241,8 @@ def resolve_pre_tool_block(
     directive and, for an ``approve`` escalation, invokes the human-approval
     gate (:func:`tools.approval.request_tool_approval`). Returns the message
     the tool result should carry when the call is blocked, the structured
-    ``kanban_approval_pending`` result when a detached card owner was parked,
+    signed ``kanban_approval_pending`` control result when a detached card
+    owner was parked or approval persistence failed closed,
     or ``None`` when the call may proceed.
 
     Centralizing this keeps the security-critical fail-closed logic in ONE

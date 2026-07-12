@@ -1745,7 +1745,13 @@ def run_curator_review(
     if synchronous:
         _llm_pass()
     else:
-        t = threading.Thread(target=_llm_pass, daemon=True, name="curator-review")
+        from tools.thread_context import propagate_context_to_thread
+
+        t = threading.Thread(
+            target=propagate_context_to_thread(_llm_pass),
+            daemon=True,
+            name="curator-review",
+        )
         t.start()
 
     return {

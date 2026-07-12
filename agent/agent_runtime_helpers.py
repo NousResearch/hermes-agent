@@ -2276,6 +2276,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         _kanban_pause = kanban_approval_pending_metadata(block_message)
         if _kanban_pause is not None:
             result = json.dumps(_kanban_pause, ensure_ascii=False)
+            control_result = (
+                block_message
+                if isinstance(block_message, str)
+                else json.dumps(block_message, ensure_ascii=False)
+            )
             _block_error_type = "kanban_approval_pending"
             _block_error_message = str(
                 _kanban_pause.get("description") or "Kanban approval required"
@@ -2302,7 +2307,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
         except Exception:
             pass
-        return result
+        return control_result if _kanban_pause is not None else result
 
     tool_start_time = time.monotonic()
 

@@ -85,32 +85,16 @@ def test_docker_network_config_is_bridged_everywhere():
 
 
 def test_sibling_container_config_sites_carry_docker_network():
-    """Every container_config dict that carries docker_run_as_host_user must
-    also carry docker_network — otherwise that code path silently falls back
-    to networked containers while the terminal path honors the lockdown
-    (the probe/exec asymmetry reported on issue #46358).
-    """
-    import ast
-    import inspect
+    """The shared constructor config preserves Docker's lockdown setting."""
+    config = {
+        "docker_run_as_host_user": True,
+        "docker_network": False,
+    }
 
-    import tools.code_execution_tool as code_execution_tool
-    import tools.file_tools as file_tools
+    container_config = terminal_tool._container_creation_config(config)
 
-    for module in (terminal_tool, file_tools, code_execution_tool):
-        tree = ast.parse(inspect.getsource(module))
-        sites = 0
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Dict):
-                continue
-            keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
-            if "docker_run_as_host_user" in keys:
-                sites += 1
-                assert "docker_network" in keys, (
-                    f"{module.__name__} builds a container_config with "
-                    f"docker_run_as_host_user but without docker_network "
-                    f"(line {node.lineno})"
-                )
-        assert sites >= 1, f"expected at least one container_config site in {module.__name__}"
+    assert container_config["docker_run_as_host_user"] is True
+    assert container_config["docker_network"] is False
 
 
 def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
@@ -155,8 +139,8 @@ def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
 def test_reuse_rejects_networked_container_when_lockdown_requested(monkeypatch):
     commands = _reuse_guard_harness(monkeypatch, existing_mode="bridge", network=False)
 
-    assert any(cmd[1:3] == ["rm", "-f"] for cmd in commands), (
-        "bridge-networked container must be removed when docker_network=false"
+    assert not any(cmd[1:3] == ["rm", "-f"] for cmd in commands), (
+        "a mismatched persisted container may still serve another Hermes process"
     )
     run_cmd = next(cmd for cmd in commands if len(cmd) > 2 and cmd[1:3] == ["run", "-d"])
     assert "--network=none" in run_cmd

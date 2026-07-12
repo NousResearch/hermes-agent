@@ -2,9 +2,11 @@
 
 Kanban workers are detached subprocesses, so ambient gateway/cron environment
 markers are not a trustworthy description of who owns a tool call. The
-dispatcher instead supplies a one-use random bootstrap nonce bound to the
-exact active task run. ``AIAgent`` atomically consumes that nonce at
-construction and binds the resulting role only while its conversation runs.
+dispatcher instead supplies a one-use launch ticket over a dedicated bootstrap
+stream, bound to the exact active task run and worker PID. Worker startup
+validates the handoff before ``AIAgent`` construction; exactly one agent
+then consumes the process-local capability and binds it only while its
+conversation runs.
 
 The ContextVar is also important inside a worker process: delegated child
 agents share the same process environment as the card owner, but they do not
@@ -14,12 +16,18 @@ downgrades any agent with ``_delegate_depth > 0`` to ``DELEGATE``.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
+import sys
 import threading
+import time
 from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from enum import Enum
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
@@ -35,10 +43,253 @@ class ExecutionRole(str, Enum):
 _EXECUTION_ROLE: ContextVar[ExecutionRole] = ContextVar(
     "_EXECUTION_ROLE", default=ExecutionRole.DIRECT
 )
+_KANBAN_PAUSE_SECRET = secrets.token_bytes(32)
+_KANBAN_PAUSE_TOKEN_FIELD = "_hermes_kanban_pause_token"
 _KANBAN_OWNER_MARKER = "HERMES_KANBAN_SESSION"
 _KANBAN_OWNER_NONCE = "HERMES_KANBAN_OWNER_BOOTSTRAP_NONCE"
 _KANBAN_DELEGATE_MARKER = "HERMES_KANBAN_DELEGATE_SESSION"
+_KANBAN_OWNER_LAUNCH_MARKER = "_HERMES_KANBAN_BOOTSTRAP_STDIN"
 _KANBAN_OWNER_CLAIM_LOCK = threading.Lock()
+_KANBAN_OWNER_LAUNCH_MAX_BYTES = 16 * 1024
+_KANBAN_OWNER_LAUNCH_MAX_TTL_SECONDS = 60
+
+# Process-local launch state. Only the trusted worker-startup path may move
+# this from ``uninitialized`` to ``ready``. AIAgent construction consumes the
+# ready state exactly once; environment mappings never participate in that
+# transition.
+_KANBAN_OWNER_LAUNCH_STATE = "uninitialized"
+
+
+def _scrub_kanban_owner_launch_environment(
+    source: MutableMapping[str, str],
+) -> None:
+    """Remove launch authority and leave only non-owner child identity."""
+
+    owner_attempt = any(
+        key in source
+        for key in (
+            _KANBAN_OWNER_LAUNCH_MARKER,
+            _KANBAN_OWNER_MARKER,
+            _KANBAN_OWNER_NONCE,
+        )
+    )
+    source.pop(_KANBAN_OWNER_LAUNCH_MARKER, None)
+    source.pop(_KANBAN_OWNER_MARKER, None)
+    source.pop(_KANBAN_OWNER_NONCE, None)
+    if owner_attempt:
+        source[_KANBAN_DELEGATE_MARKER] = "1"
+
+
+def _positive_ticket_int(value: Any) -> Optional[int]:
+    """Return a positive JSON integer, rejecting bool and coercions."""
+
+    if type(value) is not int or value <= 0:
+        return None
+    return value
+
+
+def _nonempty_ticket_text(value: Any, *, max_length: int) -> Optional[str]:
+    """Return one bounded, non-empty ticket string without outer whitespace."""
+
+    if not isinstance(value, str) or len(value) > max_length:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def initialize_kanban_owner_launch_from_stream(stream: Any = None) -> bool:
+    """Consume one dispatcher-to-worker launch ticket.
+
+    This function is the only worker-side entry point that can install the
+    process-local capability later consumed by :func:`execution_role_for_new_agent`.
+    Merely setting Kanban environment variables, including the launch marker,
+    never grants authority.
+
+    The dispatcher sets ``_HERMES_KANBAN_BOOTSTRAP_STDIN=1`` and sends one
+    UTF-8 JSON line through the worker's dedicated bootstrap stream. The line is
+    capped at 16 KiB and must bind a short-lived token to the exact database,
+    task, run, profile, claim, and worker PID. The selected board database is
+    taken only from the validated ticket; no ``HERMES_KANBAN_DB`` fallback
+    participates in owner selection.
+
+    This is a correctness boundary inside Hermes's same-account trust envelope:
+    it prevents ambient markers, explicit mappings, and supported child-launch
+    paths from accidentally promoting an agent. It does not claim isolation
+    from code already running as the same OS user and deliberately invoking
+    private internals or rewriting the operator-owned board database.
+
+    The initialization attempt is process-one-shot. It returns ``True`` only
+    when the database atomically consumed the ticket and the in-process
+    capability was installed. Every failure returns ``False`` and fails
+    closed. Launch and legacy owner markers are scrubbed in all cases.
+    """
+
+    global _KANBAN_OWNER_LAUNCH_STATE
+
+    source = os.environ
+    launch_requested = source.get(_KANBAN_OWNER_LAUNCH_MARKER) == "1"
+    with _KANBAN_OWNER_CLAIM_LOCK:
+        if _KANBAN_OWNER_LAUNCH_STATE != "uninitialized":
+            _scrub_kanban_owner_launch_environment(source)
+            return False
+        _KANBAN_OWNER_LAUNCH_STATE = (
+            "loading" if launch_requested else "disabled"
+        )
+
+    if not launch_requested:
+        _scrub_kanban_owner_launch_environment(source)
+        return False
+
+    accepted = False
+    try:
+        ticket_stream = stream
+        if ticket_stream is None:
+            ticket_stream = sys.stdin.buffer
+        raw_line = ticket_stream.readline(_KANBAN_OWNER_LAUNCH_MAX_BYTES + 1)
+        if isinstance(raw_line, str):
+            raw_bytes = raw_line.encode("utf-8")
+        elif isinstance(raw_line, (bytes, bytearray)):
+            raw_bytes = bytes(raw_line)
+        else:
+            return False
+        if not raw_bytes or len(raw_bytes) > _KANBAN_OWNER_LAUNCH_MAX_BYTES:
+            return False
+        try:
+            ticket = json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        if not isinstance(ticket, dict) or type(ticket.get("v")) is not int:
+            return False
+        if ticket["v"] != 1:
+            return False
+
+        token = _nonempty_ticket_text(ticket.get("token"), max_length=512)
+        db_path_raw = _nonempty_ticket_text(
+            ticket.get("db_path"), max_length=16 * 1024
+        )
+        task_id = _nonempty_ticket_text(ticket.get("task_id"), max_length=512)
+        profile = _nonempty_ticket_text(ticket.get("profile"), max_length=512)
+        claim_lock = _nonempty_ticket_text(
+            ticket.get("claim_lock"), max_length=1024
+        )
+        run_id = _positive_ticket_int(ticket.get("run_id"))
+        worker_pid = _positive_ticket_int(ticket.get("worker_pid"))
+        expires_at = _positive_ticket_int(ticket.get("expires_at"))
+        if None in {
+            token,
+            db_path_raw,
+            task_id,
+            profile,
+            claim_lock,
+            run_id,
+            worker_pid,
+            expires_at,
+        }:
+            return False
+        assert db_path_raw is not None
+        db_path = Path(db_path_raw)
+        if not db_path.is_absolute():
+            return False
+        if worker_pid != os.getpid():
+            return False
+        now = int(time.time())
+        if not (
+            now < expires_at <= now + _KANBAN_OWNER_LAUNCH_MAX_TTL_SECONDS
+        ):
+            return False
+
+        from hermes_cli import kanban_db as kb
+
+        # Deliberately pass the ticket path explicitly. Environment-selected
+        # paths are ambient routing hints, not handoff validation.
+        conn = kb.connect(db_path)
+        try:
+            consumed = bool(
+                kb._consume_task_owner_bootstrap(
+                    conn,
+                    task_id=task_id,
+                    run_id=run_id,
+                    profile=profile,
+                    claim_lock=claim_lock,
+                    nonce=token,
+                    worker_pid=worker_pid,
+                    expires_at=expires_at,
+                )
+            )
+        finally:
+            conn.close()
+        accepted = consumed
+        return accepted
+    except Exception:
+        return False
+    finally:
+        with _KANBAN_OWNER_CLAIM_LOCK:
+            if _KANBAN_OWNER_LAUNCH_STATE == "loading":
+                _KANBAN_OWNER_LAUNCH_STATE = (
+                    "ready" if accepted else "rejected"
+                )
+        _scrub_kanban_owner_launch_environment(source)
+
+
+def _kanban_pause_claims(
+    *,
+    request_id: Any,
+    task_id: Any,
+    run_id: Any,
+    profile: Any,
+    display_target: Any,
+    description: Any,
+    outcome: Any,
+) -> bytes:
+    payload = {
+        "description": str(description or ""),
+        "display_target": str(display_target or ""),
+        "outcome": str(outcome or "approval_pending"),
+        "profile": str(profile or ""),
+        "request_id": str(request_id or ""),
+        "run_id": str(run_id or ""),
+        "task_id": str(task_id or ""),
+        "version": 1,
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def issue_kanban_approval_pause_token(
+    *,
+    request_id: Any,
+    task_id: Any,
+    run_id: Any,
+    profile: Any,
+    display_target: Any,
+    description: Any,
+    outcome: Any = "approval_pending",
+) -> str:
+    """Sign one internal worker-halt marker bound to the exact owner run.
+
+    Routable and unavailable outcomes attest a durable broker/card transition.
+    ``approval_persistence_failed`` attests only that trusted approval code hit
+    a fail-closed control path; it deliberately makes no claim that the card
+    was parked or its worker slot was released.
+    """
+
+    claims = _kanban_pause_claims(
+        request_id=request_id,
+        task_id=task_id,
+        run_id=run_id,
+        profile=profile,
+        display_target=display_target,
+        description=description,
+        outcome=outcome,
+    )
+    digest = hmac.new(_KANBAN_PAUSE_SECRET, claims, hashlib.sha256).hexdigest()
+    return f"v1:{digest}"
 
 
 def execution_role_from_environment(
@@ -47,94 +298,78 @@ def execution_role_from_environment(
     """Classify non-owner environment identity without granting authority.
 
     Owner authority is never derivable from a mapping alone; it requires the
-    one-use database consumption performed by :func:`execution_role_for_new_agent`.
-    Any apparent owner bootstrap is therefore classified as a delegate here.
+    process-local capability installed by
+    :func:`initialize_kanban_owner_launch_from_stream`. Any apparent owner
+    bootstrap is therefore classified as a delegate here.
     """
 
     source = os.environ if environ is None else environ
     if source.get(_KANBAN_DELEGATE_MARKER) == "1":
         return ExecutionRole.KANBAN_DELEGATE
-    if _KANBAN_OWNER_MARKER in source or _KANBAN_OWNER_NONCE in source:
-        # Environment classification alone can never authenticate an owner.
-        # Only execution_role_for_new_agent's atomic DB nonce consumption may
-        # return KANBAN_OWNER.
+    if (
+        _KANBAN_OWNER_LAUNCH_MARKER in source
+        or _KANBAN_OWNER_MARKER in source
+        or _KANBAN_OWNER_NONCE in source
+    ):
+        # Environment classification alone can never validate an owner.
+        # Only the launch stream plus exact DB consumption may install the
+        # process capability that returns KANBAN_OWNER.
         return ExecutionRole.KANBAN_DELEGATE
     return ExecutionRole.DIRECT
 
 
-def _consume_kanban_owner_bootstrap(source: Mapping[str, str]) -> bool:
-    """Consume the dispatcher's exact active-run nonce, failing closed."""
-    task_id = str(source.get("HERMES_KANBAN_TASK") or "").strip()
-    run_raw = str(source.get("HERMES_KANBAN_RUN_ID") or "").strip()
-    profile = str(source.get("HERMES_PROFILE") or "").strip()
-    claim_lock = str(source.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
-    nonce = str(source.get(_KANBAN_OWNER_NONCE) or "").strip()
-    if not all((task_id, run_raw, profile, claim_lock, nonce)):
-        return False
-    try:
-        run_id = int(run_raw)
-    except ValueError:
-        return False
-    try:
-        from pathlib import Path
-
-        from hermes_cli import kanban_db as kb
-
-        db_path = str(source.get("HERMES_KANBAN_DB") or "").strip()
-        conn = kb.connect(Path(db_path).expanduser() if db_path else None)
-        try:
-            return kb.consume_task_owner_bootstrap(
-                conn,
-                task_id=task_id,
-                run_id=run_id,
-                profile=profile,
-                claim_lock=claim_lock,
-                nonce=nonce,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        return False
-
-
 def execution_role_for_new_agent(
     environ: Optional[Mapping[str, str]] = None,
+    *,
+    claim_kanban_owner: bool = False,
 ) -> ExecutionRole:
     """Resolve authority for a newly-constructed agent.
 
-    The dispatcher-owned top-level agent is created while the context is
-    direct, so it may claim the environment's card-owner capability. Any
-    agent constructed while that owner (or one of its descendants) is already
-    running is an auxiliary fork and must remain a Kanban delegate even when
-    it does not use the public ``delegate_task`` depth counter.
+    Owner authority comes only from the process-local capability installed by
+    :func:`initialize_kanban_owner_launch_from_stream`. Supplying a mapping can
+    classify an agent as a delegate, but can never consume that capability or
+    grant owner authority. Only the CLI's explicitly identified primary worker
+    construction may claim the installed capability; startup/plugin helpers
+    and every later construction remain Kanban delegates.
     """
+
+    global _KANBAN_OWNER_LAUNCH_STATE
 
     source = os.environ if environ is None else environ
     with _KANBAN_OWNER_CLAIM_LOCK:
         snapshot = dict(source)
         owner_attempt = (
-            _KANBAN_OWNER_MARKER in snapshot
+            _KANBAN_OWNER_LAUNCH_MARKER in snapshot
+            or _KANBAN_OWNER_MARKER in snapshot
             or _KANBAN_OWNER_NONCE in snapshot
         )
-        # The owner bootstrap is process-entry-only. Scrub it before any DB
-        # work and replace it with a delegate marker inherited by auxiliary
-        # agents and subprocesses. Invalid attempts are deliberately delegates,
-        # never DIRECT (which could reach unattended fail-open policy).
         if isinstance(source, MutableMapping):
-            source.pop(_KANBAN_OWNER_MARKER, None)
-            source.pop(_KANBAN_OWNER_NONCE, None)
-            if owner_attempt:
-                source[_KANBAN_DELEGATE_MARKER] = "1"
+            _scrub_kanban_owner_launch_environment(source)
 
-        if not owner_attempt:
+        # Explicit mappings are data, never launch authority. In particular,
+        # tests/plugins cannot pass an attacker-selected database and nonce to
+        # consume the real process capability.
+        if environ is not None:
+            if owner_attempt:
+                return ExecutionRole.KANBAN_DELEGATE
             return execution_role_from_environment(snapshot)
-        if snapshot.get(_KANBAN_OWNER_MARKER) != "1":
+
+        if _KANBAN_OWNER_LAUNCH_STATE == "ready":
+            if claim_kanban_owner:
+                _KANBAN_OWNER_LAUNCH_STATE = "consumed"
+                source[_KANBAN_DELEGATE_MARKER] = "1"
+                return ExecutionRole.KANBAN_OWNER
             return ExecutionRole.KANBAN_DELEGATE
-        if _EXECUTION_ROLE.get() is not ExecutionRole.DIRECT:
+        if _KANBAN_OWNER_LAUNCH_STATE in {
+            "loading",
+            "rejected",
+            "consumed",
+        }:
             return ExecutionRole.KANBAN_DELEGATE
-        if _consume_kanban_owner_bootstrap(snapshot):
-            return ExecutionRole.KANBAN_OWNER
-        return ExecutionRole.KANBAN_DELEGATE
+
+        if owner_attempt:
+            return ExecutionRole.KANBAN_DELEGATE
+        return execution_role_from_environment(snapshot)
 
 
 def bind_agent_execution_context(agent: Any) -> Token:
@@ -195,13 +430,20 @@ def is_kanban_delegate_context() -> bool:
 
 
 def kanban_approval_pending_metadata(result: Any) -> Optional[dict[str, Any]]:
-    """Return a normalized durable-approval pause marker from a tool result.
+    """Verify and normalize a durable-approval pause marker.
 
-    The marker intentionally lives at the top level of the JSON result so it
-    survives normal tool-result handling and can stop the agent loop before a
-    second model call.  Non-string/multimodal results and ordinary errors are
-    ignored.
+    Tool results are untrusted model/tool data. A remote MCP server or plugin
+    can emit the same public JSON fields as Hermes, so those fields alone must
+    never become agent-loop control flow. Only a card-owner context may halt,
+    and the marker must carry the process-local capability issued by trusted
+    approval code. Persisted outcomes attest that the broker atomically parked
+    the task/run; ``approval_persistence_failed`` attests only a fail-closed
+    process halt and must never be presented as a parked/released card. The
+    capability also authenticates the redacted display metadata and outcome.
     """
+
+    if not is_kanban_owner_context():
+        return None
 
     payload: Any = result
     if isinstance(result, str):
@@ -216,7 +458,53 @@ def kanban_approval_pending_metadata(result: Any) -> Optional[dict[str, Any]]:
         or payload.get("kanban_approval_pending") is not True
     ):
         return None
-    return dict(payload)
+
+    request_id = payload.get("request_id")
+    display_target = payload.get("display_target") or ""
+    description = payload.get("description") or "approval required"
+    outcome = str(payload.get("outcome") or "approval_pending")
+    supplied_token = payload.get(_KANBAN_PAUSE_TOKEN_FIELD)
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    run_raw = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    if not isinstance(request_id, str) or not request_id.strip():
+        return None
+    if not isinstance(supplied_token, str):
+        return None
+    if outcome not in {
+        "approval_pending",
+        "approval_unavailable",
+        "approval_persistence_failed",
+    }:
+        return None
+    if not task_id or not run_raw or not profile:
+        return None
+    try:
+        int(run_raw)
+    except ValueError:
+        return None
+    expected_token = issue_kanban_approval_pause_token(
+        request_id=request_id.strip(),
+        task_id=task_id,
+        run_id=run_raw,
+        profile=profile,
+        display_target=display_target,
+        description=description,
+        outcome=outcome,
+    )
+    if not hmac.compare_digest(supplied_token, expected_token):
+        return None
+
+    return {
+        "approved": False,
+        "status": "kanban_approval_pending",
+        "kanban_approval_pending": True,
+        "request_id": request_id.strip(),
+        "display_target": str(display_target),
+        "description": str(description),
+        "outcome": outcome,
+        "error": "",
+    }
 
 
 __all__ = [
@@ -225,6 +513,8 @@ __all__ = [
     "current_execution_role",
     "execution_role_from_environment",
     "execution_role_for_new_agent",
+    "initialize_kanban_owner_launch_from_stream",
+    "issue_kanban_approval_pause_token",
     "is_kanban_delegate_context",
     "is_kanban_owner_context",
     "kanban_approval_pending_metadata",

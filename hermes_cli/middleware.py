@@ -8,6 +8,7 @@ contract helpers here so agent-loop call sites and plugins share one vocabulary.
 from __future__ import annotations
 
 import logging
+from contextvars import copy_context
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -255,6 +256,28 @@ def _run_execution_chain(
             return terminal_call(payload)
 
         callback = callbacks[index]
+        if kind == TOOL_EXECUTION_MIDDLEWARE:
+            try:
+                approved_payload = deepcopy(payload)
+            except Exception as exc:
+                # Opaque/non-copyable members make it impossible to isolate
+                # the approved args from in-place middleware mutation. Skip
+                # the remaining wrappers and execute the already-approved
+                # object unchanged; request middleware remains available for
+                # intentional pre-approval transformation.
+                logger.warning(
+                    "Skipping tool_execution middleware because approved "
+                    "arguments could not be isolated: %s",
+                    exc,
+                )
+                return terminal_call(payload)
+        else:
+            approved_payload = _safe_copy(payload)
+        # ContextVars do not propagate to arbitrary threads. Capture the
+        # security-bearing execution context before invoking plugin code so a
+        # middleware wrapper cannot turn an owner/delegate tool call into a
+        # legacy DIRECT call merely by invoking next_call from a new thread.
+        downstream_context = copy_context()
         next_called = False
         next_succeeded = False
         next_result: Any = None
@@ -271,16 +294,41 @@ def _run_execution_chain(
                     f"{getattr(callback, '__name__', repr(callback))} called "
                     "next_call() more than once; downstream execution is single-use"
                 )
+            if (
+                kind == TOOL_EXECUTION_MIDDLEWARE
+                and next_payload is not None
+                and next_payload != approved_payload
+            ):
+                # Tool arguments have already passed hooks, guardrails, and
+                # any human/durable approval gate. Rewriting them here creates
+                # a post-approval TOCTOU gap (approved A, executed B). Request
+                # middleware is the only mutation stage because it runs before
+                # every security decision; execution middleware may wrap,
+                # observe, retry policy-free work, or transform results only.
+                logger.warning(
+                    "Middleware '%s' callback %s attempted to rewrite tool "
+                    "arguments after approval; ignoring rewritten args. Use "
+                    "tool_request middleware for argument changes.",
+                    kind,
+                    getattr(callback, "__name__", repr(callback)),
+                )
+                next_payload = approved_payload
             next_called = True
             try:
-                next_result = call_at(index + 1, payload if next_payload is None else next_payload)
+                next_result = downstream_context.copy().run(
+                    call_at,
+                    index + 1,
+                    approved_payload if next_payload is None else next_payload,
+                )
                 next_succeeded = True
                 return next_result
             except Exception as exc:
                 raise _DownstreamExecutionError(exc) from exc
 
         call_kwargs = middleware_payload(**kwargs)
-        call_kwargs[payload_key] = payload
+        # Execution middleware receives an isolated copy. In-place mutation of
+        # ``args`` must not mutate the already-approved payload by alias.
+        call_kwargs[payload_key] = _safe_copy(approved_payload)
         call_kwargs["next_call"] = next_call
         try:
             return callback(**call_kwargs)
@@ -297,7 +345,7 @@ def _run_execution_chain(
                 return next_result
             if next_called:
                 raise
-            return call_at(index + 1, payload)
+            return call_at(index + 1, approved_payload)
 
     return call_at(0, kwargs[payload_key])
 

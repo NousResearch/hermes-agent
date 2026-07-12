@@ -284,3 +284,38 @@ def test_memory_backup_recovery_report_flags_unrecoverable_index_gaps():
     rendered = report.to_markdown()
     assert "unrecoverable local index" in rendered
     assert "critical memory" not in rendered
+
+
+def test_memory_backup_recovery_report_names_rebuild_sources_without_content(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "operator.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "# Operator\n\nImportant memory: Atlas escalation path stays in the pinned runbook.\n",
+        encoding="utf-8",
+    )
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="mem-atlas-escalation",
+                content="Atlas escalation path stays in the pinned runbook.",
+                important=True,
+                journaled=True,
+                synced=True,
+                local_indexed=False,
+                durable_note_terms=("Atlas", "pinned runbook"),
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+    )
+
+    assert report.recoverable_index_ids == ("mem-atlas-escalation",)
+    assert report.recovery_sources_by_id == {
+        "mem-atlas-escalation": ("journal", "durable_note")
+    }
+    rendered = report.to_markdown()
+    assert "recovery sources" in rendered
+    assert "mem-atlas-escalation: journal, durable_note" in rendered
+    assert "Atlas escalation" not in rendered
+    assert "pinned runbook" not in rendered

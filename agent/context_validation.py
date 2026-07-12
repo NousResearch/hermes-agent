@@ -194,6 +194,7 @@ class MemoryBackupRecoveryReport:
     retryable_write_ids: tuple[str, ...] = ()
     recoverable_index_ids: tuple[str, ...] = ()
     unrecoverable_index_ids: tuple[str, ...] = ()
+    recovery_sources_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
     protected_from_gc_ids: tuple[str, ...] = ()
     unresolved_conflicts: tuple[ContextConflict, ...] = ()
     diagnostics: dict[str, object] = field(default_factory=dict)
@@ -240,6 +241,14 @@ class MemoryBackupRecoveryReport:
         _extend_id_lines(lines, "recoverable local index", self.recoverable_index_ids)
         _extend_id_lines(lines, "unrecoverable local index", self.unrecoverable_index_ids)
         _extend_id_lines(lines, "protected from GC", self.protected_from_gc_ids)
+        lines.append("")
+
+        lines.append("## recovery sources")
+        if self.recovery_sources_by_id:
+            for write_id, sources in sorted(self.recovery_sources_by_id.items()):
+                lines.append(f"- {write_id}: {', '.join(sources)}")
+        else:
+            lines.append("- none")
         lines.append("")
 
         lines.append("## Conflict keys")
@@ -382,6 +391,7 @@ def build_memory_backup_recovery_report(
     retryable: list[str] = []
     recoverable: list[str] = []
     unrecoverable: list[str] = []
+    recovery_sources: dict[str, tuple[str, ...]] = {}
     protected: list[str] = []
     conflict_groups: dict[str, list[str]] = {}
 
@@ -398,8 +408,14 @@ def build_memory_backup_recovery_report(
 
             if not write.local_indexed:
                 missing_index.append(write.id)
+                sources: list[str] = []
+                if write.journaled:
+                    sources.append("journal")
+                if note_hits:
+                    sources.append("durable_note")
                 if write.journaled or note_hits:
                     recoverable.append(write.id)
+                    recovery_sources[write.id] = tuple(sources)
                 else:
                     unrecoverable.append(write.id)
 
@@ -435,6 +451,7 @@ def build_memory_backup_recovery_report(
         retryable_write_ids=tuple(retryable),
         recoverable_index_ids=tuple(recoverable),
         unrecoverable_index_ids=tuple(unrecoverable),
+        recovery_sources_by_id=recovery_sources,
         protected_from_gc_ids=tuple(protected),
         unresolved_conflicts=conflicts,
         diagnostics=diagnostics,

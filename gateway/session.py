@@ -2178,6 +2178,7 @@ class SessionStore:
                             "has_active_processes_fn raised during prune for %s: %s",
                             entry.session_key, exc,
                         )
+                        continue   # fail safe: can't confirm idle → don't orphan live work
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:

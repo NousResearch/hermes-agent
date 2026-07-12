@@ -3,7 +3,7 @@
 from copy import deepcopy
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -63,6 +63,7 @@ def test_child_modes_dispatch_synchronously_with_internal_policy_hints(mode, exp
         parent_agent=delegate.call_args.kwargs["parent_agent"],
         _trusted_toolsets=expected_hints,
         _trusted_mode=mode,
+        _trusted_session_collector=ANY,
     )
 
 
@@ -125,13 +126,15 @@ def test_every_route_logs_privacy_safe_structured_decision(caplog):
     assert secret_context not in repr(record.__dict__)
 
 
-def test_successful_child_route_logs_validated_child_session_id_once(caplog):
+def test_successful_child_route_logs_private_collected_session_id_once(caplog):
     child_session_id = "child-session_123"
-    result = json.dumps({
-        "results": [{"status": "completed", "child_session_id": child_session_id}]
-    })
+    result = json.dumps({"results": [{"status": "completed"}]})
 
-    with patch("tools.delegate_tool.delegate_task", return_value=result):
+    def trusted_delegate(**kwargs):
+        kwargs["_trusted_session_collector"](child_session_id)
+        return result
+
+    with patch("tools.delegate_tool.delegate_task", side_effect=trusted_delegate):
         with caplog.at_level("INFO", logger="tools.delegate_tool"):
             route_trusted_mode(
                 mode="research-analysis",
@@ -147,19 +150,63 @@ def test_successful_child_route_logs_validated_child_session_id_once(caplog):
     assert len(records) == 1
     assert records[0].child_session_id == child_session_id
     assert result not in repr(records[0].__dict__)
+    assert "child_session_id" not in json.loads(result)["results"][0]
+
+
+def test_real_trusted_producer_links_child_privately_without_serializing(monkeypatch, caplog):
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._mode_router_enabled = True
+    parent._delegate_depth = 0
+    parent.session_id = "parent-session"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    child = MagicMock()
+    child._delegate_role = "leaf"
+    child.session_id = "real-child-session"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(dt, "_run_single_child", lambda *a, **k: {
+        "task_index": 0, "status": "completed", "summary": "done",
+        "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+        "exit_reason": "completed",
+    })
+
+    with caplog.at_level("INFO", logger="tools.delegate_tool"):
+        decision = route_trusted_mode(
+            mode="research-analysis", goal="private", parent_agent=parent,
+        )
+
+    assert isinstance(decision.result, str)
+    payload = json.loads(decision.result)
+    assert "child_session_id" not in payload["results"][0]
+    records = [r for r in caplog.records if getattr(r, "event_name", None) == "trusted_mode_route_decision"]
+    assert len(records) == 1
+    assert records[0].child_session_id == "real-child-session"
 
 
 @pytest.mark.parametrize(
-    "result",
+    "candidate",
     [
-        "not-json",
-        '{"results": []}',
-        '{"results": [{"child_session_id": "contains spaces/private"}]}',
-        '{"results": [{"child_session_id": 123}]}',
+        "contains spaces/private",
+        123,
+        None,
     ],
 )
-def test_successful_child_route_logs_none_for_unsafe_or_missing_session_id(caplog, result):
-    with patch("tools.delegate_tool.delegate_task", return_value=result):
+def test_successful_child_route_logs_none_for_unsafe_or_missing_session_id(caplog, candidate):
+    result = '{"results": [{"status": "completed"}]}'
+
+    def trusted_delegate(**kwargs):
+        kwargs["_trusted_session_collector"](candidate)
+        return result
+
+    with patch("tools.delegate_tool.delegate_task", side_effect=trusted_delegate):
         with caplog.at_level("INFO", logger="tools.delegate_tool"):
             route_trusted_mode(
                 mode="research-analysis", goal="private", parent_agent=_parent()

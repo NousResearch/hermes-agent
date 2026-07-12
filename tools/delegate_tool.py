@@ -2394,6 +2394,7 @@ def delegate_task(
     parent_agent=None,
     _trusted_toolsets: Optional[tuple[str, ...]] = None,
     _trusted_mode: Optional[str] = None,
+    _trusted_session_collector=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2801,17 +2802,15 @@ def delegate_task(
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
-        # Session IDs are non-content linkage metadata. Include each actual child
-        # ID so trusted synchronous callers can correlate their route event.
-        _child_sessions = {
-            index: getattr(child, "session_id", None)
-            for index, _, child in children
-        }
-        for entry in results:
-            index = entry.get("task_index")
-            child_session_id = _child_sessions.get(index)
-            if isinstance(child_session_id, str) and child_session_id:
-                entry["child_session_id"] = child_session_id
+        # Trusted code-selected routes may correlate their decision event with
+        # the child session. Keep that linkage on a private in-process channel:
+        # delegate results are public/model-facing and must retain their legacy
+        # schema without session identifiers.
+        if _trusted_mode and callable(_trusted_session_collector) and len(children) == 1:
+            try:
+                _trusted_session_collector(getattr(children[0][2], "session_id", None))
+            except Exception:
+                logger.debug("Trusted child-session collector failed", exc_info=True)
 
         return {
             "results": results,
@@ -3420,19 +3419,8 @@ def _log_trusted_mode_decision(
 _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
-def _trusted_child_session_id(result: Any) -> Optional[str]:
-    """Extract only a bounded, identifier-shaped child ID from delegate JSON."""
-    if not isinstance(result, str):
-        return None
-    try:
-        payload = json.loads(result)
-    except (TypeError, ValueError):
-        return None
-    results = payload.get("results") if isinstance(payload, dict) else None
-    if not isinstance(results, list) or len(results) != 1:
-        return None
-    entry = results[0]
-    candidate = entry.get("child_session_id") if isinstance(entry, dict) else None
+def _trusted_child_session_id(candidate: Any) -> Optional[str]:
+    """Validate a bounded, identifier-shaped ID received out of band."""
     if not isinstance(candidate, str) or not _SAFE_SESSION_ID_RE.fullmatch(candidate):
         return None
     return candidate
@@ -3499,6 +3487,12 @@ def route_trusted_mode(
     )
     # delegate_task remains authoritative for child capability intersection and
     # dangerous-command approvals.
+    child_session = None
+
+    def _collect_child_session(candidate: Any) -> None:
+        nonlocal child_session
+        child_session = _trusted_child_session_id(candidate)
+
     try:
         result = delegate_task(
             goal=goal,
@@ -3507,6 +3501,7 @@ def route_trusted_mode(
             parent_agent=parent_agent,
             _trusted_toolsets=policy_toolsets,
             _trusted_mode=contract.name,
+            _trusted_session_collector=_collect_child_session,
         )
     except Exception:
         # Preserve observability for failed attempts without emitting task content.
@@ -3521,7 +3516,7 @@ def route_trusted_mode(
         policy_toolsets=policy_toolsets, execution_authorized=authorized,
         authorization_reason=authorization_reason,
         parent_agent=parent_agent,
-        child_session_id=_trusted_child_session_id(result),
+        child_session_id=child_session,
     )
     return ModeRoutingDecision(
         contract.name, goal, "child", "mode-contract-requires-child", result, True

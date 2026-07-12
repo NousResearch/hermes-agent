@@ -406,6 +406,41 @@ def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch
 # Integration: delegate_task(background=True) routing
 # ---------------------------------------------------------------------------
 
+def test_delegate_task_ordinary_response_excludes_child_session_id(monkeypatch):
+    """The synchronous/model-facing result retains its pre-linkage schema."""
+    import json
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "parent-session"
+    parent._interrupt_requested = False
+    parent._active_children = []
+    parent._active_children_lock = None
+    child = MagicMock()
+    child._delegate_role = "leaf"
+    child.session_id = "private-child-session"
+    creds = {
+        "model": "m", "provider": None, "base_url": None, "api_key": None,
+        "api_mode": None, "command": None, "args": None,
+    }
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: child)
+    monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
+    monkeypatch.setattr(dt, "_run_single_child", lambda *a, **k: {
+        "task_index": 0, "status": "completed", "summary": "done",
+        "api_calls": 1, "duration_seconds": 0.1, "model": "m",
+        "exit_reason": "completed",
+    })
+
+    payload = json.loads(dt.delegate_task(
+        goal="ordinary task", background=False, parent_agent=parent,
+    ))
+
+    assert payload["results"][0]["summary"] == "done"
+    assert "child_session_id" not in payload["results"][0]
+
+
 def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     """delegate_task(background=True) returns a handle without running the
     child synchronously, and the child completes on the background thread.
@@ -422,6 +457,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
     fake_child._subagent_id = "s1"
+    fake_child.session_id = "private-child-session"
 
     gate = threading.Event()
 
@@ -465,6 +501,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert evt.get("is_batch") is True
     assert len(evt["results"]) == 1
     assert evt["results"][0]["summary"] == "done: the real task"
+    assert "child_session_id" not in evt["results"][0]
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text

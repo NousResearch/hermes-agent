@@ -15,9 +15,9 @@ def _dockerfile_text() -> str:
 def test_dockerfile_makes_opt_hermes_readonly_for_hermes_user() -> None:
     text = _dockerfile_text()
 
-    # --chmod on the source COPY bakes read-only perms at copy time instead
-    # of a separate chmod -R pass (which walked ~30k files — #49113).
-    assert "COPY --link --chmod=a+rX,go-w . ." in text
+    # Plain COPY + separate chmod for Podman/Buildah compatibility.
+    assert "COPY . ." in text
+    assert "RUN chmod -R a+rX,go-w ." in text
     # The old tree-walking passes must not be present.
     assert "chown -R root:root /opt/hermes" not in text
     assert "chmod -R a+rX /opt/hermes" not in text

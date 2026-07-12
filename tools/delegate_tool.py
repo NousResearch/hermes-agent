@@ -666,6 +666,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    mode: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -702,6 +703,19 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    if mode is not None:
+        # Only trusted Python callers can supply this non-schema argument.
+        from agent.mode_router import get_mode
+
+        contract = get_mode(mode)
+        parts.append(
+            "\n## Automatic Mode Contract\n"
+            f"Mode contract: {contract.name}. {contract.objective}\n"
+            f"Stages: {' -> '.join(contract.stages)}.\n"
+            "Follow these stages while retaining all safety, depth, credential, "
+            "budget, and workspace constraints above. Verify material claims "
+            "and validate outputs before reporting completion."
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1064,6 +1078,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Trusted automatic-mode contract; never model-facing.
+    mode: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1151,6 +1167,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        mode=mode,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2374,6 +2391,8 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    _trusted_toolsets: Optional[tuple[str, ...]] = None,
+    _trusted_mode: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2516,9 +2535,9 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # Trusted mode routes may narrow via code-defined policy; the
+                # model-facing path always supplies None.
+                toolsets=list(_trusted_toolsets) if _trusted_toolsets else None,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2532,6 +2551,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                mode=_trusted_mode,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3347,6 +3367,47 @@ def _build_role_param_description() -> str:
         "Role of the child agent. 'leaf' (default) = focused "
         "worker, cannot delegate further. 'orchestrator' = can "
         f"use delegate_task to spawn its own workers. {nesting_note}"
+    )
+
+
+_MODE_CHILD_TOOLSET_POLICY = {
+    "research-analysis": ("web", "browser"),
+    "execution-development": ("terminal", "file"),
+}
+
+
+def route_trusted_mode(
+    *,
+    mode: str,
+    goal: str,
+    context: Optional[str] = None,
+    parent_agent,
+):
+    """Execute a code-selected mode route without creating a model tool."""
+    from agent.mode_router import ModeRoutingDecision, get_mode
+
+    contract = get_mode(mode)
+    if not getattr(parent_agent, "_mode_router_enabled", False):
+        return ModeRoutingDecision(
+            contract.name, goal, "direct-parent", "mode-router-disabled"
+        )
+    if contract.name == "thinking-expansion":
+        return ModeRoutingDecision(
+            contract.name, goal, "direct-parent", "mode-contract-requires-parent"
+        )
+
+    # Synchronous by design: the parent needs this result for same-turn synthesis.
+    # delegate_task remains authoritative for every child construction invariant.
+    result = delegate_task(
+        goal=goal,
+        context=context,
+        background=False,
+        parent_agent=parent_agent,
+        _trusted_toolsets=_MODE_CHILD_TOOLSET_POLICY[contract.name],
+        _trusted_mode=contract.name,
+    )
+    return ModeRoutingDecision(
+        contract.name, goal, "child", "mode-contract-requires-child", result
     )
 
 

@@ -7,7 +7,7 @@ router integration may select.
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,17 @@ class ModeDefinition:
 
 class UnknownModeError(ValueError):
     """Raised when a caller requests a mode outside the closed registry."""
+
+
+@dataclass(frozen=True)
+class ModeRoutingDecision:
+    """Result returned by the trusted Python routing seam."""
+
+    mode: str
+    goal: str
+    route: str
+    reason: str
+    result: Optional[Any] = None
 
 
 MODE_DEFINITIONS: Mapping[str, ModeDefinition] = MappingProxyType(

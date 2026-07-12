@@ -1287,6 +1287,36 @@ class TestCustomProviderCompatibility:
         models = [e.get("model") for e in compatible]
         assert models == ["qwen3-coder", "glm-5.1", "kimi-k2.5"]
 
+    def test_malformed_custom_providers_does_not_hide_providers_dict(self, tmp_path):
+        """A corrupted legacy custom_providers value must not suppress v12+ providers."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "custom_providers": '[{"name":"Broken Legacy"}]',
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "default_model": "gpt-5-mini",
+                            "name": "OpenAI Direct",
+                            "transport": "codex_responses",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert len(compatible) == 1
+        assert compatible[0]["name"] == "OpenAI Direct"
+        assert compatible[0]["provider_key"] == "openai-direct"
+        assert compatible[0]["api_mode"] == "codex_responses"
+
 
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""
@@ -1926,5 +1956,4 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 

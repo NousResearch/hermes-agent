@@ -4946,10 +4946,9 @@ def get_compatible_custom_providers(
 
     custom_providers = config.get("custom_providers")
     if custom_providers is not None:
-        if not isinstance(custom_providers, list):
-            return []
-        for entry in custom_providers:
-            _append_if_new(_normalize_custom_provider_entry(entry))
+        if isinstance(custom_providers, list):
+            for entry in custom_providers:
+                _append_if_new(_normalize_custom_provider_entry(entry))
 
     for entry in providers_dict_to_custom_providers(config.get("providers")):
         _append_if_new(entry)

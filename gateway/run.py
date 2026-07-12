@@ -6722,6 +6722,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._gateway_loop = None
+
+        # Codex burst limiter (HEMP 2026-07-12): register the gateway loop for
+        # the cross-thread bridge and install the limiter from config.yaml
+        # (``throttle.codex``).  Best-effort — a config/import hiccup here must
+        # never block gateway startup, and the limiter fails open regardless.
+        try:
+            from agent import codex_throttle
+            from hermes_cli.config import read_raw_config
+
+            codex_throttle.set_gateway_loop(self._gateway_loop)
+            codex_throttle.configure_from_config(read_raw_config())
+        except Exception as _throttle_exc:  # noqa: BLE001 — never block startup
+            logger.warning("codex throttle setup skipped: %s", _throttle_exc)
+
         logger.info("Session storage: %s", self.config.sessions_dir)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain

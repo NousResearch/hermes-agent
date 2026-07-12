@@ -334,6 +334,20 @@ _MAX_BACKOFF_SECONDS = 60
 # server is unrevivable: its tools are out of the registry, so no tool call
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
+# After this many consecutive park cycles a plain transport rebuild
+# (run()'s ``continue`` → _run_stdio) is presumed insufficient: the wedge is
+# surviving in-process state, not a transient transport drop. On every Nth
+# cycle the server does a full COLD recreate of its per-connection managed
+# objects (sampling/elicitation handlers, background refresh tasks, per-server
+# locks) plus an aggressive orphan reap — the same shape a fresh __init__ +
+# startup produces — instead of reusing the same corrupted state. Fail-open: a
+# cold recreate that raises falls back to the normal rebuild. (GBrain
+# permanent-wedge incident, 2026-07-12.)
+_COLD_RECREATE_AFTER_PARKS = 3
+# After this many consecutive park cycles with no recovery, emit a one-shot
+# CRIT log so a permanently wedged server is never silently parked. The
+# gateway's log watchers (doctor/guardian) surface CRIT lines.
+_PARK_ESCALATE_AFTER_CYCLES = 5
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
@@ -1527,6 +1541,7 @@ class MCPServerTask:
         "_idle_timeout_seconds", "_max_lifetime_seconds", "_recycled_reason",
         "initialize_result", "_ping_unsupported",
         "_reconnect_retries",
+        "_park_cycles", "_park_escalated",
     )
 
     def __init__(self, name: str):
@@ -1587,6 +1602,12 @@ class MCPServerTask:
         # back to ``list_tools`` (the pre-ping probe) so we neither spam pings
         # nor reconnect-loop. Reset on each fresh transport connection.
         self._ping_unsupported: bool = False
+        # Consecutive park cycles since the last healthy session. Drives the
+        # cold recreate (every _COLD_RECREATE_AFTER_PARKS cycles) and the
+        # one-shot escalation CRIT (_PARK_ESCALATE_AFTER_CYCLES). Both are
+        # cleared by _note_healthy_session on establishment.
+        self._park_cycles: int = 0
+        self._park_escalated: bool = False
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -2164,6 +2185,7 @@ class MCPServerTask:
                     # so transient prior failures do not accumulate toward
                     # permanent parking (#57604).
                     self._reconnect_retries = 0
+                    self._note_healthy_session()
                     # stdio transport does not use OAuth, but we still honor
                     # _reconnect_event (e.g. future manual /mcp refresh) for
                     # consistency with _run_http.
@@ -2456,6 +2478,7 @@ class MCPServerTask:
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
                     self._reconnect_retries = 0
+                    self._note_healthy_session()
                     reason = await self._wait_for_lifecycle_event()
                     if reason == "reconnect":
                         logger.info(
@@ -2513,6 +2536,7 @@ class MCPServerTask:
                         # isn't gated on a stale failure count (#16788).
                         _reset_server_error(self.name)
                         self._reconnect_retries = 0
+                        self._note_healthy_session()
                         reason = await self._wait_for_lifecycle_event()
                         if reason == "reconnect":
                             logger.info(
@@ -2545,6 +2569,7 @@ class MCPServerTask:
                     # gated on a stale consecutive-failure count (#16788).
                     _reset_server_error(self.name)
                     self._reconnect_retries = 0
+                    self._note_healthy_session()
                     reason = await self._wait_for_lifecycle_event()
                     if reason == "reconnect":
                         logger.info(
@@ -2603,6 +2628,126 @@ class MCPServerTask:
             self.name, self, self._config
         )
 
+    def _note_healthy_session(self) -> None:
+        """Clear park-escalation bookkeeping after a session is established.
+
+        Called at every establishment site alongside the reconnect-retry
+        reset, so a server that recovers (whether via the normal reconnect
+        path or a cold recreate) starts the next outage from a clean slate.
+        """
+        self._park_cycles = 0
+        self._park_escalated = False
+
+    def _setup_handlers(self, config: dict) -> None:
+        """(Re)create the sampling and elicitation handlers from *config*.
+
+        Shared by :meth:`run` at startup and :meth:`_cold_recreate_state`, so a
+        cold rebuild reconstructs them through the exact same path a fresh
+        start uses. Elicitation lets servers ask the client for structured
+        input mid-tool-call (e.g. payment authorization); the handler routes
+        those through Hermes' approval system.
+        """
+        sampling_config = config.get("sampling", {})
+        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
+            self._sampling = SamplingHandler(self.name, sampling_config)
+        else:
+            self._sampling = None
+        elicitation_config = config.get("elicitation", {})
+        if elicitation_config.get("enabled", True) and _MCP_ELICITATION_TYPES:
+            self._elicitation = ElicitationHandler(
+                self.name, elicitation_config, owner=self
+            )
+        else:
+            self._elicitation = None
+
+    def _maybe_escalate_park(self, exc: Optional[BaseException] = None) -> None:
+        """Emit a one-shot CRIT when a server stays parked past the escalation
+        threshold, so a permanent wedge is never silently parked.
+
+        The gateway's log watchers (doctor/guardian) tail CRIT lines, so this
+        is the in-process surfacing path. Latched via ``_park_escalated`` and
+        reset by :meth:`_note_healthy_session` on recovery, so it fires at most
+        once per wedge episode.
+        """
+        if self._park_escalated or self._park_cycles < _PARK_ESCALATE_AFTER_CYCLES:
+            return
+        self._park_escalated = True
+        logger.critical(
+            "MCP server '%s' has been parked for %d consecutive cycles "
+            "(~%.0f min) without recovering via automatic rebuild — the "
+            "server may be permanently wedged and need manual intervention: %s",
+            self.name, self._park_cycles,
+            (self._park_cycles * _PARKED_RETRY_INTERVAL) / 60.0,
+            exc if exc is not None else "(no error captured)",
+        )
+
+    async def _cold_recreate_state(self) -> bool:
+        """Fully rebuild this server's in-process managed state (fail-open).
+
+        A plain transport rebuild (run()'s ``continue`` → _run_stdio / _run_http)
+        makes a fresh transport but REUSES the long-lived per-server objects on
+        ``self``: the sampling/elicitation handlers, the background refresh
+        tasks, and the per-server RPC/refresh locks. If any of those is wedged —
+        a refresh task pinned on a dead stream, a lock still held by a cancelled
+        RPC, a handler bound to a torn-down session — every rebuild inherits the
+        corruption and the server stays parked even though its binary is healthy
+        (GBrain incident, 2026-07-12: each rebuild died ~145 ms before the child
+        banner). This discards and re-creates that state to the same shape a
+        fresh __init__ + startup produces, and aggressively reaps any lingering
+        child process tree so the next spawn starts from a clean slate.
+
+        Returns True when the cold rebuild ran, False when it was skipped or
+        failed. On failure the caller falls through to the normal rebuild, so a
+        healthy server can never be harmed by this recovery attempt.
+        """
+        try:
+            logger.warning(
+                "MCP server '%s': cold-recreating in-process state after %d "
+                "park cycles (plain transport rebuild is not recovering it).",
+                self.name, self._park_cycles,
+            )
+            # Cancel and drop background refresh tasks that may be pinned on the
+            # dead session's streams (mirrors shutdown()'s teardown).
+            if self._pending_refresh_tasks:
+                for task in list(self._pending_refresh_tasks):
+                    task.cancel()
+                await asyncio.gather(
+                    *self._pending_refresh_tasks, return_exceptions=True
+                )
+                self._pending_refresh_tasks.clear()
+            # Reap any orphaned child tree for THIS server so a stale child
+            # can't keep holding a singleton resource (lock file, socket,
+            # pidfile) that a fresh spawn needs — a plausible cause of the
+            # child dying before its banner on every rebuild.
+            try:
+                await asyncio.to_thread(
+                    _kill_orphaned_mcp_children, False, self.name
+                )
+            except Exception:
+                pass
+            # Reset per-connection scalars to __init__ defaults.
+            self.session = None
+            self.initialize_result = None
+            self._ping_unsupported = False
+            self._pending_call_context = None
+            self._recycled_reason = None
+            # Recreate the per-server locks so one held by a cancelled RPC
+            # can't deadlock every future call. Safe here: parking deregistered
+            # the tools, so no live RPC is holding them.
+            self._rpc_lock = asyncio.Lock()
+            self._refresh_lock = asyncio.Lock()
+            # Rebuild the sampling/elicitation handlers through the same path a
+            # fresh startup uses, discarding any handler bound to the dead
+            # session.
+            self._setup_handlers(self._config)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "MCP server '%s': cold recreate failed (%s) — falling back to "
+                "the normal rebuild path.", self.name, exc,
+            )
+            return False
+
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.
 
@@ -2615,22 +2760,10 @@ class MCPServerTask:
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
 
-        # Set up sampling handler if enabled and SDK types are available
-        sampling_config = config.get("sampling", {})
-        if sampling_config.get("enabled", True) and _MCP_SAMPLING_TYPES:
-            self._sampling = SamplingHandler(self.name, sampling_config)
-        else:
-            self._sampling = None
-
-        # Set up elicitation handler if enabled and SDK types are available.
-        # Servers use elicitation/create to ask the client for structured
-        # input mid-tool-call (e.g. payment authorization). The handler
-        # routes those requests through Hermes' approval system.
-        elicitation_config = config.get("elicitation", {})
-        if elicitation_config.get("enabled", True) and _MCP_ELICITATION_TYPES:
-            self._elicitation = ElicitationHandler(self.name, elicitation_config, owner=self)
-        else:
-            self._elicitation = None
+        # Set up the sampling and elicitation handlers (when enabled and the
+        # SDK types are available). Shared with _cold_recreate_state so a cold
+        # rebuild reconstructs them identically.
+        self._setup_handlers(config)
 
         # Validate: warn if both url and command are present
         if "url" in config and "command" in config:
@@ -2780,11 +2913,20 @@ class MCPServerTask:
                         self._ready.set()
                         self._deregister_tools()
                         self._reconnect_event.clear()
+                        self._park_cycles += 1
+                        self._maybe_escalate_park(exc)
                         parked = await self._wait_for_reconnect_or_shutdown(
                             timeout=_PARKED_RETRY_INTERVAL
                         )
                         if parked == "shutdown":
                             return
+                        # A plain rebuild has not cleared the wedge for this
+                        # many cycles: fully re-create the per-server managed
+                        # state before retrying. Fail-open — the cold path
+                        # swallows its own errors, so we always fall through to
+                        # the normal rebuild below.
+                        if self._park_cycles % _COLD_RECREATE_AFTER_PARKS == 0:
+                            await self._cold_recreate_state()
                         logger.info(
                             "MCP server '%s': attempting revival after initial "
                             "connection failures (self-probe or explicit "
@@ -2843,11 +2985,20 @@ class MCPServerTask:
                     # manual /mcp refresh) still wakes us immediately.
                     self._deregister_tools()
                     self._reconnect_event.clear()
+                    self._park_cycles += 1
+                    self._maybe_escalate_park(exc)
                     parked = await self._wait_for_reconnect_or_shutdown(
                         timeout=_PARKED_RETRY_INTERVAL
                     )
                     if parked == "shutdown":
                         return
+                    # A plain rebuild has not cleared the wedge for this many
+                    # cycles: fully re-create the per-server managed state
+                    # before the next transport attempt. Fail-open — the cold
+                    # path swallows its own errors, so we always fall through
+                    # to the normal rebuild below.
+                    if self._park_cycles % _COLD_RECREATE_AFTER_PARKS == 0:
+                        await self._cold_recreate_state()
                     logger.info(
                         "MCP server '%s': attempting revival from parked state "
                         "(self-probe or explicit reconnect request); "

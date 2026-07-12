@@ -842,6 +842,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     """
     import httpx as _httpx
 
+    # Burst limiter (HEMP 2026-07-12): pace codex Responses calls so a short
+    # burst cannot exhaust the provider's 5h rolling request window (the
+    # 2026-07-12 13:14 429 credential cascade).  The wait happens in the gateway
+    # event loop (never blocks it); it is a complete no-op when the throttle is
+    # disabled or when there is no gateway loop (CLI / cron / tests).
+    from agent.codex_throttle import throttle_codex_call_blocking
+    throttle_codex_call_blocking()
+
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.

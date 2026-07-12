@@ -10,10 +10,32 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
     so the endpoint's server default applies)
 """
 
+import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+logger = logging.getLogger(__name__)
+
+
+def _is_ollama_endpoint(base_url: str | None) -> bool:
+    """True when base_url targets an Ollama server (its default port 11434).
+
+    Ollama is the one custom-lane backend known to reject Hermes' ``xhigh``
+    reasoning level (agent.log.1 2026-07-10: 400 "invalid reasoning value").
+    Keying off its signature port keeps the compat clamp scoped to Ollama and
+    leaves GLM-5.2/ARK, vLLM, and llama.cpp endpoints on the verbatim
+    passthrough so ``max``/``xhigh`` survive where the server accepts them.
+    """
+    if not base_url:
+        return False
+    try:
+        parsed = urlparse(base_url if "://" in base_url else f"http://{base_url}")
+        return parsed.port == 11434
+    except Exception:
+        return False
 
 
 class CustomProfile(ProviderProfile):
@@ -55,6 +77,17 @@ class CustomProfile(ProviderProfile):
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
             elif _effort:
+                # Ollama validates reasoning_effort against
+                # {high, medium, low, max, none} and 400s on Hermes' ``xhigh``
+                # superset level. Downgrade xhigh->high for the Ollama lane only
+                # (default port 11434) so the free local last-resort fallback
+                # survives; other custom endpoints keep the verbatim passthrough.
+                if _effort == "xhigh" and _is_ollama_endpoint(ctx.get("base_url")):
+                    logger.info(
+                        "reasoning effort clamped xhigh->high for custom lane "
+                        "(ollama compat)"
+                    )
+                    _effort = "high"
                 top_level["reasoning_effort"] = _effort
 
         return extra_body, top_level

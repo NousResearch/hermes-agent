@@ -33,6 +33,7 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
+from agent.tool_output_hygiene import apply_api_tool_output_hygiene
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -955,6 +956,43 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Assembly-time tool-output hygiene (HEMP6 P0-1b): non-destructive
+        # pruning on the API copy only.  The canonical ``messages`` list and
+        # session DB rows keep full tool outputs.  Stale pruning is gated on
+        # the pre-hygiene request size so the decision is deterministic for a
+        # given assembled history; flag-off returns the exact same api_messages.
+        _hygiene_cfg = getattr(agent, "_tool_output_hygiene_config", None)
+        if getattr(_hygiene_cfg, "enabled", False):
+            _pre_hygiene_request_tokens = estimate_request_tokens_rough(
+                api_messages, tools=agent.tools or None
+            )
+            _hygiene_context_length = int(
+                getattr(getattr(agent, "context_compressor", None), "context_length", 0)
+                or getattr(agent, "context_length", 0)
+                or 0
+            )
+            api_messages, _hygiene_stats = apply_api_tool_output_hygiene(
+                api_messages,
+                config=_hygiene_cfg,
+                request_tokens=_pre_hygiene_request_tokens,
+                context_length=_hygiene_context_length,
+                session_id=agent.session_id or "",
+            )
+            if _hygiene_stats.total_pruned:
+                agent._touch_activity(
+                    f"context_hygiene pruned {_hygiene_stats.total_pruned} tool output(s)"
+                )
+                logger.info(
+                    "context_hygiene pruned %s tool output(s): dedup=%s failed=%s stale=%s saved_tokens~%s saved_chars=%s session=%s",
+                    _hygiene_stats.total_pruned,
+                    _hygiene_stats.dedup_pruned,
+                    _hygiene_stats.failed_pruned,
+                    _hygiene_stats.stale_pruned,
+                    _hygiene_stats.saved_tokens_rough,
+                    _hygiene_stats.saved_chars,
+                    agent.session_id or "",
+                )
 
         # Calculate approximate request size for logging and pressure checks.
         # estimate_messages_tokens_rough(api_messages) includes the system

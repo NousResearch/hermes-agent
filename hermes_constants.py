@@ -854,6 +854,48 @@ def is_wsl() -> bool:
     return _wsl_detected
 
 
+def windows_path_to_wsl(path: str) -> str | None:
+    """Convert a Windows drive path (``C:\\...``) to its ``/mnt/<drive>/...`` form."""
+    import re
+
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", str(path or "").strip())
+    if not match:
+        return None
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    return f"/mnt/{drive}/{tail}"
+
+
+def wsl_unc_path_to_posix(path: str) -> str | None:
+    """Convert a Windows WSL UNC path (``\\\\wsl.localhost\\<distro>\\...`` or the
+    legacy ``\\\\wsl$\\...``) to a POSIX path inside the distro."""
+    import re
+
+    normalized = str(path or "").strip().replace("/", "\\")
+    match = re.match(r"^\\\\wsl(?:\.localhost|\$)\\[^\\]+\\(.*)$", normalized, re.IGNORECASE)
+    if not match:
+        return None
+    tail = match.group(1).replace("\\", "/")
+    return f"/{tail}" if tail else "/"
+
+
+def translate_cwd_for_wsl_backend(cwd: str) -> str:
+    """Normalize a cross-boundary cwd when Hermes itself runs inside WSL.
+
+    A Windows-host UI (native picker / drive path / ``\\\\wsl.localhost\\`` UNC)
+    can hand the WSL backend a path it can't ``chdir`` into. Map it to the POSIX
+    equivalent so the picker, sidebar, and sessions all agree on the workspace.
+    No-op off WSL and for paths that are already POSIX.
+    """
+    if not is_wsl():
+        return cwd
+    for translator in (wsl_unc_path_to_posix, windows_path_to_wsl):
+        translated = translator(cwd)
+        if translated is not None:
+            return translated
+    return cwd
+
+
 _container_detected: bool | None = None
 
 

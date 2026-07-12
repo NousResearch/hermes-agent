@@ -2054,6 +2054,20 @@ class TestSendTyping:
         )
 
     @pytest.mark.asyncio
+    async def test_active_status_threads_bounded_per_chat(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=Exception("missing_scope")
+        )
+        adapter._ACTIVE_STATUS_THREADS_PER_CHAT_MAX = 4
+
+        for i in range(20):
+            await adapter.send_typing("C123", metadata={"thread_id": f"ts_{i}"})
+
+        tracked = adapter._active_status_threads["C123"]
+        assert len(tracked) <= 4
+        assert "ts_19" in tracked
+
+    @pytest.mark.asyncio
     async def test_stop_typing_without_metadata_clears_all_channel_threads(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         await adapter.send_typing("C123", metadata={"thread_id": "111.000"})
@@ -2167,6 +2181,28 @@ class TestSendTyping:
             "C123",
             "done",
             metadata={"thread_id": "111.000"},
+        )
+
+        assert not result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="111.000",
+            status="",
+        )
+        assert adapter._active_status_threads == {"C123": {"222.000"}}
+
+    @pytest.mark.asyncio
+    async def test_send_failure_with_reply_to_clears_only_that_thread(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=Exception("Slack post failed")
+        )
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"111.000", "222.000"}
+
+        result = await adapter.send(
+            "C123",
+            "done",
+            reply_to="111.000",
         )
 
         assert not result.success

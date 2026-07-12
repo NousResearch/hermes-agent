@@ -477,6 +477,9 @@ class SlackAdapter(BasePlatformAdapter):
         # thread overwrite an older thread, leaving the older assistant status
         # stuck as "is thinking..." after final delivery.
         self._active_status_threads: Dict[str, set[str]] = {}
+        # Defensive bound for permanent Slack API failures or lost lifecycle
+        # metadata. Normal concurrency is far below this threshold.
+        self._ACTIVE_STATUS_THREADS_PER_CHAT_MAX = 128
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -1363,7 +1366,11 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        thread_ts = None
         try:
+            # Resolve once so success and exception cleanup always target the
+            # same exact thread, including callers that provide reply_to only.
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             # Check for a pending slash-command context.  When the user ran a
             # native slash command (e.g. /q, /stop, /model), the initial ack
             # already showed an ephemeral "Running /cmd…" message.  If we have
@@ -1382,7 +1389,6 @@ class SlackAdapter(BasePlatformAdapter):
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -1442,13 +1448,17 @@ class SlackAdapter(BasePlatformAdapter):
             # A failed final post must not leave Slack's persistent Assistant
             # status behind. Clear only this turn's thread; other concurrent
             # threads in the same DM/channel must keep their own status.
-            try:
-                await self.stop_typing(chat_id, metadata=metadata)
-            except Exception:
-                logger.debug(
-                    "[Slack] Failed to clear Assistant status after send error",
-                    exc_info=True,
-                )
+            if thread_ts:
+                try:
+                    await self.stop_typing(
+                        chat_id,
+                        metadata={"thread_id": thread_ts},
+                    )
+                except Exception:
+                    logger.debug(
+                        "[Slack] Failed to clear Assistant status after send error",
+                        exc_info=True,
+                    )
             return SendResult(success=False, error=str(e))
 
     async def send_private_notice(
@@ -1545,7 +1555,17 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
-        self._active_status_threads.setdefault(chat_id, set()).add(str(thread_ts))
+        tracked = self._active_status_threads.setdefault(chat_id, set())
+        thread_ts = str(thread_ts)
+        tracked.add(thread_ts)
+        while len(tracked) > self._ACTIVE_STATUS_THREADS_PER_CHAT_MAX:
+            # Keep the status being refreshed. Slack statuses also expire
+            # server-side, so dropping an older orphan is safer than allowing
+            # an unbounded local leak after permanent API/scope failures.
+            stale_thread_ts = next((ts for ts in tracked if ts != thread_ts), None)
+            if stale_thread_ts is None:
+                break
+            tracked.discard(stale_thread_ts)
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,

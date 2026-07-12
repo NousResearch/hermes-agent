@@ -13,6 +13,9 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(displayModelName('gpt-5.6-sol')).toBe('GPT-5.6 Sol')
+    expect(displayModelName('gpt-5.6-terra')).toBe('GPT-5.6 Terra')
+    expect(displayModelName('gpt-5.6-luna')).toBe('GPT-5.6 Luna')
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
@@ -23,6 +26,7 @@ describe('model-status-label', () => {
   it('maps reasoning effort to compact labels', () => {
     expect(reasoningEffortLabel('high')).toBe('High')
     expect(reasoningEffortLabel('xhigh')).toBe('Max')
+    expect(reasoningEffortLabel('max')).toBe('Max')
     expect(reasoningEffortLabel('')).toBe('')
   })
 

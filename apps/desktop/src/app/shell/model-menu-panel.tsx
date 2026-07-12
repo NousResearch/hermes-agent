@@ -172,8 +172,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
-        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+        effort: (caps?.reasoning ?? true)
+          ? (preset.effort ?? caps?.reasoning_default ?? 'medium')
+          : undefined,
+        fast: (caps?.fast ?? false) ? (preset.fast ?? caps?.fast_default ?? false) : undefined
       },
       { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
     )
@@ -253,8 +255,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // defaults when unset). Row label AND submenu read from these so
                 // they never disagree.
                 const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
-                const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
-                const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
+                const effEffort = isCurrent
+                  ? currentReasoningEffort
+                  : (preset.effort ?? caps?.reasoning_default ?? '')
+                const effFast = isCurrent
+                  ? currentFastMode
+                  : (preset.fast ?? caps?.fast_default ?? false)
 
                 const fastControl = resolveFastControl(
                   activeId ?? family.id,

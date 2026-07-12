@@ -278,6 +278,9 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
+  /** Effective profile/model default used when no Desktop preset exists. */
+  fast_default?: boolean
+  reasoning_default?: string
 }
 
 export interface ModelOptionsResponse {

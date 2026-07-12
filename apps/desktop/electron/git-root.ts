@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { resolveRequestedPathForIpc } from './hardening'
+import { resolveRequestedPathForIpc } from './hardening.ts'
 
 function findGitRoot(start, fsImpl = fs) {
   let dir = start

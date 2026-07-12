@@ -6,7 +6,7 @@ import {
   macTitleBarOverlayHeight,
   nativeOverlayWidth,
   OVERLAY_FALLBACK_WIDTH
-} from './titlebar-overlay-width'
+} from './titlebar-overlay-width.ts'
 
 // This static reservation is only the pre-layout FALLBACK. Once laid out the
 // renderer reads the exact width from navigator.windowControlsOverlay

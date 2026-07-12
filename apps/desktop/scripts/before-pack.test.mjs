@@ -1,8 +1,7 @@
-import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import { expect, test } from 'vitest'
 
 import beforePack, { cleanStaleAppOutDir } from '../scripts/before-pack.mjs'
 
@@ -20,8 +19,8 @@ test('cleanStaleAppOutDir removes a populated unpacked directory', () => {
 
     const removed = cleanStaleAppOutDir(appOutDir)
 
-    assert.equal(removed, true)
-    assert.equal(fs.existsSync(appOutDir), false)
+    expect(removed).toBe(true)
+    expect(fs.existsSync(appOutDir)).toBe(false)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -31,22 +30,22 @@ test('cleanStaleAppOutDir is a no-op when the directory is absent', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const missing = path.join(tempRoot, 'does-not-exist')
-    assert.equal(cleanStaleAppOutDir(missing), false)
+    expect(cleanStaleAppOutDir(missing)).toBe(false)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('cleanStaleAppOutDir ignores empty or invalid input', () => {
-  assert.equal(cleanStaleAppOutDir(''), false)
-  assert.equal(cleanStaleAppOutDir(undefined), false)
-  assert.equal(cleanStaleAppOutDir(null), false)
-  assert.equal(cleanStaleAppOutDir(42), false)
+  expect(cleanStaleAppOutDir('')).toBe(false)
+  expect(cleanStaleAppOutDir(undefined)).toBe(false)
+  expect(cleanStaleAppOutDir(null)).toBe(false)
+  expect(cleanStaleAppOutDir(42)).toBe(false)
 })
 
 test('beforePack default export resolves even when cleanup throws', async () => {
   // A directory path that rmSync can't remove is simulated by passing a
   // context whose appOutDir is a file the hook will try (and be allowed) to
   // remove; the contract under test is that the hook never rejects.
-  await assert.doesNotReject(beforePack({ appOutDir: '', electronPlatformName: 'linux' }))
+  await expect(beforePack({ appOutDir: '', electronPlatformName: 'linux' })).resolves.toBeUndefined()
 })

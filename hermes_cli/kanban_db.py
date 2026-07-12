@@ -6849,8 +6849,31 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
+    #
+    # Issue #63248: this regex previously fired on any text containing the
+    # bare word ``quota`` / ``auth`` / ``billing`` / ``forbidden`` /
+    # ``403`` — including match-on-path when a workspace-validation
+    # failure's error string contained the issue slug (e.g.
+    # ``issue-12-quota-governance``). A ``spawn_failed`` outcome is a
+    # *deterministic local* failure: the workspace problem never clears
+    # on its own, and ``consecutive_failures`` never advances because the
+    # guard returns before any spawn is attempted, wedging the task in
+    # ``ready`` for hours/days until the operator manually blocks &
+    # unblocks it.
+    #
+    # Gate the regex on the latest run's outcome so:
+    #   * ``spawn_failed`` / ``gave_up`` (deterministic local) fall through
+    #     to the normal ``consecutive_failures`` breaker path;
+    #   * ``crashed`` / ``timed_out`` (provider- or runtime-side) still
+    #     trip ``blocker_auth`` when the error matches the regex;
+    #   * ``rate_limited`` runs are handled by the earlier
+    #     ``rate_limit_cooldown`` path above and never reach this branch.
     err = row["last_failure_error"]
-    if err and _RESPAWN_BLOCKER_RE.search(err):
+    deterministic_local = (
+        latest_run is not None
+        and latest_run["outcome"] in ("spawn_failed", "gave_up")
+    )
+    if err and not deterministic_local and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.

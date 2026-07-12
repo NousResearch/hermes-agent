@@ -1854,7 +1854,7 @@ def test_respawn_guard_blocker_auth_on_authentication_error(kanban_home):
 
 
 def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
-    """Full word 'authorization' triggers blocker_auth (regex covers auth\\w*)."""
+    """Full word 'authorization' triggers blocker_auth (regex covers auth\w*)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="authz-task", assignee="alice")
         conn.execute(
@@ -1863,6 +1863,143 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_skipped_on_deterministic_spawn_failed(kanban_home):
+    """Issue #63248: a spawn_failed run whose error message contains an
+    auth/quota keyword in the **workspace path** (not a real provider wall)
+    must NOT trip blocker_auth — that path is a deterministic local failure
+    that the consecutive-failures circuit breaker must handle, not a
+    rate-limit cooldown. Without this gate, an issue slug like
+    ``issue-12-quota-governance`` wedges the task in ``ready`` forever:
+
+    1. spawn_failed with workspace-error mentioning ``quota``
+    2. ``_RESPAWN_BLOCKER_RE`` matches ``quota`` in the path
+    3. guard returns ``blocker_auth`` before any spawn
+    4. the breaker (``consecutive_failures``) never advances because the
+       guard short-circuits; task is permanently deferred.
+
+    Reproduction string taken verbatim from the issue's trace.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="Usage Tracking & Quota Governance",
+                           assignee="orchestrator")
+        now = int(time.time())
+        # One spawn_failed run with a workspace error containing ``quota``
+        # in the path (issue slug `issue-12-quota-governance`).
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (
+                "workspace: task <id> worktree path "
+                "'/home/.../worktrees/<repo>/issue-12-quota-governance' "
+                "is not inside a git repo and does not point at a git repo root",
+                t,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'failed', 'spawn_failed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None, (
+        "blocker_auth must NOT fire for spawn_failed + quota-in-path; the "
+        "guard cannot distinguish a real provider wall from a workspace "
+        "string-collision without inspecting the run's outcome. Issue #63248."
+    )
+
+
+def test_respawn_guard_blocker_auth_fires_on_real_quota_run(kanban_home):
+    """Regression guard for the fix to #63248: a real provider quota wall
+    (the latest run's outcome is ``rate_limited`` outside cooldown OR the
+    latest run's outcome is one of the auth-failure outcomes with a quota
+    keyword in the error) MUST still trip blocker_auth. The fix gates on
+    outcome, so we test the kept case: a run that ended with ``crashed``
+    and an error string that genuinely mentions quota — the new code
+    should still return ``blocker_auth`` because ``crashed`` is not a
+    deterministic-local outcome.
+
+    (The existing ``rate_limit_cooldown`` path already covers the
+    rate_limited case; this test covers the crashed + quota-in-error case.)
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="real-quota", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("openai.APIError: quota exceeded for tier free", t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'failed', 'crashed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_skipped_on_null_outcome(kanban_home):
+    """Edge case for the fix to #63248: a still-running task whose
+    prior failed run left a quota-flavored ``last_failure_error`` must
+    not have its outcome silently misclassified as a deterministic
+    local failure. The schema allows ``outcome=NULL`` for in-flight
+    runs (see the comment on the ``task_runs`` table around line 1226:
+    ``outcome: completed | blocked | crashed | timed_out | spawn_failed |
+    gave_up | reclaimed | (null while still running)``). When the latest
+    row has ``ended_at IS NULL`` it is excluded by the existing
+    ``WHERE ended_at IS NOT NULL`` filter at line 6828; but legacy rows
+    written before the filter was added — or rows whose outcome was
+    explicitly cleared — could surface ``outcome=NULL`` even with
+    ``ended_at`` set. The new gate must treat ``None`` as
+    **NOT** in the deterministic-local bucket (matches the existing
+    pattern at line 6834: ``latest_run["outcome"] == "rate_limited"``
+    is False for None), so the regex path stays in effect and the
+    task is not falsely labeled as a workspace/spawn issue.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="null-outcome", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("API quota exceeded", t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'running', NULL, ?, NULL)",
+            (t, now - 60),
+        )
+        # The existing WHERE ended_at IS NOT NULL excludes this row from
+        # the latest_run query, so latest_run is None → gate unchanged.
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_skipped_on_none_outcome_with_ended_at(kanban_home):
+    """Tighter null-safety check for the fix to #63248: even if a task_runs
+    row sneaks through with ``ended_at`` set but ``outcome=NULL`` (an
+    inconsistent state the schema permits because outcome is nullable),
+    the new gate must not misclassify it as a deterministic local
+    failure. ``None in ('spawn_failed', 'gave_up')`` is False in Python,
+    so ``deterministic_local`` stays False and the regex path is the
+    default — same as pre-fix behavior.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="null-outcome-ended", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("API quota exceeded", t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'failed', NULL, ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth", (
+        "outcome=NULL must NOT be classified as deterministic-local; "
+        "the gate treats None as 'unknown' and defers to the regex."
+    )
 
 
 def test_respawn_guard_recent_success(kanban_home):

@@ -708,6 +708,32 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
+def resolve_model_threshold(
+    model: str,
+    model_thresholds: dict[str, float] | None,
+    default: float,
+) -> float:
+    """Resolve the effective compression threshold for a given model.
+
+    ``model_thresholds`` maps substring keys to override fractions.  The
+    longest matching key wins (so ``glm-5.2-1M`` beats ``glm-5.2`` when the
+    model is ``glm-5.2-1M``).  When no override matches, or when
+    ``model_thresholds`` is empty/None, ``default`` is returned unchanged.
+
+    This is a module-level helper so plugin context engines (e.g. LCM) can
+    import and reuse the same resolution logic as the built-in compressor.
+    """
+    if not model_thresholds or not model:
+        return default
+    best_key = ""
+    for key in model_thresholds:
+        if key in model and len(key) > len(best_key):
+            best_key = key
+    if best_key:
+        return float(model_thresholds[best_key])
+    return default
+
+
 class ContextCompressor(ContextEngine):
     """Default context engine — compresses conversation context via lossy summarization.
 
@@ -899,17 +925,19 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        # Re-apply the small-context threshold floor for the NEW window,
-        # starting from the originally-configured percent (not the possibly
-        # floored live value) so a small -> large switch drops back to the
-        # configured threshold and a large -> small switch gains the floor.
-        # Guard with getattr: compressors unpickled/constructed before this
-        # attribute existed fall back to the live value.
-        _configured_pct = getattr(
-            self, "_configured_threshold_percent", self.threshold_percent,
+        # Re-resolve per-model threshold for the NEW model, then re-apply the
+        # small-context threshold floor. Starting from _config_threshold_percent
+        # (the raw config value) so a switch from a model with an override to
+        # one without correctly falls back to the global threshold.
+        _config_pct = getattr(
+            self, "_config_threshold_percent", self.threshold_percent,
         )
+        _new_base = resolve_model_threshold(
+            model, self.model_thresholds, _config_pct,
+        )
+        self._base_threshold_percent = _new_base
         self.threshold_percent = self._effective_threshold_percent(
-            context_length, _configured_pct,
+            context_length, _new_base,
         )
         # max_tokens=None here means "caller didn't specify" → keep the existing
         # output reservation. A switch that genuinely changes the output budget
@@ -1050,13 +1078,26 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        model_thresholds: dict[str, float] | None = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
-        self.threshold_percent = threshold_percent
+        # Per-model threshold overrides (longest substring match wins).
+        # Stored as a plain dict; resolved in _resolve_threshold(), then the
+        # small-context floor is applied on top.
+        self.model_thresholds = model_thresholds or {}
+        # _config_threshold_percent is the raw config value (before per-model
+        # override or small-context floor). Used as the fallback when switching
+        # to a model with no matching override.
+        self._config_threshold_percent = threshold_percent
+        # Resolve per-model override first, then apply the small-context floor.
+        self._base_threshold_percent = resolve_model_threshold(
+            model, self.model_thresholds, threshold_percent,
+        )
+        self.threshold_percent = self._base_threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
@@ -1086,9 +1127,11 @@ class ContextCompressor(ContextEngine):
         # resolved and BEFORE threshold_tokens is derived. The pre-floor
         # value is kept so update_model() can re-derive for a new window
         # (switching small -> large must drop back to the configured value).
+        # Note: _base_threshold_percent already has the per-model override
+        # applied, so the floor stacks on top of any model-specific threshold.
         self._configured_threshold_percent = self.threshold_percent
         self.threshold_percent = self._effective_threshold_percent(
-            self.context_length, self.threshold_percent,
+            self.context_length, self._base_threshold_percent,
         )
         threshold_percent = self.threshold_percent
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if

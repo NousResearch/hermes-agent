@@ -332,6 +332,7 @@ locales = ["locales/*.yaml"]
 # catalog iterates over (a shared `optional-mcps/*/*` glob would collapse all
 # manifests into one colliding optional-mcps/manifest.yaml). One target per
 # entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
+"optional-mcps/agentweb" = ["optional-mcps/agentweb/manifest.yaml"]
 "optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]
 "optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 

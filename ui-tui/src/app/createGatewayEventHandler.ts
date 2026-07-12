@@ -807,6 +807,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'sudo.expire':
+        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
+
+        return
+
+      case 'secret.expire':
+        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
+
+        return
+
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)

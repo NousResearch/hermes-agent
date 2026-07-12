@@ -1,43 +1,48 @@
 """
 FinetuneBenchEnv -- Fine-tune evaluation benchmark.
 
-Runs a structured prompt bank against the agent loop, scoring tool selection,
-execution quality, and end-to-end task completion. This is the evaluation gate
-referenced in the hermes-finetune design spec.
+Runs a structured prompt bank against the hermes agent loop, scoring tool
+selection, execution quality, and end-to-end task completion. This is the
+evaluation gate referenced in the hermes-finetune design spec.
+
+Standalone: drives the production agent (``run_agent.AIAgent``) directly
+against an OpenAI-compatible endpoint. It has no dependency on the removed
+Atropos RL environment framework, so it works both from a repo checkout and
+from an installed skill (``<hermes-home>/skills/mlops/finetune/bench/``) —
+the ``run_agent`` / ``tools`` / ``model_tools`` modules it drives are part
+of the hermes-agent installation itself.
 
 Usage:
     python finetune_bench_env.py evaluate \\
-        --config environments/benchmarks/finetune_bench/default.yaml
+        --config default.yaml
 
-    python finetune_bench_env.py process \\
-        --env.data_path_to_save_groups results.jsonl
+    python finetune_bench_env.py evaluate \\
+        --config default.yaml --env.prompt_bank_path /path/to/bank.yaml
 """
 
+import argparse
 import json
 import logging
 import os
 import re
+import shutil
 import sys
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-# Ensure repo root is on sys.path
-_repo_root = Path(__file__).resolve().parent.parent.parent.parent
-if str(_repo_root) not in sys.path:
-    sys.path.insert(0, str(_repo_root))
+from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import Field
 
-from atroposlib.envs.base import EvalHandlingEnum
-from atroposlib.envs.server_handling.server_manager import APIServerConfig
+BENCH_DIR = Path(__file__).resolve().parent
 
-from environments.agent_loop import AgentResult, HermesAgentLoop
-from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig
-from environments.tool_context import ToolContext
+# Shared path constants live in the sibling scripts/ package of the skill.
+_scripts_dir = str(BENCH_DIR.parent / "scripts")
+if _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
+
+from common import BENCH_DIR as BENCH_STATE_DIR  # noqa: E402  (~/.hermes/finetune/bench)
 
 logger = logging.getLogger(__name__)
 
@@ -67,44 +72,137 @@ class CaseResult:
 # Configuration
 # =============================================================================
 
-class FinetuneBenchConfig(HermesAgentEnvConfig):
-    """Configuration for the finetune benchmark environment."""
+@dataclass
+class FinetuneBenchConfig:
+    """Configuration for the finetune benchmark environment.
 
-    prompt_bank_path: str = Field(
-        default="environments/benchmarks/finetune_bench/prompt_bank.yaml",
-        description="Path to the prompt bank YAML file.",
-    )
-    custom_cases_dir: str = Field(
-        default="~/.hermes/finetune/bench/custom",
-        description="Directory for user-provided custom test cases.",
-    )
-    baseline_results_path: Optional[str] = Field(
-        default=None,
-        description="Path to previous eval results for comparison.",
-    )
-    regression_threshold_tool_selection: float = Field(
-        default=0.03,
-        description="Maximum allowed regression in tool selection accuracy.",
-    )
-    regression_threshold_execution: float = Field(
-        default=0.05,
-        description="Maximum allowed regression in tool execution success.",
-    )
-    regression_threshold_completion: float = Field(
-        default=0.05,
-        description="Maximum allowed regression in task completion rate.",
-    )
-    format_compliance_minimum: float = Field(
-        default=0.95,
-        description="Minimum required format compliance rate.",
-    )
+    Populated from the ``env:`` section of the config YAML; the ``setup:``
+    section supplies the model endpoint. Unknown keys are ignored (with a
+    debug log) so configs written for older revisions keep loading.
+    """
+
+    # Agent / sandbox
+    enabled_toolsets: List[str] = field(default_factory=lambda: ["terminal", "file"])
+    terminal_backend: str = "docker"
+    max_agent_turns: int = 15
+    agent_temperature: float = 0.1
+    terminal_timeout: int = 60
+    terminal_lifetime: int = 600
+    max_token_length: int = 4096
+    system_prompt: str = ""
+    extra_body: Optional[Dict[str, Any]] = None
+
+    # Benchmark-specific
+    prompt_bank_path: str = "prompt_bank.yaml"
+    custom_cases_dir: str = "~/.hermes/finetune/bench/custom"
+    baseline_results_path: Optional[str] = None
+    regression_threshold_tool_selection: float = 0.03
+    regression_threshold_execution: float = 0.05
+    regression_threshold_completion: float = 0.05
+    format_compliance_minimum: float = 0.95
+
+    # Endpoint (from the ``setup:`` section)
+    model_name: str = "carnice"
+    base_url: str = "http://localhost:8008/v1"
+    api_key: str = "none"
+
+    @classmethod
+    def load(cls, config_path: Path, overrides: Optional[Dict[str, str]] = None) -> "FinetuneBenchConfig":
+        cfg = cls()
+        data = {}
+        if config_path.exists():
+            with open(config_path) as f:
+                data = yaml.safe_load(f) or {}
+        else:
+            logger.warning("Config not found: %s (using defaults)", config_path)
+
+        valid = set(cls.__dataclass_fields__)
+        for key, value in (data.get("env") or {}).items():
+            if key in valid:
+                setattr(cfg, key, value)
+            else:
+                logger.debug("Ignoring unknown env config key: %s", key)
+
+        setup = data.get("setup") or []
+        if setup and isinstance(setup, list) and isinstance(setup[0], dict):
+            first = setup[0]
+            cfg.model_name = first.get("model_name", cfg.model_name)
+            cfg.base_url = first.get("base_url", cfg.base_url)
+            cfg.api_key = first.get("api_key", cfg.api_key)
+
+        for key, value in (overrides or {}).items():
+            if key not in valid:
+                logger.warning("Ignoring unknown --env override: %s", key)
+                continue
+            current = getattr(cfg, key)
+            if isinstance(current, bool):
+                value = str(value).lower() in {"1", "true", "yes"}
+            elif isinstance(current, int):
+                value = int(value)
+            elif isinstance(current, float):
+                value = float(value)
+            setattr(cfg, key, value)
+
+        return cfg
+
+
+# =============================================================================
+# Verification context
+# =============================================================================
+
+class VerifyContext:
+    """Run verification commands in the same sandbox the agent used.
+
+    Sharing the rollout's ``task_id`` means terminal commands see the same
+    container/cwd state (files, processes) the model produced.
+    """
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+
+    def terminal(self, command: str, timeout: int = 180) -> Dict[str, Any]:
+        """Run a command; returns a dict with 'exit_code' and 'output'."""
+        import asyncio
+        import concurrent.futures
+
+        from model_tools import handle_function_call
+
+        def _call() -> str:
+            return handle_function_call(
+                "terminal",
+                {"command": command, "timeout": timeout},
+                task_id=self.task_id,
+            )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            result = _call()
+        else:
+            # Container backends use asyncio.run() internally — hop to a
+            # worker thread so they get a clean event loop.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(_call).result(timeout=300)
+
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError:
+            return {"exit_code": -1, "output": result}
+
+    def cleanup(self) -> None:
+        """Tear down the rollout's sandbox (containers, sessions)."""
+        try:
+            from tools.terminal_tool import cleanup_vm
+            cleanup_vm(self.task_id)
+        except Exception as e:
+            logger.debug("Sandbox cleanup failed for %s: %s", self.task_id[:8], e)
 
 
 # =============================================================================
 # Environment
 # =============================================================================
 
-class FinetuneBenchEnv(HermesAgentBaseEnv):
+class FinetuneBenchEnv:
     """
     Fine-tune evaluation benchmark environment.
 
@@ -113,31 +211,15 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
     """
 
     name = "finetune-bench"
-    env_config_cls = FinetuneBenchConfig
 
-    @classmethod
-    def config_init(cls):
-        env_config = FinetuneBenchConfig(
-            enabled_toolsets=["terminal", "file", "web"],
-            # Docker backend is REQUIRED — see the comment in default.yaml.
-            terminal_backend="docker",
-            max_agent_turns=15,
-            eval_handling="STOP_TRAIN",
-            steps_per_eval=1,
-            total_steps=1,
-        )
-        server_configs = [
-            APIServerConfig(
-                model_name="carnice",
-                base_url="http://localhost:8008/v1",
-                api_key="none",
-                num_requests_for_eval=1,
-            )
-        ]
-        return env_config, server_configs
+    def __init__(self, config: FinetuneBenchConfig):
+        self.config = config
+        self.prompt_bank: List[Dict[str, Any]] = []
+        self.baseline: Optional[Dict[str, Any]] = None
+        self.results: List[CaseResult] = []
 
-    async def setup(self):
-        """Load prompt bank, custom cases, and configure docker sandbox mount."""
+    def setup(self):
+        """Load prompt bank, custom cases, and configure the sandbox."""
         # Force non-interactive mode for any tool calls the agent loop makes
         # during the rollout. The bench env is definitionally non-interactive
         # — there's no user to enter a sudo password, click an approval
@@ -150,11 +232,18 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         os.environ["HERMES_YOLO_MODE"] = "1"
         os.environ.setdefault("SUDO_PASSWORD", "")  # ensures no prompt is shown
 
+        # Map sandbox config onto the terminal tool's environment knobs.
+        # This process is a dedicated bench subprocess, so mutating our own
+        # environment doesn't leak into the dispatching hermes session.
+        if self.config.terminal_backend:
+            os.environ["TERMINAL_ENV"] = self.config.terminal_backend
+        os.environ["TERMINAL_TIMEOUT"] = str(self.config.terminal_timeout)
+        os.environ["TERMINAL_LIFETIME_SECONDS"] = str(self.config.terminal_lifetime)
+
         # Pre-flight: confirm the configured LLM endpoint is reachable BEFORE
         # we start the rollout loop. Without this check, a dead llama-server
-        # causes the bench to hang silently on its first request — the agent
-        # loop has no per-call timeout and the parent dispatcher only kills
-        # after hours. Fail loud and fast instead.
+        # causes the bench to hang silently on its first request. Fail loud
+        # and fast instead.
         self._preflight_health_check()
 
         # Suppress the per-container disk-quota warning that fires for every
@@ -168,9 +257,7 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
 
         # Bind-mount the host scratch dir into every container the bench
         # spawns so per-case working dirs (created by _rollout_case) are
-        # visible inside the sandbox at the same path. This is set as an
-        # env var because docker_volumes isn't supported in the per-task
-        # override dict, only in global config.
+        # visible inside the sandbox at the same path.
         host_scratch = Path("/tmp/finetune-bench")
         host_scratch.mkdir(parents=True, exist_ok=True)
         existing = os.environ.get("TERMINAL_DOCKER_VOLUMES", "")
@@ -185,9 +272,9 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
             os.environ["TERMINAL_DOCKER_VOLUMES"] = json.dumps(current)
             logger.info("Mounted %s into bench containers", mount_spec)
 
-        bank_path = Path(self.config.prompt_bank_path)
+        bank_path = Path(self.config.prompt_bank_path).expanduser()
         if not bank_path.is_absolute():
-            bank_path = _repo_root / bank_path
+            bank_path = BENCH_DIR / bank_path
 
         if bank_path.exists():
             with open(bank_path) as f:
@@ -209,13 +296,12 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         # Load baseline for comparison
         self.baseline = None
         if self.config.baseline_results_path:
-            bp = Path(self.config.baseline_results_path)
+            bp = Path(self.config.baseline_results_path).expanduser()
             if bp.exists():
                 with open(bp) as f:
                     self.baseline = json.load(f)
 
-        self.results: List[CaseResult] = []
-        self.iter = 0
+        self.results = []
 
         logger.info("Loaded %d test cases", len(self.prompt_bank))
 
@@ -228,25 +314,9 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         import urllib.request
         import urllib.error
 
-        # Find the base_url from the first server config. Atropos's
-        # APIServer stores it as `self.config.base_url` (a Pydantic
-        # field on the APIServerConfig). Older versions and some
-        # subclasses may also expose it as a direct attribute.
-        base_url = None
-        try:
-            for server in self.server.servers:
-                cfg = getattr(server, "config", None)
-                url = (
-                    getattr(cfg, "base_url", None) if cfg is not None else None
-                ) or getattr(server, "base_url", None)
-                if url:
-                    base_url = str(url)
-                    break
-        except Exception as e:
-            logger.debug("preflight: server enumeration failed: %s", e)
-
+        base_url = self.config.base_url
         if not base_url:
-            print("[finetune-bench] ⚠ could not determine LLM server URL from config — "
+            print("[finetune-bench] ⚠ no base_url configured — "
                   "skipping pre-flight health check")
             return
 
@@ -264,7 +334,7 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         try:
             with urllib.request.urlopen(health_url, timeout=5) as resp:
                 if 200 <= resp.status < 300:
-                    print(f"[finetune-bench] pre-flight: ✓ server is responsive")
+                    print("[finetune-bench] pre-flight: ✓ server is responsive")
                     return
                 print(
                     f"[finetune-bench] pre-flight: ✗ server returned HTTP {resp.status}"
@@ -276,7 +346,7 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
             print(f"  reason: {e}")
             print(
                 "  Start your local model (e.g. llama-server) before running the bench, "
-                "or update finetune_bench/default.yaml's setup.base_url to point at a "
+                "or update the bench default.yaml's setup.base_url to point at a "
                 "different endpoint."
             )
 
@@ -285,17 +355,15 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         # failure instead of waiting hours for a hung run.
         raise SystemExit(2)
 
-    async def get_next_item(self):
-        if self.iter >= len(self.prompt_bank):
-            return None
-        item = self.prompt_bank[self.iter]
-        self.iter += 1
-        return item
-
     def format_prompt(self, item):
         return item["prompt"]
 
-    async def compute_reward(self, item, result, ctx):
+    # =========================================================================
+    # Scoring
+    # =========================================================================
+
+    def compute_reward(self, item, messages: List[Dict], turns_used: int,
+                       tool_errors: int, ctx: VerifyContext) -> CaseResult:
         """Score a single test case."""
         case = CaseResult(
             case_id=item["id"],
@@ -303,11 +371,9 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
             category=item["category"],
             tags=item.get("tags", []),
             is_canary=item.get("canary", False),
-            turns_used=result.turns_used,
-            tool_errors=len(result.tool_errors) if result.tool_errors else 0,
+            turns_used=turns_used,
+            tool_errors=tool_errors,
         )
-
-        messages = result.messages
 
         # Format compliance
         case.format_valid = self._check_format(messages)
@@ -331,18 +397,18 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
             if v["method"] == "output_match":
                 case.tool_args_valid = self._verify_output(messages, v)
             elif v["method"] == "functional_test":
-                case.task_completed = await self._verify_functional(ctx, item, v)
+                case.task_completed = self._verify_functional(ctx, item, v)
                 case.tool_args_valid = case.task_completed
 
         # Tier 3: End-to-end
         if item["tier"] == 3 and item.get("verification"):
             v = item["verification"]
-            case.task_completed = await self._verify_functional(ctx, item, v)
+            case.task_completed = self._verify_functional(ctx, item, v)
 
         # Composite reward
         case.reward = self._compute_composite(case, item["tier"])
         self.results.append(case)
-        return case.reward
+        return case
 
     def _compute_composite(self, case: CaseResult, tier: int) -> float:
         if not case.format_valid or not case.tool_call_parseable:
@@ -396,11 +462,11 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         for msg in messages:
             if msg.get("role") == "tool":
                 content = msg.get("content", "")
-                if expected in content:
+                if isinstance(content, str) and expected in content:
                     return True
         return False
 
-    async def _verify_functional(self, ctx: ToolContext, item: Dict, verification: Dict) -> bool:
+    def _verify_functional(self, ctx: VerifyContext, item: Dict, verification: Dict) -> bool:
         checks = verification.get("checks", [])
         commands = verification.get("test_commands", [])
 
@@ -446,18 +512,15 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
     # Per-case rollout (called by evaluate)
     # =========================================================================
 
-    async def _rollout_case(self, item: Dict) -> CaseResult:
+    def _rollout_case(self, item: Dict) -> Optional[CaseResult]:
         """Run one test case end-to-end: setup → agent loop → score."""
-        import asyncio
-        import shutil
-        import uuid as _uuid
-
+        from run_agent import AIAgent
         from tools.terminal_tool import (
             register_task_env_overrides,
             clear_task_env_overrides,
         )
 
-        task_id = str(_uuid.uuid4())
+        task_id = str(uuid.uuid4())
 
         # --- Setup phase: every case gets an isolated working directory ---
         # If the case specifies setup.working_dir, use that. Otherwise mint a
@@ -478,40 +541,44 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
             fpath.parent.mkdir(parents=True, exist_ok=True)
             fpath.write_text(content)
 
-        # Pin the terminal sandbox cwd for this rollout. The local terminal
-        # backend honors this override so all commands the agent runs land
-        # inside the per-case dir, not the repo root.
+        # Pin the terminal sandbox cwd for this rollout so all commands the
+        # agent runs land inside the per-case dir, not the host cwd.
         register_task_env_overrides(task_id, {"cwd": str(wd)})
 
-        # --- Resolve tools (uses HermesAgentBaseEnv helper) ---
-        tools, valid_names = self._resolve_tools_for_group()
-
-        # --- Build messages ---
+        # --- Build prompt ---
         # Tell the model its working directory so it doesn't try to use
         # absolute paths or assume it's somewhere else.
         prompt_text = (
             f"[Working directory: {wd}]\n\n{self.format_prompt(item)}"
         )
-        messages: List[Dict[str, Any]] = []
-        if self.config.system_prompt:
-            messages.append({"role": "system", "content": self.config.system_prompt})
-        messages.append({"role": "user", "content": prompt_text})
 
-        # --- Run agent loop (always direct server for OpenAI-compatible llama.cpp) ---
-        agent = HermesAgentLoop(
-            server=self.server,
-            tool_schemas=tools,
-            valid_tool_names=valid_names,
-            max_turns=item.get("max_turns") or self.config.max_agent_turns,
-            task_id=task_id,
-            temperature=self.config.agent_temperature,
+        # --- Run the production agent loop against the configured endpoint ---
+        request_overrides: Dict[str, Any] = {
+            "temperature": self.config.agent_temperature,
+        }
+        if self.config.extra_body:
+            request_overrides["extra_body"] = dict(self.config.extra_body)
+
+        agent = AIAgent(
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+            model=self.config.model_name,
+            max_iterations=item.get("max_turns") or self.config.max_agent_turns,
+            enabled_toolsets=list(self.config.enabled_toolsets),
+            quiet_mode=True,
             max_tokens=self.config.max_token_length,
-            extra_body=self.config.extra_body,
+            request_overrides=request_overrides,
+            session_id=f"finetune-bench-{task_id[:8]}",
         )
 
         try:
             try:
-                result = await agent.run(messages)
+                result = agent.run_conversation(
+                    prompt_text,
+                    system_message=self.config.system_prompt or None,
+                    task_id=task_id,
+                )
+                messages = result.get("messages", [])
             except Exception as e:
                 logger.error("Case %s rollout failed: %s", item.get("id"), e)
                 case = CaseResult(
@@ -527,19 +594,29 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
                 self.results.append(case)
                 return case
 
-            # --- Score via compute_reward ---
-            ctx = ToolContext(task_id)
+            turns_used = sum(
+                1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
+            )
+            tool_errors = sum(
+                1 for m in messages
+                if isinstance(m, dict)
+                and m.get("role") == "tool"
+                and isinstance(m.get("content"), str)
+                and m["content"].lstrip().lower().startswith("error")
+            )
+
+            # --- Score ---
+            ctx = VerifyContext(task_id)
             try:
-                await self.compute_reward(item, result, ctx)
+                return self.compute_reward(item, messages, turns_used, tool_errors, ctx)
             except Exception as e:
                 logger.error("Case %s scoring failed: %s", item.get("id"), e)
+                return self.results[-1] if self.results else None
             finally:
                 try:
                     ctx.cleanup()
                 except Exception:
                     pass
-
-            return self.results[-1] if self.results else None
         finally:
             # Always release the per-task cwd override so it doesn't leak
             # into the next case (or any concurrent local-terminal users).
@@ -552,42 +629,46 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
     # Evaluation & reporting
     # =========================================================================
 
-    async def evaluate(self, *args, **kwargs):
+    def evaluate(self):
         """Iterate the prompt bank, score each case, then aggregate."""
-        import asyncio
-
-        # Atropos may not have called setup() — defensive load.
-        if not hasattr(self, "prompt_bank") or not self.prompt_bank:
-            await self.setup()
+        if not self.prompt_bank:
+            self.setup()
 
         if not self.prompt_bank:
             print("[finetune-bench] No test cases loaded — check prompt_bank_path")
             return
 
-        from tqdm import tqdm
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = None
 
         total = len(self.prompt_bank)
         print(f"\n{'='*60}")
         print(f"  FINETUNE BENCH — running {total} test cases")
         print(f"{'='*60}\n")
 
-        pbar = tqdm(total=total, desc="Evaluating", dynamic_ncols=True)
-        for item in self.prompt_bank:
+        pbar = tqdm(total=total, desc="Evaluating", dynamic_ncols=True) if tqdm else None
+        for i, item in enumerate(self.prompt_bank, 1):
             try:
-                await self._rollout_case(item)
+                self._rollout_case(item)
             except Exception as e:
                 logger.error("Case %s failed in evaluate loop: %s", item.get("id"), e)
             passed = sum(1 for r in self.results if r.reward >= 0.5)
             done = len(self.results)
             pct = (passed / done * 100) if done else 0.0
-            pbar.set_postfix_str(f"pass={passed}/{done} ({pct:.1f}%)")
-            pbar.update(1)
-        pbar.close()
+            if pbar:
+                pbar.set_postfix_str(f"pass={passed}/{done} ({pct:.1f}%)")
+                pbar.update(1)
+            else:
+                print(f"  [{i}/{total}] pass={passed}/{done} ({pct:.1f}%)")
+        if pbar:
+            pbar.close()
 
         metrics = self._aggregate_metrics()
 
         # Save results
-        results_dir = Path("~/.hermes/finetune/bench/results").expanduser()
+        results_dir = BENCH_STATE_DIR / "results"
         results_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_path = results_dir / f"bench_{ts}.json"
@@ -748,5 +829,51 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         print()
 
 
+# =============================================================================
+# CLI
+# =============================================================================
+
+def _parse_env_overrides(unknown_args: List[str]) -> Dict[str, str]:
+    """Parse ``--env.<key> <value>`` (or ``--env.<key>=<value>``) pairs."""
+    overrides: Dict[str, str] = {}
+    i = 0
+    while i < len(unknown_args):
+        arg = unknown_args[i]
+        if arg.startswith("--env."):
+            key = arg[len("--env."):]
+            if "=" in key:
+                key, _, value = key.partition("=")
+                overrides[key] = value
+            elif i + 1 < len(unknown_args):
+                overrides[key] = unknown_args[i + 1]
+                i += 1
+            else:
+                logger.warning("Missing value for override %s", arg)
+        else:
+            logger.warning("Ignoring unknown argument: %s", arg)
+        i += 1
+    return overrides
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    parser = argparse.ArgumentParser(description="Finetune evaluation benchmark")
+    parser.add_argument("command", choices=["evaluate"], help="Action to run")
+    parser.add_argument(
+        "--config",
+        default=str(BENCH_DIR / "default.yaml"),
+        help="Path to the bench config YAML",
+    )
+    args, unknown = parser.parse_known_args(argv)
+    overrides = _parse_env_overrides(unknown)
+
+    config = FinetuneBenchConfig.load(Path(args.config).expanduser(), overrides)
+    env = FinetuneBenchEnv(config)
+    env.setup()
+    env.evaluate()
+    return 0
+
+
 if __name__ == "__main__":
-    FinetuneBenchEnv.cli()
+    raise SystemExit(main())

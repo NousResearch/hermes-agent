@@ -21,9 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import common
 from common import (
-    ADAPTERS_DIR, CLUSTERS_DIR, CLUSTER_STATE_PATH,
-    EXTRACTED_DIR, FINETUNE_DIR, REGISTRY_PATH, SCORED_DIR,
     ensure_dirs, load_config, load_json, save_json, read_jsonl, logger,
 )
 
@@ -245,7 +244,7 @@ def redeploy(adapter_dir: Optional[Path] = None) -> bool:
         if active is None:
             print("redeploy: no active adapter to deploy")
             return False
-        adapter_dir = ADAPTERS_DIR / active["cluster_id"] / active["version"]
+        adapter_dir = common.ADAPTERS_DIR / active["cluster_id"] / active["version"]
         print(f"redeploy: deploying {active['cluster_id']} {active['version']}")
     else:
         adapter_dir = Path(adapter_dir).expanduser()
@@ -331,10 +330,10 @@ class AdapterRegistry:
 
     def __init__(self):
         ensure_dirs()
-        self.registry = load_json(REGISTRY_PATH, {"adapters": []})
+        self.registry = load_json(common.REGISTRY_PATH, {"adapters": []})
 
     def _save(self):
-        save_json(REGISTRY_PATH, self.registry)
+        save_json(common.REGISTRY_PATH, self.registry)
 
     def _find_adapter(self, cluster_id: str, version: str = None) -> Optional[Dict]:
         """Find an adapter entry in the registry."""
@@ -362,7 +361,7 @@ class AdapterRegistry:
         """Register a new adapter version (initially as 'trained', not promoted)."""
         import hashlib
 
-        adapter_dir = ADAPTERS_DIR / cluster_id / version
+        adapter_dir = common.ADAPTERS_DIR / cluster_id / version
         config_path = adapter_dir / "config.yml"
 
         # Compute hashes for reproducibility
@@ -390,7 +389,7 @@ class AdapterRegistry:
         }
 
         # Update label from cluster state
-        cluster_state = load_json(CLUSTER_STATE_PATH, {})
+        cluster_state = load_json(common.CLUSTER_STATE_PATH, {})
         cluster_info = cluster_state.get("clusters", {}).get(cluster_id, {})
         entry["cluster_label"] = cluster_info.get("label", f"auto:{cluster_id}")
 
@@ -422,7 +421,7 @@ class AdapterRegistry:
         entry["promoted_at"] = datetime.now().isoformat()
 
         # Update symlink
-        cluster_dir = ADAPTERS_DIR / cluster_id
+        cluster_dir = common.ADAPTERS_DIR / cluster_id
         active_link = cluster_dir / "active"
         if active_link.is_symlink() or active_link.exists():
             active_link.unlink()
@@ -455,7 +454,7 @@ class AdapterRegistry:
         target["promoted_at"] = datetime.now().isoformat()
 
         # Update symlink
-        cluster_dir = ADAPTERS_DIR / cluster_id
+        cluster_dir = common.ADAPTERS_DIR / cluster_id
         active_link = cluster_dir / "active"
         if active_link.is_symlink() or active_link.exists():
             active_link.unlink()
@@ -467,7 +466,7 @@ class AdapterRegistry:
 
     def gc(self, keep_versions: int = 2):
         """Garbage collect old adapter versions, keeping N most recent."""
-        for cluster_dir in ADAPTERS_DIR.iterdir():
+        for cluster_dir in common.ADAPTERS_DIR.iterdir():
             if not cluster_dir.is_dir() or cluster_dir.name.startswith("."):
                 continue
 
@@ -504,22 +503,22 @@ class AdapterRegistry:
         # Data stats
         extracted_count = sum(
             sum(1 for _ in open(p))
-            for p in EXTRACTED_DIR.glob("extract_*.jsonl")
+            for p in common.EXTRACTED_DIR.glob("extract_*.jsonl")
             if p.exists()
-        ) if EXTRACTED_DIR.exists() else 0
+        ) if common.EXTRACTED_DIR.exists() else 0
 
         scored_count = sum(
             sum(1 for _ in open(p))
-            for p in SCORED_DIR.glob("scored_*.jsonl")
+            for p in common.SCORED_DIR.glob("scored_*.jsonl")
             if p.exists()
-        ) if SCORED_DIR.exists() else 0
+        ) if common.SCORED_DIR.exists() else 0
 
         lines.append(f"\n  Data:")
         lines.append(f"    Extracted sessions: {extracted_count}")
         lines.append(f"    Scored sessions:    {scored_count}")
 
         # Cluster state
-        cluster_state = load_json(CLUSTER_STATE_PATH, {})
+        cluster_state = load_json(common.CLUSTER_STATE_PATH, {})
         if cluster_state:
             lines.append(f"\n  Clustering:")
             lines.append(f"    Algorithm:        {cluster_state.get('algorithm', 'n/a')}")
@@ -561,10 +560,15 @@ class AdapterRegistry:
         return "\n".join(lines)
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
-BENCH_ENV_SCRIPT = REPO_ROOT / "environments" / "benchmarks" / "finetune_bench" / "finetune_bench_env.py"
-BENCH_DEFAULT_CONFIG = REPO_ROOT / "environments" / "benchmarks" / "finetune_bench" / "default.yaml"
-BENCH_RESULTS_DIR = FINETUNE_DIR / "bench" / "results"
+# Bench assets ship inside the skill bundle (bench/ next to scripts/), so
+# they resolve identically from a repo checkout and from an installed skill
+# (<hermes-home>/skills/mlops/finetune/).
+BENCH_ASSETS_DIR = Path(__file__).resolve().parent.parent / "bench"
+BENCH_ENV_SCRIPT = BENCH_ASSETS_DIR / "finetune_bench_env.py"
+BENCH_DEFAULT_CONFIG = BENCH_ASSETS_DIR / "default.yaml"
+def bench_results_dir() -> Path:
+    """Resolve at call time so profile changes (HERMES_HOME) take effect."""
+    return common.BENCH_DIR / "results"
 
 
 def run_bench(prompt_bank: str = None) -> Optional[Path]:
@@ -581,8 +585,8 @@ def run_bench(prompt_bank: str = None) -> Optional[Path]:
         logger.error("Bench config not found: %s", BENCH_DEFAULT_CONFIG)
         return None
 
-    BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    pre_existing = set(BENCH_RESULTS_DIR.glob("bench_*.json"))
+    bench_results_dir().mkdir(parents=True, exist_ok=True)
+    pre_existing = set(bench_results_dir().glob("bench_*.json"))
 
     cmd = [
         sys.executable, str(BENCH_ENV_SCRIPT), "evaluate",
@@ -593,7 +597,7 @@ def run_bench(prompt_bank: str = None) -> Optional[Path]:
 
     print(f"  Running: {' '.join(cmd)}")
     try:
-        subprocess.run(cmd, cwd=str(REPO_ROOT), check=False, timeout=3600 * 2)
+        subprocess.run(cmd, cwd=str(BENCH_ASSETS_DIR), check=False, timeout=3600 * 2)
     except subprocess.TimeoutExpired:
         logger.error("Bench timed out after 2h")
         return None
@@ -602,7 +606,7 @@ def run_bench(prompt_bank: str = None) -> Optional[Path]:
         return None
 
     # Find the new result file (bench writes timestamped JSON)
-    after = set(BENCH_RESULTS_DIR.glob("bench_*.json"))
+    after = set(bench_results_dir().glob("bench_*.json"))
     new = after - pre_existing
     if not new:
         # Fall back to most recent file
@@ -630,7 +634,7 @@ def bench_passes(candidate_path: Path, baseline_path: Path = None) -> tuple:
     if baseline_path is None:
         # Find prior result files, sort by mtime newest-first.
         prior_files = sorted(
-            (p for p in BENCH_RESULTS_DIR.glob("bench_*.json") if p != candidate_path),
+            (p for p in bench_results_dir().glob("bench_*.json") if p != candidate_path),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -738,7 +742,7 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
     registry = AdapterRegistry()
     promoted: List[Tuple[str, str]] = []
     for cid in trained:
-        cluster_dir = ADAPTERS_DIR / cid
+        cluster_dir = common.ADAPTERS_DIR / cid
         versions = sorted(
             (d.name for d in cluster_dir.iterdir()
              if d.is_dir() and d.name.startswith("v")),
@@ -748,7 +752,7 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
             continue
         version = versions[-1]
         cluster_info = (cluster_state or {}).get("clusters", {}).get(cid, {})
-        train_path = CLUSTERS_DIR / cid / "train.jsonl"
+        train_path = common.CLUSTERS_DIR / cid / "train.jsonl"
         ds_size = sum(1 for _ in open(train_path)) if train_path.exists() else 0
         registry.register_adapter(
             cluster_id=cid,
@@ -767,7 +771,7 @@ def run_pipeline(dry_run: bool = False, with_bench: bool = False):
     if serving_cfg.get("auto_redeploy") and promoted:
         print(f"\n[5b/{total_steps}] Redeploying llama-server with new adapter...")
         cid, version = promoted[-1]  # last promoted adapter wins
-        deploy_dir = ADAPTERS_DIR / cid / version
+        deploy_dir = common.ADAPTERS_DIR / cid / version
         if not redeploy(deploy_dir):
             print("  ⚠ Redeploy failed. Adapter is promoted but not yet served.")
             print("    The bench will measure the previously-served model.")
@@ -920,13 +924,13 @@ def main():
     elif args.command == "redeploy":
         adapter_dir = None
         if args.cluster and args.version:
-            adapter_dir = ADAPTERS_DIR / args.cluster / args.version
+            adapter_dir = common.ADAPTERS_DIR / args.cluster / args.version
         elif args.cluster:
             # Use the active version of the requested cluster
             registry = AdapterRegistry()
             for entry in registry.registry.get("adapters", []):
                 if entry.get("cluster_id") == args.cluster and entry.get("status") == "active":
-                    adapter_dir = ADAPTERS_DIR / args.cluster / entry["version"]
+                    adapter_dir = common.ADAPTERS_DIR / args.cluster / entry["version"]
                     break
             if adapter_dir is None:
                 print(f"No active adapter for cluster {args.cluster}")

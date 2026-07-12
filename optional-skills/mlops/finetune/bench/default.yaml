@@ -10,7 +10,6 @@ env:
   agent_temperature: 0.1
   terminal_timeout: 60
   terminal_lifetime: 600
-  tool_pool_size: 32
   # Per-response output cap. 2048 is too small — write_file calls with
   # long content (shell scripts, multi-class Python files) get truncated
   # mid-string and produce unparseable JSON tool calls, manifesting as
@@ -18,23 +17,17 @@ env:
   # enough headroom while staying well under typical server context limits.
   max_token_length: 4096
 
-  # Benchmark-specific
-  prompt_bank_path: environments/benchmarks/finetune_bench/prompt_bank.yaml
+  # Benchmark-specific. Relative paths resolve against this file's
+  # directory, so the defaults work both from a repo checkout and from an
+  # installed skill.
+  prompt_bank_path: prompt_bank.yaml
   custom_cases_dir: ~/.hermes/finetune/bench/custom
   regression_threshold_tool_selection: 0.03
   regression_threshold_execution: 0.05
   regression_threshold_completion: 0.05
   format_compliance_minimum: 0.95
 
-  # Eval config
-  eval_handling: STOP_TRAIN
-  steps_per_eval: 1
-  total_steps: 1
-  group_size: 1
-  num_rollouts_per_group_for_logging: 1
-
 setup:
   - model_name: carnice
     base_url: http://localhost:8008/v1
     api_key: none
-    num_requests_for_eval: 1

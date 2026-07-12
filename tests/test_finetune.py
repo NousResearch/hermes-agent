@@ -1424,3 +1424,105 @@ class TestRedeploy:
         # No comparable baseline → pass with a "new baseline" message
         assert passed is True
         assert "new baseline" in report.lower()
+
+
+# ============================================================================
+# Installed-skill integration
+# ============================================================================
+
+class TestInstalledSkill:
+    """The official install path copies only the skill bundle (see
+    tools/skills_hub.py OptionalSkillSource.fetch). Everything /finetune
+    needs — including the bench env — must live inside the bundle and
+    resolve correctly from the installed location."""
+
+    SKILL_SRC = Path(__file__).resolve().parent.parent / "optional-skills" / "mlops" / "finetune"
+
+    def _install_skill(self, tmp_path):
+        """Mirror OptionalSkillSource.fetch() + install_from_quarantine():
+        copy every non-hidden, non-pyc file under the skill dir."""
+        import shutil
+
+        dest = tmp_path / "skills" / "mlops" / "finetune"
+        for f in self.SKILL_SRC.rglob("*"):
+            if (
+                f.is_file()
+                and not f.name.startswith(".")
+                and "__pycache__" not in f.parts
+                and f.suffix != ".pyc"
+            ):
+                rel = f.relative_to(self.SKILL_SRC)
+                target = dest / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, target)
+        return dest
+
+    def test_bench_assets_ship_with_the_bundle(self, tmp_path):
+        """The bench env, config, and prompt bank survive installation."""
+        dest = self._install_skill(tmp_path)
+        assert (dest / "bench" / "finetune_bench_env.py").exists()
+        assert (dest / "bench" / "default.yaml").exists()
+        assert (dest / "bench" / "prompt_bank.yaml").exists()
+        assert (dest / "scripts" / "manage.py").exists()
+
+    def test_manage_resolves_bench_from_installed_skill(self, tmp_path):
+        """manage.py finds the bench env relative to the installed skill,
+        not the repo checkout. Runs in a subprocess so the repo-path
+        `manage` module already imported by other tests isn't reused."""
+        import subprocess
+
+        dest = self._install_skill(tmp_path)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        code = (
+            "import sys, json; "
+            f"sys.path.insert(0, {str(dest / 'scripts')!r}); "
+            "import manage; "
+            "print(json.dumps({"
+            "'env': str(manage.BENCH_ENV_SCRIPT), "
+            "'env_exists': manage.BENCH_ENV_SCRIPT.exists(), "
+            "'cfg_exists': manage.BENCH_DEFAULT_CONFIG.exists()}))"
+        )
+        env = dict(os.environ, HERMES_HOME=str(hermes_home))
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        assert proc.returncode == 0, proc.stderr
+        info = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert info["env_exists"] is True, info
+        assert info["cfg_exists"] is True, info
+        assert str(dest) in info["env"], info
+
+    def test_bench_config_loads_from_installed_skill(self, tmp_path):
+        """The bench env parses its default config and resolves the prompt
+        bank from the installed location (no repo, no atroposlib)."""
+        import subprocess
+
+        dest = self._install_skill(tmp_path)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(exist_ok=True)
+
+        bench_dir = dest / "bench"
+        code = (
+            "import sys, json, importlib.util; "
+            f"spec = importlib.util.spec_from_file_location('finetune_bench_env', {str(bench_dir / 'finetune_bench_env.py')!r}); "
+            "mod = importlib.util.module_from_spec(spec); "
+            "spec.loader.exec_module(mod); "
+            "from pathlib import Path; "
+            f"cfg = mod.FinetuneBenchConfig.load(Path({str(bench_dir / 'default.yaml')!r})); "
+            "bank = Path(cfg.prompt_bank_path); "
+            "bank = bank if bank.is_absolute() else mod.BENCH_DIR / bank; "
+            "import yaml; cases = yaml.safe_load(bank.read_text())['cases']; "
+            "print(json.dumps({'n_cases': len(cases), 'backend': cfg.terminal_backend}))"
+        )
+        env = dict(os.environ, HERMES_HOME=str(hermes_home))
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        assert proc.returncode == 0, proc.stderr
+        info = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert info["n_cases"] > 200, info
+        assert info["backend"] == "docker", info

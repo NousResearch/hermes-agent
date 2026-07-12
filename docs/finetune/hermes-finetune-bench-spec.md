@@ -1,8 +1,8 @@
 # Design: Fine-Tune Evaluation Benchmark (`finetune-bench`)
 
 **Status:** Proposal (companion to `hermes-finetune` design spec)
-**Target:** `environments/benchmarks/finetune_bench/`
-**Framework:** `HermesAgentBaseEnv` (Atropos environment system)
+**Target:** `optional-skills/mlops/finetune/bench/`
+**Framework:** standalone — drives the production agent (`run_agent.AIAgent`) directly. (Originally targeted the Atropos `HermesAgentBaseEnv` framework, which was removed upstream in #26106; code snippets below predate that rewrite and are kept for design rationale only — see `optional-skills/mlops/finetune/bench/finetune_bench_env.py` for the current implementation.)
 
 ---
 
@@ -18,11 +18,10 @@ Unlike TerminalBench2 (which tests general coding ability) or YC-Bench (which te
 
 ## Architecture
 
-The benchmark is a standard Hermes environment subclass:
+The benchmark is a standalone harness around the production agent:
 
 ```
-HermesAgentBaseEnv
-    └── FinetuneBenchEnv
+FinetuneBenchEnv
             ├── setup()           → load prompt bank + ground truth
             ├── get_next_item()   → return next test case
             ├── format_prompt()   → convert to user message
@@ -34,13 +33,13 @@ It runs via the standard CLI:
 
 ```bash
 # Evaluate base model (before fine-tune)
-python environments/benchmarks/finetune_bench/finetune_bench_env.py evaluate \
-    --config environments/benchmarks/finetune_bench/default.yaml \
+python optional-skills/mlops/finetune/bench/finetune_bench_env.py evaluate \
+    --config optional-skills/mlops/finetune/bench/default.yaml \
     --openai.model_name base-model
 
 # Evaluate fine-tuned model (after fine-tune)  
-python environments/benchmarks/finetune_bench/finetune_bench_env.py evaluate \
-    --config environments/benchmarks/finetune_bench/default.yaml \
+python optional-skills/mlops/finetune/bench/finetune_bench_env.py evaluate \
+    --config optional-skills/mlops/finetune/bench/default.yaml \
     --openai.model_name finetuned-model
 
 # Or via the skill
@@ -307,7 +306,7 @@ Custom cases are merged into the prompt bank at runtime and appear in the evalua
 ## Implementation: Environment Class
 
 ```python
-# environments/benchmarks/finetune_bench/finetune_bench_env.py
+# optional-skills/mlops/finetune/bench/finetune_bench_env.py
 
 """
 Fine-tune evaluation benchmark.
@@ -348,7 +347,7 @@ class CaseResult:
 
 
 class FinetuneBenchConfig(HermesAgentEnvConfig):
-    prompt_bank_path: str = "environments/benchmarks/finetune_bench/prompt_bank.yaml"
+    prompt_bank_path: str = "prompt_bank.yaml"  # relative to the bench dir
     custom_cases_dir: str = "~/.hermes/finetune/bench/custom"
     baseline_results_path: Optional[str] = None  # path to previous eval for comparison
     regression_threshold_tool_selection: float = 0.03
@@ -679,7 +678,7 @@ if __name__ == "__main__":
 ## Prompt Bank Structure
 
 ```yaml
-# environments/benchmarks/finetune_bench/prompt_bank.yaml
+# optional-skills/mlops/finetune/bench/prompt_bank.yaml
 
 cases:
   # ============================================================

@@ -41,6 +41,7 @@ Payment / credit exhaustion fallback:
 """
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -2108,11 +2109,11 @@ def _read_main_model() -> str:
 
     Runtime override: when an AIAgent is active with a CLI/gateway-provided
     model that differs from config.yaml, ``set_runtime_main()`` records the
-    override in a process-local global. This is consulted FIRST so tools
+    override in the current execution context. This is consulted FIRST so tools
     that gate on "the active main model" (e.g. ``vision_analyze``'s native
     fast path) see the live runtime, not the persisted config default.
     """
-    override = _RUNTIME_MAIN_MODEL
+    override = _runtime_main_value("model")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2139,7 +2140,7 @@ def _read_main_provider() -> str:
     Runtime override: see ``_read_main_model`` — same mechanism for the
     provider half of the runtime tuple.
     """
-    override = _RUNTIME_MAIN_PROVIDER
+    override = _runtime_main_value("provider")
     if isinstance(override, str) and override.strip():
         return override.strip().lower()
     try:
@@ -2159,7 +2160,7 @@ def _read_main_api_key() -> str:
     """Read the user's main model API key from the runtime override or config.
 
     Mirrors ``_read_main_model`` / ``_read_main_provider``: checks the
-    process-local ``_RUNTIME_MAIN_API_KEY`` override first (set by
+    context-local runtime override first (set by
     ``set_runtime_main`` when an AIAgent is active), then falls back to
     ``model.api_key`` in config.yaml.
 
@@ -2168,7 +2169,7 @@ def _read_main_api_key() -> str:
     the main model's credentials instead of falling to ``no-key-required``
     (issue #9318).
     """
-    override = _RUNTIME_MAIN_API_KEY
+    override = _runtime_main_value("api_key")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2189,7 +2190,7 @@ def _read_main_base_url() -> str:
 
     Same override-then-config pattern as ``_read_main_api_key``.
     """
-    override = _RUNTIME_MAIN_BASE_URL
+    override = _runtime_main_value("base_url")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -2225,13 +2226,80 @@ def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
     return _read_main_api_key()
 
 
-# Process-local override set by AIAgent at session/turn start. Single-threaded
-# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
+# Runtime override set by AIAgent at session/turn start. This is scoped to the
+# current execution context so delegated children running in worker threads
+# cannot overwrite the parent's auxiliary routing after a timeout.
+_RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[Dict[str, str]]] = contextvars.ContextVar(
+    "hermes_auxiliary_runtime_main",
+    default=None,
+)
+_RUNTIME_MAIN_KEYS = ("provider", "model", "base_url", "api_key", "api_mode")
+
+# Legacy main-thread mirror retained for tests and direct introspection. Runtime
+# routing should read through _runtime_main_snapshot(), not these globals
+# directly.
 _RUNTIME_MAIN_PROVIDER: str = ""
 _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+
+
+def _runtime_main_payload(
+    provider: str = "",
+    model: str = "",
+    *,
+    base_url: str = "",
+    api_key: str = "",
+    api_mode: str = "",
+) -> Dict[str, str]:
+    return {
+        "provider": (provider or "").strip().lower(),
+        "model": (model or "").strip(),
+        "base_url": (base_url or "").strip(),
+        "api_key": api_key.strip() if isinstance(api_key, str) else "",
+        "api_mode": (api_mode or "").strip(),
+    }
+
+
+def _runtime_main_snapshot() -> Dict[str, str]:
+    runtime = _RUNTIME_MAIN_CONTEXT.get()
+    if isinstance(runtime, dict) and any(
+        isinstance(runtime.get(key), str) and runtime.get(key, "").strip()
+        for key in _RUNTIME_MAIN_KEYS
+    ):
+        return {
+            key: runtime.get(key, "").strip() if isinstance(runtime.get(key), str) else ""
+            for key in _RUNTIME_MAIN_KEYS
+        }
+
+    if threading.current_thread() is threading.main_thread():
+        return {
+            "provider": _RUNTIME_MAIN_PROVIDER,
+            "model": _RUNTIME_MAIN_MODEL,
+            "base_url": _RUNTIME_MAIN_BASE_URL,
+            "api_key": _RUNTIME_MAIN_API_KEY,
+            "api_mode": _RUNTIME_MAIN_API_MODE,
+        }
+
+    return {key: "" for key in _RUNTIME_MAIN_KEYS}
+
+
+def _runtime_main_value(key: str) -> str:
+    return _runtime_main_snapshot().get(key, "")
+
+
+def _mirror_runtime_main_globals(runtime: Dict[str, str]) -> None:
+    if threading.current_thread() is not threading.main_thread():
+        return
+
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
+    _RUNTIME_MAIN_PROVIDER = runtime.get("provider", "")
+    _RUNTIME_MAIN_MODEL = runtime.get("model", "")
+    _RUNTIME_MAIN_BASE_URL = runtime.get("base_url", "")
+    _RUNTIME_MAIN_API_KEY = runtime.get("api_key", "")
+    _RUNTIME_MAIN_API_MODE = runtime.get("api_mode", "")
 
 
 def set_runtime_main(
@@ -2253,24 +2321,22 @@ def set_runtime_main(
     recorded so that ``_resolve_auto`` can construct a valid client in
     Step 1 instead of falling through to the aggregator chain.
     """
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
-    _RUNTIME_MAIN_MODEL = (model or "").strip()
-    _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
-    _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
-    _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    runtime = _runtime_main_payload(
+        provider,
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        api_mode=api_mode,
+    )
+    _RUNTIME_MAIN_CONTEXT.set(runtime)
+    _mirror_runtime_main_globals(runtime)
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
-    _RUNTIME_MAIN_PROVIDER = ""
-    _RUNTIME_MAIN_MODEL = ""
-    _RUNTIME_MAIN_BASE_URL = ""
-    _RUNTIME_MAIN_API_KEY = ""
-    _RUNTIME_MAIN_API_MODE = ""
+    runtime = _runtime_main_payload()
+    _RUNTIME_MAIN_CONTEXT.set(runtime)
+    _mirror_runtime_main_globals(runtime)
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -4148,17 +4214,18 @@ def _resolve_auto(
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
 
-    # Fall back to process-local globals when main_runtime dict was not
+    # Fall back to the context-local runtime when main_runtime dict was not
     # provided or was incomplete.  ``set_runtime_main()`` now records
     # base_url/api_key/api_mode alongside provider/model, so custom:
     # providers get the full credential surface in Step 1 of the
     # auto-detect chain.
-    if not runtime_base_url and _RUNTIME_MAIN_BASE_URL:
-        runtime_base_url = _RUNTIME_MAIN_BASE_URL
-    if not runtime_api_key and _RUNTIME_MAIN_API_KEY:
-        runtime_api_key = _RUNTIME_MAIN_API_KEY
-    if not runtime_api_mode and _RUNTIME_MAIN_API_MODE:
-        runtime_api_mode = _RUNTIME_MAIN_API_MODE
+    runtime_snapshot = _runtime_main_snapshot()
+    if not runtime_base_url and runtime_snapshot.get("base_url"):
+        runtime_base_url = runtime_snapshot["base_url"]
+    if not runtime_api_key and runtime_snapshot.get("api_key"):
+        runtime_api_key = runtime_snapshot["api_key"]
+    if not runtime_api_mode and runtime_snapshot.get("api_mode"):
+        runtime_api_mode = runtime_snapshot["api_mode"]
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -5382,10 +5449,11 @@ def resolve_vision_provider_client(
                 rpc_api_key = None
                 rpc_api_mode = resolved_api_mode
                 if main_provider == "custom" or main_provider.startswith("custom:"):
-                    if _RUNTIME_MAIN_BASE_URL:
-                        rpc_base_url = _RUNTIME_MAIN_BASE_URL
-                        rpc_api_key = _RUNTIME_MAIN_API_KEY or None
-                        rpc_api_mode = resolved_api_mode or _RUNTIME_MAIN_API_MODE or None
+                    runtime_snapshot = _runtime_main_snapshot()
+                    if runtime_snapshot.get("base_url"):
+                        rpc_base_url = runtime_snapshot["base_url"]
+                        rpc_api_key = runtime_snapshot.get("api_key") or None
+                        rpc_api_mode = resolved_api_mode or runtime_snapshot.get("api_mode") or None
                     else:
                         # No live runtime recorded (non-gateway caller): fall
                         # back to resolving the configured custom endpoint.

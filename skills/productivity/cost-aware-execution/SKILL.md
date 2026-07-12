@@ -1,6 +1,6 @@
 ---
 name: cost-aware-execution
-description: Execute tasks using the minimum sufficient effort required by minimizing unnecessary tool usage and reasoning.
+description: Trigger via slash command to minimize tool use and cost.
 version: 0.4.0
 author: JackTheGit
 license: MIT

@@ -69,7 +69,11 @@ def _all_elements(cards: list[dict]) -> list[dict]:
 
 
 def _sdk_body_bytes(body) -> int:
-    return len(json.dumps(body.__dict__, ensure_ascii=False).encode("utf-8"))
+    import lark_oapi as lark
+
+    serialized = lark.JSON.marshal(body)
+    assert isinstance(serialized, str)
+    return len(serialized.encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +482,48 @@ class TestFullPipelineByteLimit:
             if element.get("tag") == "markdown"
         )
         assert body_markdown.count(title) == 1
+
+    def test_custom_table_limits_are_honored_with_hard_limit_clamping(self):
+        table = TableBlock(
+            headers=["A", "B"],
+            rows=[[str(index), "value"] for index in range(7)],
+        )
+        cards = render_document_to_feishu_card_v2_parts(
+            MessageDocument([table, table, table]),
+            max_rows=3,
+            max_tables=2,
+        )
+        table_counts = [
+            sum(element.get("tag") == "table" for element in card["body"]["elements"])
+            for card in cards
+        ]
+        assert all(count <= 2 for count in table_counts)
+        assert [
+            len(element["rows"])
+            for element in _all_elements(cards)
+            if element.get("tag") == "table"
+        ] == [3, 3, 1] * 3
+
+        too_wide = TableBlock(
+            headers=[f"c{index}" for index in range(51)],
+            rows=[["v"] * 51],
+        )
+        wide_cards = render_document_to_feishu_card_v2_parts(
+            MessageDocument([too_wide]),
+            max_columns=100,
+        )
+        assert all(
+            element.get("tag") != "table" for element in _all_elements(wide_cards)
+        )
+
+    @pytest.mark.parametrize("name", ["max_tables", "max_columns", "max_rows"])
+    def test_invalid_table_limits_are_rejected(self, name):
+        kwargs = {name: 0}
+        with pytest.raises(FeishuCardRenderingError, match=name):
+            render_document_to_feishu_card_v2_parts(
+                MessageDocument([ParagraphBlock(text="x")]),
+                **kwargs,
+            )
 
     def test_singular_public_builders_reject_content_that_requires_multiple_cards(self):
         text = "x" * 50000

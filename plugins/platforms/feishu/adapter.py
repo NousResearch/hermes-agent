@@ -272,7 +272,13 @@ async def _sleep_between_feishu_multicard_parts(
 
 
 def _serialized_sdk_request_body_size(request_body: Any) -> int:
-    """Return the exact UTF-8 size of an SDK request body's JSON fields."""
+    """Return the exact UTF-8 size emitted by the Lark SDK JSON serializer."""
+    serializer = getattr(lark, "JSON", None) if lark is not None else None
+    if serializer is not None:
+        serialized = serializer.marshal(request_body)
+        if not isinstance(serialized, str):
+            raise ValueError("Lark SDK failed to serialize interactive request body")
+        return len(serialized.encode("utf-8"))
     fields = getattr(request_body, "__dict__", request_body)
     return len(json.dumps(fields, ensure_ascii=False).encode("utf-8"))
 
@@ -2192,10 +2198,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        last_response = None
+        last_result: Optional[SendResult] = None
+        delivered_chunks = 0
 
         try:
-            for chunk in chunks:
+            for chunk_index, chunk in enumerate(chunks):
                 msg_type, payload = self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
@@ -2229,11 +2236,43 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
-                last_response = response
+                result = self._finalize_send_result(response, "send failed")
+                if not result.success:
+                    if delivered_chunks:
+                        logger.warning(
+                            "[Feishu] Legacy chunk delivery failed after %d chunk(s); "
+                            "reporting partial delivery: %s",
+                            delivered_chunks,
+                            result.error,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=result.error,
+                            delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                            raw_response={
+                                "delivered_chunks": delivered_chunks,
+                                "total_chunks": len(chunks),
+                                "failed_index": chunk_index,
+                            },
+                        )
+                    return result
+                last_result = result
+                delivered_chunks += 1
 
-            return self._finalize_send_result(last_response, "send failed")
+            return last_result or SendResult(success=False, error="send produced no chunks")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+            if delivered_chunks:
+                return SendResult(
+                    success=False,
+                    error=str(exc),
+                    delivery_state=FinalDeliveryState.PARTIALLY_DELIVERED,
+                    raw_response={
+                        "delivered_chunks": delivered_chunks,
+                        "total_chunks": len(chunks),
+                        "failed_index": delivered_chunks,
+                    },
+                )
             return SendResult(success=False, error=str(exc))
 
     async def edit_message(

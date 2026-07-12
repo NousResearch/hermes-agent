@@ -1906,10 +1906,17 @@ class SendResult:
     delivery_state: Optional[FinalDeliveryState] = None
 
     def __post_init__(self) -> None:
-        if (
-            self.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
-            and self.success
-        ):
+        if self.delivery_state is None:
+            return
+        if self.delivery_state is FinalDeliveryState.FULLY_DELIVERED and not self.success:
+            raise ValueError(
+                "SendResult with FULLY_DELIVERED delivery_state must have success=True."
+            )
+        if self.delivery_state is FinalDeliveryState.NOT_HANDLED and self.success:
+            raise ValueError(
+                "SendResult with NOT_HANDLED delivery_state must have success=False."
+            )
+        if self.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED and self.success:
             raise ValueError(
                 "SendResult with PARTIALLY_DELIVERED delivery_state must have "
                 "success=False to avoid reporting partial delivery as success."

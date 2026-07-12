@@ -53,3 +53,16 @@ def test_explicit_not_handled_with_failure():
 def test_delivery_state_is_optional_and_defaults_none():
     result = SendResult(success=True)
     assert result.delivery_state is None
+
+
+@pytest.mark.parametrize(
+    ("success", "state"),
+    [
+        (False, FinalDeliveryState.FULLY_DELIVERED),
+        (True, FinalDeliveryState.NOT_HANDLED),
+        (True, FinalDeliveryState.PARTIALLY_DELIVERED),
+    ],
+)
+def test_send_result_rejects_inconsistent_explicit_delivery_states(success, state):
+    with pytest.raises(ValueError, match=state.name):
+        SendResult(success=success, delivery_state=state)

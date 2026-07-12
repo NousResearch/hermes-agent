@@ -17,6 +17,7 @@ from gateway.rendering.document import (
     DividerBlock,
     HeadingBlock,
     ImageBlock,
+    ListBlock,
     MessageDocument,
     ParagraphBlock,
     TableBlock,
@@ -31,6 +32,7 @@ _DEFAULT_MAX_CARD_CHARS = 6000
 _DEFAULT_MAX_CARD_BYTES = 28 * 1024
 _DEFAULT_MAX_ROWS_PER_TABLE = 10
 _DEFAULT_MAX_TABLES_PER_CARD = 5
+_MAX_TABLE_COLUMNS = 50
 _DEFAULT_MAX_OUTER_REQUEST_BYTES = 30 * 1024
 _MAX_INLINE_PLAIN_TEXT_BYTES = 1024
 _NUMBERING_TITLE_RESERVE = " 99999999999999999999/99999999999999999999"
@@ -108,6 +110,16 @@ def render_document_to_feishu_card_v2_parts(
         raise FeishuCardRenderingError(
             "Feishu card byte budgets must be positive and markdown budget >= 8"
         )
+    for name, value in (
+        ("max_tables", max_tables),
+        ("max_columns", max_columns),
+        ("max_rows", max_rows),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise FeishuCardRenderingError(f"{name} must be a positive integer")
+    effective_max_tables = min(max_tables, _DEFAULT_MAX_TABLES_PER_CARD)
+    effective_max_columns = min(max_columns, _MAX_TABLE_COLUMNS)
+    effective_max_rows = min(max_rows, _DEFAULT_MAX_ROWS_PER_TABLE)
     effective_title = title
     title_elements: list[dict[str, Any]] = []
     if len((title + _NUMBERING_TITLE_RESERVE).encode("utf-8")) > (
@@ -122,9 +134,8 @@ def render_document_to_feishu_card_v2_parts(
         doc,
         table_policy=table_policy,
         table_cell_type=table_cell_type,
-        max_tables=max_tables,
-        max_columns=max_columns,
-        max_rows=max_rows,
+        max_columns=effective_max_columns,
+        max_rows=effective_max_rows,
         image_key_by_source=image_key_by_source,
     )
 
@@ -139,9 +150,7 @@ def render_document_to_feishu_card_v2_parts(
     paginated: list[dict[str, Any]] = []
     for element in expanded:
         if element.get("tag") == "table":
-            paginated.extend(
-                _paginate_table_element(element, _DEFAULT_MAX_ROWS_PER_TABLE)
-            )
+            paginated.extend(_paginate_table_element(element, effective_max_rows))
         else:
             paginated.append(element)
 
@@ -149,7 +158,7 @@ def render_document_to_feishu_card_v2_parts(
         paginated,
         max_elements_per_card=max_elements_per_card,
         max_card_chars=max_card_chars,
-        max_tables_per_card=_DEFAULT_MAX_TABLES_PER_CARD,
+        max_tables_per_card=effective_max_tables,
     ) or [[]]
 
     cards: list[dict[str, Any]] = []
@@ -300,7 +309,6 @@ def _document_to_elements(
     *,
     table_policy: str,
     table_cell_type: str,
-    max_tables: int,
     max_columns: int,
     max_rows: int,
     image_key_by_source: dict[str, str] | None,
@@ -318,6 +326,14 @@ def _document_to_elements(
             )
         elif isinstance(block, CodeBlock):
             content = _render_code_block_content(block)
+            elements.append(
+                {"tag": "markdown", "content": content, "text_size": "normal"}
+            )
+        elif isinstance(block, ListBlock):
+            content = "\n".join(
+                f"{index}. {item}" if block.ordered else f"- {item}"
+                for index, item in enumerate(block.items, start=1)
+            )
             elements.append(
                 {"tag": "markdown", "content": content, "text_size": "normal"}
             )
@@ -352,7 +368,13 @@ def _document_to_elements(
                 and bool(block.rows)
             )
             if use_table:
-                elements.append(_build_table_element(block, table_cell_type, len(block.rows)))
+                elements.append(
+                    _build_table_element(
+                        block,
+                        table_cell_type,
+                        min(len(block.rows), max_rows),
+                    )
+                )
             else:
                 content = _render_code_block_content_from_raw(
                     language="markdown", code=block.raw_markdown or _table_to_markdown(block)
@@ -360,7 +382,10 @@ def _document_to_elements(
                 elements.append(
                     {"tag": "markdown", "content": content, "text_size": "normal"}
                 )
-        # Unknown block types are silently ignored.
+        else:
+            raise FeishuCardRenderingError(
+                f"unsupported message document block: {type(block).__name__}"
+            )
     return elements
 
 

@@ -272,3 +272,48 @@ async def test_base_rich_partial_delivery_completes_as_failure():
     await adapter._process_message_background(event, build_session_key(event.source))
 
     assert adapter.processing_outcomes == [ProcessingOutcome.FAILURE]
+
+
+@pytest.mark.asyncio
+async def test_legacy_second_chunk_failure_returns_partial_and_stops():
+    adapter = _make_adapter()
+    adapter.config.extra["final_response_format"] = "legacy"
+    adapter.MAX_MESSAGE_LENGTH = 8  # type: ignore[assignment]
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return _FakeFailure() if len(calls) == 2 else _FakeResponse()
+
+    adapter._feishu_send_with_retry = fake_send
+    result = await adapter.send("oc_1", "abcdefghijklmnopqrstuvwxyz")
+
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivered_chunks"] == 1
+    assert result.raw_response["total_chunks"] > 1
+    assert result.raw_response["failed_index"] == 1
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_legacy_exception_after_first_chunk_returns_partial():
+    adapter = _make_adapter()
+    adapter.config.extra["final_response_format"] = "legacy"
+    adapter.MAX_MESSAGE_LENGTH = 8  # type: ignore[assignment]
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            raise RuntimeError("forced legacy failure")
+        return _FakeResponse()
+
+    adapter._feishu_send_with_retry = fake_send
+    result = await adapter.send("oc_1", "abcdefghijklmnopqrstuvwxyz")
+
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivered_chunks"] == 1
+    assert result.raw_response["failed_index"] == 1
+    assert len(calls) == 2

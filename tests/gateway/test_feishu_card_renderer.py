@@ -1,14 +1,21 @@
 import json
 
+import pytest
+
 from gateway.rendering.document import (
     CodeBlock,
+    DividerBlock,
     HeadingBlock,
     ImageBlock,
+    ListBlock,
     MessageDocument,
     ParagraphBlock,
     TableBlock,
 )
-from gateway.platforms.feishu_card_renderer import render_document_to_feishu_card_v2
+from gateway.platforms.feishu_card_renderer import (
+    FeishuCardRenderingError,
+    render_document_to_feishu_card_v2,
+)
 
 
 def test_card_v2_contains_schema_body_and_summary():
@@ -60,6 +67,29 @@ def test_code_block_renders_markdown_fence():
     assert card["body"]["elements"] == [
         {"tag": "markdown", "content": "```python\nprint('hi')\n```", "text_size": "normal"}
     ]
+
+
+def test_list_and_divider_blocks_render_losslessly():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument(
+            [
+                ListBlock(ordered=False, items=["alpha", "beta"]),
+                DividerBlock(),
+                ListBlock(ordered=True, items=["first", "second"]),
+            ]
+        )
+    )
+
+    assert card["body"]["elements"] == [
+        {"tag": "markdown", "content": "- alpha\n- beta", "text_size": "normal"},
+        {"tag": "hr"},
+        {"tag": "markdown", "content": "1. first\n2. second", "text_size": "normal"},
+    ]
+
+
+def test_unknown_document_block_fails_instead_of_silently_dropping_content():
+    with pytest.raises(FeishuCardRenderingError, match="unsupported message document block"):
+        render_document_to_feishu_card_v2(MessageDocument([object()]))  # type: ignore[list-item]
 
 
 def test_too_wide_table_falls_back_to_markdown_code_block():

@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import { translate } from '../i18n/index.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -104,12 +104,13 @@ describe('createSlashHandler', () => {
 
   it('keeps hosted dashboard chat alive for /exit', () => {
     envState.dashboardTuiMode = true
+    patchUiState({ locale: 'zh' })
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/exit')).toBe(true)
     expect(ctx.session.die).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(translate('zh', 'sys.dashboardExitDisabled'))
   })
 
   it('keeps /quit available outside hosted dashboard chat', () => {
@@ -143,7 +144,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/update')).toBe(true)
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(translate('en', 'sys.dashboardUpdateDisabled'))
 
     vi.advanceTimersByTime(150)
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()

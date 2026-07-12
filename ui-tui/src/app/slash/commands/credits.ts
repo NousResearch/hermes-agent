@@ -6,7 +6,6 @@ import type { SlashCommand } from '../types.js'
 
 export const creditsCommands: SlashCommand[] = [
   {
-    help: 'Show Nous credit balance and top up',
     name: 'credits',
     run: (_arg, ctx) => {
       const t = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) =>
@@ -44,11 +43,7 @@ export const creditsCommands: SlashCommand[] = [
                   detail: url,
                   onConfirm: () => {
                     const ok = openExternalUrl(url)
-                    ctx.transcript.sys(
-                      ok
-                        ? t('credits.completeInBrowser')
-                        : t('credits.openUrl', { url })
-                    )
+                    ctx.transcript.sys(ok ? t('credits.completeInBrowser') : t('credits.openUrl', { url }))
                   },
                   title: t('credits.addTitle')
                 }

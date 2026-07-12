@@ -78,6 +78,13 @@ describe("Dashboard i18n framework", () => {
     expect(normalizeLocale("traditional-chinese")).toBe("zh-hant");
     expect(normalizeLocale("zh-extra")).toBeNull();
     expect(normalizeLocale("pt_BR")).toBe("pt");
+    expect(normalizeLocale("jp")).toBe("ja");
+    expect(normalizeLocale("日本語")).toBe("ja");
+    expect(normalizeLocale("한국어")).toBe("ko");
+    expect(normalizeLocale("turkce")).toBe("tr");
+    expect(normalizeLocale("francais")).toBe("fr");
+    expect(normalizeLocale("brazilian")).toBe("pt");
+    expect(normalizeLocale("ua")).toBe("uk");
   });
 
   it("deep-merges locale overrides onto the complete English source", () => {
@@ -86,6 +93,16 @@ describe("Dashboard i18n framework", () => {
     expect(catalog.chatSidebar.model).toBe("模型");
     expect(catalog.common.gateway).toBe("网关");
     expect(catalog.theme.fontTitle).toBe("字体");
+  });
+
+  it("preserves existing official translations and falls back per missing leaf", () => {
+    const catalog = resolveTranslations("de");
+
+    expect(catalog.common.save).toBe("Speichern");
+    expect(catalog.chatSidebar.model).toBe(en.chatSidebar.model);
+    expect(catalog.modelPicker.expensiveWarningTitle).toBe(
+      en.modelPicker.expensiveWarningTitle,
+    );
   });
 
   it("persists only display.language so concurrent config edits are preserved", async () => {

@@ -1,35 +1,36 @@
 import { describe, expect, it } from 'vitest'
 
-// Locale packs that intentionally export the English base until translated.
-import { en as af } from '../i18n/af.js'
-import { en as de } from '../i18n/de.js'
-import { en, type TranslationKey } from '../i18n/en.js'
-import { en as es } from '../i18n/es.js'
-import { en as fr } from '../i18n/fr.js'
-import { en as ga } from '../i18n/ga.js'
-import { en as hu } from '../i18n/hu.js'
+// Locale overlays that intentionally stay empty until reviewed translations land.
+import { af } from '../i18n/af.js'
+import { de } from '../i18n/de.js'
+import { en, type TranslationKey, type TuiLocaleOverlay } from '../i18n/en.js'
+import { es } from '../i18n/es.js'
+import { fr } from '../i18n/fr.js'
+import { ga } from '../i18n/ga.js'
+import { hu } from '../i18n/hu.js'
 import {
   getThinkingVerbs,
   getToolVerb,
   LOCALES,
   normalizeLocale,
+  resolveLangPack,
   shouldEllipsisVerb,
   toolsetLabel,
   translate,
   translateStatus
 } from '../i18n/index.js'
-import { en as itLang } from '../i18n/it.js'
-import { en as ja } from '../i18n/ja.js'
-import { en as ko } from '../i18n/ko.js'
-import { en as pt } from '../i18n/pt.js'
-import { en as ru } from '../i18n/ru.js'
-import { en as tr } from '../i18n/tr.js'
-import { en as uk } from '../i18n/uk.js'
-import { en as zhHant } from '../i18n/zh-hant.js'
+import { it as itLang } from '../i18n/it.js'
+import { ja } from '../i18n/ja.js'
+import { ko } from '../i18n/ko.js'
+import { pt } from '../i18n/pt.js'
+import { ru } from '../i18n/ru.js'
+import { tr } from '../i18n/tr.js'
+import { uk } from '../i18n/uk.js'
+import { zhHant } from '../i18n/zh-hant.js'
 import { zh } from '../i18n/zh.js'
 
 // ── Shell packs: languages that re-export English until translated ──
-const SHELL_PACKS: [string, typeof en][] = [
+const SHELL_PACKS: [string, TuiLocaleOverlay][] = [
   ['af', af],
   ['de', de],
   ['es', es],
@@ -98,14 +99,36 @@ describe('TranslationKey coverage', () => {
     expect(mismatches).toEqual([])
   })
 
-  it('every shell pack has exactly the same catalog keys as EN', () => {
-    for (const [name, pack] of SHELL_PACKS) {
+  it('every shell overlay resolves to exactly the same catalog keys as EN', () => {
+    for (const [name, overlay] of SHELL_PACKS) {
+      const pack = resolveLangPack(overlay)
       const packKeys = new Set(Object.keys(pack.catalog))
       const missing = enKeys.filter(k => !packKeys.has(k))
       const extra = Object.keys(pack.catalog).filter(k => !(k in en.catalog))
       expect(missing, `${name} missing keys`).toEqual([])
       expect(extra, `${name} extra keys`).toEqual([])
     }
+  })
+
+  it('fills each missing field in a partial locale overlay from EN', () => {
+    const pack = resolveLangPack({
+      catalog: { 'branding.tagline': 'Localized tagline' },
+      status: { ready: 'localized ready' },
+      toolVerbs: { browser: 'localized browser' },
+      trail: { analyzeLabel: 'localized analysis' },
+      verbStyle: 'ellipsis'
+    })
+
+    expect(pack.catalog['branding.tagline']).toBe('Localized tagline')
+    expect(pack.catalog['common.cancel']).toBe(en.catalog['common.cancel'])
+    expect(pack.status.ready).toBe('localized ready')
+    expect(pack.status.queued).toBe(en.status.queued)
+    expect(pack.toolVerbs.browser).toBe('localized browser')
+    expect(pack.toolVerbs.terminal).toBe(en.toolVerbs.terminal)
+    expect(pack.trail.analyzeLabel).toBe('localized analysis')
+    expect(pack.trail.draftPrefix).toBe(en.trail.draftPrefix)
+    expect(pack.verbs).toBe(en.verbs)
+    expect(pack.verbStyle).toBe('ellipsis')
   })
 
   it('zh status map covers every EN status key', () => {
@@ -206,6 +229,15 @@ describe('normalizeLocale', () => {
   it('aliases: japanese / jp → ja', () => {
     expect(normalizeLocale('japanese')).toBe('ja')
     expect(normalizeLocale('jp')).toBe('ja')
+    expect(normalizeLocale('日本語')).toBe('ja')
+  })
+
+  it('normalizes native and ASCII language names consistently across runtimes', () => {
+    expect(normalizeLocale('한국어')).toBe('ko')
+    expect(normalizeLocale('turkce')).toBe('tr')
+    expect(normalizeLocale('francais')).toBe('fr')
+    expect(normalizeLocale('brazilian')).toBe('pt')
+    expect(normalizeLocale('ua')).toBe('uk')
   })
 
   it('aliases: german / deutsch → de', () => {
@@ -256,8 +288,8 @@ describe('verbStyle', () => {
   })
 
   it('shell packs inherit EN verbStyle (pad)', () => {
-    for (const [name, pack] of SHELL_PACKS) {
-      expect(pack.verbStyle, `${name} verbStyle`).toBe('pad')
+    for (const [name, overlay] of SHELL_PACKS) {
+      expect(resolveLangPack(overlay).verbStyle, `${name} verbStyle`).toBe('pad')
     }
   })
 
@@ -271,7 +303,7 @@ describe('verbStyle', () => {
   })
 })
 
-// ─── Shell packs re-export EN ──────────────────────────────────
+// ─── Empty locale overlays resolve through EN ─────────────────
 
 describe('shell packs', () => {
   it('all shell locales are in LOCALES', () => {
@@ -280,39 +312,21 @@ describe('shell packs', () => {
     }
   })
 
-  it('shell packs re-export EN catalog (identity check)', () => {
-    for (const [name, pack] of SHELL_PACKS) {
-      expect(pack.catalog, `${name} catalog !== en catalog`).toBe(en.catalog)
-    }
-  })
+  it('empty overlays produce complete English-equivalent runtime packs', () => {
+    for (const [name, overlay] of SHELL_PACKS) {
+      const pack = resolveLangPack(overlay)
 
-  it('shell packs re-export EN toolVerbs', () => {
-    for (const [name, pack] of SHELL_PACKS) {
-      expect(pack.toolVerbs, `${name} toolVerbs`).toBe(en.toolVerbs)
-    }
-  })
-
-  it('shell packs re-export EN verbs', () => {
-    for (const [name, pack] of SHELL_PACKS) {
+      expect(pack.catalog, `${name} catalog`).toEqual(en.catalog)
+      expect(pack.toolVerbs, `${name} toolVerbs`).toEqual(en.toolVerbs)
       expect(pack.verbs, `${name} verbs`).toBe(en.verbs)
+      expect(pack.status, `${name} status`).toEqual(en.status)
+      expect(pack.trail, `${name} trail`).toEqual(en.trail)
     }
   })
 
-  it('shell packs re-export EN status', () => {
-    for (const [name, pack] of SHELL_PACKS) {
-      expect(pack.status, `${name} status`).toBe(en.status)
-    }
-  })
-
-  it('shell packs re-export EN trail', () => {
-    for (const [name, pack] of SHELL_PACKS) {
-      expect(pack.trail, `${name} trail`).toBe(en.trail)
-    }
-  })
-
-  it('zh-hant is a shell pack (re-exports EN)', () => {
-    expect(zhHant.verbStyle).toBe('pad')
-    expect(zhHant.verbs).toBe(en.verbs)
+  it('zh-hant remains an empty overlay until reviewed translations land', () => {
+    expect(zhHant).toEqual({})
+    expect(resolveLangPack(zhHant).verbStyle).toBe('pad')
   })
 })
 

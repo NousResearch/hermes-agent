@@ -11,7 +11,10 @@ import { TextInput } from './textInput.js'
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 // tirith warning present → backend downgrades "always" to session scope, so drop it.
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
-const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') => `prompt.approval${o.charAt(0).toUpperCase() + o.slice(1)}` as const
+
+const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') =>
+  `prompt.approval${o.charAt(0).toUpperCase() + o.slice(1)}` as const
+
 const CMD_PREVIEW_LINES = 10
 
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
@@ -97,7 +100,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        ⚠ approval required · {req.description}
+        {ti('prompt.approvalRequired', { description: req.description })}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -109,7 +112,10 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
 
         {overflow > 0 ? (
           <Text color={t.color.muted}>
-            … +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)
+            {ti('prompt.previewOverflow', {
+              count: String(overflow),
+              lineNoun: ti(overflow === 1 ? 'prompt.previewLine' : 'prompt.previewLines')
+            })}
           </Text>
         ) : null}
       </Box>
@@ -139,7 +145,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
   const heading = (
     <Text bold>
-      <Text color={t.color.accent}>ask</Text>
+      <Text color={t.color.accent}>{ti('prompt.clarifyLabel')}</Text>
       <Text color={t.color.text}> {req.question}</Text>
     </Text>
   )
@@ -185,7 +191,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
         </Box>
 
         <Text color={t.color.muted}>
-          {ti('prompt.typeHint', { action: choices.length ? ti('prompt.typeHintBack') : ti('prompt.typeHintCancel') })}{' · '}
+          {ti('prompt.typeHint', { action: choices.length ? ti('prompt.typeHintBack') : ti('prompt.typeHintCancel') })}
+          {' · '}
           {isMac ? ti('prompt.copyPasteHint') : ti('input.interruptHintMac')}
         </Text>
       </Box>

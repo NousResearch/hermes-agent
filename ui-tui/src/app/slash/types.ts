@@ -14,8 +14,6 @@ export interface SlashRunCtx extends SlashHandlerContext {
 
 export interface SlashCommand {
   aliases?: string[]
-  help?: string
   name: string
   run: (arg: string, ctx: SlashRunCtx, cmd: string) => void
-  usage?: string
 }

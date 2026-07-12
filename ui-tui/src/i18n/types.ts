@@ -18,7 +18,7 @@ export const LOCALES = [
   'ga',
   'pt',
   'ru',
-  'hu',
+  'hu'
 ] as const
 
 export type Locale = (typeof LOCALES)[number]
@@ -36,6 +36,16 @@ export interface LangPack {
   verbStyle: 'ellipsis' | 'pad'
 }
 
+/** A locale may translate any subset; omitted values inherit from English. */
+export interface LangPackOverlay<CatalogKey extends string = string> {
+  catalog?: Partial<Record<CatalogKey, string>>
+  status?: Record<string, string>
+  toolVerbs?: Record<string, string>
+  trail?: Partial<LangPack['trail']>
+  verbs?: string[]
+  verbStyle?: LangPack['verbStyle']
+}
+
 // ── Shared glossary ────────────────────────────────────────────
 // Terms that appear in multiple modules and MUST use the same
 // translation everywhere.  When a translator encounters one of
@@ -48,12 +58,4 @@ export interface LangPack {
 //   Canonical translations by locale (add rows as languages mature):
 //     zh: provider→服务商  clarify→询问  secret→敏感信息  steer→引导
 //         persist→保存    spawn→生成    in-place→直接    commit→个提交
-export type GlossaryTerm =
-  | 'provider'
-  | 'clarify'
-  | 'secret'
-  | 'steer'
-  | 'persist'
-  | 'spawn'
-  | 'in-place'
-  | 'commit'
+export type GlossaryTerm = 'provider' | 'clarify' | 'secret' | 'steer' | 'persist' | 'spawn' | 'in-place' | 'commit'

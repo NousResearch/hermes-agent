@@ -1,21 +1,21 @@
 import { createContext, type ReactNode, useContext, useMemo } from 'react'
 
-import { en as af } from './af.js'
-import { en as de } from './de.js'
-import { en, type TranslationKey } from './en.js'
-import { en as es } from './es.js'
-import { en as fr } from './fr.js'
-import { en as ga } from './ga.js'
-import { en as hu } from './hu.js'
-import { en as it } from './it.js'
-import { en as ja } from './ja.js'
-import { en as ko } from './ko.js'
-import { en as pt } from './pt.js'
-import { en as ru } from './ru.js'
-import { en as tr } from './tr.js'
+import { af } from './af.js'
+import { de } from './de.js'
+import { en, type TranslationKey, type TuiLocaleOverlay } from './en.js'
+import { es } from './es.js'
+import { fr } from './fr.js'
+import { ga } from './ga.js'
+import { hu } from './hu.js'
+import { it } from './it.js'
+import { ja } from './ja.js'
+import { ko } from './ko.js'
+import { pt } from './pt.js'
+import { ru } from './ru.js'
+import { tr } from './tr.js'
 import { type LangPack, type Locale, LOCALES } from './types.js'
-import { en as uk } from './uk.js'
-import { en as zhHant } from './zh-hant.js'
+import { uk } from './uk.js'
+import { zhHant } from './zh-hant.js'
 import { zh } from './zh.js'
 
 // ── Re-export the public type surface ──────────────────────────
@@ -23,7 +23,7 @@ export { LOCALES }
 export type { Locale, TranslationKey }
 
 // ── Language pack catalog (add new locales here) ───────────────
-const CATALOGS: Record<Locale, LangPack> = {
+const OVERLAYS: Record<Locale, TuiLocaleOverlay> = {
   en,
   zh,
   'zh-hant': zhHant,
@@ -41,6 +41,21 @@ const CATALOGS: Record<Locale, LangPack> = {
   ru,
   hu
 }
+
+/** Resolve a partial locale overlay into a complete runtime pack. */
+export const resolveLangPack = (overlay: TuiLocaleOverlay): LangPack => ({
+  catalog: { ...en.catalog, ...overlay.catalog },
+  status: { ...en.status, ...overlay.status },
+  toolVerbs: { ...en.toolVerbs, ...overlay.toolVerbs },
+  trail: { ...en.trail, ...overlay.trail },
+  verbs: overlay.verbs ?? en.verbs,
+  verbStyle: overlay.verbStyle ?? en.verbStyle
+})
+
+const CATALOGS = Object.fromEntries(LOCALES.map(locale => [locale, resolveLangPack(OVERLAYS[locale])])) as Record<
+  Locale,
+  LangPack
+>
 
 const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
 
@@ -83,8 +98,10 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   japanese: 'ja',
   'ja-jp': 'ja',
   jp: 'ja',
+  日本語: 'ja',
   korean: 'ko',
   'ko-kr': 'ko',
+  한국어: 'ko',
   magyar: 'hu',
   mandarin: 'zh',
   portuguese: 'pt',
@@ -98,6 +115,7 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   spanish: 'es',
   'simplified-chinese': 'zh',
   'traditional-chinese': 'zh-hant',
+  turkce: 'tr',
   turkish: 'tr',
   türkçe: 'tr',
   'tr-tr': 'tr',

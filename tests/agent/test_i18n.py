@@ -93,12 +93,17 @@ def test_normalize_lang_accepts_aliases():
     assert i18n._normalize_lang("Deutsch") == "de"
     assert i18n._normalize_lang("español") == "es"
     assert i18n._normalize_lang("jp") == "ja"
+    assert i18n._normalize_lang("日本語") == "ja"
+    assert i18n._normalize_lang("한국어") == "ko"
     assert i18n._normalize_lang("Ukrainian") == "uk"
     assert i18n._normalize_lang("uk-UA") == "uk"
     assert i18n._normalize_lang("ua") == "uk"
     assert i18n._normalize_lang("Turkish") == "tr"
     assert i18n._normalize_lang("tr-TR") == "tr"
     assert i18n._normalize_lang("türkçe") == "tr"
+    assert i18n._normalize_lang("turkce") == "tr"
+    assert i18n._normalize_lang("francais") == "fr"
+    assert i18n._normalize_lang("brazilian") == "pt"
     assert i18n._normalize_lang("pt_BR") == "pt"
 
 
@@ -122,6 +127,19 @@ def test_env_var_override(monkeypatch):
 def test_env_var_normalized(monkeypatch):
     i18n.reset_language_cache()
     monkeypatch.setenv("HERMES_LANGUAGE", "Chinese")
+    assert i18n.get_language() == "zh"
+
+
+def test_config_language_refreshes_without_process_restart(monkeypatch):
+    """The central config cache, rather than an i18n lifetime cache, owns refresh."""
+    from hermes_cli import config as config_module
+
+    current = {"display": {"language": "en"}}
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.setattr(config_module, "load_config_readonly", lambda: current)
+
+    assert i18n.get_language() == "en"
+    current = {"display": {"language": "zh"}}
     assert i18n.get_language() == "zh"
 
 

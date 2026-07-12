@@ -79,17 +79,8 @@ const MOUSE_MODE_LABEL: Record<MouseTrackingMode, TranslationKey> = {
   wheel: 'mouse.mode.wheel'
 }
 
-// Shown when /exit or /quit is refused in the hosted dashboard chat. Kept as a
-// constant so the test asserts against the same source of truth as production.
-export const DASHBOARD_EXIT_DISABLED_MESSAGE =
-  'exit is disabled in hosted dashboard chat — use /new to start a fresh session'
-
-export const DASHBOARD_UPDATE_DISABLED_MESSAGE =
-  'update is disabled in hosted dashboard chat — the hosted environment is managed separately'
-
 export const coreCommands: SlashCommand[] = [
   {
-    help: 'list commands + hotkeys',
     name: 'help',
     run: (_arg, ctx) => {
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
@@ -124,7 +115,6 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['exit'],
-    help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => {
       // In the hosted dashboard chat there is no in-page restart path after
@@ -135,7 +125,7 @@ export const coreCommands: SlashCommand[] = [
       // (which auto-starts a fresh chat), the explicit quit command refuses and
       // instructs the user to run /new themselves.
       if (DASHBOARD_TUI_MODE) {
-        ctx.transcript.sys(DASHBOARD_EXIT_DISABLED_MESSAGE)
+        ctx.transcript.sys(translate(ctx.ui.locale, 'sys.dashboardExitDisabled'))
 
         return
       }
@@ -145,11 +135,10 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'update Hermes Agent to the latest version (exits TUI)',
     name: 'update',
     run: (_arg, ctx) => {
       if (DASHBOARD_TUI_MODE) {
-        ctx.transcript.sys(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+        ctx.transcript.sys(translate(ctx.ui.locale, 'sys.dashboardUpdateDisabled'))
 
         return
       }
@@ -163,7 +152,6 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['scroll'],
-    help: 'set mouse tracking preset [on|off|toggle|wheel|buttons|all]',
     name: 'mouse',
     run: (arg, ctx) => {
       const current = ctx.ui.mouseTracking
@@ -188,7 +176,6 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['new'],
-    help: 'start a new session',
     name: 'clear',
     run: (arg, ctx, cmd) => {
       if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
@@ -228,7 +215,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'force a full UI repaint',
     name: 'redraw',
     run: (_arg, ctx) => {
       forceRedraw(process.stdout)
@@ -237,7 +223,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'show live session info',
     name: 'status',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
@@ -259,7 +244,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'set or show current session title',
     name: 'title',
     run: (arg, ctx) => {
       if (!ctx.sid) {
@@ -304,7 +288,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle compact transcript',
     name: 'compact',
     run: (arg, ctx) => {
       const next = flagFromArg(arg, ctx.ui.compact)
@@ -328,7 +311,6 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['detail'],
-    help: 'control agent detail visibility (global or per-section)',
     name: 'details',
     run: (arg, ctx) => {
       const { gateway, transcript, ui } = ctx
@@ -402,7 +384,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'local fortune',
     name: 'fortune',
     run: (arg, ctx) => {
       const key = arg.trim().toLowerCase()
@@ -420,7 +401,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'copy selection or assistant message',
     name: 'copy',
     run: async (arg, ctx) => {
       const { sys } = ctx.transcript
@@ -468,14 +448,12 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'attach clipboard image',
     name: 'paste',
     run: (arg, ctx) => (arg ? ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usagePaste')) : ctx.composer.paste())
   },
 
   {
     aliases: ['compose'],
-    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
     name: 'prompt',
     run: (arg, ctx) => {
       if (arg) {
@@ -492,7 +470,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'configure IDE terminal keybindings for multiline + undo/redo',
     name: 'terminal-setup',
     run: (arg, ctx) => {
       const target = arg.trim().toLowerCase()
@@ -527,7 +504,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'view gateway logs',
     name: 'logs',
     run: (arg, ctx) => {
       const text = ctx.gateway.gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
@@ -539,7 +515,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'view current transcript (user + assistant messages)',
     name: 'history',
     run: (arg, ctx) => {
       // The CLI-side `/history` runs in a detached slash-worker subprocess
@@ -576,7 +551,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'save the current transcript to JSON',
     name: 'save',
     run: (_arg, ctx) => {
       const hasConversation = ctx.local
@@ -610,7 +584,6 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['sb'],
-    help: 'status bar position (on|off|top|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
@@ -638,7 +611,6 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['q'],
-    help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {
       if (!arg) {
@@ -657,7 +629,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'inject a message after the next tool call (no interrupt)',
     name: 'steer',
     run: (arg, ctx) => {
       const payload = arg?.trim() ?? ''
@@ -699,7 +670,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'undo last exchange',
     name: 'undo',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
@@ -720,7 +690,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'retry last user message',
     name: 'retry',
     run: (_arg, ctx) => {
       const last = ctx.local.getLastUserMsg()

@@ -301,7 +301,6 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse, tr
 
 export const billingCommands: SlashCommand[] = [
   {
-    help: 'Manage Nous terminal billing — buy credits, auto-reload, limits',
     name: 'billing',
     // ZERO sub-commands (plan §0.4): any arg is ignored. Bare `/billing`
     // fetches state and opens the interactive overlay (CLI/TUI parity).

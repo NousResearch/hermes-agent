@@ -42,7 +42,6 @@ const modelValueForConfigSet = (arg: string) => {
 export const sessionCommands: SlashCommand[] = [
   {
     aliases: ['bg', 'btw'],
-    help: 'launch a background prompt',
     name: 'background',
     run: (arg, ctx) => {
       if (!arg) {
@@ -63,7 +62,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
       if (ctx.session.guardBusySessionSwitch('change models')) {
@@ -125,7 +123,6 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     aliases: ['switch', 'session', 'resume'],
-    help: 'browse, switch, or resume sessions',
     name: 'sessions',
     run: (arg, ctx) => {
       const trimmed = arg.trim()
@@ -153,7 +150,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => {
       ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
@@ -169,7 +165,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {
@@ -195,7 +190,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
       ctx.gateway
@@ -253,7 +247,6 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     aliases: ['fork'],
-    help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
       const prevSid = ctx.sid
@@ -274,7 +267,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'voice mode: [on|off|tts|status]',
     name: 'voice',
     run: (arg, ctx) => {
       const normalized = (arg ?? '').trim().toLowerCase()
@@ -364,9 +356,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle / adopt / resize an animated pet',
     name: 'pet',
-    usage: '/pet [toggle | list | scale <n> | <slug>]',
     run: (arg, ctx, cmd) => {
       const sub = arg.trim().toLowerCase()
 
@@ -389,7 +379,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch theme skin (fires skin.changed)',
     name: 'skin',
     run: (arg, ctx) => {
       if (!arg) {
@@ -415,9 +404,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
     name: 'indicator',
-    usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
     run: (arg, ctx) => {
       const value = arg.trim().toLowerCase()
 
@@ -456,7 +443,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle yolo mode (per-session approvals)',
     name: 'yolo',
     run: (_arg, ctx) => {
       ctx.gateway
@@ -470,7 +456,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'inspect or set reasoning effort (updates live agent)',
     name: 'reasoning',
     run: (arg, ctx) => {
       if (!arg) {
@@ -515,7 +500,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle fast mode [normal|fast|status|on|off|toggle]',
     name: 'fast',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
@@ -561,7 +545,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'control busy enter mode [queue|steer|interrupt|status]',
     name: 'busy',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
@@ -596,7 +579,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'cycle verbose tool-output mode (updates live agent)',
     name: 'verbose',
     run: (arg, ctx) => {
       ctx.gateway
@@ -610,7 +592,6 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -630,7 +611,7 @@ export const sessionCommands: SlashCommand[] = [
         const creditsLines = r?.credits_lines ?? []
 
         if (creditsLines.length) {
-          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
+          ctx.transcript.panel(translate(ctx.ui.locale, 'credits.panelTitle'), [{ text: creditsLines.join('\n') }])
         }
 
         if (!r?.calls) {

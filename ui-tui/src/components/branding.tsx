@@ -245,9 +245,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>{truncLine(toolsetLabel(k, locale) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>{ti('branding.moreToolsets', { count: String(overflow) })}</Text>
-        )}
+        {overflow > 0 && <Text color={t.color.muted}>{ti('branding.moreToolsets', { count: String(overflow) })}</Text>}
       </>
     )
   }
@@ -261,15 +259,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
           <Text color={t.color.muted}>: </Text>
           {s.connected ? (
-            <Text color={t.color.text}>
-              {ti('branding.tools', { count: String(s.tools) })}
-            </Text>
+            <Text color={t.color.text}>{ti('branding.tools', { count: String(s.tools) })}</Text>
           ) : s.disabled || s.status === 'disabled' ? (
-            <Text color={t.color.muted}>disabled</Text>
+            <Text color={t.color.muted}>{ti('branding.mcpDisabled')}</Text>
           ) : s.status === 'connecting' ? (
-            <Text color={t.color.warn}>connecting</Text>
+            <Text color={t.color.warn}>{ti('branding.mcpConnecting')}</Text>
           ) : s.status === 'configured' ? (
-            <Text color={t.color.muted}>configured</Text>
+            <Text color={t.color.muted}>{ti('branding.mcpConfigured')}</Text>
           ) : (
             <Text color={t.color.error}>{ti('branding.mcpFailed')}</Text>
           )}
@@ -329,14 +325,14 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Box flexDirection="column" marginBottom={1}>
             <Text color={t.color.accent} wrap="truncate-end">
               {info.model.split('/').pop()}
-              <Text color={t.color.muted}> · Nous Research</Text>
+              <Text color={t.color.muted}>{ti('branding.nousResearch')}</Text>
             </Text>
             <Text color={t.color.muted} wrap="truncate-end">
               {info.cwd || process.cwd()}
             </Text>
             {sid && (
               <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
+                <Text color={t.color.sessionLabel}>{ti('branding.session')}</Text>
                 <Text color={t.color.sessionBorder}>{sid}</Text>
               </Text>
             )}
@@ -360,7 +356,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
-            suffix={skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined}
+            suffix={
+              skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined
+            }
             t={t}
             title={ti('branding.availableSkills')}
           />

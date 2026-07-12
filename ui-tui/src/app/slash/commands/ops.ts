@@ -64,7 +64,6 @@ interface SkillsReloadResponse {
 
 export const opsCommands: SlashCommand[] = [
   {
-    help: 'stop background processes',
     name: 'stop',
     run: (_arg, ctx) => {
       ctx.gateway
@@ -82,7 +81,6 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['reload_mcp'],
-    help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
       // Parse arg: `now` / `always` skip the confirmation gate.
@@ -128,7 +126,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
       ctx.gateway
@@ -146,7 +143,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'manage browser CDP connection [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
       const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
@@ -203,7 +199,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'list, diff, or restore checkpoints',
     name: 'rollback',
     run: (arg, ctx) => {
       if (!ctx.sid) {
@@ -304,7 +299,6 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['tasks'],
-    help: 'open the spawn-tree dashboard (live audit + kill/pause controls)',
     name: 'agents',
     run: (arg, ctx) => {
       const sub = arg.trim().toLowerCase()
@@ -348,7 +342,6 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['learning', 'memory-graph'],
-    help: 'open your learning journey — skills + memories on a timeline',
     name: 'journey',
     run: (_arg, ctx) => {
       void ctx
@@ -357,7 +350,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'replay a completed spawn tree · `/replay [N|last|list|load <path>]`',
     name: 'replay',
     run: (arg, ctx) => {
       const history = getSpawnHistory()
@@ -443,7 +435,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'diff two completed spawn trees · `/replay-diff <baseline> <candidate>` (indexes from /replay list or history N)',
     name: 'replay-diff',
     run: (arg, ctx) => {
       const parts = arg.trim().split(/\s+/).filter(Boolean)
@@ -481,7 +472,6 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['reload_skills'],
-    help: 're-scan installed skills in the live TUI gateway',
     name: 'reload-skills',
     run: (_arg, ctx) => {
       ctx.gateway
@@ -517,7 +507,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'browse, inspect, install skills',
     name: 'skills',
     run: (arg, ctx, cmd) => {
       const text = arg.trim()
@@ -711,7 +700,6 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
     name: 'plugins',
     run: (arg, ctx, cmd) => {
       // No argument → open the interactive Plugins Hub overlay. Any
@@ -728,18 +716,17 @@ export const opsCommands: SlashCommand[] = [
             return
           }
 
-          const body = r?.output || '/plugins: no output'
-          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const body = r?.output || translate(ctx.ui.locale, 'command.noOutput', { command: 'plugins' })
+          const text = r?.warning ? `${translate(ctx.ui.locale, 'common.warning')}: ${r.warning}\n${body}` : body
           const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-          long ? ctx.transcript.page(text, 'Plugins') : ctx.transcript.sys(text)
+          long ? ctx.transcript.page(text, translate(ctx.ui.locale, 'plugins.title')) : ctx.transcript.sys(text)
         })
         .catch(ctx.guardedErr)
     }
   },
 
   {
-    help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
     run: (arg, ctx, cmd) => {
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)

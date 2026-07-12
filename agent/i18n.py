@@ -34,7 +34,6 @@ import logging
 import os
 import sysconfig
 import threading
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -59,12 +58,12 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     # "Simplified Chinese" and "Traditional Chinese".
     "zh-cn": "zh", "zh-hans": "zh",
     "traditional-chinese": "zh-hant",
-    "japanese": "ja", "jp": "ja", "ja-jp": "ja",
+    "japanese": "ja", "日本語": "ja", "jp": "ja", "ja-jp": "ja",
     "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
     "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
-    "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
+    "french": "fr", "français": "fr", "francais": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
     "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
-    "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
+    "turkish": "tr", "turkce": "tr", "türkçe": "tr", "tr-tr": "tr",
     # Afrikaans — South African Dutch-derived language; "af-ZA" is the common BCP-47 tag.
     "afrikaans": "af", "af-za": "af",
     # Korean
@@ -219,18 +218,16 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
-@lru_cache(maxsize=1)
 def _config_language_cached() -> str | None:
-    """Read ``display.language`` from config.yaml once per process.
+    """Read the current ``display.language`` through the central config cache.
 
-    Cached because ``t()`` is called in hot paths (every approval prompt,
-    every gateway reply) and re-reading YAML each call would be wasteful.
-    ``reset_language_cache()`` clears this when config changes at runtime
-    (e.g. after the setup wizard).
+    ``load_config_readonly()`` owns the mtime-aware cache and avoids a deepcopy
+    on cache hits. Keeping a second process-lifetime cache here would prevent a
+    running gateway from observing Dashboard language changes.
     """
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
         lang = (cfg.get("display") or {}).get("language")
         if lang:
             return _normalize_lang(lang)
@@ -240,12 +237,11 @@ def _config_language_cached() -> str | None:
 
 
 def reset_language_cache() -> None:
-    """Invalidate cached language resolution and catalogs.
+    """Invalidate locale catalogs loaded by this process.
 
-    Call after :func:`hermes_cli.config.save_config` if a running process
-    needs to pick up a changed ``display.language`` without restart.
+    Language configuration is already refreshed by the central mtime-aware
+    config cache; this hook remains useful for tests and catalog updates.
     """
-    _config_language_cached.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
 

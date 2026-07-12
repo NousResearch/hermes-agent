@@ -12,6 +12,13 @@ import pytest
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import cron.jobs as jobs_mod
+
+    cron_dir = tmp_path / "cron"
+    monkeypatch.setattr(jobs_mod, "HERMES_DIR", tmp_path)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", cron_dir / "output")
     yield tmp_path
 
 

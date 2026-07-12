@@ -678,6 +678,42 @@ class TelegramAdapter(BasePlatformAdapter):
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
 
+    @staticmethod
+    def _token_fingerprint(token: Optional[str]) -> Optional[str]:
+        """Return a stable, log-safe fingerprint for a Telegram bot token."""
+        if not isinstance(token, str):
+            return None
+        token = token.strip()
+        if not token:
+            return None
+        import hashlib
+
+        return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
+
+    def _gateway_profile_name(self) -> str:
+        """Best-effort profile label for connect-path diagnostics."""
+        raw = getattr(self, "_gateway_profile_label", None)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+        extra = getattr(self.config, "extra", None)
+        if isinstance(extra, dict):
+            for key in ("_gateway_profile", "profile"):
+                value = extra.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return "default"
+
+    def _connect_diagnostic_summary(self, token: Optional[str] = None) -> str:
+        """Profile-attributed, masked token diagnostics for connect logs."""
+        if token is None:
+            token = getattr(self.config, "token", None)
+        token = token.strip() if isinstance(token, str) else ""
+        fingerprint = self._token_fingerprint(token) or "-"
+        return (
+            f"profile={self._gateway_profile_name()} "
+            f"token_len={len(token)} token_fp={fingerprint}"
+        )
+
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
@@ -3016,23 +3052,28 @@ class TelegramAdapter(BasePlatformAdapter):
             TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
             TELEGRAM_WEBHOOK_SECRET Secret token for update verification
         """
+        token = getattr(self.config, "token", None)
+        connect_diag = self._connect_diagnostic_summary(token)
         if not TELEGRAM_AVAILABLE:
             logger.error(
-                "[%s] python-telegram-bot not installed. Run: pip install python-telegram-bot",
+                "[%s] python-telegram-bot not installed (%s). Run: pip install python-telegram-bot",
                 self.name,
+                connect_diag,
             )
             return False
         
-        if not self.config.token:
-            logger.error("[%s] No bot token configured", self.name)
+        if not token:
+            logger.error("[%s] No bot token configured (%s)", self.name, connect_diag)
             return False
+
+        logger.info("[%s] Telegram connect starting (%s)", self.name, connect_diag)
         
         try:
-            if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+            if not self._acquire_platform_lock('telegram-bot-token', token, 'Telegram bot token'):
                 return False
 
             # Build the application
-            builder = Application.builder().token(self.config.token)
+            builder = Application.builder().token(token)
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
                 builder = builder.base_url(custom_base_url)
@@ -3210,8 +3251,9 @@ class TelegramAdapter(BasePlatformAdapter):
             for _attempt in range(_max_connect):
                 try:
                     logger.warning(
-                        "[%s] Connecting to Telegram (attempt %d/%d)…",
+                        "[%s] Connecting to Telegram (attempt %d/%d, %s)…",
                         self.name, _attempt + 1, _max_connect,
+                        connect_diag,
                     )
                     await _await_with_thread_deadline(
                         self._app.initialize(),
@@ -3367,7 +3409,12 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
-            logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            logger.info(
+                "[%s] Connected to Telegram (%s mode, %s)",
+                self.name,
+                mode,
+                connect_diag,
+            )
 
             # Start the persistent heartbeat loop in polling mode. Webhook mode
             # receives updates via incoming pushes — there is no long-poll
@@ -3396,7 +3443,12 @@ class TelegramAdapter(BasePlatformAdapter):
             safe_error = _redact_telegram_error_text(e)
             message = f"Telegram startup failed: {safe_error}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
-            logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
+            logger.error(
+                "[%s] Failed to connect to Telegram (%s): %s",
+                self.name,
+                connect_diag,
+                safe_error,
+            )
             return False
 
     async def _set_status_indicator(self, online: bool) -> None:

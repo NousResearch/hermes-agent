@@ -8578,9 +8578,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"'{profile_name}'s config.yaml (configure it only on the "
                     f"default profile)."
                 )
-            with _profile_runtime_scope(profile_home):
-                adapter = self._create_adapter(platform, platform_config)
+            try:
+                with _profile_runtime_scope(profile_home):
+                    adapter = self._create_adapter(platform, platform_config)
+            except Exception as e:
+                logger.error(
+                    "[MULTIPLEX] Profile '%s': _create_adapter('%s') raised %s",
+                    profile_name,
+                    platform.value,
+                    e,
+                    exc_info=True,
+                )
+                continue
             if not adapter:
+                logger.warning(
+                    "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
+                    profile_name,
+                    platform.value,
+                )
                 continue
 
             # Same-token conflict detection — refuse a duplicate poll.
@@ -8610,6 +8625,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter._busy_text_mode = self._busy_text_mode
+            setattr(adapter, "_gateway_profile_label", profile_name)
+            if hasattr(adapter, "config") and hasattr(adapter.config, "extra") and isinstance(adapter.config.extra, dict):
+                adapter.config.extra.setdefault("_gateway_profile", profile_name)
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -8617,12 +8635,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if success:
                     profile_map[platform] = adapter
                     connected += 1
-                    logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
+                    logger.info(
+                        "✓ %s connected (profile: %s, token_fp=%s)",
+                        platform.value,
+                        profile_name,
+                        fp or "-",
+                    )
                 else:
-                    logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
+                    logger.warning(
+                        "✗ %s failed to connect (profile: %s, token_fp=%s)",
+                        platform.value,
+                        profile_name,
+                        fp or "-",
+                    )
                     await self._safe_adapter_disconnect(adapter, platform)
             except Exception as e:
-                logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
+                logger.error(
+                    "✗ %s error (profile: %s, token_fp=%s): %s",
+                    platform.value,
+                    profile_name,
+                    fp or "-",
+                    e,
+                )
                 await self._safe_adapter_disconnect(adapter, platform)
         return connected
 

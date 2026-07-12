@@ -1,4 +1,9 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
+import asyncio
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, cast
+
 import pytest
 
 from gateway.run import GatewayRunner
@@ -8,6 +13,42 @@ class _FakeAdapter:
     def __init__(self, token=None, config=None):
         self.token = token
         self.config = config
+
+
+class _FakeTelegramAdapter(_FakeAdapter):
+    def __init__(self, token=None, config=None):
+        super().__init__(token=token, config=config)
+        self.platform: Any = None
+        self._busy_text_mode = None
+        self._gateway_profile_label = None
+        self.message_handler = None
+        self.fatal_error_handler = None
+        self.session_store = None
+        self.busy_session_handler = None
+        self.topic_recovery_fn = None
+        self.authorization_check = None
+        self.disconnect_called = False
+
+    def set_message_handler(self, handler):
+        self.message_handler = handler
+
+    def set_fatal_error_handler(self, handler):
+        self.fatal_error_handler = handler
+
+    def set_session_store(self, session_store):
+        self.session_store = session_store
+
+    def set_busy_session_handler(self, handler):
+        self.busy_session_handler = handler
+
+    def set_topic_recovery_fn(self, fn):
+        self.topic_recovery_fn = fn
+
+    def set_authorization_check(self, fn):
+        self.authorization_check = fn
+
+    async def disconnect(self):
+        self.disconnect_called = True
 
 
 class TestCredentialFingerprint:
@@ -186,6 +227,60 @@ class TestPortBindingHardError:
         assert connected == 0
         assert duplicate.disconnected is True
         assert runner._profile_adapters["reviewer"] == {}
+
+    @pytest.mark.asyncio
+    async def test_secondary_telegram_connect_logs_profile_and_token_fingerprint(self, monkeypatch, caplog):
+        """Secondary-profile Telegram startup logs must attribute profile + token.
+
+        Regression guard for the multiplex diagnostic blind spot: when a
+        secondary Telegram adapter hangs or fails, the logs must still tell the
+        operator WHICH profile/token was in play, and the adapter must inherit
+        the profile label before connect() runs.
+        """
+        import logging
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner._busy_text_mode = "interrupt"
+        runner.session_store = cast(Any, object())
+        runner._handle_adapter_fatal_error = cast(Any, object())
+        runner._handle_active_session_busy_message = cast(Any, object())
+        runner._recover_telegram_topic_thread_id = cast(Any, object())
+        runner._make_profile_message_handler = cast(Any, lambda profile_name: f"handler:{profile_name}")
+        runner._make_adapter_auth_check = cast(Any, lambda platform: "auth-check")
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="reviewer-token-123"),
+        }
+        adapter = _FakeTelegramAdapter(config=reviewer_cfg.platforms[Platform.TELEGRAM])
+        adapter.platform = Platform.TELEGRAM
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr("gateway.run._profile_runtime_scope", lambda _home: nullcontext())
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter)
+        monkeypatch.setattr(
+            runner,
+            "_connect_adapter_with_timeout",
+            lambda a, p: asyncio.sleep(0, result=True),
+        )
+
+        with caplog.at_level(logging.INFO, logger="gateway.run"):
+            connected = await runner._start_one_profile_adapters("reviewer", Path("/tmp/reviewer"), {})
+
+        assert connected == 1
+        assert adapter._gateway_profile_label == "reviewer"
+        assert adapter.config.extra.get("_gateway_profile") == "reviewer"
+        expected_fp = GatewayRunner._adapter_credential_fingerprint(adapter)
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "✓ telegram connected" in msg
+            and "profile: reviewer" in msg
+            and f"token_fp={expected_fp}" in msg
+            for msg in messages
+        )
 
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES

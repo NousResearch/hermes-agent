@@ -153,6 +153,23 @@ def test_store_install_resolution(boba_like):
     assert store.resolve_active_pet("does-not-exist").slug == "boba"
     # display metadata flows from pet.json
     assert store.load_pet("boba").display_name == "Boba"
+    # Existing manifests without a version remain v1.
+    assert store.load_pet("boba").sprite_version_number == 1
+
+
+def test_store_reads_v2_sprite_version(boba_like):
+    pet_json = boba_like / "pet.json"
+    pet_json.write_text(
+        '{"id":"boba","displayName":"Boba","spriteVersionNumber":2,"spritesheetPath":"spritesheet.webp"}'
+    )
+
+    assert store.load_pet("boba").sprite_version_number == 2
+
+    # Malformed metadata must fail closed to the legacy contract.
+    pet_json.write_text(
+        '{"id":"boba","displayName":"Boba","spriteVersionNumber":"future","spritesheetPath":"spritesheet.webp"}'
+    )
+    assert store.load_pet("boba").sprite_version_number == 1
 
 
 def test_store_remove(boba_like):

@@ -6578,6 +6578,7 @@ def _pet_payload_cache_key(pet, *, scale: float) -> tuple | None:
         stat.st_size,
         pet.slug,
         pet.display_name,
+        getattr(pet, "sprite_version_number", 1),
         round(scale, 4),
     )
 
@@ -6592,6 +6593,23 @@ def _clone_pet_payload(payload: dict) -> dict:
     if isinstance(payload.get("stateRows"), list):
         out["stateRows"] = list(payload["stateRows"])
     return out
+
+
+def _pet_look_direction_count(pet) -> int:
+    """Return the supported v2 gaze-frame count, gated by manifest and geometry."""
+    if getattr(pet, "sprite_version_number", 1) != 2:
+        return 0
+    try:
+        from PIL import Image
+
+        from agent.pet import constants
+
+        with Image.open(pet.spritesheet) as image:
+            if image.width != constants.FRAME_W * 8 or image.height != constants.FRAME_H * 11:
+                return 0
+        return 16
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return 0
 
 
 def _pet_row_frame_counts(spritesheet) -> dict:
@@ -6663,6 +6681,8 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
         "mime": mime,
         "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
         "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+        "spriteVersionNumber": getattr(pet, "sprite_version_number", 1),
+        "lookDirectionCount": _pet_look_direction_count(pet),
         "frameW": constants.FRAME_W,
         "frameH": constants.FRAME_H,
         "framesPerState": constants.FRAMES_PER_STATE,
@@ -6763,6 +6783,8 @@ def _(rid, params: dict) -> dict:
                 "displayName": pet.display_name,
                 "scale": scale,
                 "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+                "spriteVersionNumber": getattr(pet, "sprite_version_number", 1),
+                "lookDirectionCount": _pet_look_direction_count(pet),
             },
         )
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface

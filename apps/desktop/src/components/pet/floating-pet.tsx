@@ -22,6 +22,7 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
+import { supportsPetLookDirections } from './pet-look'
 import { PetSprite, roamWalkRow } from './pet-sprite'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
@@ -44,6 +45,8 @@ interface PetInfoMeta {
   displayName?: string
   scale?: number
   spritesheetRevision?: string
+  spriteVersionNumber?: number
+  lookDirectionCount?: number
 }
 
 function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
@@ -53,7 +56,9 @@ function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
     info.slug === meta.slug &&
     info.displayName === meta.displayName &&
     info.scale === meta.scale &&
-    info.spritesheetRevision === meta.spritesheetRevision
+    info.spritesheetRevision === meta.spritesheetRevision &&
+    info.spriteVersionNumber === meta.spriteVersionNumber &&
+    info.lookDirectionCount === meta.lookDirectionCount
   )
 }
 
@@ -189,7 +194,9 @@ export function FloatingPet() {
             current.displayName === next.displayName &&
             current.scale === next.scale &&
             current.spritesheetRevision &&
-            current.spritesheetRevision === next.spritesheetRevision
+            current.spritesheetRevision === next.spritesheetRevision &&
+            current.spriteVersionNumber === next.spriteVersionNumber &&
+            current.lookDirectionCount === next.lookDirectionCount
           ) {
             return
           }
@@ -397,8 +404,9 @@ export function FloatingPet() {
   })
 
   // While roaming, drive the directional run row + mirror from the travel
-  // direction; at rest, fall back to the inward-facing static mascot.
+  // direction; validated v2 pets use their fixed look cells while resting.
   const walk = roamWalkRow(roamDir, info.stateRows)
+  const gazeEnabled = atRest && roamDir === 0 && supportsPetLookDirections(info)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.
@@ -442,11 +450,12 @@ export function FloatingPet() {
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
+          transform:
+            roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : gazeEnabled ? 'none' : facing(position.x, petW),
           zIndex: 1
         }}
       >
-        <PetSprite info={info} rowOverride={walk.row} />
+        <PetSprite info={info} lookAtPointer={gazeEnabled} rowOverride={walk.row} />
       </div>
       {/* Hearts puff off the pet; its celebrate ("yay"/jump) pose is driven by
           burstVibeHearts's router. */}

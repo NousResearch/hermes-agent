@@ -243,3 +243,34 @@ def test_pet_info_meta_avoids_full_payload(monkeypatch):
     assert result["displayName"] == "Meta Pet"
     assert result["scale"] == 0.7
     assert ":" in result["spritesheetRevision"]
+    assert result["spriteVersionNumber"] == 1
+    assert result["lookDirectionCount"] == 0
+
+
+def test_v2_look_capability_requires_manifest_and_11_row_geometry():
+    import json
+
+    from agent.pet import constants, store
+
+    def install(slug: str, rows: int, version: int):
+        sheet = Image.new("RGBA", (constants.FRAME_W * 8, constants.FRAME_H * rows), (80, 120, 220, 255))
+        pet = store.register_local_pet(sheet, slug=slug, display_name=slug)
+        manifest = pet.directory / "pet.json"
+        meta = json.loads(manifest.read_text(encoding="utf-8"))
+        meta["spriteVersionNumber"] = version
+        manifest.write_text(json.dumps(meta), encoding="utf-8")
+        return store.load_pet(slug)
+
+    v2 = install("v2-ready", rows=11, version=2)
+    assert v2 is not None
+    payload = server._pet_sprite_payload(v2, scale=0.7)
+    assert payload["spriteVersionNumber"] == 2
+    assert payload["lookDirectionCount"] == 16
+
+    short = install("v2-short", rows=9, version=2)
+    assert short is not None
+    assert server._pet_sprite_payload(short, scale=0.7)["lookDirectionCount"] == 0
+
+    legacy = install("legacy-tall", rows=11, version=1)
+    assert legacy is not None
+    assert server._pet_sprite_payload(legacy, scale=0.7)["lookDirectionCount"] == 0

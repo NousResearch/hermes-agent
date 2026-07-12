@@ -46,7 +46,9 @@ Unicode **half-block** rendering. Inside a pipe or redirect (no TTY), terminal
 rendering is disabled by design.
 
 The desktop app draws the pet as a floating sprite on a canvas and toggles it
-from **Settings → Appearance**.
+from **Settings → Appearance**. A validated v2 pet follows the pointer with its
+16 fixed look-direction cells while idle; agent activity and roaming still use
+the standard animated state rows.
 
 ## Quick start (CLI)
 
@@ -157,6 +159,25 @@ quiet there.
 
 The overlay is a pure puppet of the in-app pet — it carries no separate gateway
 connection and never appears in the dock or app switcher.
+
+### Sprite atlas versions
+
+Hermes remains compatible with legacy 8-row atlases and the standard 8×9
+Petdex/Codex atlas. Version 2 adds two fixed-gaze rows without changing the first
+nine rows:
+
+- The grid is exactly **8 columns × 11 rows**, with **192×208** cells.
+- Rows 0–8 retain the standard animation taxonomy.
+- Rows 9–10 contain 16 look directions, starting at north (`000°`) and advancing
+  clockwise in `22.5°` steps; eight cells are packed into each row.
+- Idle row 0, column 6 is the fixed neutral frame used inside the pointer
+  deadzone and while the pointer is outside the host window.
+- `pet.json` must declare `"spriteVersionNumber": 2`.
+
+Hermes enables directional gaze only when both the manifest version and exact
+8×11 geometry validate. A malformed or mislabeled package safely falls back to
+the standard animation rows. The terminal renderer intentionally continues to
+use those state rows because a terminal surface has no pointer to follow.
 
 ## Configuration
 

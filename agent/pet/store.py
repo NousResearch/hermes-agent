@@ -43,6 +43,7 @@ class InstalledPet:
     directory: Path
     spritesheet: Path
     created_by: str = ""  # "generator" for pets hatched locally; "" for petdex installs
+    sprite_version_number: int = 1
 
     @property
     def exists(self) -> bool:
@@ -69,6 +70,18 @@ def _read_pet_json(directory: Path) -> dict:
     except (OSError, ValueError) as exc:
         logger.debug("unreadable pet.json in %s: %s", directory, exc)
         return {}
+
+
+def _sprite_version_number(meta: dict) -> int:
+    """Return a positive manifest sprite version, defaulting malformed values to v1."""
+    raw = meta.get("spriteVersionNumber", 1)
+    if isinstance(raw, bool):
+        return 1
+    try:
+        version = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return version if version >= 1 else 1
 
 
 def _resolve_spritesheet(directory: Path, meta: dict) -> Path:
@@ -120,6 +133,7 @@ def load_pet(slug: str) -> InstalledPet | None:
         directory=directory,
         spritesheet=_resolve_spritesheet(directory, meta),
         created_by=str(meta.get("createdBy", "") or ""),
+        sprite_version_number=_sprite_version_number(meta),
     )
 
 

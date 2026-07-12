@@ -24,6 +24,10 @@ export interface PetInfo {
   // Stable sheet revision (`mtime_ns:size`) from the gateway; lets the desktop
   // skip full sprite payload refreshes when the active pet hasn't changed.
   spritesheetRevision?: string
+  // Versioned atlas contract from pet.json. The gateway only exposes look rows
+  // when both v2 metadata and exact 8x11 geometry validate.
+  spriteVersionNumber?: number
+  lookDirectionCount?: number
   frameW?: number
   frameH?: number
   framesPerState?: number

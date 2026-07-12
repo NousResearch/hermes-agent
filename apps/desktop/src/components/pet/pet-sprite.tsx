@@ -2,6 +2,8 @@ import { memo, useEffect, useMemo, useRef } from 'react'
 
 import { $petState, type PetInfo, type PetState } from '@/store/pet'
 
+import { lookCellForVector, PET_V2_NEUTRAL_LOOK_CELL, supportsPetLookDirections } from './pet-look'
+
 const DEFAULT_FRAME_W = 192
 const DEFAULT_FRAME_H = 208
 const DEFAULT_FRAMES = 6
@@ -101,6 +103,8 @@ interface PetSpriteProps {
   stateOverride?: PetState
   /** Force a concrete row name from `info.stateRows` (e.g. `running-right`). */
   rowOverride?: string
+  /** Follow the pointer with validated v2 look rows while the live state is idle. */
+  lookAtPointer?: boolean
 }
 
 /**
@@ -114,11 +118,12 @@ interface PetSpriteProps {
  * with `memo`, this component effectively never re-renders after mount until
  * the pet itself changes.
  */
-function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSpriteProps) {
+function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, lookAtPointer = false }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stateRef = useRef<PetState>($petState.get())
   const overrideRef = useRef<PetState | undefined>(stateOverride)
   const rowOverrideRef = useRef<string | undefined>(rowOverride)
+  const lookCellRef = useRef<ReturnType<typeof lookCellForVector>>(null)
 
   // Keep the override current without re-running the RAF setup effect.
   useEffect(() => {
@@ -128,6 +133,48 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
   useEffect(() => {
     rowOverrideRef.current = rowOverride
   }, [rowOverride])
+
+  const gazeEnabled = lookAtPointer && supportsPetLookDirections(info)
+  useEffect(() => {
+    lookCellRef.current = null
+
+    if (!gazeEnabled) {
+      return
+    }
+
+    lookCellRef.current = PET_V2_NEUTRAL_LOOK_CELL
+
+    const onMove = (event: MouseEvent) => {
+      const rect = canvasRef.current?.getBoundingClientRect()
+
+      if (!rect) {
+        return
+      }
+
+      const deadzone = Math.max(10, Math.min(rect.width, rect.height) * 0.18)
+      lookCellRef.current =
+        lookCellForVector(
+          event.clientX - (rect.left + rect.width / 2),
+          event.clientY - (rect.top + rect.height / 2),
+          deadzone
+        ) ?? PET_V2_NEUTRAL_LOOK_CELL
+    }
+
+    const reset = () => {
+      lookCellRef.current = PET_V2_NEUTRAL_LOOK_CELL
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('blur', reset)
+    document.addEventListener('mouseleave', reset)
+
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('blur', reset)
+      document.removeEventListener('mouseleave', reset)
+      lookCellRef.current = null
+    }
+  }, [gazeEnabled])
 
   const frameW = info.frameW ?? DEFAULT_FRAME_W
   const frameH = info.frameH ?? DEFAULT_FRAME_H
@@ -221,7 +268,14 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
 
     const render = (now: number) => {
       const forcedRow = rowOverrideRef.current
-      const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
+      const state = overrideRef.current ?? stateRef.current
+      const lookCell = !forcedRow && state === 'idle' ? lookCellRef.current : null
+
+      const { row, count } = lookCell
+        ? { row: lookCell.row, count: 1 }
+        : forcedRow
+          ? resolveRow(forcedRow)
+          : resolve(state)
 
       if (row !== activeRow || count !== activeCount) {
         activeRow = row
@@ -241,17 +295,18 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       }
 
       frame %= count
+      const visibleFrame = lookCell?.column ?? frame
 
       // Only touch the canvas when the visible cell actually changes. The RAF
       // ticks at ~60Hz but the sprite only steps ~5Hz, so this skips ~90% of
       // the clear+draw work and keeps the main thread free.
-      if ((frame !== drawnFrame || row !== drawnRow) && image.complete && image.naturalWidth > 0) {
-        const sx = frame * frameW
+      if ((visibleFrame !== drawnFrame || row !== drawnRow) && image.complete && image.naturalWidth > 0) {
+        const sx = visibleFrame * frameW
         const sy = row * frameH
         ctx.clearRect(0, 0, canvas.width, canvas.height)
         ctx.imageSmoothingEnabled = false
         ctx.drawImage(image, sx, sy, frameW, frameH, 0, 0, drawW, drawH)
-        drawnFrame = frame
+        drawnFrame = visibleFrame
         drawnRow = row
       }
 

@@ -20,7 +20,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2, Loader2, RefreshCw } from '@/lib/icons'
+import { FileImage, FileText, FolderOpen, Link2, Loader2, Pencil, Box, RefreshCw } from '@/lib/icons'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
@@ -543,7 +543,7 @@ function ArtifactCellAction({
 
 function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
-  const Icon = isLink ? Link2 : FileText
+  const Icon = isLink ? Link2 : fileTypeIcon(artifact.value)
   const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
@@ -562,6 +562,19 @@ function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx
       </span>
     </ArtifactCellAction>
   )
+}
+
+// Distinct glyph per diagram-source type so .excalidraw / .drawio / .mermaid
+// attachments read as diagrams in the artifacts list (not a generic file).
+function fileTypeIcon(path: string): typeof FileText {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  if (ext === 'excalidraw') {
+    return Pencil
+  }
+  if (ext === 'drawio') {
+    return Box
+  }
+  return FileText
 }
 
 function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) {

@@ -1323,6 +1323,11 @@ class TestPrompt:
     async def test_prompt_auto_titles_session(self, agent):
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.model = "gpt-5.6-sol"
+        state.agent.provider = "openai-codex"
+        state.agent.base_url = "https://chatgpt.example.test/backend-api/codex"
+        state.agent.api_key = object()
+        state.agent.api_mode = "codex_responses"
         state.agent.run_conversation = MagicMock(return_value={
             "final_response": "Here is the fix.",
             "messages": [
@@ -1343,6 +1348,13 @@ class TestPrompt:
         assert mock_title.call_args.args[1] == new_resp.session_id
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
+        assert mock_title.call_args.kwargs["main_runtime"] == {
+            "model": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.example.test/backend-api/codex",
+            "api_key": state.agent.api_key,
+            "api_mode": "codex_responses",
+        }
         assert callable(mock_title.call_args.kwargs["title_callback"])
 
     @pytest.mark.asyncio

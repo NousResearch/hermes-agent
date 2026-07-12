@@ -6194,6 +6194,12 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     """maybe_auto_title is called after a successful (complete) prompt."""
 
     class _Agent:
+        model = "gpt-5.6-sol"
+        provider = "openai-codex"
+        base_url = "https://chatgpt.example.test/backend-api/codex"
+        api_key = object()
+        api_mode = "codex_responses"
+
         def run_conversation(
             self, prompt, conversation_history=None, stream_callback=None
         ):
@@ -6226,6 +6232,13 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     assert args[1] == "session-key"
     assert args[2] == "Tell me about Rome"
     assert args[3] == "Rome was founded in 753 BC."
+    assert mock_title.call_args.kwargs["main_runtime"] == {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.example.test/backend-api/codex",
+        "api_key": _Agent.api_key,
+        "api_mode": "codex_responses",
+    }
 
 
 def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):

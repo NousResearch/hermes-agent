@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
-    "@types/node": "^24.13.2",
+    "@types/node": "^22.20.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

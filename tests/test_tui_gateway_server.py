@@ -13,6 +13,7 @@ import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
+from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
@@ -421,6 +422,43 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert events[1][0] == "tool.complete"
     assert "args_text" not in events[0][2]
     assert "result_text" not in events[1][2]
+
+
+def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "risk-test",
+        {"tool_progress_mode": "all"},
+    )
+
+    server._on_tool_progress(
+        "risk-test",
+        "tool.output_risk",
+        "web_extract",
+        tool_call_id="tool-1",
+        risk_metadata={
+            "risk": "high",
+            "findings": ["prompt_injection"],
+            "redacted": False,
+        },
+    )
+
+    assert events == [(
+        "tool.output_risk",
+        "risk-test",
+        {
+            "tool_id": "tool-1",
+            "name": "web_extract",
+            "risk": "high",
+            "findings": ["prompt_injection"],
+            "redacted": False,
+        },
+    )]
+    assert "result" not in events[0][2]
 
 
 def test_dispatch_rejects_non_object_request():
@@ -1827,7 +1865,7 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id: calls["hooks"].append((event, session_id)),
+        lambda event, session_id, *_args: calls["hooks"].append((event, session_id)),
     )
 
     try:
@@ -1959,7 +1997,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
     monkeypatch.setattr(
         server,
         "_notify_session_boundary",
-        lambda event, session_id: hooks.append((event, session_id)),
+        lambda event, session_id, *_args: hooks.append((event, session_id)),
     )
 
     import tools.approval as _approval
@@ -2111,14 +2149,85 @@ def test_notification_event_routing_by_session_key(monkeypatch):
     monkeypatch.setattr(server, "_sessions", {"a": mine, "b": other})
 
     # My own event → handle it.
-    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "mine"}) is False
+    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": "mine"}) is False
     # Global/system event with no owner → handle it.
-    assert server._notification_event_belongs_elsewhere(mine, {"session_key": ""}) is False
-    assert server._notification_event_belongs_elsewhere(mine, {}) is False
+    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": ""}) is False
+    assert server._notification_event_belongs_elsewhere("a", mine, {}) is False
     # Owned by another *live* session → defer to that session's poller.
-    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "other"}) is True
+    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": "other"}) is True
     # Owner is gone (not in _sessions) → handle as fallback so it isn't lost.
-    assert server._notification_event_belongs_elsewhere(mine, {"session_key": "ghost"}) is False
+    assert server._notification_event_belongs_elsewhere("a", mine, {"session_key": "ghost"}) is False
+
+
+def test_async_delegation_event_prefers_origin_ui_session(monkeypatch):
+    """Detached subagent completions return to the commissioning TUI tab.
+
+    Regression: when the durable session key was stale/orphaned, whichever
+    desktop poller woke first could consume the async result and inject it into
+    an unrelated session.
+    """
+    mine = _session(session_key="current-key")
+    other = _session(session_key="unrelated-key")
+    monkeypatch.setattr(server, "_sessions", {"origin-sid": mine, "other-sid": other})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    evt = {
+        "type": "async_delegation",
+        "session_key": "stale-or-rotated-key",
+        "origin_ui_session_id": "origin-sid",
+    }
+
+    assert server._notification_event_belongs_elsewhere("other-sid", other, evt) is True
+    assert server._notification_event_belongs_elsewhere("origin-sid", mine, evt) is False
+
+
+def test_notification_event_follows_compression_continuation(monkeypatch):
+    """Events keyed to a compressed parent route to the live continuation."""
+    old_parent = _session(session_key="old-parent")
+    live_tip = _session(session_key="new-tip")
+    monkeypatch.setattr(server, "_sessions", {"old-sid": old_parent, "tip-sid": live_tip})
+
+    class _DB:
+        def resolve_resume_session_id(self, session_id):
+            return "new-tip" if session_id == "old-parent" else session_id
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    evt = {"type": "async_delegation", "session_key": "old-parent"}
+
+    assert server._notification_event_belongs_elsewhere("old-sid", old_parent, evt) is True
+    assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+    # A third session must leave it alone for the continuation's poller.
+    third = _session(session_key="third")
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"old-sid": old_parent, "tip-sid": live_tip, "third-sid": third},
+    )
+    assert server._notification_event_belongs_elsewhere("third-sid", third, evt) is True
+
+
+def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch):
+    """A closed origin tab must not steal its resumed continuation's result."""
+    finalized_origin = _session(session_key="old-parent", _finalized=True)
+    live_tip = _session(session_key="new-tip")
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {"origin-sid": finalized_origin, "tip-sid": live_tip},
+    )
+
+    class _DB:
+        def resolve_resume_session_id(self, session_id):
+            return "new-tip" if session_id == "old-parent" else session_id
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    evt = {
+        "type": "async_delegation",
+        "session_key": "old-parent",
+        "origin_ui_session_id": "origin-sid",
+    }
+
+    assert server._notification_event_belongs_elsewhere("origin-sid", finalized_origin, evt) is True
+    assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
 
 
 def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
@@ -5498,7 +5607,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     release_build = threading.Event()
     build_entered = threading.Event()
 
-    def _slow_make_agent(sid, key, session_id=None, session_db=None):
+    def _slow_make_agent(sid, key, session_id=None, session_db=None, **_kwargs):
         build_started.set()
         build_entered.set()
         release_build.wait(timeout=3.0)
@@ -5606,7 +5715,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None: _FakeAgent())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(
         server,
@@ -5712,7 +5821,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
 
     emits = []
 
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None: _FakeAgent())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kwargs: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
@@ -6518,7 +6627,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             return [
                 {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
@@ -6537,7 +6646,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -6555,7 +6664,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
@@ -6810,8 +6919,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
-                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+                "hermes_cli.browser_connect.launch_chrome_debug",
+                return_value=ChromeDebugLaunch(),
             ),
+            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
@@ -6866,8 +6977,10 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
-                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+                "hermes_cli.browser_connect.launch_chrome_debug",
+                return_value=ChromeDebugLaunch(),
             ),
+            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],

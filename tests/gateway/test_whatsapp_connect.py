@@ -105,6 +105,40 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
 
 
 # ---------------------------------------------------------------------------
+# Windows subprocess visibility
+# ---------------------------------------------------------------------------
+
+class TestWindowsSubprocessVisibility:
+    """Short-lived WhatsApp subprocesses must not open console windows."""
+
+    def test_requirement_probe_uses_hidden_window_flags(self):
+        from plugins.platforms.whatsapp.adapter import check_whatsapp_requirements
+
+        hidden_flags = 0x08000000
+        run_result = MagicMock(returncode=0)
+
+        with patch(
+            "plugins.platforms.whatsapp.adapter.find_node_executable",
+            return_value="node.exe",
+        ), patch(
+            "plugins.platforms.whatsapp.adapter.windows_hide_flags",
+            return_value=hidden_flags,
+        ), patch(
+            "plugins.platforms.whatsapp.adapter.subprocess.run",
+            return_value=run_result,
+        ) as mock_run:
+            assert check_whatsapp_requirements() is True
+
+        mock_run.assert_called_once_with(
+            ["node.exe", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=hidden_flags,
+        )
+
+
+# ---------------------------------------------------------------------------
 # _close_bridge_log() unit tests
 # ---------------------------------------------------------------------------
 
@@ -218,6 +252,7 @@ class TestConnectCleanup:
     @pytest.mark.asyncio
     async def test_releases_lock_when_npm_install_fails(self):
         adapter = _make_adapter()
+        hidden_flags = 0x08000000
 
         def _path_exists(path_obj):
             return not str(path_obj).endswith("node_modules")
@@ -226,12 +261,14 @@ class TestConnectCleanup:
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
-             patch("subprocess.run", return_value=install_result), \
+             patch("plugins.platforms.whatsapp.adapter.windows_hide_flags", return_value=hidden_flags), \
+             patch("subprocess.run", return_value=install_result) as mock_run, \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
+        assert mock_run.call_args.kwargs["creationflags"] == hidden_flags
         mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
         assert adapter._platform_lock_identity is None
 
@@ -573,6 +610,7 @@ class TestHttpSessionLifecycle:
     async def test_disconnect_uses_taskkill_tree_on_windows(self):
         """Windows disconnect should target the bridge process tree, not just the parent PID."""
         adapter = _make_adapter()
+        hidden_flags = 0x08000000
         mock_proc = MagicMock()
         mock_proc.pid = 12345
         mock_proc.poll.side_effect = [0]
@@ -583,6 +621,7 @@ class TestHttpSessionLifecycle:
         adapter._session_lock_identity = None
 
         with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True), \
+             patch("plugins.platforms.whatsapp.adapter.windows_hide_flags", return_value=hidden_flags), \
              patch("plugins.platforms.whatsapp.adapter.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run, \
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
             await adapter.disconnect()
@@ -592,6 +631,7 @@ class TestHttpSessionLifecycle:
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=hidden_flags,
         )
         mock_proc.terminate.assert_not_called()
         mock_proc.kill.assert_not_called()

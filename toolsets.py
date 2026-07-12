@@ -48,6 +48,7 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_autonomy_check", "browser_exit_recover",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -176,7 +177,8 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog", "browser_autonomy_check", "browser_exit_recover",
+            "web_search"
         ],
         "includes": []
     },

@@ -140,6 +140,8 @@ from plugins.browser.firecrawl.provider import (  # noqa: F401
     FirecrawlBrowserProvider as FirecrawlProvider,
 )
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from tools.browser_autonomy import annotate_browser_response
+from tools.browser_exit_recovery import build_exit_recovery_hint, recover_browser_exit
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
@@ -826,6 +828,58 @@ def _is_local_backend() -> bool:
 
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
+_exit_auto_recovery_resolved = False
+_cached_exit_auto_recovery: bool = False
+
+
+def _exit_recovery_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(browser_cfg, dict):
+            return {}
+        exit_cfg = browser_cfg.get("exit_recovery", {})
+        return exit_cfg if isinstance(exit_cfg, dict) else {}
+    except Exception as e:
+        logger.debug("Could not read browser.exit_recovery from config: %s", e)
+        return {}
+
+
+def _browser_exit_auto_recovery_enabled() -> bool:
+    """Return whether browser navigation may auto-switch exits and retry once.
+
+    The safe default is disabled. When enabled, the classifier still has to see
+    a concrete network/proxy/exit-health failure; CAPTCHA/access-control
+    signals are never eligible.
+    """
+    global _exit_auto_recovery_resolved, _cached_exit_auto_recovery
+    if _exit_auto_recovery_resolved:
+        return _cached_exit_auto_recovery
+
+    _exit_auto_recovery_resolved = True
+    _cached_exit_auto_recovery = False
+    env_value = os.getenv("HERMES_BROWSER_AUTO_EXIT_RECOVERY")
+    if env_value is not None and env_value.strip():
+        _cached_exit_auto_recovery = is_truthy_value(env_value, default=False)
+        return _cached_exit_auto_recovery
+
+    cfg = _exit_recovery_config()
+    _cached_exit_auto_recovery = is_truthy_value(
+        cfg.get("auto_recover"),
+        default=False,
+    )
+    return _cached_exit_auto_recovery
+
+
+def _browser_exit_recovery_preferred_exit() -> str:
+    cfg = _exit_recovery_config()
+    return str(cfg.get("preferred_exit") or "residential").strip().lower()
+
+
+def _browser_exit_recovery_allow_direct() -> bool:
+    cfg = _exit_recovery_config()
+    return is_truthy_value(cfg.get("allow_direct_fallback"), default=False)
 
 
 def _get_browser_engine() -> str:
@@ -1927,7 +1981,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_vision",
-        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
+        "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand complex layouts, visual verification walls, or cases where the text snapshot misses important visual information. Do not solve or bypass CAPTCHA/human-verification challenges; use this to identify that a human handoff or official API/auth route is needed. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2813,6 +2867,38 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         [url],
         timeout=_get_open_command_timeout(first_open=is_first_nav),
     )
+    ip_recovery: Optional[Dict[str, Any]] = None
+
+    if not result.get("success"):
+        error_text = str(result.get("error", "Navigation failed"))
+        auto_recovery_enabled = _browser_exit_auto_recovery_enabled()
+        ip_recovery = build_exit_recovery_hint(
+            error=error_text,
+            url=url,
+            auto_recovery_enabled=auto_recovery_enabled,
+        )
+        if ip_recovery.get("eligible") and auto_recovery_enabled:
+            recovery = recover_browser_exit(
+                reason=error_text,
+                url=url,
+                preferred_exit=_browser_exit_recovery_preferred_exit(),
+                allow_direct=_browser_exit_recovery_allow_direct(),
+                verify=True,
+            )
+            ip_recovery["attempt"] = recovery
+            if recovery.get("success"):
+                retry_result = _run_browser_command(
+                    nav_session_key,
+                    "open",
+                    [url],
+                    timeout=_get_open_command_timeout(first_open=is_first_nav),
+                )
+                ip_recovery["retried_navigation"] = True
+                ip_recovery["retry_success"] = bool(retry_result.get("success"))
+                if retry_result.get("success"):
+                    result = retry_result
+                else:
+                    ip_recovery["retry_error"] = retry_result.get("error", "Navigation retry failed")
 
     if result.get("success"):
         data = result.get("data", {})
@@ -2857,29 +2943,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "url": final_url,
             "title": title
         }
+        if ip_recovery is not None:
+            response["ip_recovery"] = ip_recovery
         # Remember only a successful, non-blocked navigation as the task owner.
         # Failed opens and blocked redirects must not retarget follow-up clicks
         # or snapshots to a newly-created but irrelevant session.
         _last_active_session_key[effective_task_id] = nav_session_key
         _copy_fallback_warning(response, result)
-
-        # Detect common "blocked" page patterns from title/url
-        blocked_patterns = [
-            "access denied", "access to this page has been denied",
-            "blocked", "bot detected", "verification required",
-            "please verify", "are you a robot", "captcha",
-            "cloudflare", "ddos protection", "checking your browser",
-            "just a moment", "attention required"
-        ]
-        title_lower = title.lower()
-
-        if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
-                f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
-                "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
-            )
 
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
@@ -2909,12 +2979,21 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
 
+        annotate_browser_response(
+            response,
+            url=final_url,
+            title=title,
+            snapshot=str(response.get("snapshot") or ""),
+        )
         return json.dumps(response, ensure_ascii=False)
     else:
-        return json.dumps({
+        response = {
             "success": False,
             "error": result.get("error", "Navigation failed")
-        }, ensure_ascii=False)
+        }
+        if ip_recovery is not None:
+            response["ip_recovery"] = ip_recovery
+        return json.dumps(response, ensure_ascii=False)
 
 
 def browser_snapshot(
@@ -3008,6 +3087,7 @@ def browser_snapshot(
         except Exception as _sv_exc:
             logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
 
+        annotate_browser_response(response, snapshot=snapshot_text)
         return json.dumps(response, ensure_ascii=False)
     else:
         response = {
@@ -4382,6 +4462,7 @@ def cleanup_all_browsers() -> None:
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
     global _cached_browser_engine, _browser_engine_resolved
+    global _cached_exit_auto_recovery, _exit_auto_recovery_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
@@ -4394,6 +4475,8 @@ def cleanup_all_browsers() -> None:
     _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
     _browser_engine_resolved = False
+    _cached_exit_auto_recovery = False
+    _exit_auto_recovery_resolved = False
 
 # ============================================================================
 # Requirements Check

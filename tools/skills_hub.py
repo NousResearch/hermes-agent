@@ -3125,8 +3125,21 @@ class OptionalSkillSource(SkillSource):
         if not files:
             return None
 
-        # Determine category from directory structure
+        # Keep the bundle identity aligned with discovery and the installed
+        # SKILL.md. Directory slugs are source identifiers and may differ from
+        # the canonical frontmatter name; using ``skill_dir.name`` here would
+        # silently rename a skill between ``scan_all()`` and ``fetch()``.
         name = skill_dir.name
+        skill_md = files.get("SKILL.md")
+        if isinstance(skill_md, bytes):
+            try:
+                skill_md = skill_md.decode("utf-8")
+            except UnicodeDecodeError:
+                skill_md = None
+        if isinstance(skill_md, str):
+            frontmatter_name = self._parse_frontmatter(skill_md).get("name")
+            if isinstance(frontmatter_name, str) and frontmatter_name.strip():
+                name = frontmatter_name.strip()
 
         return SkillBundle(
             name=name,

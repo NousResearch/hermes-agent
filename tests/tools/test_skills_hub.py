@@ -1150,11 +1150,16 @@ class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
         from tools.skills_guard import content_hash
 
+        # Nested references ensure the invariance holds across mixed-depth
+        # file layouts — same hash shape whether files live at the root or
+        # under subdirectories of subdirectories.
         bundle = SkillBundle(
             name="demo-skill",
             files={
                 "SKILL.md": "same content",
                 "references/checklist.md": "- [ ] security\n",
+                "references/styles.md": "style index\n",
+                "references/styles/minimal.md": "minimal style\n",
             },
             source="github",
             identifier="owner/repo/demo-skill",
@@ -1165,6 +1170,9 @@ class TestCheckForSkillUpdates:
         (skill_dir / "SKILL.md").write_text("same content")
         (skill_dir / "references").mkdir()
         (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "styles.md").write_text("style index\n")
+        (skill_dir / "references" / "styles").mkdir()
+        (skill_dir / "references" / "styles" / "minimal.md").write_text("minimal style\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
@@ -1817,6 +1825,61 @@ class TestSkillMetaToDict:
 
 
 class TestOptionalSkillSourceMetadata:
+    def test_fetch_uses_frontmatter_name_when_directory_slug_differs(self, tmp_path):
+        """Bundle identity must come from the installed SKILL.md frontmatter,
+        not the directory slug. ``scan_all()`` advertises the frontmatter
+        name; ``fetch()`` must produce the same identifier so installers and
+        updaters can correlate them.
+        """
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "training" / "trl-fine-tuning"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: fine-tuning-with-trl\ndescription: test\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/training/trl-fine-tuning")
+
+        assert bundle is not None
+        assert bundle.name == "fine-tuning-with-trl"
+
+    @pytest.mark.parametrize(
+        "skill_md",
+        [
+            None,
+            b"---\nname:\ndescription: test\n---\n",
+            b"---\nname: [not, a, string]\ndescription: test\n---\n",
+            b"\xff\xfe\x00not-utf8",
+        ],
+        ids=("missing", "empty-name", "non-string-name", "non-utf8"),
+    )
+    def test_fetch_falls_back_to_directory_slug_for_invalid_frontmatter_name(
+        self, tmp_path, skill_md
+    ):
+        """When the frontmatter name is missing, blank, non-string, or the
+        SKILL.md is unreadable bytes, ``fetch()`` must fall back to the
+        directory slug — never raise, never invent a bogus name.
+        """
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "training" / "directory-slug"
+        skill_dir.mkdir(parents=True)
+        if skill_md is None:
+            (skill_dir / "README.md").write_text("Body\n", encoding="utf-8")
+        else:
+            (skill_dir / "SKILL.md").write_bytes(skill_md)
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/training/directory-slug")
+
+        assert bundle is not None
+        assert bundle.name == "directory-slug"
+
     def test_scan_all_emits_repo_root_relative_metadata(self, tmp_path):
         optional_root = tmp_path / "optional-skills"
         skill_dir = optional_root / "finance" / "3-statement-model"

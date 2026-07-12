@@ -260,5 +260,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+  },
+  tray: {
+    getMinimizeToTray: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
+    setMinimizeToTray: (value: boolean) => ipcRenderer.invoke('hermes:minimize-to-tray:set', value)
   }
 })

@@ -26,7 +26,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -2265,6 +2266,8 @@ let updateInFlight = false
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
+let minimizeToTray = true
+let tray: Tray | null = null
 
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
@@ -7218,6 +7221,77 @@ function openPetOverlay(bounds) {
   return petOverlayWindow
 }
 
+function createTray() {
+  if (tray) return
+
+  const iconPath = getAppIconPath()
+  if (!iconPath) {
+    console.log('[tray] no icon available; skipping tray creation')
+    return
+  }
+
+  let trayIcon: Electron.NativeImage
+  try {
+    trayIcon = nativeImage.createFromPath(iconPath)
+    if (trayIcon.isEmpty()) {
+      console.log('[tray] icon loaded as empty image; skipping')
+      return
+    }
+    trayIcon = trayIcon.resize({ width: 16, height: 16 })
+  } catch (err) {
+    console.log(`[tray] failed to load icon: ${(err as Error).message}; skipping`)
+    return
+  }
+
+  try {
+    tray = new Tray(trayIcon)
+    tray.setToolTip('Hermes Agent — click to show/hide')
+    tray.setIgnoreDoubleClickEvents(true)
+
+    tray.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      if (mainWindow.isVisible()) {
+        mainWindow.hide()
+      } else {
+        focusWindow(mainWindow)
+      }
+    })
+
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: 'Show Hermes',
+        click: () => {
+          if (!mainWindow || mainWindow.isDestroyed()) return
+          focusWindow(mainWindow)
+        }
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit Hermes',
+        click: () => {
+          minimizeToTray = false
+          app.quit()
+        }
+      }
+    ])
+    tray.setContextMenu(contextMenu)
+  } catch (err) {
+    console.log(`[tray] failed to create tray: ${(err as Error).message}`)
+    tray = null
+  }
+}
+
+function destroyTray() {
+  if (tray) {
+    try {
+      tray.destroy()
+    } catch {
+      // Tray may already be destroyed
+    }
+    tray = null
+  }
+}
+
 function closePetOverlay() {
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
     petOverlayWindow.close()
@@ -7266,6 +7340,8 @@ function createWindow() {
     }
   }
 
+  createTray()
+
   if (!IS_MAC) {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
@@ -7296,7 +7372,17 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', (event) => {
+    schedulePersistWindowState.flush()
+    if (minimizeToTray && tray && !isQuittingForHandoff) {
+      event.preventDefault()
+      mainWindow.hide()
+      if (IS_MAC && app.dock) {
+        app.dock.hide()
+      }
+      return
+    }
+  })
 
   // The overlay rides the main window — closing the app's primary window must
   // tear it down too (otherwise it strands as an orphan that blocks
@@ -7732,6 +7818,21 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
+})
+
+ipcMain.handle('hermes:minimize-to-tray:get', () => minimizeToTray)
+
+ipcMain.handle('hermes:minimize-to-tray:set', (_event, value) => {
+  minimizeToTray = Boolean(value)
+  if (minimizeToTray) {
+    createTray()
+  } else if (tray) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      focusWindow(mainWindow)
+    }
+    destroyTray()
+  }
+  return minimizeToTray
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
@@ -9036,6 +9137,9 @@ app.whenReady().then(() => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
     } else {
+      if (IS_MAC && app.dock && app.dock.isVisible && !app.dock.isVisible()) {
+        app.dock.show()
+      }
       focusWindow(mainWindow)
     }
   })
@@ -9077,6 +9181,9 @@ app.on('before-quit', () => {
       void 0
     }
   }
+
+  minimizeToTray = false
+  destroyTray()
 
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)

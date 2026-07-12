@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
-from hermes_cli.config import get_hermes_home
+import yaml
+
+from hermes_constants import get_hermes_home, get_default_hermes_root
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from utils import is_truthy_value
 
@@ -111,16 +113,24 @@ def multiplex_profiles_enabled() -> bool:
     """Return whether the gateway is running with profile multiplexing on.
 
     Resolves the same 3-tier chain the gateway uses at startup
-    (env override > config.yaml gateway.multiplex_profiles > default False),
-    but reads the *default* profile's config — multiplexing is a property of
-    the shared gateway, owned by the default profile, so a secondary profile's
-    own config.yaml must not be consulted here.
+    (env override > config.yaml gateway.multiplex_profiles > default False)
+    from the **machine default** Hermes home, not the in-process
+    ``HERMES_HOME``. The dashboard can be re-exec'd with ``HERMES_HOME``
+    pinned to the default profile (machine dashboard) or to a named
+    profile's directory (``hermes --isolated``); multiplexing is a property
+    of the shared machine-wide gateway, owned by the default profile, so
+    this must always resolve the root config.
     """
-    from hermes_cli.config import load_config
-
     try:
-        cfg = load_config()
+        root_home = get_default_hermes_root()
     except Exception:
+        return False
+
+    root_config = root_home / "config.yaml"
+    try:
+        with open(root_config, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except OSError:
         return False
     if not isinstance(cfg, dict):
         return False

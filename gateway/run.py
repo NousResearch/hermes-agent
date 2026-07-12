@@ -1378,26 +1378,9 @@ def _current_max_iterations() -> int:
 
 
 from contextlib import contextmanager as _contextmanager
+from gateway.config import is_port_binding_platform
 
 
-# Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
-# multiplexer the default profile owns the single shared listener and serves
-# every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
-# enabling one of these is always a misconfiguration: it would try to bind a
-# port already held by the default's listener. We hard-error on it rather than
-# silently dropping the adapter (see _start_one_profile_adapters).
-# Stored as platform .value strings since the Platform enum is imported below.
-_PORT_BINDING_PLATFORM_VALUES = frozenset({
-    "webhook",
-    "api_server",
-    "msgraph_webhook",
-    "feishu",
-    "wecom_callback",
-    "bluebubbles",
-    "sms",
-    "whatsapp_cloud",
-    "line",
-})
 
 
 class MultiplexConfigError(RuntimeError):
@@ -8567,7 +8550,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile's listener already serves every profile via the
             # /p/<profile>/ prefix, so a second bind can only collide. This is a
             # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
+            if is_port_binding_platform(platform.value):
                 raise MultiplexConfigError(
                     f"Profile '{profile_name}' enables the port-binding platform "
                     f"'{platform.value}', but gateway.multiplex_profiles is on. The "

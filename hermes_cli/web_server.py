@@ -2400,10 +2400,11 @@ async def git_branch_switch_route(body: GitBranchSwitchBody):
 
 
 # Host TCP ports each port-binding gateway platform listens on, as
-# ``platform-name -> (config port key, adapter default)``.  Mirrors
-# ``_PORT_BINDING_PLATFORM_VALUES`` in gateway/run.py and each adapter's
-# DEFAULT_PORT / DEFAULT_WEBHOOK_PORT constant.  Used only for the dashboard's
-# gateway-topology readout — best-effort display data, not a bind source.
+# ``platform-name -> (config port key, adapter default)``.  Mirrors the
+# ``_PORT_BINDING_PLATFORM_VALUES`` classification in ``gateway/config`` and
+# each adapter's ``DEFAULT_PORT`` / ``DEFAULT_WEBHOOK_PORT`` constant.  Used
+# only for the dashboard's gateway-topology readout — best-effort display
+# data, not a bind source.
 _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
     "webhook": ("port", 8644),
     "api_server": ("port", 8642),

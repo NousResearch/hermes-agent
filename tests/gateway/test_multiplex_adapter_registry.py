@@ -188,8 +188,9 @@ class TestPortBindingHardError:
         assert runner._profile_adapters["reviewer"] == {}
 
     def test_port_binding_set_covers_known_listeners(self):
-        from gateway.run import _PORT_BINDING_PLATFORM_VALUES
-        # Every adapter that binds a TCP port must be in the guard set.
+        from gateway.config import is_port_binding_platform
+        # Every adapter that binds a TCP port must pass the single-source
+        # classification in gateway/config.py.
         for p in ("webhook", "api_server", "msgraph_webhook", "feishu",
                   "wecom_callback", "bluebubbles", "sms"):
-            assert p in _PORT_BINDING_PLATFORM_VALUES
+            assert is_port_binding_platform(p)

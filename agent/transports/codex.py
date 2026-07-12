@@ -164,6 +164,12 @@ class ResponsesApiTransport(ProviderTransport):
                 reasoning_effort = reasoning_config["effort"]
 
         _effort_clamp = {"minimal": "low"}
+        if "gpt-5.6" in (model or "").lower():
+            # Ultra is the Codex product tier; the Responses API wire value is max.
+            _effort_clamp["ultra"] = "max"
+        if params.get("is_xai_responses", False):
+            # xAI Responses tops out at high; keep generic stronger values usable.
+            _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

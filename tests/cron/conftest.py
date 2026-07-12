@@ -11,6 +11,8 @@ edge cases — call ``monkeypatch.delenv("HERMES_MODEL", raising=False)``
 inside the test, which overrides this fixture's value for that scope.
 """
 
+import sys
+
 import pytest
 
 
@@ -30,9 +32,9 @@ def _isolated_cron_test_home(monkeypatch, tmp_path):
     # the same per-test home. Production code creates its required subdirs on
     # demand, so setting the path is sufficient and keeps fixtures composable.
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import run_agent
-
-    monkeypatch.setattr(run_agent, "_hermes_home", home)
+    run_agent = sys.modules.get("run_agent")
+    if run_agent is not None:
+        monkeypatch.setattr(run_agent, "_hermes_home", home)
     yield
 
 

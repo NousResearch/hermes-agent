@@ -213,6 +213,7 @@ class TestFeishuFallbackThreadRouting:
             payload=json.dumps({"text": "hello"}),
             reply_to=None,
             metadata={"thread_id": "omt_topic_abc"},
+            uuid_value="test-thread-uuid",
         )
 
         # Verify message.create was called (not message.reply)
@@ -268,6 +269,7 @@ class TestFeishuFallbackThreadRouting:
             payload=json.dumps({"text": "hello"}),
             reply_to=None,
             metadata=None,
+            uuid_value="test-chat-uuid",
         )
 
         mock_client.im.v1.message.create.assert_called_once()

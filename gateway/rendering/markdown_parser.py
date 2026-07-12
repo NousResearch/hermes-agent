@@ -8,7 +8,6 @@ for lossless fallback.
 from __future__ import annotations
 
 import re
-from typing import Iterable
 
 from gateway.rendering.document import (
     CodeBlock,
@@ -91,7 +90,7 @@ def parse_markdown_document(text: str) -> MessageDocument:
     return MessageDocument(blocks=blocks)
 
 
-def _parse_table_at(lines: list[str], start: int) -> tuple[TableBlock, int] | None:
+def _parse_table_at(lines: list[str], start: int) -> tuple[TableBlock | ParagraphBlock, int] | None:
     if start + 1 >= len(lines):
         return None
     header = _split_table_row(lines[start])
@@ -103,15 +102,25 @@ def _parse_table_at(lines: list[str], start: int) -> tuple[TableBlock, int] | No
 
     raw_lines = [lines[start], lines[start + 1]]
     rows: list[list[str]] = []
+    uncertain = False
     i = start + 2
     while i < len(lines):
-        row = _split_table_row(lines[i])
-        if not row:
+        candidate = lines[i]
+        if not candidate.strip() or "|" not in candidate:
             break
-        raw_lines.append(lines[i])
-        rows.append(_fit_row(row, len(header)))
+        raw_lines.append(candidate)
+        row = _split_table_row(candidate)
+        if row is None or len(row) != len(header):
+            uncertain = True
+        else:
+            rows.append(row)
         i += 1
 
+    # Do not commit a partial TableBlock. Once a header and separator establish
+    # a table candidate, every contiguous pipe-bearing row must be safe to
+    # split; otherwise preserve the complete candidate as raw Markdown.
+    if uncertain:
+        return ParagraphBlock("\n".join(raw_lines)), i
     if not rows:
         return None
     return TableBlock(headers=header, rows=rows, raw_markdown="\n".join(raw_lines)), i
@@ -123,23 +132,95 @@ def _split_table_row(line: str) -> list[str] | None:
     stripped = line.strip()
     if not stripped:
         return None
-    if stripped.startswith("|"):
+    # Track whether outer pipes were present — a single-cell row like
+    # "| content |" is valid only when the pipes wrap the content.
+    had_leading_pipe = stripped.startswith("|")
+    had_trailing_pipe = stripped.endswith("|")
+    if had_leading_pipe:
         stripped = stripped[1:]
-    if stripped.endswith("|"):
+    if had_trailing_pipe:
         stripped = stripped[:-1]
-    cells = [cell.strip() for cell in stripped.split("|")]
-    if len(cells) < 2:
+
+    # Minimal state machine: track backslash-escape and backtick spans
+    # so that \| and `a|b` are not treated as column delimiters. A code
+    # span closes only on a backtick run matching its opening run length.
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    backtick_delimiter = 0
+    i = 0
+
+    while i < len(stripped):
+        ch = stripped[i]
+
+        if backtick_delimiter:
+            if ch == "`":
+                run_end = i + 1
+                while run_end < len(stripped) and stripped[run_end] == "`":
+                    run_end += 1
+                run = stripped[i:run_end]
+                current.append(run)
+                if len(run) == backtick_delimiter:
+                    backtick_delimiter = 0
+                i = run_end
+                continue
+            current.append(ch)
+            i += 1
+            continue
+
+        if escaped:
+            # Previous char was backslash; this char is literal (including |)
+            current.append(ch)
+            escaped = False
+            i += 1
+            continue
+
+        if ch == "\\":
+            escaped = True
+            current.append(ch)
+            i += 1
+            continue
+
+        if ch == "`":
+            run_end = i + 1
+            while run_end < len(stripped) and stripped[run_end] == "`":
+                run_end += 1
+            run = stripped[i:run_end]
+            backtick_delimiter = len(run)
+            current.append(run)
+            i = run_end
+            continue
+
+        if ch == "|":
+            cells.append("".join(current).strip())
+            current = []
+            i += 1
+            continue
+
+        current.append(ch)
+        i += 1
+
+    # Unclosed backtick → ambiguous; signal failure so caller degrades safely
+    if backtick_delimiter:
         return None
+
+    # Trailing backslash (dangling escape) → ambiguous
+    if escaped:
+        return None
+
+    cells.append("".join(current).strip())
+
+    # A pipe-wrapped row "| content |" may have just one cell.
+    # A bare row without outer pipes needs at least 2 cells to be a table row.
+    if had_leading_pipe and had_trailing_pipe:
+        if len(cells) < 1:
+            return None
+    else:
+        if len(cells) < 2:
+            return None
     return cells
 
 
 def _is_separator_cell(cell: str) -> bool:
     compact = cell.replace(" ", "")
     return bool(_TABLE_SEPARATOR_CELL_RE.match(compact))
-
-
-def _fit_row(row: Iterable[str], width: int) -> list[str]:
-    fitted = list(row)[:width]
-    if len(fitted) < width:
-        fitted.extend("" for _ in range(width - len(fitted)))
-    return fitted

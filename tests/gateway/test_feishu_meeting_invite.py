@@ -245,6 +245,7 @@ class TestMeetingInviteSendRouting(unittest.TestCase):
                 payload='{"text":"ok"}',
                 reply_to=None,
                 metadata=None,
+                uuid_value="test-user-uuid",
             ))
 
         self.assertEqual(created_requests[0].receive_id_type, "user_id")

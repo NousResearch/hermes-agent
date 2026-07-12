@@ -5,7 +5,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    EphemeralReply,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
 from gateway.session import SessionSource, build_session_key
 
 
@@ -34,7 +40,7 @@ class _RichHookAdapter(BasePlatformAdapter):
         return self.rich_result
 
 
-def _event():
+def _event(message_type=MessageType.TEXT):
     source = SessionSource(
         platform=Platform.FEISHU,
         chat_id="chat-1",
@@ -42,7 +48,7 @@ def _event():
     )
     return MessageEvent(
         text="make image",
-        message_type=MessageType.TEXT,
+        message_type=message_type,
         source=source,
         message_id="msg-1",
     )
@@ -87,6 +93,34 @@ async def test_final_rich_response_hook_none_falls_back_to_legacy_delivery(tmp_p
     assert len(adapter.rich_calls) == 1
     assert adapter.sent_text and adapter.sent_text[0][1] == "正文"
     adapter.send_multiple_images.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_feishu_command_response_is_not_marked_final_in_rich_hook_or_fallback():
+    adapter = _RichHookAdapter(rich_result=None)
+    adapter._message_handler = AsyncMock(return_value="Command notice")
+    event = _event(MessageType.COMMAND)
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert len(adapter.rich_calls) == 1
+    assert "hermes_final_response" not in adapter.rich_calls[0]["metadata"]
+    assert len(adapter.sent_text) == 1
+    assert "hermes_final_response" not in adapter.sent_text[0][2]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_ephemeral_response_is_not_marked_final_in_rich_hook_or_fallback():
+    adapter = _RichHookAdapter(rich_result=None)
+    adapter._message_handler = AsyncMock(return_value=EphemeralReply("System notice"))
+    event = _event()
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert len(adapter.rich_calls) == 1
+    assert "hermes_final_response" not in adapter.rich_calls[0]["metadata"]
+    assert len(adapter.sent_text) == 1
+    assert "hermes_final_response" not in adapter.sent_text[0][2]["metadata"]
 
 
 @pytest.mark.asyncio

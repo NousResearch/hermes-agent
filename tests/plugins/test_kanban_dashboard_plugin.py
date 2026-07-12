@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -112,6 +113,50 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_board_list_recommends_persistent_workspace_for_configured_workdir(
+    client, tmp_path
+):
+    """Board metadata should tell the UI which safe task default to use."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    kb.write_board_metadata("default", default_workdir=str(repo))
+
+    plain_dir = tmp_path / "notes"
+    plain_dir.mkdir()
+    kb.create_board("notes", default_workdir=str(plain_dir))
+    kb.create_board("disposable")
+
+    response = client.get("/api/plugins/kanban/boards")
+
+    assert response.status_code == 200
+    boards = {board["slug"]: board for board in response.json()["boards"]}
+    assert boards["default"]["default_workspace_kind"] == "worktree"
+    assert boards["notes"]["default_workspace_kind"] == "dir"
+    assert boards["disposable"]["default_workspace_kind"] == "scratch"
+
+
+def test_dashboard_workspace_picker_explains_persistence_contract():
+    """Task creation must make scratch deletion visible without a hover."""
+    bundle = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "kanban"
+        / "dashboard"
+        / "dist"
+        / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "Temporary — deleted on completion" in bundle
+    assert "Git worktree — preserved" in bundle
+    assert "Directory — preserved" in bundle
+    assert "defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || \"\"" in bundle
+    assert (
+        "This workspace and any files left in it are deleted when the task completes."
+        in bundle
+    )
 
 
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
@@ -245,6 +290,19 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js
     assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_markdown_html_is_sanitized_before_render():
+    """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function sanitizeMarkdownHtml(html)" in js
+    assert "MARKDOWN_ALLOWED_TAGS" in js
+    assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
+    assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
 
 
 # ---------------------------------------------------------------------------

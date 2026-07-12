@@ -102,6 +102,9 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
+# Bot Framework activities are JSON payloads well under 1 MiB; an explicit
+# aiohttp client_max_size keeps oversized/chunked request bodies bounded.
+_MAX_BODY_BYTES = 1_048_576
 _WEBHOOK_PATH = "/api/messages"
 
 
@@ -691,6 +694,7 @@ class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
+    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
@@ -708,7 +712,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
         # then re-check the module globals it rebinds.
         check_teams_requirements()
@@ -737,8 +741,12 @@ class TeamsAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Set up aiohttp app first — the bridge adapter wires SDK routes into it
-            aiohttp_app = web.Application()
+            # Set up aiohttp app first — the bridge adapter wires SDK routes into it.
+            # client_max_size: Bot Framework activities are JSON (caps out well
+            # under 1 MiB); an explicit cap keeps oversized/chunked bodies from
+            # being buffered unbounded on a 0.0.0.0 bind (same pattern as
+            # webhook.py / raft, #58536/#58902).
+            aiohttp_app = web.Application(client_max_size=_MAX_BODY_BYTES)
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
             self._app = App(

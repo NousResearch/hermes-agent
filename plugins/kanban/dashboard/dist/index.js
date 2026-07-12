@@ -334,6 +334,48 @@
     );
     return html;
   }
+  const MARKDOWN_ALLOWED_TAGS = new Set([
+    "a",
+    "code",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "li",
+    "p",
+    "pre",
+    "strong",
+    "ul",
+  ]);
+  function escapeAttribute(value) {
+    return escapeHtml(value).replace(/`/g, "&#96;");
+  }
+  function sanitizeMarkdownAttrs(tag, attrs) {
+    if (tag === "a") {
+      const hrefMatch =
+        /\shref=(["'])(.*?)\1/i.exec(attrs) ||
+        /\shref=([^\s>]+)/i.exec(attrs);
+      const href = hrefMatch ? (hrefMatch[2] || hrefMatch[1] || "").trim() : "";
+      if (!/^(https?:\/\/|mailto:)/i.test(href)) return "";
+      return ` href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer"`;
+    }
+    if (tag === "pre" && /\sclass=(["'])hermes-kanban-md-code\1/i.test(attrs)) {
+      return ' class="hermes-kanban-md-code"';
+    }
+    return "";
+  }
+  function sanitizeMarkdownHtml(html) {
+    return String(html || "").replace(
+      /<\/?([a-zA-Z][A-Za-z0-9-]*)([^>]*)>/g,
+      (match, rawTag, attrs) => {
+        const tag = rawTag.toLowerCase();
+        if (!MARKDOWN_ALLOWED_TAGS.has(tag)) return "";
+        if (/^<\s*\//.test(match)) return `</${tag}>`;
+        return `<${tag}${sanitizeMarkdownAttrs(tag, attrs || "")}>`;
+      },
+    );
+  }
 
   function MarkdownBlock(props) {
     const enabled = props.enabled !== false;
@@ -342,7 +384,7 @@
     }
     return h("div", {
       className: "hermes-kanban-md",
-      dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || "") },
+      dangerouslySetInnerHTML: { __html: sanitizeMarkdownHtml(renderMarkdown(props.source || "")) },
     });
   }
 
@@ -1030,6 +1072,7 @@
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
+          boardMeta: boardList.find(function (item) { return item.slug === board; }) || null,
           laneByProfile,
           selectedIds,
           failedIds,
@@ -2231,6 +2274,93 @@
   // -------------------------------------------------------------------------
 
   function BoardColumns(props) {
+    const columnsRef = useRef(null);
+    const panRef = useRef({ isPanning: false, startX: 0, scrollLeft: 0 });
+    const [isPanning, setIsPanning] = useState(false);
+    const [isScrollable, setIsScrollable] = useState(false);
+
+    const checkScrollable = useCallback(function () {
+      const el = columnsRef.current;
+      setIsScrollable(!!el && el.scrollWidth > el.clientWidth + 1);
+    }, []);
+
+    useEffect(function () {
+      checkScrollable();
+      const el = columnsRef.current;
+      if (!el) return undefined;
+      if (typeof ResizeObserver !== "undefined") {
+        const observer = new ResizeObserver(checkScrollable);
+        observer.observe(el);
+        return function () { observer.disconnect(); };
+      }
+      window.addEventListener("resize", checkScrollable);
+      return function () { window.removeEventListener("resize", checkScrollable); };
+    }, [checkScrollable, props.board]);
+
+    const isPanBlockedTarget = useCallback(function (target) {
+      if (!target) return true;
+      if (target.closest && target.closest(".hermes-kanban-card")) return true;
+      if (target.closest && target.closest(".hermes-kanban-column-add")) return true;
+      if (target.closest && target.closest(".hermes-kanban-col-check")) return true;
+      if (target.closest && target.closest("button,input,textarea,select,a,[role='button']")) return true;
+      return false;
+    }, []);
+
+    const stopPan = useCallback(function () {
+      const el = columnsRef.current;
+      if (!panRef.current.isPanning) return;
+      panRef.current.isPanning = false;
+      setIsPanning(false);
+      if (el) {
+        // Keep cursor feedback instant even before React flushes the state update.
+        el.classList.remove("hermes-kanban-columns--panning");
+        el.style.userSelect = "";
+      }
+      if (panRef.current.cleanup) panRef.current.cleanup();
+      panRef.current.cleanup = null;
+    }, []);
+
+    useEffect(function () {
+      return function () { stopPan(); };
+    }, [stopPan]);
+
+    const handleMouseDown = useCallback(function (e) {
+      if (e.button !== 0) return;
+      if (isPanBlockedTarget(e.target)) return;
+      const el = columnsRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      // Preserve the native horizontal scrollbar as a fallback; grab-pan starts above it.
+      if (e.clientY >= rect.bottom - 20) return;
+      if (el.scrollWidth <= el.clientWidth) return;
+
+      panRef.current.isPanning = true;
+      panRef.current.startX = e.clientX;
+      panRef.current.scrollLeft = el.scrollLeft;
+      setIsPanning(true);
+      el.classList.add("hermes-kanban-columns--panning");
+      el.style.userSelect = "none";
+
+      function onMouseMove(ev) {
+        if (!panRef.current.isPanning) return;
+        const dx = ev.clientX - panRef.current.startX;
+        el.scrollLeft = panRef.current.scrollLeft - dx;
+        ev.preventDefault();
+      }
+      function onMouseUp() { stopPan(); }
+
+      if (panRef.current.cleanup) panRef.current.cleanup();
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp, { once: true });
+      window.addEventListener("blur", onMouseUp, { once: true });
+      panRef.current.cleanup = function () {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        window.removeEventListener("blur", onMouseUp);
+      };
+      e.preventDefault();
+    }, [isPanBlockedTarget, stopPan]);
+
     const handleDragStart = useCallback(function (e) {
       const card = e.target.closest && e.target.closest(".hermes-kanban-card");
       if (!card) return;
@@ -2240,11 +2370,22 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
-    return h("div", { className: "hermes-kanban-columns", onDragStart: handleDragStart, onDragEnd: handleDragEnd },
+    return h("div", {
+      ref: columnsRef,
+      className: cn(
+        "hermes-kanban-columns",
+        isScrollable ? "hermes-kanban-columns--scrollable" : "",
+        isPanning ? "hermes-kanban-columns--panning" : "",
+      ),
+      onDragStart: handleDragStart,
+      onDragEnd: handleDragEnd,
+      onMouseDown: handleMouseDown,
+    },
       props.board.columns.map(function (col) {
         return h(Column, {
           key: col.name,
           column: col,
+          boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
@@ -2365,6 +2506,8 @@
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
+        defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
+        defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
         },
@@ -2606,12 +2749,13 @@
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
     const [skills, setSkills] = useState("");
-    // Workspace controls. `scratch` (default) ignores path; `worktree` optionally
-    // takes a path (dispatcher derives one from the assignee profile otherwise);
-    // `dir` requires a path. Backend enforces the rule — we only hide/show the
-    // input here to save vertical space in the common `scratch` case.
-    const [workspaceKind, setWorkspaceKind] = useState("scratch");
-    const [workspacePath, setWorkspacePath] = useState("");
+    // A board with a configured workdir defaults to a persistent workspace:
+    // worktree for git repositories, dir for ordinary directories. Boards
+    // without one keep scratch for disposable research and ops tasks.
+    const defaultWorkspaceKind = props.defaultWorkspaceKind || "scratch";
+    const defaultWorkspacePath = props.defaultWorkspacePath || "";
+    const [workspaceKind, setWorkspaceKind] = useState(defaultWorkspaceKind);
+    const [workspacePath, setWorkspacePath] = useState(defaultWorkspacePath);
     // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
     // loop — a judge re-checks the card after each turn and the worker keeps
     // going in the same session until done, or the turn budget runs out
@@ -2654,15 +2798,15 @@
       }
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind("scratch"); setWorkspacePath("");
+      setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
 
     const showPathInput = workspaceKind !== "scratch";
     const pathPlaceholder = workspaceKind === "dir"
-      ? tx(t, "workspacePathDir", "workspace path (required, e.g. ~/projects/my-app)")
+      ? tx(t, "workspacePathDir", "workspace path (required without a board workdir)")
       : tx(t, "workspacePathOptional",
-          "workspace path (optional, derived from assignee if blank)");
+          "repository path (optional when the board has a workdir)");
 
     return h("div", { className: "hermes-kanban-inline-create" },
       h("textarea", {
@@ -2738,12 +2882,15 @@
       h("div", { className: "flex gap-2" },
         h(Select, Object.assign({
           value: workspaceKind,
-          title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
-          className: "h-7 text-xs w-28",
+          title: "Choose whether task files are temporary or preserved after completion.",
+          className: "h-7 text-xs flex-1",
         }, selectChangeHandler(setWorkspaceKind)),
-          h(SelectOption, { value: "scratch" }, "scratch"),
-          h(SelectOption, { value: "worktree" }, "worktree"),
-          h(SelectOption, { value: "dir" }, "dir"),
+          h(SelectOption, { value: "scratch" },
+            tx(t, "workspaceScratch", "Temporary — deleted on completion")),
+          h(SelectOption, { value: "worktree" },
+            tx(t, "workspaceWorktree", "Git worktree — preserved")),
+          h(SelectOption, { value: "dir" },
+            tx(t, "workspaceDir", "Directory — preserved")),
         ),
         showPathInput ? h(Input, {
           value: workspacePath,
@@ -2752,6 +2899,11 @@
           className: "h-7 text-xs flex-1",
         }) : null,
       ),
+      workspaceKind === "scratch" ? h("div", {
+        className: "text-xs text-destructive",
+        role: "alert",
+      }, tx(t, "workspaceScratchWarning",
+        "This workspace and any files left in it are deleted when the task completes.")) : null,
       h(Select, Object.assign({
         value: parent,
         className: "h-7 text-xs",

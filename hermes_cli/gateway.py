@@ -3948,6 +3948,14 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_TELEGRAM_HTTP_POOL_TIMEOUT</key>
+        <string>20</string>
+        <key>HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT</key>
+        <string>15</string>
+        <key>HERMES_TELEGRAM_HTTP_READ_TIMEOUT</key>
+        <string>60</string>
+        <key>HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT</key>
+        <string>60</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -3961,6 +3969,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>262144</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>

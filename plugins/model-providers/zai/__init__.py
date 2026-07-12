@@ -98,7 +98,10 @@ class ZaiProfile(ProviderProfile):
         # keeps the server default (enabled) exactly as before.
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            extra_body["thinking"] = {
+                "type": "enabled" if enabled else "disabled",
+                "clear_thinking": True,
+            }
 
         if _is_glm_5_2(model):
             effort = _glm_5_2_reasoning_effort(reasoning_config)

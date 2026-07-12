@@ -64,6 +64,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import strip_markdown
 
 from .auth import load_project_credentials
+from .sidecar_runtime import ensure_runtime_sidecar_files, get_runtime_sidecar_dir
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,6 @@ _MAX_MESSAGE_LENGTH = 8000
 # reconnect can replay, so keep at least 1k ids for ~48h.
 _DEDUP_MAX_SIZE = 4000
 _DEDUP_WINDOW_SECONDS = 48 * 3600
-
-_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 
 # Cap on a self-heal `npm ci`/`npm install` of the sidecar deps. A cold
 # install of the pinned spectrum-ts tree normally takes well under a minute;
@@ -135,7 +134,7 @@ def check_requirements() -> bool:
         return False
     if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
         return False
-    if not (_SIDECAR_DIR / "node_modules").exists():
+    if not (get_runtime_sidecar_dir() / "node_modules").exists():
         # spectrum-ts not installed yet — `hermes photon setup` will
         # install it.  check_fn still returns False so the gateway
         # surfaces the missing-deps state in `hermes setup` / status.
@@ -153,8 +152,9 @@ def _sidecar_deps_stale() -> bool:
     same signal ``npm ci`` uses. Returns False (do nothing) if either file is
     missing or unreadable, so a first-run or odd filesystem never blocks start.
     """
-    lockfile = _SIDECAR_DIR / "package-lock.json"
-    marker = _SIDECAR_DIR / "node_modules" / ".package-lock.json"
+    runtime_dir = get_runtime_sidecar_dir()
+    lockfile = runtime_dir / "package-lock.json"
+    marker = runtime_dir / "node_modules" / ".package-lock.json"
     try:
         return lockfile.stat().st_mtime > marker.stat().st_mtime
     except OSError:
@@ -174,10 +174,11 @@ def _reinstall_sidecar_deps() -> None:
     if not npm:
         logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
         return
+    runtime_dir = ensure_runtime_sidecar_files()
     try:
         result = subprocess.run(  # noqa: S603
             [npm, "ci"],
-            cwd=str(_SIDECAR_DIR),
+            cwd=str(runtime_dir),
             capture_output=True,
             text=True,
             check=False,
@@ -189,7 +190,7 @@ def _reinstall_sidecar_deps() -> None:
             )
             result = subprocess.run(  # noqa: S603
                 [npm, "install"],
-                cwd=str(_SIDECAR_DIR),
+                cwd=str(runtime_dir),
                 capture_output=True,
                 text=True,
                 check=False,
@@ -913,10 +914,11 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
     async def _start_sidecar(self) -> None:
-        if not (_SIDECAR_DIR / "node_modules").exists():
+        sidecar_dir = ensure_runtime_sidecar_files()
+        if not (sidecar_dir / "node_modules").exists():
             raise RuntimeError(
-                f"Photon sidecar deps not installed. Run: "
-                f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"
+                "Photon sidecar deps not installed. "
+                "Run `hermes photon install-sidecar` (or `hermes photon setup`)."
             )
         # A `hermes update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
@@ -948,8 +950,8 @@ class PhotonAdapter(BasePlatformAdapter):
             patch = subprocess.run(  # noqa: S603
                 [
                     self._node_bin,
-                    str(_SIDECAR_DIR / "patch-spectrum-mixed-attachments.mjs"),
-                    str(_SIDECAR_DIR),
+                    str(sidecar_dir / "patch-spectrum-mixed-attachments.mjs"),
+                    str(sidecar_dir),
                 ],
                 capture_output=True,
                 text=True,
@@ -967,7 +969,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
-            [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
+            [self._node_bin, str(sidecar_dir / "index.mjs")],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

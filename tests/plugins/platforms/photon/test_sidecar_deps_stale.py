@@ -31,7 +31,7 @@ def test_stale_when_lockfile_newer_than_marker(tmp_path, monkeypatch) -> None:
     """The update-rewrites-lockfile-but-skips-install case must reinstall."""
     sidecar = tmp_path / "sidecar"
     _seed(sidecar, lock_mtime=2000.0, marker_mtime=1000.0)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar)
+    monkeypatch.setattr(photon_adapter, "get_runtime_sidecar_dir", lambda: sidecar)
     assert photon_adapter._sidecar_deps_stale() is True
 
 
@@ -39,7 +39,7 @@ def test_fresh_when_marker_newer_than_lockfile(tmp_path, monkeypatch) -> None:
     """A normal install (marker at/after lockfile) must NOT trigger a reinstall."""
     sidecar = tmp_path / "sidecar"
     _seed(sidecar, lock_mtime=1000.0, marker_mtime=2000.0)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar)
+    monkeypatch.setattr(photon_adapter, "get_runtime_sidecar_dir", lambda: sidecar)
     assert photon_adapter._sidecar_deps_stale() is False
 
 
@@ -47,5 +47,5 @@ def test_not_stale_when_marker_missing(tmp_path, monkeypatch) -> None:
     """No marker (first run / unreadable) must fail safe to False, never block start."""
     sidecar = tmp_path / "sidecar"
     _seed(sidecar, lock_mtime=2000.0, marker_mtime=None)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar)
+    monkeypatch.setattr(photon_adapter, "get_runtime_sidecar_dir", lambda: sidecar)
     assert photon_adapter._sidecar_deps_stale() is False

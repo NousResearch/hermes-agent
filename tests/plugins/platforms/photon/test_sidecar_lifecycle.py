@@ -135,7 +135,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules").mkdir()
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(photon_adapter, "ensure_runtime_sidecar_files", lambda: tmp_path)
 
     spawned: Dict[str, Any] = {}
 
@@ -153,6 +153,12 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
         spawned["kwargs"] = kwargs
         return _FakeProc()
 
+    class _PatchResult:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    monkeypatch.setattr(photon_adapter.subprocess, "run", lambda *a, **k: _PatchResult())
     monkeypatch.setattr(photon_adapter.subprocess, "Popen", _fake_popen)
 
     class _HealthyClient(_ProbeClient):
@@ -167,5 +173,6 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     await adapter._start_sidecar()
 
     kwargs = spawned["kwargs"]
+    assert spawned["cmd"] == [adapter._node_bin, str(tmp_path / "index.mjs")]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"

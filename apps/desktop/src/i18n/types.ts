@@ -469,6 +469,8 @@ export interface Translations {
       modeTitle: string
       localTitle: string
       localDesc: string
+      inheritTitle: string
+      inheritDesc: string
       remoteTitle: string
       remoteDesc: string
       remoteAuthHint: string

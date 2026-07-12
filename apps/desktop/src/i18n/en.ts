@@ -554,13 +554,15 @@ export const en: Translations = {
       allProfiles: 'All profiles',
       defaultConnection: 'Default connection for every profile that has no override of its own.',
       profileConnection: profile =>
-        `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
+        `Connection used only when “${profile}” is the active profile. Choose Use default gateway to remove its override.`,
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
       modeTitle: 'Connection mode',
       localTitle: 'Local gateway',
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
+      inheritTitle: 'Use default gateway',
+      inheritDesc: "Remove this profile's override and use the default connection.",
       remoteTitle: 'Remote gateway',
       remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
       remoteAuthHint: 'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',

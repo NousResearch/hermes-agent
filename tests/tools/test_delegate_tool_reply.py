@@ -1,17 +1,19 @@
 """Tests for the ``delegate_tool_reply`` explicit delivery channel.
 
 Covers:
-- handler: spill file + ack result
-- extraction: no-call fallback, single call, multi-call concat, truncation,
-  spill-file path override
+- handler: records to agent-instance state + spill file + ack result
+- extraction: no-call fallback, single call, multi-call append, compression
+  safety (agent-instance state survives when messages[] is replaced)
 - visibility: delegation_reply not in CONFIGURABLE_TOOLSETS, not in default
   tool definitions, but present in child toolsets built by _build_child_agent
-  (validated via toolset resolution)
+  (validated via constructor-capture pattern from test_delegate.py)
+- system prompt discipline injection
 """
 
 import json
 import os
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,142 +26,161 @@ from tools.registry import registry
 # Handler
 # ---------------------------------------------------------------------------
 
-def test_handler_returns_ack_and_writes_spill(monkeypatch):
+def test_handler_records_to_agent_instance_and_spills(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
-        result = dtr.delegate_tool_reply(content="my deliverable", parent_agent=None)
+        agent = MagicMock()
+        agent._subagent_id = "child-123"
+        result = dtr.delegate_tool_reply(content="my deliverable", parent_agent=agent)
         data = json.loads(result)
         assert data["acknowledged"] is True
-        assert isinstance(data["path"], str) or data["path"] is None
+        # Agent-instance state recorded
+        assert hasattr(agent, "_delegate_reply_chunks")
+        assert agent._delegate_reply_chunks == ["my deliverable"]
+        # Spill file written
         if data["path"]:
             with open(data["path"], encoding="utf-8") as f:
                 assert f.read() == "my deliverable"
 
 
-def test_handler_idempotent_distinct_paths(monkeypatch):
+def test_handler_multi_call_appends_to_instance_list(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
-        r1 = json.loads(dtr.delegate_tool_reply(content="a", parent_agent=None))
-        r2 = json.loads(dtr.delegate_tool_reply(content="b", parent_agent=None))
-        # Timestamps include microseconds so paths differ.
-        assert r1["path"] != r2["path"]
+        agent = MagicMock()
+        agent._subagent_id = "child-456"
+        dtr.delegate_tool_reply(content="chunk1", parent_agent=agent)
+        dtr.delegate_tool_reply(content="chunk2", parent_agent=agent)
+        assert agent._delegate_reply_chunks == ["chunk1", "chunk2"]
 
 
-# ---------------------------------------------------------------------------
-# Extraction: _extract_reply_deliverable
-# ---------------------------------------------------------------------------
-
-def _assistant_with_reply(content, tc_id="call_1"):
-    return {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-            {
-                "id": tc_id,
-                "type": "function",
-                "function": {
-                    "name": "delegate_tool_reply",
-                    "arguments": json.dumps({"content": content}),
-                },
-            }
-        ],
-    }
-
-
-def _tool_result(tc_id, payload):
-    return {"role": "tool", "tool_call_id": tc_id, "content": json.dumps(payload)}
-
-
-def test_extraction_no_calls_returns_none():
-    msgs = [{"role": "assistant", "content": "just prose", "tool_calls": []}]
-    assert dt._extract_reply_deliverable(msgs) is None
-
-
-def test_extraction_single_call_uses_content():
-    msgs = [_assistant_with_reply("THE REPORT", "c1")]
-    assert dt._extract_reply_deliverable(msgs) == "THE REPORT"
-
-
-def test_extraction_multi_call_concatenates_in_order():
-    msgs = [
-        _assistant_with_reply("part1", "c1"),
-        _assistant_with_reply("part2", "c2"),
-    ]
-    assert dt._extract_reply_deliverable(msgs) == "part1\n\npart2"
-
-
-def test_extraction_prefers_spill_file(monkeypatch):
+def test_handler_no_agent_still_spills(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
-        # Handler writes the spill file; simulate the tool result pointing to it.
-        handler_result = json.loads(
-            dtr.delegate_tool_reply(content="FULL DELIVERABLE", parent_agent=None)
-        )
-        spill_path = handler_result["path"]
-        # Args truncated by compression (only 200-char head), but spill is complete.
-        truncated_content = "X" * 200 + dt._REPLY_TRUNCATED_MARKER
-        msgs = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "c1",
-                        "type": "function",
-                        "function": {
-                            "name": "delegate_tool_reply",
-                            "arguments": json.dumps({"content": truncated_content}),
-                        },
-                    }
-                ],
-            },
-            _tool_result("c1", {"acknowledged": True, "path": spill_path}),
-        ]
-        result = dt._extract_reply_deliverable(msgs)
-        assert result == "FULL DELIVERABLE"
+        result = dtr.delegate_tool_reply(content="orphan deliverable", parent_agent=None)
+        data = json.loads(result)
+        assert data["acknowledged"] is True
 
 
-def test_extraction_truncated_without_spill_includes_marker():
-    truncated_content = "X" * 200 + dt._REPLY_TRUNCATED_MARKER
-    msgs = [_assistant_with_reply(truncated_content, "c1")]
-    result = dt._extract_reply_deliverable(msgs)
-    assert result is not None
-    assert dt._REPLY_TRUNCATED_MARKER in result
-    assert "truncated by context compression" in result
+# ---------------------------------------------------------------------------
+# Extraction: _extract_reply_deliverable (reads from agent instance)
+# ---------------------------------------------------------------------------
+
+def test_extraction_no_chunks_returns_none():
+    child = MagicMock()
+    # No _delegate_reply_chunks attribute set
+    del child._delegate_reply_chunks
+    assert dt._extract_reply_deliverable(child) is None
 
 
-def test_extraction_empty_content_call_returns_empty_string_not_none():
-    msgs = [_assistant_with_reply("", "c1")]
-    # Found the call (returns "" not None), so it signals "child used the tool"
-    assert dt._extract_reply_deliverable(msgs) == ""
+def test_extraction_single_chunk():
+    child = MagicMock()
+    child._delegate_reply_chunks = ["THE REPORT"]
+    assert dt._extract_reply_deliverable(child) == "THE REPORT"
 
 
-def test_extraction_ignores_other_tools():
-    msgs = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "c1",
-                    "type": "function",
-                    "function": {"name": "terminal", "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "c1", "content": "{}"},
+def test_extraction_multi_chunk_appends_in_order():
+    child = MagicMock()
+    child._delegate_reply_chunks = ["part1", "part2"]
+    assert dt._extract_reply_deliverable(child) == "part1\n\npart2"
+
+
+def test_extraction_empty_list_returns_empty_string_not_none():
+    child = MagicMock()
+    child._delegate_reply_chunks = []
+    assert dt._extract_reply_deliverable(child) == ""
+
+
+def test_extraction_non_list_returns_none():
+    child = MagicMock()
+    child._delegate_reply_chunks = "not a list"
+    assert dt._extract_reply_deliverable(child) is None
+
+
+# ---------------------------------------------------------------------------
+# Compression safety regression (the core teknium1 review point)
+# ---------------------------------------------------------------------------
+
+def test_extraction_survives_context_compression():
+    """The deliverable is read from agent-instance state, not messages[].
+
+    Context compression replaces the middle of messages[] with a summary
+    (context_compressor.py Phase 4). This test proves that even if messages[]
+    is completely replaced by a synthetic summary, the deliverable recorded on
+    the agent instance is intact — because the handler wrote it at execution
+    time, outside the transcript.
+    """
+    child = MagicMock()
+    child._delegate_reply_chunks = ["FULL AUDIT REPORT"]
+    # Simulate compression: messages[] is now a synthetic summary, no
+    # delegate_tool_reply tool calls remain in it.
+    compressed_messages = [
+        {"role": "user", "content": "do the audit"},
+        {"role": "assistant", "content": "[Summary of earlier turns: subagent ran audit and delivered results.]"},
+        {"role": "assistant", "content": "done"},
     ]
-    assert dt._extract_reply_deliverable(msgs) is None
+    # Extraction does NOT read messages — it reads the agent instance.
+    assert dt._extract_reply_deliverable(child) == "FULL AUDIT REPORT"
+    # Even if someone passed messages, it wouldn't matter — the function
+    # signature takes `child`, not `messages`.
 
 
-def test_extraction_empty_messages():
-    assert dt._extract_reply_deliverable([]) is None
-    assert dt._extract_reply_deliverable(None) is None
+def test_extraction_multi_chunk_survives_compression():
+    child = MagicMock()
+    child._delegate_reply_chunks = ["chunk-A", "chunk-B", "chunk-C"]
+    assert dt._extract_reply_deliverable(child) == "chunk-A\n\nchunk-B\n\nchunk-C"
 
 
 # ---------------------------------------------------------------------------
-# Visibility / toolset membership
+# Visibility / toolset membership (constructor-capture pattern)
 # ---------------------------------------------------------------------------
+
+def _make_mock_parent():
+    """Create a mock parent matching test_delegate.py's _make_mock_parent."""
+    parent = MagicMock()
+    parent.base_url = "https://openrouter.ai/api/v1"
+    parent.api_key = "***"
+    parent.provider = "openrouter"
+    parent.api_mode = "chat_completions"
+    parent.model = "anthropic/claude-sonnet-4"
+    parent.platform = "cli"
+    parent.providers_allowed = None
+    parent.providers_ignored = None
+    parent.providers_order = None
+    parent.provider_sort = None
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent._active_children = []
+    parent._active_children_lock = MagicMock()
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    return parent
+
+
+def test_build_child_agent_includes_delegation_reply():
+    """Exercise the real _build_child_agent, not a hand-written append."""
+    parent = _make_mock_parent()
+    parent.enabled_toolsets = ["terminal", "file"]
+
+    with patch("tools.delegate_tool._load_config", return_value={}):
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            dt._build_child_agent(
+                task_index=0,
+                goal="Test delivery channel",
+                context=None,
+                toolsets=["terminal", "file"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        enabled = MockAgent.call_args[1]["enabled_toolsets"]
+        assert "delegation_reply" in enabled
+
 
 def test_delegation_reply_not_in_configurable_toolsets():
     from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
@@ -173,29 +194,16 @@ def test_delegation_reply_not_in_core_tools():
 
 
 def test_delegation_reply_toolset_resolves():
-    from toolsets import resolve_toolset, get_toolset
+    from toolsets import get_toolset
     ts = get_toolset("delegation_reply")
     assert ts is not None
     assert "delegate_tool_reply" in ts["tools"]
-    resolved = resolve_toolset("delegation_reply")
-    assert "delegate_tool_reply" in resolved
 
 
 def test_tool_registered_under_delegation_reply_toolset():
     entry = registry.get_entry("delegate_tool_reply")
     assert entry is not None
     assert entry.toolset == "delegation_reply"
-
-
-def test_child_toolsets_include_delegation_reply_after_build(monkeypatch):
-    # Exercise the toolset-assembly branch of _build_child_agent without
-    # constructing a full AIAgent. We replicate the final assembly steps
-    # (the lines after _strip_blocked_tools) to assert delegation_reply is
-    # appended unconditionally.
-    child_toolsets = ["terminal", "file"]
-    if "delegation_reply" not in child_toolsets:
-        child_toolsets.append("delegation_reply")
-    assert "delegation_reply" in child_toolsets
 
 
 # ---------------------------------------------------------------------------

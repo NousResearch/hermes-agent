@@ -23,19 +23,29 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _claimed_task(conn, *, title="approval", parents=()):
+_DEFAULT_ROUTE = {
+    "platform": "telegram",
+    "chat_id": "chat-1",
+    "thread_id": "thread-1",
+    "user_id": "user-1",
+    "notifier_profile": "default",
+}
+
+
+def _claimed_task(conn, *, title="approval", parents=(), route=None):
     task_id = kb.create_task(
         conn,
         title=title,
         assignee="worker",
         parents=parents,
+        _trusted_gateway_origin=route or _DEFAULT_ROUTE,
     )
     task = kb.claim_task(conn, task_id, claimer="test:owner")
     assert task is not None
     return task
 
 
-def _request(conn, task, *, raw_action="rm -rf /tmp/example", route=None):
+def _request(conn, task, *, raw_action="rm -rf /tmp/example"):
     return kb.request_task_approval(
         conn,
         task_id=task.id,
@@ -52,7 +62,6 @@ def _request(conn, task, *, raw_action="rm -rf /tmp/example", route=None):
         expected_run_id=task.current_run_id,
         expected_claim_lock=task.claim_lock,
         profile="worker",
-        route=route,
         timeout_seconds=300,
     )
 
@@ -77,6 +86,145 @@ def test_action_digest_binds_execution_context(tmp_path):
     assert base != kb.kanban_action_digest(
         "terminal", "dangerous command", "local", workdir=str(tmp_path),
     )
+
+
+def test_manual_notification_subscription_cannot_grant_approval_authority(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="manual route", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="attacker-chat",
+            user_id="attacker",
+            notifier_profile="default",
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test:owner")
+        assert claimed is not None
+
+        with pytest.raises(ValueError, match="trusted gateway approval origin"):
+            _request(conn, claimed)
+
+        assert kb.get_task(conn, task_id).status == "running"
+        assert kb.list_task_approvals(conn, task_id=task_id) == []
+        assert kb.get_task_approval_route(conn, task_id) is None
+
+
+def test_approval_origin_requires_exact_user_principal(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="anonymous", assignee="worker")
+        with pytest.raises(ValueError, match="user_id"):
+            kb._bind_task_approval_route(
+                conn,
+                task_id=task_id,
+                platform="telegram",
+                chat_id="chat-1",
+                user_id="",
+                notifier_profile="default",
+            )
+        assert kb.get_task_approval_route(conn, task_id) is None
+
+
+def test_removed_origin_subscription_fails_before_request_is_persisted(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        task = _claimed_task(conn)
+        assert kb.remove_notify_sub(
+            conn,
+            task_id=task.id,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="thread-1",
+        ) is True
+
+        with pytest.raises(ValueError, match="no active delivery"):
+            _request(conn, task)
+
+        assert kb.get_task(conn, task.id).status == "running"
+        assert kb.list_task_approvals(conn, task_id=task.id) == []
+
+
+def test_approval_origin_is_immutable_and_idempotent(kanban_home):
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="immutable origin",
+            assignee="worker",
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        original = kb.get_task_approval_route(conn, task_id)
+        assert original is not None
+        assert kb._bind_task_approval_route(
+            conn,
+            task_id=task_id,
+            **_DEFAULT_ROUTE,
+        ) is True
+        assert kb._bind_task_approval_route(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="attacker-chat",
+            thread_id="thread-1",
+            user_id="attacker",
+            notifier_profile="default",
+        ) is False
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="chat-1",
+            thread_id="thread-1",
+            user_id="attacker",
+            notifier_profile="attacker-profile",
+        )
+        origin_sub = next(
+            sub
+            for sub in kb.list_notify_subs(conn, task_id)
+            if sub["chat_id"] == "chat-1"
+        )
+        assert origin_sub["user_id"] == "user-1"
+        assert origin_sub["notifier_profile"] == "default"
+        assert kb.get_task_approval_route(conn, task_id) == original
+
+
+def test_idempotent_create_cannot_claim_unbound_or_foreign_task(kanban_home):
+    with kb.connect() as conn:
+        unbound_id = kb.create_task(
+            conn,
+            title="unbound",
+            assignee="worker",
+            idempotency_key="unbound-key",
+        )
+        with pytest.raises(ValueError, match="not owned"):
+            kb.create_task(
+                conn,
+                title="retry",
+                assignee="worker",
+                idempotency_key="unbound-key",
+                _trusted_gateway_origin=_DEFAULT_ROUTE,
+            )
+        assert kb.get_task_approval_route(conn, unbound_id) is None
+
+        bound_id = kb.create_task(
+            conn,
+            title="bound",
+            assignee="worker",
+            idempotency_key="bound-key",
+            _trusted_gateway_origin=_DEFAULT_ROUTE,
+        )
+        foreign = {**_DEFAULT_ROUTE, "chat_id": "foreign-chat"}
+        with pytest.raises(ValueError, match="not owned"):
+            kb.create_task(
+                conn,
+                title="foreign retry",
+                assignee="worker",
+                idempotency_key="bound-key",
+                _trusted_gateway_origin=foreign,
+            )
+        assert kb.get_task_approval_route(conn, bound_id)["chat_id"] == "chat-1"
 
 
 def test_request_parks_exact_run_without_counting_failure_and_redacts_event(
@@ -231,17 +379,17 @@ def test_request_is_owner_cas_and_idempotent(kanban_home):
 
 def test_pending_request_rejects_manual_ready_claim(kanban_home):
     with kb.connect() as conn:
-        task = _claimed_task(conn)
-        request = _request(
+        task = _claimed_task(
             conn,
-            task,
             route={
                 "platform": "telegram",
                 "chat_id": "shared-chat",
                 "thread_id": "thread-1",
+                "user_id": "user-1",
                 "notifier_profile": "default",
             },
         )
+        request = _request(conn, task)
         assert request is not None
         conn.execute(
             "UPDATE tasks SET status = 'ready', block_kind = NULL WHERE id = ?",
@@ -254,10 +402,8 @@ def test_pending_request_rejects_manual_ready_claim(kanban_home):
 
 def test_route_bound_decision_requeues_binds_and_consumes_once(kanban_home):
     with kb.connect() as conn:
-        task = _claimed_task(conn)
-        request = _request(
+        task = _claimed_task(
             conn,
-            task,
             route={
                 "platform": "telegram",
                 "chat_id": "chat-1",
@@ -266,6 +412,7 @@ def test_route_bound_decision_requeues_binds_and_consumes_once(kanban_home):
                 "notifier_profile": "default",
             },
         )
+        request = _request(conn, task)
         assert request is not None
         wrong_route = kb.decide_task_approval(
             conn,
@@ -377,17 +524,17 @@ def test_exact_grant_has_one_winner_across_connections(kanban_home):
 
 def test_competing_gateway_decisions_have_one_cas_winner(kanban_home):
     with kb.connect() as conn:
-        task = _claimed_task(conn)
-        request = _request(
+        task = _claimed_task(
             conn,
-            task,
             route={
                 "platform": "telegram",
                 "chat_id": "shared-chat",
                 "thread_id": "thread-1",
+                "user_id": "user-1",
                 "notifier_profile": "default",
             },
         )
+        request = _request(conn, task)
         request_id = request["id"]
 
     barrier = threading.Barrier(2)

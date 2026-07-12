@@ -335,6 +335,20 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def get_bound_session_env(name: str, default: str = "") -> str:
+    """Read only a value bound in this task's Session ContextVars.
+
+    Unlike :func:`get_session_env`, this never falls back to ``os.environ``.
+    Use it at authorization boundaries where a process-global or inherited
+    environment value must not be mistaken for the current gateway principal.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    return default if value is _UNSET else value
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 

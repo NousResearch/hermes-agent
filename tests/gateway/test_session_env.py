@@ -7,6 +7,7 @@ from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
+    get_bound_session_env,
     get_session_env,
     set_session_vars,
     clear_session_vars,
@@ -205,6 +206,17 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") == ""
 
 
+def test_bound_session_env_never_falls_back_to_process_environment(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "stale-process-chat")
+
+    assert get_session_env("HERMES_SESSION_CHAT_ID") == "stale-process-chat"
+    assert get_bound_session_env("HERMES_SESSION_CHAT_ID") == ""
+
+    tokens = set_session_vars(chat_id="current-context-chat")
+    assert get_bound_session_env("HERMES_SESSION_CHAT_ID") == "current-context-chat"
+    clear_session_vars(tokens)
+
+
 def test_session_id_set_via_contextvars(monkeypatch):
     """set_session_vars should set HERMES_SESSION_ID via contextvars."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-env-session")
@@ -393,4 +405,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

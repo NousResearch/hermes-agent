@@ -1406,6 +1406,21 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Immutable authorization principal captured only by trusted task-origin
+-- paths. Notification subscriptions are mutable delivery preferences and
+-- MUST NOT be consulted as approval authority.
+CREATE TABLE IF NOT EXISTS kanban_approval_routes (
+    task_id          TEXT PRIMARY KEY,
+    platform         TEXT NOT NULL CHECK (
+        length(trim(platform)) > 0 AND lower(trim(platform)) != 'tui'
+    ),
+    chat_id          TEXT NOT NULL CHECK (length(trim(chat_id)) > 0),
+    thread_id        TEXT NOT NULL DEFAULT '',
+    user_id          TEXT NOT NULL CHECK (length(trim(user_id)) > 0),
+    notifier_profile TEXT NOT NULL CHECK (length(trim(notifier_profile)) > 0),
+    bound_at         INTEGER NOT NULL
+);
+
 -- Durable, board-scoped approval broker for detached Kanban workers. Raw
 -- commands/code are intentionally absent: only a canonical digest and a
 -- redacted display target cross the process boundary.
@@ -2604,6 +2619,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    _trusted_gateway_origin: Optional[dict[str, Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2687,6 +2703,11 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
+    trusted_gateway_origin = (
+        _normalize_task_approval_route(_trusted_gateway_origin)
+        if _trusted_gateway_origin is not None
+        else None
+    )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2746,6 +2767,16 @@ def create_task(
             (idempotency_key,),
         ).fetchone()
         if row:
+            if trusted_gateway_origin is not None:
+                existing_route = get_task_approval_route(conn, row["id"])
+                if not _task_approval_route_matches(
+                    existing_route,
+                    trusted_gateway_origin,
+                ):
+                    raise ValueError(
+                        "idempotency key matched a task that is not owned by "
+                        "this gateway origin"
+                    )
             return row["id"]
 
     now = int(time.time())
@@ -2863,6 +2894,16 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                if trusted_gateway_origin is not None:
+                    if not _bind_task_approval_route_in_txn(
+                        conn,
+                        task_id=task_id,
+                        route=trusted_gateway_origin,
+                        add_notification=True,
+                    ):
+                        raise RuntimeError(
+                            "could not bind the task's trusted gateway origin"
+                        )
                 _append_event(
                     conn,
                     task_id,
@@ -3698,45 +3739,180 @@ def mark_task_approval_notified(
         return changed.rowcount == 1
 
 
-def _approval_route_for_task(
-    conn: sqlite3.Connection,
-    task_id: str,
-    route: Optional[dict[str, Any]],
-) -> dict[str, Optional[str]]:
-    """Normalize an explicit route or select the task's first gateway route."""
-    selected: Optional[dict[str, Any]] = route
-    if selected is None:
-        row = conn.execute(
-            "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
-            "FROM kanban_notify_subs "
-            "WHERE task_id = ? AND lower(platform) != 'tui' "
-            "  AND chat_id IS NOT NULL AND chat_id != '' "
-            "ORDER BY created_at ASC, rowid ASC "
-            "LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        selected = dict(row) if row is not None else {}
-    platform = str(selected.get("platform") or "").strip() or None
-    if platform and platform.casefold() == "tui":
-        raise ValueError("TUI notification routes cannot own Kanban approvals")
-    chat_id = str(selected.get("chat_id") or "").strip() or None
-    if bool(platform) != bool(chat_id):
-        raise ValueError("approval route requires both platform and chat_id")
+_APPROVAL_ROUTE_FIELDS = (
+    "platform",
+    "chat_id",
+    "thread_id",
+    "user_id",
+    "notifier_profile",
+)
+
+
+def _normalize_task_approval_route(route: dict[str, Any]) -> dict[str, str]:
+    """Validate one exact, human-resolvable gateway approval principal."""
+    platform = str(route.get("platform") or "").strip().casefold()
+    chat_id = str(route.get("chat_id") or "").strip()
+    thread_id = str(route.get("thread_id") or "").strip()
+    user_id = str(route.get("user_id") or "").strip()
+    raw_profile = str(route.get("notifier_profile") or "").strip()
+    notifier_profile = _canonical_assignee(raw_profile) if raw_profile else None
+    if not platform or platform == "tui":
+        raise ValueError("approval origin requires a real gateway platform")
+    if not chat_id:
+        raise ValueError("approval origin requires a chat_id")
+    if not user_id:
+        raise ValueError("approval origin requires a user_id")
+    if not notifier_profile:
+        raise ValueError("approval origin requires a notifier profile")
     return {
         "platform": platform,
         "chat_id": chat_id,
-        "thread_id": str(selected.get("thread_id") or "") if platform else None,
-        "user_id": (
-            str(selected.get("user_id"))
-            if selected.get("user_id") is not None
-            else None
-        ),
-        "notifier_profile": (
-            str(selected.get("notifier_profile"))
-            if selected.get("notifier_profile") is not None
-            else None
-        ),
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "notifier_profile": notifier_profile,
     }
+
+
+def _task_approval_route_matches(
+    stored: Optional[dict[str, Any]],
+    expected: dict[str, Any],
+) -> bool:
+    if stored is None:
+        return False
+    return all(
+        str(stored.get(field) or "") == str(expected.get(field) or "")
+        for field in _APPROVAL_ROUTE_FIELDS
+    )
+
+
+def get_task_approval_route(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    """Read the immutable gateway principal authorized for task approvals."""
+    row = conn.execute(
+        "SELECT * FROM kanban_approval_routes WHERE task_id = ?",
+        (str(task_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _bind_task_approval_route_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    route: dict[str, Any],
+    add_notification: bool,
+) -> bool:
+    """Bind once inside an existing write transaction.
+
+    This is deliberately private: only trusted automatic origin paths may
+    mint approval authority. Mutable/manual notification subscriptions never
+    call it and are never consulted by the approval broker.
+    """
+    normalized = _normalize_task_approval_route(route)
+    if conn.execute(
+        "SELECT 1 FROM tasks WHERE id = ?",
+        (str(task_id),),
+    ).fetchone() is None:
+        return False
+    existing = get_task_approval_route(conn, task_id)
+    if existing is not None and not _task_approval_route_matches(
+        existing,
+        normalized,
+    ):
+        return False
+    if existing is None:
+        conn.execute(
+            "INSERT INTO kanban_approval_routes ("
+            "task_id, platform, chat_id, thread_id, user_id, "
+            "notifier_profile, bound_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(task_id),
+                normalized["platform"],
+                normalized["chat_id"],
+                normalized["thread_id"],
+                normalized["user_id"],
+                normalized["notifier_profile"],
+                int(time.time()),
+            ),
+        )
+    if add_notification:
+        _add_notify_sub_in_txn(conn, task_id=task_id, **normalized)
+        # A mutable subscription may have been inserted first with the same
+        # delivery PK but a different/NULL user. The trusted origin wins for
+        # that exact route so the resulting delivery remains resolvable;
+        # conflicting chats/threads cannot affect this row or the immutable
+        # authority above.
+        conn.execute(
+            "UPDATE kanban_notify_subs SET user_id = ?, notifier_profile = ? "
+            "WHERE task_id = ? AND lower(platform) = ? AND chat_id = ? "
+            "  AND thread_id = ?",
+            (
+                normalized["user_id"],
+                normalized["notifier_profile"],
+                str(task_id),
+                normalized["platform"],
+                normalized["chat_id"],
+                normalized["thread_id"],
+            ),
+        )
+    return True
+
+
+def _bind_task_approval_route(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    user_id: str,
+    notifier_profile: str,
+    thread_id: Optional[str] = None,
+    add_notification: bool = True,
+) -> bool:
+    """Trusted auto-origin setter; immutable and idempotent on exact replay."""
+    route = {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id or "",
+        "user_id": user_id,
+        "notifier_profile": notifier_profile,
+    }
+    with write_txn(conn):
+        return _bind_task_approval_route_in_txn(
+            conn,
+            task_id=str(task_id),
+            route=route,
+            add_notification=add_notification,
+        )
+
+
+def _approval_route_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, str]:
+    """Resolve only the immutable trusted origin, never a notification sub."""
+    selected = get_task_approval_route(conn, task_id)
+    if selected is None:
+        raise ValueError("task has no trusted gateway approval origin")
+    normalized = _normalize_task_approval_route(selected)
+    delivery = conn.execute(
+        "SELECT 1 FROM kanban_notify_subs "
+        "WHERE task_id = ? AND lower(platform) = ? AND chat_id = ? "
+        "  AND thread_id = ? AND user_id = ? AND notifier_profile = ?",
+        (
+            str(task_id),
+            normalized["platform"],
+            normalized["chat_id"],
+            normalized["thread_id"],
+            normalized["user_id"],
+            normalized["notifier_profile"],
+        ),
+    ).fetchone()
+    if delivery is None:
+        raise ValueError("task approval origin has no active delivery subscription")
+    return normalized
 
 
 def request_task_approval(
@@ -3751,7 +3927,6 @@ def request_task_approval(
     profile: str,
     description: Optional[str] = None,
     expected_claim_lock: Optional[str] = None,
-    route: Optional[dict[str, Any]] = None,
     expires_at: Optional[int] = None,
     timeout_seconds: int = KANBAN_APPROVAL_REQUEST_TIMEOUT_SECONDS,
 ) -> Optional[dict[str, Any]]:
@@ -3782,7 +3957,7 @@ def request_task_approval(
     )
     if deadline <= now:
         raise ValueError("approval request expiry must be in the future")
-    normalized_route = _approval_route_for_task(conn, task_id, route)
+    normalized_route = _approval_route_for_task(conn, task_id)
 
     with write_txn(conn):
         existing = conn.execute(
@@ -6408,6 +6583,7 @@ def decompose_triage_task(
             return None
         if root_row["status"] != "triage":
             return None
+        root_approval_route = get_task_approval_route(conn, task_id)
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -6454,6 +6630,15 @@ def decompose_triage_task(
                     (author or "decomposer"),
                 ),
             )
+            if root_approval_route is not None and not _bind_task_approval_route_in_txn(
+                conn,
+                task_id=new_id,
+                route=root_approval_route,
+                add_notification=True,
+            ):
+                raise RuntimeError(
+                    "could not inherit the root task's approval origin"
+                )
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
@@ -6578,6 +6763,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_routes WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_approval_requests WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
@@ -6602,6 +6788,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_approval_routes WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_approval_requests WHERE task_id = ?", (task_id,))
     recompute_ready(conn)
     return True
@@ -9892,6 +10079,40 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _add_notify_sub_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> None:
+    """Insert a mutable delivery subscription inside an existing txn."""
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+    )
+    if notifier_profile:
+        # Self-heal legacy rows that predate notifier ownership by
+        # backfilling only when the existing value is unset.
+        conn.execute(
+            """
+            UPDATE kanban_notify_subs
+               SET notifier_profile = ?
+             WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+               AND (notifier_profile IS NULL OR notifier_profile = '')
+            """,
+            (notifier_profile, task_id, platform, chat_id, thread_id or ""),
+        )
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -9902,30 +10123,21 @@ def add_notify_sub(
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
 ) -> None:
-    """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
-    now = int(time.time())
+    """Register a mutable notification preference for ``task_id``.
+
+    This does not grant approval authority. Only trusted auto-origin paths may
+    bind the separate immutable ``kanban_approval_routes`` row.
+    """
     with write_txn(conn):
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+        _add_notify_sub_in_txn(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
         )
-        if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
-            conn.execute(
-                """
-                UPDATE kanban_notify_subs
-                   SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
-                """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
-            )
 
 
 def list_notify_subs(

@@ -168,6 +168,49 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_children_inherit_only_immutable_approval_route(kanban_home):
+    route = {
+        "platform": "telegram",
+        "chat_id": "origin-chat",
+        "thread_id": "topic-1",
+        "user_id": "origin-user",
+        "notifier_profile": "beta",
+    }
+    with kb.connect() as conn:
+        rooted = kb.create_task(
+            conn,
+            title="routed root",
+            assignee="worker",
+            triage=True,
+            _trusted_gateway_origin=route,
+        )
+        routed_children = kb.decompose_triage_task(
+            conn,
+            rooted,
+            root_assignee="orchestrator",
+            children=[{"title": "routed child"}],
+        )
+        child_route = kb.get_task_approval_route(conn, routed_children[0])
+        assert all(child_route[key] == value for key, value in route.items())
+
+        unbound = _create_triage(conn, title="unbound root")
+        kb.add_notify_sub(
+            conn,
+            task_id=unbound,
+            platform="telegram",
+            chat_id="attacker-chat",
+            user_id="attacker",
+            notifier_profile="default",
+        )
+        unbound_children = kb.decompose_triage_task(
+            conn,
+            unbound,
+            root_assignee="orchestrator",
+            children=[{"title": "unbound child"}],
+        )
+        assert kb.get_task_approval_route(conn, unbound_children[0]) is None
+
+
 def test_decompose_children_inherit_dir_workspace(kanban_home):
     """Fan-out children inherit the root's dir workspace, not scratch."""
     proj = "/home/teknium/myproject"

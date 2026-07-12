@@ -31,12 +31,13 @@ def _pending_approval(conn):
         conn,
         title="approval recovery",
         assignee="worker1",
-    )
-    kb.add_notify_sub(
-        conn,
-        task_id=task_id,
-        platform="telegram",
-        chat_id="chat1",
+        _trusted_gateway_origin={
+            "platform": "telegram",
+            "chat_id": "chat1",
+            "thread_id": "",
+            "user_id": "user1",
+            "notifier_profile": "default",
+        },
     )
     task = kb.claim_task(conn, task_id, claimer="test:notifier")
     assert task is not None
@@ -694,13 +695,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
 @pytest.mark.asyncio
 async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
-    """`/kanban --board <slug> create ...` must subscribe on that board.
-
-    The gateway handler currently auto-subscribes after `/kanban create`,
-    but the create detection must still work when the shared `--board`
-    flag appears before the subcommand, and the subscription must land in
-    that board's DB rather than the ambient/default board.
-    """
+    """Gateway origin and subscription commit on the explicitly named board."""
     from gateway.run import GatewayRunner
     from gateway.config import Platform
 
@@ -712,6 +707,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         chat_id="chat1",
         thread_id="th1",
         user_id="u1",
+        profile="beta",
     )
     event = SimpleNamespace(
         text='/kanban --board projx create "hello" --assignee alice',
@@ -726,6 +722,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     try:
         subs = kb.list_notify_subs(conn)
         tasks = kb.list_tasks(conn)
+        route = kb.get_task_approval_route(conn, tasks[0].id)
     finally:
         conn.close()
 
@@ -733,12 +730,42 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "th1"
+    assert route["user_id"] == "u1"
+    assert route["notifier_profile"] == "beta"
 
     conn = kb.connect(board="default")
     try:
         assert kb.list_notify_subs(conn) == []
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_without_user_principal_stays_unrouted(kanban_home):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="anonymous-chat",
+        thread_id=None,
+        user_id=None,
+        profile="default",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "anonymous" --assignee alice',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    assert "Created" in out
+    assert "subscribed" not in out.lower()
+    with kb.connect() as conn:
+        task = next(task for task in kb.list_tasks(conn) if task.title == "anonymous")
+        assert kb.get_task_approval_route(conn, task.id) is None
+        assert kb.list_notify_subs(conn, task.id) == []
 
 
 @pytest.mark.asyncio

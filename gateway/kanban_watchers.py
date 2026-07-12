@@ -248,6 +248,15 @@ class GatewayKanbanWatchersMixin:
                         getattr(platform, "value", str(platform)).lower()
                         for platform in self.adapters.keys()
                     }
+                    for profile_adapters in getattr(
+                        self,
+                        "_profile_adapters",
+                        {},
+                    ).values():
+                        active_platforms.update(
+                            getattr(platform, "value", str(platform)).lower()
+                            for platform in profile_adapters.keys()
+                        )
                     if not active_platforms:
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries

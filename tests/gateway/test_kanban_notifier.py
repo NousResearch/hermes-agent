@@ -436,15 +436,16 @@ def test_kanban_notifier_real_request_round_trip(tmp_path, monkeypatch):
     conn = kb.connect()
     try:
         task_id = kb.create_task(
-            conn, title="real approval notification", assignee="worker",
-        )
-        kb.add_notify_sub(
             conn,
-            task_id=task_id,
-            platform="telegram",
-            chat_id="chat-1",
-            user_id="u1",
-            notifier_profile="default",
+            title="real approval notification",
+            assignee="worker",
+            _trusted_gateway_origin={
+                "platform": "telegram",
+                "chat_id": "chat-1",
+                "thread_id": "",
+                "user_id": "u1",
+                "notifier_profile": "default",
+            },
         )
         claimed = kb.claim_task(conn, task_id, claimer="test:notifier")
         assert claimed is not None
@@ -470,3 +471,53 @@ def test_kanban_notifier_real_request_round_trip(tmp_path, monkeypatch):
     assert len(adapter.sent) == 1
     assert "redacted real target" in adapter.sent[0]["text"]
     assert f"/approve {request['id']}" in adapter.sent[0]["text"]
+
+
+def test_approval_notifier_collects_secondary_profile_only_platform(
+    tmp_path,
+    monkeypatch,
+):
+    """A platform connected only by a secondary profile remains active."""
+    db_path = tmp_path / "secondary-profile-approval.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="secondary approval",
+            assignee="worker",
+            _trusted_gateway_origin={
+                "platform": "telegram",
+                "chat_id": "secondary-chat",
+                "thread_id": "topic-1",
+                "user_id": "secondary-user",
+                "notifier_profile": "beta",
+            },
+        )
+        claimed = kb.claim_task(conn, task_id, claimer="test:secondary")
+        request = kb.request_task_approval(
+            conn,
+            task_id=task_id,
+            action_kind="terminal",
+            action_digest="sha256:secondary",
+            display_target="redacted secondary target",
+            worker_session_id="worker-session",
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+            profile="worker",
+            description="secondary profile approval",
+        )
+        assert request is not None
+
+    adapter = RecordingAdapter()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {}
+    runner._profile_adapters = {"beta": {Platform.TELEGRAM: adapter}}
+    runner._kanban_sub_fail_counts = {}
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert request["id"] in adapter.sent[0]["text"]
+    assert adapter.sent[0]["metadata"]["thread_id"] == "topic-1"

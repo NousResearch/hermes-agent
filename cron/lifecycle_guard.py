@@ -35,8 +35,10 @@ informative rejection instead of scheduling a job that will only fail
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import stat
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -77,12 +79,67 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
-_LAUNCHCTL_SUBMIT_PATTERN = re.compile(r"(?i)\blaunchctl\s+submit\b")
+_SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
+_MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
+_MAX_REFERENCED_SCRIPT_DEPTH = 8
+_CONTROL_CHARS = frozenset(";&|()")
+
+
+def _iter_command_segments(command: str) -> Iterator[list[str]]:
+    """Yield shell-tokenized command segments, honoring quotes and comments."""
+    normalized = command.replace("\\\n", "")
+    for line in normalized.splitlines() or [normalized]:
+        try:
+            lexer = shlex.shlex(
+                line,
+                posix=True,
+                punctuation_chars=";&|()",
+            )
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            tokens = list(lexer)
+        except ValueError:
+            continue
+
+        segment: list[str] = []
+        for token in tokens:
+            if token and set(token) <= _CONTROL_CHARS:
+                if segment:
+                    yield segment
+                    segment = []
+                continue
+            segment.append(token)
+        if segment:
+            yield segment
+
+
+def _command_token_index(segment: list[str]) -> Optional[int]:
+    """Return the executable token index after simple env assignments."""
+    for index, token in enumerate(segment):
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+            continue
+        return index
+    return None
 
 
 def contains_launchctl_submit_command(command: str) -> bool:
-    """Return True for launchd's persistent ``launchctl submit`` primitive."""
-    return bool(command and _LAUNCHCTL_SUBMIT_PATTERN.search(command))
+    """Detect an executed ``launchctl submit``, not quoted/comment-only text."""
+    for segment in _iter_command_segments(command):
+        index = _command_token_index(segment)
+        if index is None:
+            continue
+        if Path(segment[index]).name == "launchctl":
+            arguments = segment[index + 1 :]
+            if arguments and arguments[0].lower() == "submit":
+                return True
+    return False
+
+
+def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Path:
+    path = Path(candidate).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd or Path.cwd()) / path
+    return path
 
 
 def _iter_referenced_shell_scripts(
@@ -90,38 +147,125 @@ def _iter_referenced_shell_scripts(
     *,
     cwd: Optional[str] = None,
 ) -> Iterator[Path]:
-    """Yield script files passed to shell executables in *command*.
+    """Yield scripts executed directly or through a POSIX shell."""
+    for segment in _iter_command_segments(command):
+        index = _command_token_index(segment)
+        if index is None:
+            continue
+        executable = segment[index]
+        executable_name = Path(executable).name
 
-    This covers direct execution (``bash script.sh``) and service-manager
-    wrappers such as ``launchctl submit ... -- /bin/bash script.sh``. Shell
-    ``-c`` payloads are already visible in the command text and are not paths.
-    """
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        return
-
-    for index, token in enumerate(tokens):
-        if Path(token).name not in _SHELL_EXECUTABLES:
+        if executable_name in {".", "source"}:
+            if len(segment) > index + 1:
+                yield _resolve_terminal_script_path(segment[index + 1], cwd)
             continue
 
-        candidate: Optional[str] = None
-        for argument in tokens[index + 1 :]:
-            if argument == "--":
-                continue
-            if argument in {"-c", "--command"}:
+        if executable_name in _SHELL_EXECUTABLES:
+            arguments = segment[index + 1 :]
+            arg_index = 0
+            while arg_index < len(arguments):
+                argument = arguments[arg_index]
+                if argument == "--":
+                    arg_index += 1
+                    break
+                if argument in {"-c", "--command"}:
+                    break
+                if argument in _SHELL_OPTIONS_WITH_VALUES:
+                    arg_index += 2
+                    continue
+                if argument.startswith("-"):
+                    arg_index += 1
+                    continue
                 break
-            if argument.startswith("-"):
-                continue
-            candidate = argument
-            break
-
-        if not candidate:
+            if arg_index < len(arguments) and arguments[arg_index] not in {
+                "-c",
+                "--command",
+            }:
+                yield _resolve_terminal_script_path(arguments[arg_index], cwd)
             continue
-        path = Path(candidate).expanduser()
-        if not path.is_absolute():
-            path = Path(cwd or Path.cwd()) / path
-        yield path
+
+        if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
+            yield _resolve_terminal_script_path(executable, cwd)
+
+
+def _iter_shell_command_payloads(command: str) -> Iterator[str]:
+    """Yield code passed through ``sh|bash|... -c`` for recursive scanning."""
+    for segment in _iter_command_segments(command):
+        index = _command_token_index(segment)
+        if index is None or Path(segment[index]).name not in _SHELL_EXECUTABLES:
+            continue
+        arguments = segment[index + 1 :]
+        for arg_index, argument in enumerate(arguments[:-1]):
+            if argument in {"-c", "--command"}:
+                yield arguments[arg_index + 1]
+                break
+
+
+def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
+    """Return ``(text, unsafe)`` using bounded, regular-file-only reads."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None, False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, True
+        if metadata.st_size > _MAX_REFERENCED_SCRIPT_BYTES:
+            return None, True
+        data = os.read(descriptor, _MAX_REFERENCED_SCRIPT_BYTES + 1)
+    except OSError:
+        return None, False
+    finally:
+        os.close(descriptor)
+    if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
+        return None, True
+    return data.decode("utf-8", errors="replace"), False
+
+
+def _contains_unsafe_gateway_action(
+    command: str,
+    *,
+    cwd: Optional[str],
+    depth: int,
+    visited: set[Path],
+) -> bool:
+    if contains_gateway_lifecycle_command(command) or contains_launchctl_submit_command(
+        command
+    ):
+        return True
+    if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
+        return True
+
+    for payload in _iter_shell_command_payloads(command):
+        if _contains_unsafe_gateway_action(
+            payload,
+            cwd=cwd,
+            depth=depth + 1,
+            visited=visited,
+        ):
+            return True
+
+    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
+        try:
+            resolved = script_path.resolve(strict=False)
+        except OSError:
+            resolved = script_path
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+        script_text, unsafe = _read_referenced_script(script_path)
+        if unsafe:
+            return True
+        if script_text and _contains_unsafe_gateway_action(
+            script_text,
+            cwd=cwd,
+            depth=depth + 1,
+            visited=visited,
+        ):
+            return True
+    return False
 
 
 def contains_gateway_lifecycle_command_or_referenced_script(
@@ -129,17 +273,13 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     *,
     cwd: Optional[str] = None,
 ) -> bool:
-    """Detect direct lifecycle commands and shell scripts containing one."""
-    if contains_gateway_lifecycle_command(command):
-        return True
-    for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
-        try:
-            script_text = script_path.read_bytes().decode("utf-8", errors="replace")
-        except OSError:
-            continue
-        if contains_gateway_lifecycle_command(script_text):
-            return True
-    return False
+    """Detect lifecycle/submit commands, including bounded nested scripts."""
+    return _contains_unsafe_gateway_action(
+        command,
+        cwd=cwd,
+        depth=0,
+        visited=set(),
+    )
 
 
 def _resolve_script_path(script_path: str) -> Path:
@@ -162,20 +302,16 @@ def _resolve_script_path(script_path: str) -> Path:
 
 
 def _read_script_for_scanning(script_path: str) -> str:
-    """Read a script file for lifecycle-pattern scanning.
+    """Read a cron script with the bounded terminal-script scanner.
 
-    Decodes with ``errors="replace"`` so binary or non-UTF-8 content does not
-    silently bypass the check — a plain text-mode read raises
-    ``UnicodeDecodeError`` on such files, and swallowing that error would let
-    an attacker hide the command in binary noise.  Returns an empty string
-    only when the file cannot be read at all.
+    Non-regular or oversized inputs fail closed by returning a lifecycle-shaped
+    sentinel, while missing/unreadable paths remain empty so ordinary scheduler
+    path validation can report them.
     """
-    try:
-        return _resolve_script_path(script_path).read_bytes().decode(
-            "utf-8", errors="replace"
-        )
-    except OSError:
-        return ""
+    script_text, unsafe = _read_referenced_script(_resolve_script_path(script_path))
+    if unsafe:
+        return "hermes gateway restart"
+    return script_text or ""
 
 
 def check_gateway_lifecycle(
@@ -200,10 +336,12 @@ def check_gateway_lifecycle(
         if script_text:
             combined = f"{combined}\n{script_text}"
 
-    if contains_gateway_lifecycle_command(combined):
+    if contains_gateway_lifecycle_command(combined) or contains_launchctl_submit_command(
+        combined
+    ):
         raise GatewayLifecycleBlocked(
-            "Blocked: cron job contains a gateway lifecycle command "
-            "(restart/stop/kill). This is blocked to prevent agent-driven "
+            "Blocked: cron job contains a gateway lifecycle command or persistent "
+            "launchctl submit operation. This is blocked to prevent agent-driven "
             "SIGTERM-respawn loops under launchd/systemd supervision "
             "(#30719). Run `hermes gateway restart` from a shell outside "
             "the running gateway instead."

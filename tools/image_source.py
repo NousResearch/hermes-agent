@@ -270,8 +270,24 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
+def _lazy_create_env(task_id: str):
+    """Create a sandbox environment for *task_id* if none exists yet.
+
+    Reuses the lazy-init from ``code_execution_tool._get_or_create_env`` so
+    vision_analyze can auto-establish the sandbox before any terminal tool
+    has been called.  Returns the env, or None on failure.
+    """
+    try:
+        from tools.code_execution_tool import _get_or_create_env
+
+        env, _ = _get_or_create_env(task_id)
+        return env
+    except Exception:
+        return None
+
+
 async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
-    """Read the image bytes inside the sandbox (fail-closed when none exists).
+    """Read the image bytes inside the sandbox (create one if none exists).
 
     Reached when a host read is not permitted or the host file is absent. The
     agent can already ``cat`` any container file (file_operations.py reads
@@ -280,18 +296,23 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     path from being parsed as a ``base64`` option; ``base64 -w0`` is GNU-only,
     so pipe through ``tr -d`` for BusyBox.
 
-    Fail-closed: if there is no active sandbox env we refuse rather than falling
-    back to a host read, so a non-cache host path under a sandbox never leaks.
+    If there is no active sandbox env yet (e.g. vision_analyze was called
+    before any terminal tool), lazy-create one so the image path is reachable.
     """
     import asyncio
     import shlex
 
     env = _get_active_env(ctx.task_id)
     if env is None:
-        raise SourceNotFound(
-            f"'{p}' is not reachable inside the sandbox and no active sandbox "
-            f"session is available to read it",
-            src=src, origin="container")
+        # No active sandbox yet — lazy-initialize one (same pattern as
+        # code_execution_tool._get_or_create_env).  Run in a thread since
+        # SSH / Docker env creation can block on network I/O.
+        env = await asyncio.to_thread(_lazy_create_env, ctx.task_id)
+        if env is None:
+            raise SourceNotFound(
+                f"'{p}' is not reachable inside the sandbox and no active sandbox "
+                f"session is available to read it",
+                src=src, origin="container")
 
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 bytes
     # so a huge file (or /dev/zero) can't stream unbounded base64 into host

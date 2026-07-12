@@ -155,14 +155,15 @@ class TestNonLocalBackendConfinement:
 
     @pytest.mark.asyncio
     async def test_non_cache_path_fails_closed_without_sandbox(self, tmp_path, monkeypatch):
-        """No active sandbox env -> refuse rather than fall back to a host read."""
+        """No active sandbox env and creation fails -> refuse rather than fall back to a host read."""
         home = tmp_path / "hermes"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         secret = tmp_path / "id_rsa"
         secret.write_bytes(b"HOST-PRIVATE-KEY")
 
-        with patch("tools.image_source._get_active_env", return_value=None):
+        with patch("tools.image_source._get_active_env", return_value=None), \
+             patch("tools.image_source._lazy_create_env", return_value=None):
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))
 
@@ -184,8 +185,9 @@ class TestNonLocalBackendConfinement:
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unsupported")
 
-        # Fails closed (no sandbox) rather than host-reading the symlink target.
-        with patch("tools.image_source._get_active_env", return_value=None):
+        # Fails closed (no sandbox, can't create) rather than host-reading the symlink target.
+        with patch("tools.image_source._get_active_env", return_value=None), \
+             patch("tools.image_source._lazy_create_env", return_value=None):
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(str(link), isrc.ResolveContext(task_id="t1"))
 

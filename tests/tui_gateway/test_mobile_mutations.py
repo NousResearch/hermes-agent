@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+import sqlite3
 import threading
 
 import pytest
@@ -27,6 +29,21 @@ class _MobileTransport:
         return True
 
 
+@pytest.fixture(autouse=True)
+def _isolated_gateway_mutation_store(tmp_path, monkeypatch):
+    """Keep every dispatch in this module off the user's Hermes home."""
+    from tui_gateway import server
+
+    store = MobileMutationStore(tmp_path / "gateway-mobile-mutations.sqlite3")
+    monkeypatch.setattr(server, "_mobile_mutation_store", lambda: store)
+    try:
+        yield store
+    finally:
+        server._sessions.clear()
+        store.close()
+        assert store._closed is True
+
+
 def _reserve(
     store: MobileMutationStore,
     *,
@@ -41,6 +58,123 @@ def _reserve(
         resource_id="conversation-root",
         semantic_parameters={"text": text},
     )
+
+
+def test_owned_pre_execution_reservation_can_be_released_and_retried(tmp_path):
+    store = MobileMutationStore(tmp_path / "mobile-mutations.sqlite3")
+    first = _reserve(store)
+    duplicate = _reserve(store)
+
+    assert duplicate.disposition is MutationDisposition.IN_PROGRESS
+    assert store.release_before_execution(duplicate) is False
+    assert store.release_before_execution(first) is True
+    assert store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="request-1",
+    ) is None
+    assert _reserve(store).disposition is MutationDisposition.EXECUTE
+    store.close()
+
+
+def test_advertised_mutations_share_one_policy_and_resource_authority():
+    from tui_gateway import mobile_contract
+
+    payload = mobile_contract.gateway_ready_payload(skin="default")
+    advertised = set(
+        payload["capabilities"]["mutation.idempotency"]["methods"]
+    )
+    described = {
+        method
+        for method, policy in mobile_contract.MOBILE_METHOD_POLICIES.items()
+        if policy.mutation is not None
+    }
+
+    assert advertised == set(mobile_contract.MOBILE_MUTATION_METHODS)
+    assert advertised == described
+    for method in advertised:
+        policy = mobile_contract.MOBILE_METHOD_POLICIES[method]
+        descriptor = policy.mutation
+        assert descriptor is not None
+        assert descriptor.resource_parameter in policy.allowed_parameters
+        assert set(descriptor.semantic_parameters) <= policy.allowed_parameters
+
+
+def test_transient_lineage_failure_releases_receipt_for_identical_retry(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+):
+    from tui_gateway import server
+
+    outage = {"active": True}
+
+    class Db:
+        @staticmethod
+        def get_compression_lineage(_session_id):
+            return ["conversation-root", "conversation-tip"]
+
+    @contextlib.contextmanager
+    def session_db(_session):
+        if outage["active"]:
+            raise sqlite3.OperationalError("lineage store unavailable")
+        yield Db()
+
+    class Agent:
+        session_id = "conversation-tip"
+        interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+    agent = Agent()
+    monkeypatch.setattr(server, "_session_db", session_db)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    server._sessions["live-1"] = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "session_key": "conversation-tip",
+    }
+    request = {
+        "jsonrpc": "2.0",
+        "id": "first-correlation",
+        "method": "session.interrupt",
+        "params": {
+            "client_request_id": "retry-after-lineage-outage",
+            "expected_stored_session_id": "conversation-root",
+            "session_id": "live-1",
+        },
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+
+    unavailable = server.dispatch(request, transport)
+
+    assert unavailable["error"] == {
+        "code": 5037,
+        "message": "mobile mutation preflight is temporarily unavailable",
+        "data": {
+            "client_request_id": "retry-after-lineage-outage",
+            "reason": "mutation_preflight_unavailable",
+        },
+    }
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="retry-after-lineage-outage",
+    ) is None
+
+    outage["active"] = False
+    request["id"] = "retry-correlation"
+    retry = server.dispatch(request, transport)
+
+    assert agent.interrupt_calls == 1
+    assert retry["result"]["status"] == "interrupted"
+    assert retry["result"]["mutation"] == {
+        "client_request_id": "retry-after-lineage-outage",
+        "deduplicated": False,
+        "state": "completed",
+    }
 
 
 def test_completed_mutation_replays_exact_outcome_after_database_reopen(tmp_path):
@@ -207,6 +341,272 @@ def test_mobile_mutation_rejects_an_oversized_request_identity():
     assert response["error"]["data"] == {
         "reason": "invalid_client_request_id"
     }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [sqlite3.OperationalError("database unavailable"), RuntimeError("unexpected")],
+)
+def test_receipt_reservation_failures_return_structured_unavailable_errors(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+    caplog,
+    failure,
+):
+    from tui_gateway import server
+
+    def fail_reservation(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "reserve",
+        fail_reservation,
+    )
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        response = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "store-outage",
+                "method": "session.interrupt",
+                "params": {
+                    "client_request_id": "store-outage-1",
+                    "expected_stored_session_id": "conversation-root",
+                    "session_id": "live-1",
+                },
+            },
+            _MobileTransport("conversation.read", "conversation.control"),
+        )
+
+    assert response["error"] == {
+        "code": 5037,
+        "message": "durable mutation receipt is temporarily unavailable",
+        "data": {"reason": "mutation_store_unavailable"},
+    }
+    assert any(record.exc_info is not None for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [sqlite3.OperationalError("database unavailable"), RuntimeError("unexpected")],
+)
+def test_receipt_wait_failures_return_structured_unavailable_errors(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+    caplog,
+    failure,
+):
+    from tui_gateway import server
+
+    original = _isolated_gateway_mutation_store.reserve(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="wait-outage-1",
+        method="session.interrupt",
+        resource_id="conversation-root",
+        semantic_parameters={},
+    )
+    assert original.disposition is MutationDisposition.EXECUTE
+
+    def fail_wait(_claim, *, timeout):
+        assert timeout == 30.0
+        raise failure
+
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "wait_for_outcome",
+        fail_wait,
+    )
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        response = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "wait-outage",
+                "method": "session.interrupt",
+                "params": {
+                    "client_request_id": "wait-outage-1",
+                    "expected_stored_session_id": "conversation-root",
+                    "session_id": "live-1",
+                },
+            },
+            _MobileTransport("conversation.read", "conversation.control"),
+        )
+
+    assert response["error"] == {
+        "code": 5037,
+        "message": "durable mutation receipt is temporarily unavailable",
+        "data": {"reason": "mutation_store_unavailable"},
+    }
+    assert any(record.exc_info is not None for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [sqlite3.OperationalError("database unavailable"), RuntimeError("unexpected")],
+)
+def test_receipt_status_failures_return_structured_unavailable_errors(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+    caplog,
+    failure,
+):
+    from tui_gateway import server
+
+    def fail_status(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(_isolated_gateway_mutation_store, "status", fail_status)
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        response = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "status-outage",
+                "method": "mutation.status",
+                "params": {"client_request_id": "status-outage-1"},
+            },
+            _MobileTransport("conversation.read"),
+        )
+
+    assert response["error"] == {
+        "code": 5037,
+        "message": "durable mutation receipt is temporarily unavailable",
+        "data": {"reason": "mutation_store_unavailable"},
+    }
+    assert any(record.exc_info is not None for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [sqlite3.OperationalError("database unavailable"), RuntimeError("unexpected")],
+)
+def test_receipt_completion_failures_become_structured_unknown_outcomes(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+    caplog,
+    failure,
+):
+    from tui_gateway import server
+
+    class Agent:
+        interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+    agent = Agent()
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    server._sessions["live-1"] = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "session_key": "conversation-root",
+    }
+    original_complete = _isolated_gateway_mutation_store.complete
+
+    def fail_completion(_claim, _outcome):
+        raise failure
+
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "complete",
+        fail_completion,
+    )
+    request = {
+        "jsonrpc": "2.0",
+        "id": "completion-outage",
+        "method": "session.interrupt",
+        "params": {
+            "client_request_id": "completion-outage-1",
+            "expected_stored_session_id": "conversation-root",
+            "session_id": "live-1",
+        },
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        response = server.dispatch(request, transport)
+
+    assert response["error"] == {
+        "code": 5037,
+        "message": "mutation outcome could not be recorded durably",
+        "data": {"reason": "mutation_outcome_unknown"},
+    }
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="completion-outage-1",
+    )["state"] == "outcome_unknown"
+    assert agent.interrupt_calls == 1
+    assert any(record.exc_info is not None for record in caplog.records)
+
+    monkeypatch.setattr(
+        _isolated_gateway_mutation_store,
+        "complete",
+        original_complete,
+    )
+    request["id"] = "completion-outage-retry"
+    retry = server.dispatch(request, transport)
+
+    assert retry["error"]["code"] == 4091
+    assert agent.interrupt_calls == 1
+
+
+def test_unexpected_handler_failure_returns_structured_unknown_outcome(
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+    caplog,
+):
+    from tui_gateway import server
+
+    class Agent:
+        interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+            raise RuntimeError("interrupt transport failed")
+
+    agent = Agent()
+    server._sessions["live-1"] = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "queued_prompt": None,
+        "running": True,
+        "session_key": "conversation-root",
+    }
+    request = {
+        "jsonrpc": "2.0",
+        "id": "handler-failure",
+        "method": "session.interrupt",
+        "params": {
+            "client_request_id": "handler-failure-1",
+            "expected_stored_session_id": "conversation-root",
+            "session_id": "live-1",
+        },
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+
+    with caplog.at_level(logging.ERROR, logger="tui_gateway.server"):
+        response = server.dispatch(request, transport)
+
+    assert response["error"] == {
+        "code": 5037,
+        "message": "mutation handler failed before a durable outcome was available",
+        "data": {"reason": "mutation_outcome_unknown"},
+    }
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="handler-failure-1",
+    )["state"] == "outcome_unknown"
+    assert agent.interrupt_calls == 1
+    assert any(record.exc_info is not None for record in caplog.records)
+
+    request["id"] = "handler-failure-retry"
+    retry = server.dispatch(request, transport)
+
+    assert retry["error"]["code"] == 4091
+    assert agent.interrupt_calls == 1
 
 
 

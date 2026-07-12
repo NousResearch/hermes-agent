@@ -58,12 +58,23 @@ SUPPORTED_MOBILE_SCOPES = frozenset(
     }
 )
 
+
+@dataclass(frozen=True)
+class MobileMutationDescriptor:
+    """Durable identity and pre-execution checks for an idempotent mutation."""
+
+    resource_parameter: str
+    semantic_parameters: tuple[str, ...] = ()
+    requires_live_lineage_validation: bool = False
+
+
 @dataclass(frozen=True)
 class MobileMethodPolicy:
-    """Scopes and parameters that make one existing gateway method mobile-safe."""
+    """Authorization and mutation policy for one mobile-safe gateway method."""
 
     required_scopes: tuple[str, ...]
     allowed_parameters: frozenset[str]
+    mutation: MobileMutationDescriptor | None = None
 
 
 MOBILE_METHOD_POLICIES = {
@@ -106,6 +117,11 @@ MOBILE_METHOD_POLICIES = {
                 "text",
             }
         ),
+        mutation=MobileMutationDescriptor(
+            resource_parameter="expected_stored_session_id",
+            semantic_parameters=("text",),
+            requires_live_lineage_validation=True,
+        ),
     ),
     "session.interrupt": MobileMethodPolicy(
         (CONVERSATION_CONTROL_SCOPE,),
@@ -116,16 +132,28 @@ MOBILE_METHOD_POLICIES = {
                 "session_id",
             }
         ),
+        mutation=MobileMutationDescriptor(
+            resource_parameter="expected_stored_session_id",
+            requires_live_lineage_validation=True,
+        ),
     ),
     "session.delete": MobileMethodPolicy(
         (CONVERSATION_DELETE_SCOPE,),
         frozenset({"client_request_id", "session_id"}),
+        mutation=MobileMutationDescriptor(resource_parameter="session_id"),
     ),
     "mutation.status": MobileMethodPolicy(
         (CONVERSATION_READ_SCOPE,),
         frozenset({"client_request_id"}),
     ),
 }
+
+MOBILE_MUTATION_POLICIES = {
+    method: policy.mutation
+    for method, policy in MOBILE_METHOD_POLICIES.items()
+    if policy.mutation is not None
+}
+MOBILE_MUTATION_METHODS = frozenset(MOBILE_MUTATION_POLICIES)
 
 
 def normalize_mobile_scopes(scopes: Iterable[object]) -> tuple[str, ...]:
@@ -179,11 +207,7 @@ def gateway_ready_payload(*, skin: str, authorization: dict | None = None) -> di
             "auth.ws_scopes": {"version": 1},
             "mutation.idempotency": {
                 "version": 1,
-                "methods": [
-                    "prompt.submit",
-                    "session.interrupt",
-                    "session.delete",
-                ],
+                "methods": list(MOBILE_MUTATION_POLICIES),
                 "status_method": "mutation.status",
             },
         },

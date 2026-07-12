@@ -277,6 +277,29 @@ class MobileMutationStore:
             self._changed.notify_all()
             return completed
 
+    def release_before_execution(self, claim: MutationClaim) -> bool:
+        """Remove this process's reservation before any side effect can run."""
+        if claim.disposition is not MutationDisposition.EXECUTE:
+            return False
+        with self._changed:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM mobile_mutations
+                WHERE principal_digest = ? AND request_digest = ?
+                  AND fingerprint = ? AND state = 'in_progress'
+                  AND owner_instance_id = ?
+                """,
+                (
+                    claim._principal_digest,
+                    claim._request_digest,
+                    claim._fingerprint,
+                    claim._owner_instance_id,
+                ),
+            )
+            released = cursor.rowcount == 1
+            self._changed.notify_all()
+            return released
+
     def mark_outcome_unknown(self, claim: MutationClaim) -> bool:
         """Terminalize a reserved request after an unexpected execution failure."""
         with self._changed:

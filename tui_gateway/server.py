@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -30,6 +31,7 @@ from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.mobile_mutations import (
     MobileMutationStore,
+    MutationClaim,
     MutationConflict,
     MutationDisposition,
 )
@@ -1282,10 +1284,20 @@ def handle_request(req: dict) -> dict | None:
     return fn(rid, params)
 
 
-_MOBILE_MUTATION_METHODS = frozenset(
-    {"prompt.submit", "session.interrupt", "session.delete"}
-)
 _NOT_A_MOBILE_MUTATION = object()
+
+
+class _MobileMutationPreflightUnavailable(RuntimeError):
+    """Live lineage validation could not safely authorize execution."""
+
+
+def _mobile_mutation_store_unavailable(rid: Any) -> dict:
+    return _err(
+        rid,
+        5037,
+        "durable mutation receipt is temporarily unavailable",
+        data={"reason": "mutation_store_unavailable"},
+    )
 
 
 def _mobile_mutation_resource(
@@ -1294,9 +1306,20 @@ def _mobile_mutation_resource(
     rid: Any,
 ) -> tuple[str, dict[str, Any]] | dict:
     """Resolve client-supplied durable semantics without consulting live state."""
-    if method in {"prompt.submit", "session.interrupt"}:
-        expected = str(params.get("expected_stored_session_id") or "").strip()
-        if not expected:
+    from tui_gateway.mobile_contract import MOBILE_MUTATION_POLICIES
+
+    descriptor = MOBILE_MUTATION_POLICIES.get(method)
+    if descriptor is None:
+        return _err(
+            rid,
+            -32601,
+            f"unknown mobile mutation: {method}",
+            data={"method": method, "reason": "unknown_mobile_mutation"},
+        )
+
+    resource_id = str(params.get(descriptor.resource_parameter) or "").strip()
+    if not resource_id:
+        if descriptor.resource_parameter == "expected_stored_session_id":
             return _err(
                 rid,
                 -32602,
@@ -1306,34 +1329,48 @@ def _mobile_mutation_resource(
                     "reason": "durable_resource_id_required",
                 },
             )
-        semantics = {"text": params.get("text")} if method == "prompt.submit" else {}
+        return _err(rid, -32602, f"{descriptor.resource_parameter} is required")
+
+    semantics = {
+        parameter: params.get(parameter)
+        for parameter in descriptor.semantic_parameters
+    }
+    if descriptor.resource_parameter == "expected_stored_session_id":
         # Cuttle keeps this server-issued Conversation identity stable while the
         # process-local live session id and compression tip can rotate. Binding
         # the receipt to the live id would turn a valid reconnect retry into a
         # different mutation. The execute path validates this identity against
         # current Hermes state before the handler can mutate anything.
-        return expected, semantics
+        return resource_id, semantics
 
-    target = str(params.get("session_id") or "").strip()
-    if not target:
-        return _err(rid, -32602, "session_id is required")
-    # A stored session id is itself the durable resource being deleted. Do not
-    # normalize it through a compression lineage: after successful deletion
-    # that lineage is intentionally gone, while a retry must still fingerprint
-    # to the same tombstoned target and replay the original outcome.
-    return target, {}
+    if descriptor.resource_parameter == "session_id":
+        # A stored session id is itself the durable resource being deleted. Do not
+        # normalize it through a compression lineage: after successful deletion
+        # that lineage is intentionally gone, while a retry must still fingerprint
+        # to the same tombstoned target and replay the original outcome.
+        return resource_id, semantics
+
+    return _err(
+        rid,
+        5037,
+        "mobile mutation resource policy is unavailable",
+        data={"method": method, "reason": "mutation_policy_unavailable"},
+    )
 
 
 def _mobile_mutation_preflight(method: str, params: dict, rid: Any) -> dict | None:
     """Validate live routing only for a newly reserved mutation, not a replay."""
-    if method not in {"prompt.submit", "session.interrupt"}:
+    from tui_gateway.mobile_contract import MOBILE_MUTATION_POLICIES
+
+    descriptor = MOBILE_MUTATION_POLICIES.get(method)
+    if descriptor is None or not descriptor.requires_live_lineage_validation:
         return None
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     assert session is not None
 
-    expected = str(params.get("expected_stored_session_id") or "").strip()
+    expected = str(params.get(descriptor.resource_parameter) or "").strip()
     runtime_id = str(params.get("session_id") or "").strip()
     current_ids = {
         str(session.get("session_key") or "").strip(),
@@ -1360,11 +1397,17 @@ def _mobile_mutation_preflight(method: str, params: dict, rid: Any) -> dict | No
                             and str(current_lineage[0]) == expected_root
                         ):
                             return None
-        except Exception:
-            logger.debug(
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning(
                 "failed to validate mobile mutation conversation identity",
                 exc_info=True,
             )
+            raise _MobileMutationPreflightUnavailable from exc
+        except Exception as exc:
+            logger.exception(
+                "unexpected failure validating mobile mutation conversation identity"
+            )
+            raise _MobileMutationPreflightUnavailable from exc
 
     live = ", ".join(sorted(current_ids)) or "unknown"
     return _err(
@@ -1408,6 +1451,36 @@ def _mutation_response(
     return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
+def _mark_mobile_mutation_outcome_unknown(
+    store: MobileMutationStore,
+    claim: MutationClaim,
+    *,
+    context: str,
+) -> bool:
+    """Best-effort terminalization after execution may have begun."""
+    try:
+        changed = store.mark_outcome_unknown(claim)
+    except (OSError, sqlite3.Error):
+        logger.warning(
+            "mobile mutation outcome-unknown update failed after %s",
+            context,
+            exc_info=True,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "unexpected mobile mutation outcome-unknown update failure after %s",
+            context,
+        )
+        return False
+    if not changed:
+        logger.error(
+            "mobile mutation receipt was not owned while marking outcome unknown after %s",
+            context,
+        )
+    return changed
+
+
 def _dispatch_mobile_mutation(
     req: dict,
     *,
@@ -1418,11 +1491,12 @@ def _dispatch_mobile_mutation(
 ) -> object:
     from tui_gateway.mobile_contract import (
         MOBILE_AUDIENCE,
+        MOBILE_MUTATION_METHODS,
         effective_authorization,
     )
 
     grant = effective_authorization(getattr(transport, "authorization", None))
-    if grant["audience"] != MOBILE_AUDIENCE or method not in _MOBILE_MUTATION_METHODS:
+    if grant["audience"] != MOBILE_AUDIENCE or method not in MOBILE_MUTATION_METHODS:
         return _NOT_A_MOBILE_MUTATION
 
     client_request_id = str(params.get("client_request_id") or "").strip()
@@ -1464,15 +1538,20 @@ def _dispatch_mobile_mutation(
         )
     except (OSError, sqlite3.Error):
         logger.warning("mobile mutation receipt reservation failed", exc_info=True)
-        return _err(
-            rid,
-            5037,
-            "durable mutation receipt is temporarily unavailable",
-            data={"reason": "mutation_store_unavailable"},
-        )
+        return _mobile_mutation_store_unavailable(rid)
+    except Exception:
+        logger.exception("unexpected mobile mutation receipt reservation failure")
+        return _mobile_mutation_store_unavailable(rid)
 
     if claim.disposition is MutationDisposition.IN_PROGRESS:
-        claim = store.wait_for_outcome(claim, timeout=30.0)
+        try:
+            claim = store.wait_for_outcome(claim, timeout=30.0)
+        except (OSError, sqlite3.Error):
+            logger.warning("mobile mutation receipt wait failed", exc_info=True)
+            return _mobile_mutation_store_unavailable(rid)
+        except Exception:
+            logger.exception("unexpected mobile mutation receipt wait failure")
+            return _mobile_mutation_store_unavailable(rid)
     if claim.disposition is MutationDisposition.REPLAY:
         return _mutation_response(
             rid,
@@ -1505,13 +1584,57 @@ def _dispatch_mobile_mutation(
 
     try:
         response = _mobile_mutation_preflight(method, params, rid)
+    except _MobileMutationPreflightUnavailable:
+        try:
+            released = store.release_before_execution(claim)
+        except (OSError, sqlite3.Error):
+            logger.warning(
+                "mobile mutation receipt release failed after preflight outage",
+                exc_info=True,
+            )
+            released = False
+        except Exception:
+            logger.exception(
+                "unexpected mobile mutation receipt release failure after preflight outage"
+            )
+            released = False
+        if not released:
+            logger.error(
+                "mobile mutation receipt could not be released after preflight outage"
+            )
+            return _mobile_mutation_store_unavailable(rid)
+        return _err(
+            rid,
+            5037,
+            "mobile mutation preflight is temporarily unavailable",
+            data={
+                "client_request_id": client_request_id,
+                "reason": "mutation_preflight_unavailable",
+            },
+        )
+
+    try:
         if response is None:
             response = handle_request(req)
     except Exception:
-        store.mark_outcome_unknown(claim)
-        raise
+        logger.exception("mobile mutation handler failed")
+        _mark_mobile_mutation_outcome_unknown(
+            store,
+            claim,
+            context="handler failure",
+        )
+        return _err(
+            rid,
+            5037,
+            "mutation handler failed before a durable outcome was available",
+            data={"reason": "mutation_outcome_unknown"},
+        )
     if response is None:
-        store.mark_outcome_unknown(claim)
+        _mark_mobile_mutation_outcome_unknown(
+            store,
+            claim,
+            context="empty handler response",
+        )
         return _err(
             rid,
             5037,
@@ -1519,7 +1642,25 @@ def _dispatch_mobile_mutation(
             data={"reason": "mutation_outcome_unknown"},
         )
     outcome = _mutation_outcome(response)
-    if not store.complete(claim, outcome):
+    try:
+        completed = store.complete(claim, outcome)
+    except (OSError, sqlite3.Error):
+        logger.warning("mobile mutation receipt completion failed", exc_info=True)
+        _mark_mobile_mutation_outcome_unknown(
+            store,
+            claim,
+            context="receipt completion failure",
+        )
+        completed = False
+    except Exception:
+        logger.exception("unexpected mobile mutation receipt completion failure")
+        _mark_mobile_mutation_outcome_unknown(
+            store,
+            claim,
+            context="unexpected receipt completion failure",
+        )
+        completed = False
+    if not completed:
         return _err(
             rid,
             5037,
@@ -6525,12 +6666,10 @@ def _(rid, params: dict) -> dict:
         )
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("mobile mutation status lookup failed", exc_info=True)
-        return _err(
-            rid,
-            5037,
-            "durable mutation receipt is temporarily unavailable",
-            data={"reason": "mutation_store_unavailable"},
-        )
+        return _mobile_mutation_store_unavailable(rid)
+    except Exception:
+        logger.exception("unexpected mobile mutation status lookup failure")
+        return _mobile_mutation_store_unavailable(rid)
     if status is None:
         return _err(
             rid,

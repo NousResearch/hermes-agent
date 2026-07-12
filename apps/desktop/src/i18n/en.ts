@@ -2323,6 +2323,7 @@ export const en: Translations = {
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
       skip: 'Skip',
+      skipped: 'Skipped',
       continueLabel: 'Continue'
     },
     tool: {

@@ -2484,6 +2484,7 @@ export const zh: Translations = {
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
       skip: '跳过',
+      skipped: '已跳过',
       continueLabel: '继续'
     },
     tool: {

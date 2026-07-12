@@ -2286,6 +2286,27 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
+    # Session<->workspace binding: cd back into a resumed session's recorded cwd
+    # so it resumes in the repo it belonged to. Opt out with --no-restore-cwd;
+    # skipped under --worktree (that path owns its own dir). Best-effort — a
+    # missing dir warns and stays put rather than failing the resume.
+    if (
+        getattr(args, "resume", None)
+        and not getattr(args, "no_restore_cwd", False)
+        and not getattr(args, "worktree", False)
+    ):
+        try:
+            from hermes_state import SessionDB
+
+            _saved_cwd = ((SessionDB().get_session(args.resume) or {}).get("cwd") or "").strip()
+            if _saved_cwd and not os.path.isdir(_saved_cwd):
+                print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
+            elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
+                os.chdir(_saved_cwd)
+                print(f"↪ restored workspace dir: {_saved_cwd}")
+        except Exception:
+            pass  # never let cwd-restore break a resume
+
     # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
         from hermes_cli.xai_retirement import (
@@ -13514,6 +13535,12 @@ def main():
     sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
     )
+    sessions_list.add_argument(
+        "--workspace",
+        metavar="NEEDLE",
+        help="Only sessions in one workspace: a git repo root or project dir "
+        "(matched by path substring or basename).",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -13840,13 +13867,58 @@ def main():
         _exclude = None if _source else ["tool"]
 
         if action == "list":
+            from hermes_state import workspace_key as _ws_key
+
             sessions = db.list_sessions_rich(
                 source=args.source, exclude_sources=_exclude, limit=args.limit
             )
+
+            # Workspace filter: match a session by its workspace key (git repo
+            # root, else cwd) — path substring or exact basename.
+            _ws_filter = (getattr(args, "workspace", None) or "").strip()
+            if _ws_filter:
+                _needle = _ws_filter.lower()
+
+                def _in_workspace(s):
+                    key = (_ws_key(s) or "").lower()
+                    return bool(key) and (
+                        _needle in key or _needle == os.path.basename(key.rstrip("/\\"))
+                    )
+
+                sessions = [s for s in sessions if _in_workspace(s)]
+
             if not sessions:
                 print("No sessions found.")
                 return
+
+            # Short workspace label: the repo/dir basename, "—" when unbound. The
+            # Workspace column only appears once at least one session carries one
+            # (or when filtering), so all-unbound listings read as before.
+            def _ws_label(s):
+                key = _ws_key(s)
+                return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
+
+            has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
             has_titles = any(s.get("title") for s in sessions)
+
+            if has_ws:
+                if has_titles:
+                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                    print("─" * 110)
+                else:
+                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                    print("─" * 100)
+                for s in sessions:
+                    last_active = _relative_time(s.get("last_active"))
+                    ws = _ws_label(s)[:16]
+                    if has_titles:
+                        title = (s.get("title") or "—")[:26]
+                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    else:
+                        preview = s.get("preview", "")[:36]
+                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                return
+
             if has_titles:
                 print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
                 print("─" * 110)

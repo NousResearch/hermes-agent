@@ -97,8 +97,12 @@ Run before opening a PR (lint may surface pre-existing warnings but must exit cl
 npm run fix
 npm run typecheck
 npm run lint
-npm run test:desktop:all
+npm run test:ui
+npm run test:desktop:platforms
 ```
+
+Run `npm run test:desktop:all` for install, boot, update, packaging, or other
+release-path changes.
 
 ### Troubleshooting
 

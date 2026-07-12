@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import (
+    CredentialPool,
+    PooledCredential,
+    credential_pool_matches_provider,
+    get_custom_provider_pool_key,
+    load_pool,
+)
 from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     AuthError,
@@ -1731,7 +1737,19 @@ def resolve_runtime_provider(
                 if not pool_api_key or not _agent_key_is_usable(nous_state, min_ttl):
                     logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
                     pool_api_key = ""
-        if entry is not None and pool_api_key:
+        if (
+            entry is not None
+            and pool_api_key
+            and credential_pool_matches_provider(
+                pool,
+                provider,
+                base_url=(
+                    getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or ""
+                ),
+            )
+        ):
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
                 entry=entry,

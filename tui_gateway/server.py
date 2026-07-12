@@ -10773,6 +10773,25 @@ def _is_repo_junk(root: str) -> bool:
     return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
 
 
+def _is_session_cwd_junk(cwd: str) -> bool:
+    """A non-git cwd that should stay in flat Recents rather than auto-group.
+
+    Unlike discovered git roots, an explicitly selected descendant of
+    HERMES_HOME may be an intentional prose/data workspace. The pre-Projects
+    desktop surfaced every such cwd, so exclude only the two broad defaults
+    that would create catch-all projects.
+    """
+    if not cwd:
+        return True
+
+    from hermes_constants import get_hermes_home
+
+    real = os.path.normcase(os.path.realpath(cwd))
+    home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+    hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
+    return real == home or real == hermes_home
+
+
 def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dict]:
     """Merge filesystem-scanned repos (cached) with session-derived repo roots.
 
@@ -10974,6 +10993,7 @@ def _build_project_tree(
         preview_limit=preview_limit,
         hydrate=hydrate,
         is_junk_root=_is_repo_junk,
+        is_junk_cwd=_is_session_cwd_junk,
     )
     return tree, active_id
 

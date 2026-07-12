@@ -1683,6 +1683,12 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
+        # models.dev catalogs include providers Hermes may not route yet.
+        # Gate on runtime capability rather than registry membership: special
+        # providers and plugin aliases can be routable without a registry row.
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
@@ -1696,8 +1702,13 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and store.get("credential_pool", {}).get(hermes_id):
-                    has_creds = True
+                raw_pool_present = bool(
+                    store and store.get("credential_pool", {}).get(hermes_id)
+                )
+                if raw_pool_present:
+                    has_creds = _credential_pool_is_usable(
+                        hermes_id, raw_pool_present=True
+                    )
             except Exception:
                 pass
         if not has_creds:
@@ -1712,6 +1723,15 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # A providers.<built-in>.models block extends the provider's discovered
+        # catalog. Section 3 cannot emit it later because this built-in row owns
+        # the slug, so merge declarations here before applying max_models.
+        configured_models: list[str] = []
+        if isinstance(user_providers, dict):
+            configured = user_providers.get(hermes_id)
+            if isinstance(configured, dict):
+                configured_models = _declared_model_ids(configured.get("models"))
+        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         total = len(model_ids)
         if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
@@ -1786,9 +1806,7 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(hermes_slug)
-                if pool.has_credentials():
+                if _credential_pool_is_usable(hermes_slug):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
@@ -1927,9 +1945,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                from agent.credential_pool import load_pool
-                _cp_pool = load_pool(_cp.slug)
-                if _cp_pool.has_credentials():
+                if _credential_pool_is_usable(_cp.slug):
                     _cp_has_creds = True
             except Exception:
                 pass

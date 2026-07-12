@@ -1060,7 +1060,7 @@ def register(ctx):
 
 ### `pre_approval_request`
 
-Fires **immediately before** an approval request is shown to the user — covers every surface: interactive CLI, the Ink TUI, gateway platforms (Telegram, Discord, Slack, WhatsApp, Matrix, etc.), and ACP clients (VS Code, Zed, JetBrains).
+Fires **immediately before** an approval request is shown to the user — covers every surface: interactive CLI, the Ink TUI, gateway platforms (Telegram, Discord, Slack, WhatsApp, Matrix, etc.), and ACP clients (VS Code, Zed, JetBrains). In `approvals.mode=smart` it also fires when the auxiliary LLM auto-approves or auto-denies (no human is prompted), with `surface="smart"`.
 
 This is the right place to wire a custom notifier — for example, a macOS menu-bar app that pops an allow/deny notification, or an audit log that records every approval request with context.
 
@@ -1085,7 +1085,7 @@ def my_callback(
 | `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
-| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals |
+| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals, `"smart"` for aux-LLM auto approve/deny decisions (`approvals.mode=smart`) |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 
@@ -1133,7 +1133,8 @@ Same kwargs as `pre_approval_request`, plus:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `choice` | `str` | One of `"once"`, `"session"`, `"always"`, `"deny"`, or `"timeout"` |
+| `choice` | `str` | One of `"once"`, `"session"`, `"always"`, `"deny"`, or `"timeout"` for prompted surfaces, or `"smart_approve"` / `"smart_deny"` for `surface="smart"` auto decisions |
+| `decided_by` | `str` | Present only on `surface="smart"` responses: `"aux_llm"` when the auxiliary LLM decided. Absent on CLI/gateway responses. |
 
 **Return value:** ignored.
 

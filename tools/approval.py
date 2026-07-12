@@ -2748,15 +2748,18 @@ def check_all_command_guards(command: str, env_type: str,
         # (nemo_relay, notifiers, audit) see smart-mode auto decisions too, not
         # just escalations. Observers only: _fire_approval_hook swallows errors,
         # and the verdict, return value, and approve_session ordering below are
-        # unchanged. surface="smart" and the smart_* choices are additive.
-        # Redact the payload like the gateway path: smart mode also runs in
-        # gateway sessions that forward it off-box. The raw command still runs.
-        from agent.redact import redact_sensitive_text
-        _hook_command = redact_sensitive_text(command)
-        _hook_desc = redact_sensitive_text(combined_desc_for_llm)
-        _primary_key = warnings[0][0]
-        _all_keys = [key for key, _, _ in warnings]
+        # unchanged. surface="smart" and the smart_* choices are additive. The
+        # payload prep lives inside this gate so the escalate path never runs
+        # observer-only code: it falls straight through to the manual prompt and
+        # an observability failure can't abort a defer-to-human. Redacted like
+        # the gateway path because smart mode also runs in gateway sessions that
+        # forward it off-box; the raw command is still what runs.
         if verdict in ("approve", "deny"):
+            from agent.redact import redact_sensitive_text
+            _hook_command = redact_sensitive_text(command)
+            _hook_desc = redact_sensitive_text(combined_desc_for_llm)
+            _primary_key = warnings[0][0]
+            _all_keys = [key for key, _, _ in warnings]
             _fire_approval_hook(
                 "pre_approval_request",
                 command=_hook_command,

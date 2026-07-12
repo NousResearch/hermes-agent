@@ -287,6 +287,55 @@ class TestSmartModeFiresHooks:
         assert "smart" not in surfaces
         assert "cli" in surfaces
 
+    def test_escalate_runs_no_observer_redaction(
+        self, isolated_session, monkeypatch
+    ):
+        """The observer-only payload redaction runs only for auto approve/deny.
+        On escalate (defer-to-human) the smart branch must add no redaction over
+        what the manual prompt already does, so an observability failure there
+        can never abort the fall-through. Measured as a differential against the
+        manual baseline (both paths reach the same prompt, which redaction is
+        load-bearing for), so this stays robust if the prompt's own redaction
+        changes."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        import agent.redact as _redact
+        real_redact = _redact.redact_sensitive_text
+        calls = {"n": 0}
+
+        def counting_redact(text, *a, **k):
+            calls["n"] += 1
+            return real_redact(text, *a, **k)
+
+        monkeypatch.setattr("agent.redact.redact_sensitive_text", counting_redact)
+
+        def cb(command, description, *, allow_permanent=True):
+            return "once"
+
+        cmd = "rm -rf /tmp/test-smart-esc-count"
+        noop_hook = patch("hermes_cli.plugins.invoke_hook", side_effect=lambda *a, **k: [])
+
+        # Baseline: manual mode reaches the prompt and does its own redaction.
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        with noop_hook:
+            r_manual = check_all_command_guards(cmd, "local", approval_callback=cb)
+        baseline = calls["n"]
+
+        # Smart mode that escalates hits the same prompt and must add no
+        # redaction over that baseline (pre-fix it redacted twice more, up front).
+        calls["n"] = 0
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
+        monkeypatch.setattr(approval_module, "_smart_approve", lambda c, d: "escalate")
+        with noop_hook:
+            r_smart = check_all_command_guards(cmd, "local", approval_callback=cb)
+
+        assert r_manual["approved"] is True
+        assert r_smart["approved"] is True
+        assert baseline > 0  # sanity: the prompt really does redact
+        assert calls["n"] == baseline  # escalate added no observer redaction
+
     # -- check_execute_code_guard (whole-script guard) -------------------
 
     def test_execute_code_auto_approve_fires_hooks(

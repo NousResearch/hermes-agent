@@ -8556,7 +8556,8 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     # Compression can rotate AIAgent.session_id while the detached child is
     # still running. Resolve the event's original key to its continuation tip so
     # an event captured before or after compression still maps to the same live
-    # desktop session instead of becoming an orphan that any poller may consume.
+    # desktop session instead of becoming an ownerless event that no poller may
+    # inject into a conversation.
     resolved_key = evt_key
     try:
         db = _get_db()
@@ -8615,9 +8616,9 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     minus its orphan-adoption fallback. An event owns-matches when its
     ``origin_ui_session_id`` is this live session, or its ``session_key``
     (raw or resolved through the compression chain) matches this session's
-    key/lineage. Used as a fail-closed gate for async-delegation payloads:
-    "not provably elsewhere" is NOT good enough to inject a conversation
-    payload into this chat (#55578).
+    key/lineage. Used as a fail-closed gate for every process notification:
+    "not provably elsewhere" is NOT good enough to inject an automatic turn
+    into this chat (#55578).
     """
     if session.get("_finalized"):
         return False
@@ -8688,10 +8689,9 @@ def _notification_poller_loop(
     status.update (kind=process) for user visibility, then chains an
     agent turn via _run_prompt_submit if the session is idle.
 
-    NOTE: The completion_queue is global (one per process). If multiple
-    TUI sessions coexist, whichever poller wakes first grabs the event,
-    even if the process was started by a different session. This matches
-    CLI/gateway behavior (single session per process).
+    NOTE: The completion_queue is global (one per process). If multiple TUI
+    sessions coexist, a poller may dequeue another session's event, but it must
+    requeue it; only a positive ownership match may trigger an agent turn.
     """
     from tools.process_registry import process_registry, format_process_notification
 
@@ -8712,26 +8712,22 @@ def _notification_poller_loop(
             time.sleep(0.1)
             continue
 
-        # Fail closed for async-delegation results (#55578): these carry a
-        # conversation payload, and injecting one into any chat other than the
-        # one that commissioned it is a hard cross-session leak. The
+        # Fail closed for every process notification (#55578): injecting an
+        # automatic turn into any chat other than the one that commissioned it
+        # is a hard cross-session leak. The
         # belongs-elsewhere check above already re-queued events owned by
         # another LIVE session; what reaches here is either ours or an
-        # orphan whose owner is gone. Orphaned delegation payloads are
-        # DROPPED, not adopted — the subagent's summary is already persisted
-        # in the delegation records/output store, so nothing is lost, whereas
-        # a wrong-chat injection is unrecoverable. Non-delegation events
-        # (background process completions etc.) keep the historical
-        # adopt-orphans behavior.
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
+        # orphan whose owner is gone. Ownerless events are DROPPED from
+        # conversation injection, not adopted; process/delegation output stays
+        # available in the durable registry, whereas wrong-chat injection is
+        # unrecoverable.
+        if not _session_owns_notification_event(sid, session, evt):
             logger.warning(
-                "async-delegation completion %s has no live owner "
+                "process notification %s has no live owner "
                 "(origin=%r key=%r); dropping from injection instead of "
-                "delivering to session %s (#55578 fail-closed; result "
-                "remains in the delegation records)",
-                evt.get("delegation_id", "?"),
+                "delivering to session %s (#55578 fail-closed; output "
+                "remains in the process/delegation records)",
+                evt.get("delegation_id") or evt.get("session_id", "?"),
                 str(evt.get("origin_ui_session_id") or ""),
                 str(evt.get("session_key") or ""),
                 sid,
@@ -8794,13 +8790,11 @@ def _notification_poller_loop(
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
-        # Same fail-closed rule as the live loop: an orphaned async-delegation
-        # payload is never adopted by a foreign session — defer it (a later
+        # Same fail-closed rule as the live loop: an ownerless notification is
+        # never adopted by a foreign session — defer it (a later
         # resume of the owner's lineage can still claim it) rather than
-        # injecting another chat's conversation here (#55578).
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
+        # injecting an automatic turn into another chat (#55578).
+        if not _session_owns_notification_event(sid, session, evt):
             deferred.append(evt)
             continue
         _evt_sid = evt.get("session_id", "")
@@ -9363,7 +9357,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             # Positive-proof ownership (compression-chain aware) — the same
             # fail-closed gate the poller uses, so the post-turn drain can't
-            # adopt another session's (or an orphan's) delegation payload,
+            # adopt another session's (or an orphan's) notification,
             # while a post-compression session still claims its own
             # pre-compression dispatches (#55578).
             for _evt, synth in process_registry.drain_notifications(

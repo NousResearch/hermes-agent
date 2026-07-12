@@ -7712,12 +7712,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
     # Isolate the completion queue for the duration of this test. The poller
     # reads process_registry.completion_queue by attribute at runtime; the
-    # event below carries no session_key, so any *other* poller (a leaked
-    # daemon thread from another test, or a concurrent one in the same xdist
-    # worker) is allowed to dequeue and dispatch it to its own session — whose
-    # agent may be a fixture double without run_conversation. A fresh Queue
-    # here fully isolates this test; monkeypatch restores the original on
-    # teardown. (Same pattern as test_notification_poller_requeues_when_busy.)
+    # A fresh Queue fully isolates this test from leaked/concurrent pollers in
+    # the same xdist worker; monkeypatch restores the original on teardown.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     process_registry._completion_consumed.discard("proc_poller_test")
@@ -7729,6 +7725,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_poller_test",
+        "session_key": "session-key",
         "command": "echo hello",
         "exit_code": 0,
         "output": "hello",
@@ -7779,9 +7776,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
     # Isolate the completion queue so a concurrent/leaked poller in the same
-    # xdist worker can't dequeue this session_key-less event before our poller
-    # does. monkeypatch restores the shared singleton on teardown. (Same
-    # pattern as test_notification_poller_requeues_when_busy.)
+    # xdist worker can't dequeue this event before our poller does.
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
 
@@ -7789,6 +7784,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     isolated_queue.put({
         "type": "completion",
         "session_id": "proc_already_done",
+        "session_key": "session-key",
         "command": "echo x",
         "exit_code": 0,
         "output": "x",
@@ -7831,6 +7827,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     evt = {
         "type": "completion",
         "session_id": "proc_busy_test",
+        "session_key": "session-key",
         "command": "make build",
         "exit_code": 0,
         "output": "ok",
@@ -7855,6 +7852,234 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
         server._sessions.pop("sid_busy", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_post_turn_drain_preserves_foreign_completion_for_owner(monkeypatch):
+    """B's post-turn drain cannot consume A's process completion."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+
+    session_a = _session(session_key="session-a-drainown")
+    session_b = _session(session_key="session-b-drainown")
+    server._sessions.update({"sid-a-drainown": session_a, "sid-b-drainown": session_b})
+    evt = {
+        "type": "completion",
+        "session_id": "proc-owned-by-a-drainown",
+        "session_key": "session-a-drainown",
+        "command": "echo a",
+        "exit_code": 0,
+        "output": "a",
+    }
+    isolated_queue.put(evt)
+
+    try:
+        drained_b = process_registry.drain_notifications(
+            session_key="session-b-drainown",
+            owns_event=lambda event: server._session_owns_notification_event(
+                "sid-b-drainown", session_b, event
+            ),
+        )
+        assert drained_b == []
+        assert isolated_queue.qsize() == 1
+
+        drained_a = process_registry.drain_notifications(
+            session_key="session-a-drainown",
+            owns_event=lambda event: server._session_owns_notification_event(
+                "sid-a-drainown", session_a, event
+            ),
+        )
+        assert [event[0]["session_id"] for event in drained_a] == ["proc-owned-by-a-drainown"]
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-a-drainown", None)
+        server._sessions.pop("sid-b-drainown", None)
+
+
+def test_notification_poller_requeues_foreign_completion_then_owner_gets_it(monkeypatch):
+    """B may dequeue A's event, but only A receives the automatic turn."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    turns = {"a": [], "b": []}
+
+    class _Agent:
+        model = "test-model"
+
+        def __init__(self, bucket):
+            self._bucket = bucket
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            self._bucket.append(prompt)
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _StopAfterOneLoop:
+        def __init__(self):
+            self._checks = 0
+
+        def is_set(self):
+            self._checks += 1
+            return self._checks > 1
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    session_a = _session(agent=_Agent(turns["a"]), session_key="session-a-pollreq")
+    session_b = _session(agent=_Agent(turns["b"]), session_key="session-b-pollreq")
+    server._sessions.update({"sid-a-pollreq": session_a, "sid-b-pollreq": session_b})
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc-owned-by-a-pollreq",
+        "session_key": "session-a-pollreq",
+        "command": "echo a",
+        "exit_code": 0,
+        "output": "a",
+    })
+
+    try:
+        server._notification_poller_loop(_StopAfterOneLoop(), "sid-b-pollreq", session_b)
+        assert turns["b"] == []
+        assert isolated_queue.qsize() == 1
+
+        owner_stop = threading.Event()
+        owner_stop.set()
+        server._notification_poller_loop(owner_stop, "sid-a-pollreq", session_a)
+        session_a["_run_thread"].join(timeout=5)
+
+        assert len(turns["a"]) == 1
+        assert "proc-owned-by-a-pollreq completed normally" in turns["a"][0]
+        assert turns["b"] == []
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-a-pollreq", None)
+        server._sessions.pop("sid-b-pollreq", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+def test_ownerless_completion_is_injected_into_no_conversation(monkeypatch):
+    """An event without ownership metadata is never adopted by a live chat."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+
+    class _StopAfterOneLoop:
+        def __init__(self):
+            self._checks = 0
+
+        def is_set(self):
+            self._checks += 1
+            return self._checks > 1
+
+    session_a = _session(session_key="session-a-ownerless")
+    session_b = _session(session_key="session-b-ownerless")
+    server._sessions.update({"sid-a-ownerless": session_a, "sid-b-ownerless": session_b})
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc-ownerless-ownerless",
+        "session_key": "",
+        "command": "echo orphan",
+        "exit_code": 0,
+        "output": "orphan",
+    })
+    try:
+        server._notification_poller_loop(_StopAfterOneLoop(), "sid-a-ownerless", session_a)
+
+        stop = threading.Event()
+        stop.set()
+        server._notification_poller_loop(stop, "sid-b-ownerless", session_b)
+
+        assert session_a.get("_run_thread") is None
+        assert session_b.get("_run_thread") is None
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-a-ownerless", None)
+        server._sessions.pop("sid-b-ownerless", None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+def test_completion_ownership_follows_compression_lineage(monkeypatch):
+    """A continuation claims an event stamped with its pre-compression key."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    class _Db:
+        def resolve_resume_session_id(self, session_key):
+            assert session_key == "pre-compression"
+            return "continuation"
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    session = _session(session_key="continuation")
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc-before-compression",
+        "session_key": "pre-compression",
+        "command": "echo lineage",
+        "exit_code": 0,
+        "output": "lineage",
+    })
+
+    drained = process_registry.drain_notifications(
+        session_key="continuation",
+        owns_event=lambda event: server._session_owns_notification_event(
+            "sid-continuation", session, event
+        ),
+    )
+
+    assert [event[0]["session_id"] for event in drained] == ["proc-before-compression"]
+    assert isolated_queue.empty()
+
+
+def test_completion_ownership_db_failure_fails_closed(monkeypatch):
+    """A lineage lookup failure cannot turn an unknown event into ours."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    class _BrokenDb:
+        def resolve_resume_session_id(self, _session_key):
+            raise RuntimeError("database unavailable")
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDb())
+    session = _session(session_key="unrelated-live-session")
+    evt = {
+        "type": "completion",
+        "session_id": "proc-unknown-lineage",
+        "session_key": "unknown-parent",
+        "command": "echo unknown",
+        "exit_code": 0,
+        "output": "unknown",
+    }
+    isolated_queue.put(evt)
+
+    drained = process_registry.drain_notifications(
+        session_key="unrelated-live-session",
+        owns_event=lambda event: server._session_owns_notification_event(
+            "sid-unrelated", session, event
+        ),
+    )
+
+    assert drained == []
+    assert isolated_queue.get_nowait() is evt
 
 
 def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, tmp_path):
@@ -7962,6 +8187,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     base = {
         "type": "watch_match",
         "session_id": "proc_watch_dedup",
+        "session_key": "session-key",
         "command": "tail -f app.log",
         "pattern": "READY",
         "output": "READY on port 8000",

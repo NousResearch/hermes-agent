@@ -40,6 +40,7 @@ Requires:
 """
 
 import asyncio
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -984,6 +985,39 @@ try:
     from tools.cronjob_tools import _scan_cron_prompt as _scan_cron_prompt
 except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
+
+
+@contextlib.contextmanager
+def _use_profile_and_secret_scope(profile):
+    """Bind a routed agent profile's HOME **and** its fail-closed credential scope for one run.
+
+    ``use_profile`` alone routes the home (``get_hermes_home`` reads the profile ContextVar) but
+    does NOT install the credential scope.  Under ``gateway.multiplex_profiles`` that leaves
+    ``get_secret`` — reached in the agent run via ``credential_pool`` when resolving the LLM/provider
+    key — *unscoped*, so it fails closed (``UnscopedSecretError``) or reads another profile's
+    process-global value.  This mirrors the base adapter's ``_profile_runtime_scope``: install the
+    profile's ``.env`` secret scope alongside the home binding.  ``None`` is a no-op, so single-agent
+    installs pay nothing.  Bind inside the executor thread — ContextVars don't cross the boundary.
+    """
+    from agent.profile import use_profile
+
+    if profile is None:
+        with use_profile(None):
+            yield
+        return
+
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    with use_profile(profile):
+        secret_token = set_secret_scope(build_profile_secret_scope(profile.resolved_home))
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
 
 
 class APIServerAdapter(BasePlatformAdapter):
@@ -4881,7 +4915,6 @@ class APIServerAdapter(BasePlatformAdapter):
         request_profile = _api_request_profile.get()
 
         def _run():
-            from agent.profile import use_profile
             from gateway.session_context import clear_session_vars
 
             with self._profile_scope(request_profile):
@@ -4891,13 +4924,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id or "",
                 )
                 try:
-                    # Re-bind the active agent profile inside the executor thread
-                    # so path getters (get_hermes_home, skills_dir, …) see the
-                    # per-agent home.  ``use_profile(None)`` is a no-op, so
-                    # single-agent installs pay nothing.  Nested inside the
-                    # profile scope (which selects the multiplex profile home /
+                    # Bind the routed agent profile inside the executor thread so
+                    # path getters (get_hermes_home, skills_dir, …) AND credential
+                    # reads (get_secret via credential_pool) resolve to this agent.
+                    # Home + secret scope together; None is a no-op.  Nested inside
+                    # the profile scope (which selects the multiplex profile home /
                     # #61276 default) so the agent scope refines it.
-                    with use_profile(agent_profile):
+                    with _use_profile_and_secret_scope(agent_profile):
                         agent = self._create_agent(
                             ephemeral_system_prompt=ephemeral_system_prompt,
                             session_id=session_id,
@@ -5200,7 +5233,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
-                    from agent.profile import use_profile as _use_profile_thread
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
@@ -5222,11 +5254,11 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_key=approval_session_key,
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
-                            # Bind the routed agent profile inside the executor thread
-                            # (asyncio's default executor does not copy ContextVars).
-                            # Nested inside the profile scope so the agent scope refines
-                            # the multiplex profile home / #61276 default.
-                            with _use_profile_thread(agent_profile):
+                            # Bind the routed agent profile (home + fail-closed secret scope)
+                            # inside the executor thread — asyncio's default executor does not
+                            # copy ContextVars.  Nested inside the profile scope so the agent
+                            # scope refines the multiplex profile home / #61276 default.
+                            with _use_profile_and_secret_scope(agent_profile):
                                 agent = self._create_agent(
                                     ephemeral_system_prompt=ephemeral_system_prompt,
                                     session_id=session_id,

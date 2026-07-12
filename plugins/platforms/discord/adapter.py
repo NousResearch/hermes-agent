@@ -6138,6 +6138,16 @@ class DiscordAdapter(BasePlatformAdapter):
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
+            bot_user = getattr(self._client, "user", None)
+            bot_user_id = getattr(bot_user, "id", None)
+            thread_owner_id = getattr(message.channel, "owner_id", None)
+            bot_owns_thread = (
+                bot_user_id is not None
+                and thread_owner_id is not None
+                and str(thread_owner_id) == str(bot_user_id)
+            )
+            if bot_owns_thread and not self._discord_thread_require_mention():
+                self._threads.mark(thread_id)
 
         is_voice_linked_channel = False
 

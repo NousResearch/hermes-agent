@@ -23638,7 +23638,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         is not a transactional boundary: a process crash after adapter
         acceptance can still cause durable at-least-once replay.
         """
-        source = self._build_process_event_source(evt)
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server-originated sessions bind a RAW session key (the
             # X-Hermes-Session-Id value — see _bind_api_server_session), not a

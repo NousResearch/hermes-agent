@@ -4286,6 +4286,17 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
+        # If still no conversation_history but a session_id was explicitly
+        # provided, restore history from SessionDB — matches the behavior of
+        # POST /api/sessions/{session_id}/chat/stream.
+        if not conversation_history and body.get("session_id"):
+            try:
+                loaded = self._conversation_history_for_session(body["session_id"])
+                if loaded:
+                    conversation_history = loaded
+            except Exception:
+                pass
+
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated

@@ -2728,6 +2728,20 @@ class AIAgent:
 
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
+        # Propagate clear to active children BEFORE clearing parent flag.
+        # This ensures that any code path that calls clear_interrupt() (e.g., /new, /clear)
+        # propagates the clear signal to all active children, mirroring the interrupt() method.
+        _active_children_lock = getattr(self, "_active_children_lock", None)
+        _active_children = getattr(self, "_active_children", None)
+        if _active_children_lock is not None and _active_children is not None:
+            with _active_children_lock:
+                children_copy = list(_active_children)
+            for child in children_copy:
+                try:
+                    child.clear_interrupt()
+                except Exception as e:
+                    logger.debug("Failed to clear interrupt on child agent: %s", e)
+
         self._interrupt_requested = False
         self._interrupt_message = None
         self._interrupt_thread_signal_pending = False

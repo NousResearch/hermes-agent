@@ -2615,14 +2615,25 @@ def run_job(
     # ---------------------------------------------------------------
     from run_agent import AIAgent
 
-    # Initialize SQLite session store so cron job messages are persisted
-    # and discoverable via session_search (same pattern as gateway/run.py).
+    # NOTE: the SQLite session store is constructed LAZILY at the bottom of
+    # this LLM branch (just before AIAgent(...)), NOT eagerly here as it
+    # used to be. Several early-return paths below - wake-gate,
+    # prompt-injection block, no-output prerun - used to skip the
+    # trailing `finally` that closed `_session_db`, leaking one open
+    # SQLite connection (and one fd) per leaked tick until a long-running
+    # gateway hit `EMFILE` (#60859). Constructing the store only after
+    # those early-return paths have been evaluated means the skip paths
+    # never open a connection at all, and there is one place that owns
+    # the lifecycle instead of two.
+
+    # We bind `_session_db = None` here so the trailing `finally` block
+    # (and any error-handling code paths that jump there when AIAgent
+    # construction raises) can reference the name without
+    # `UnboundLocalError`. The actual SessionDB() construction happens
+    # lazily just above the AIAgent() call so that the wake-gate /
+    # prompt-injection-block / no-output early-return paths never open
+    # a connection in the first place.
     _session_db = None
-    try:
-        from hermes_state import SessionDB
-        _session_db = SessionDB()
-    except Exception as e:
-        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
@@ -3041,6 +3052,24 @@ def run_job(
             logger.warning(
                 "Job '%s': MCP initialization failed (non-fatal): %s",
                 job_id, _mcp_exc,
+            )
+
+        # Lazy SQLite session-store construction (#60859).
+        # All the early-return paths above (wake-gate, prompt-injection
+        # block, no-output prerun) have already been considered at this
+        # point, so any cron tick that reaches here genuinely needs the
+        # store. The trailing `finally` below still owns the close;
+        # the `_session_db = None` binding at the top of the LLM branch
+        # ensures the name is defined even if AIAgent() raises.
+        try:
+            from hermes_state import SessionDB
+            _session_db = SessionDB()
+        except Exception as e:
+            # _session_db stays None; the trailing `finally` skips close()
+            # on falsy because it gates on `if _session_db:`.
+            logger.debug(
+                "Job '%s': SQLite session store not available: %s",
+                job_id, e,
             )
 
         agent = AIAgent(

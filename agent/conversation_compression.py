@@ -568,7 +568,7 @@ def compress_context(
             _lock_acquired = _lock_db.try_acquire_compression_lock(
                 _lock_sid, _lock_holder, ttl_seconds=_lock_ttl
             )
-        except Exception as _lock_err:
+        except (AttributeError, TypeError) as _lock_err:
             # Broken/absent lock subsystem (version skew, etc.).  Log once
             # per session and proceed WITHOUT the lock rather than letting
             # the exception spin the outer loop.
@@ -582,7 +582,22 @@ def compress_context(
                     "process (or `hermes update`) to resync.",
                     _lock_sid, type(_lock_err).__name__, _lock_err,
                 )
-            _lock_acquired = True  # treat as acquired-but-unlocked; proceed
+            _lock_acquired = True  # fail open — treat as acquired-but-unlocked; proceed
+        except Exception as _lock_err:
+            # Transient error from a present-but-unhealthy lock subsystem.
+            # Fail CLOSED — do NOT proceed with compression this cycle
+            # to avoid two compactors running concurrently on the same
+            # session and forking it.
+            _lock_holder = None  # we don't own anything to release
+            if getattr(agent, "_last_compression_lock_error_sid", None) != _lock_sid:
+                agent._last_compression_lock_error_sid = _lock_sid
+                logger.warning(
+                    "compression lock acquisition failed for session=%s "
+                    "(%s: %s) — skipping compression this cycle to avoid "
+                    "concurrent-session fork.",
+                    _lock_sid, type(_lock_err).__name__, _lock_err,
+                )
+            _lock_acquired = False  # fail closed — skip compression, retry next cycle
         if not _lock_acquired:
             try:
                 existing = _lock_db.get_compression_lock_holder(_lock_sid)

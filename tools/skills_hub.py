@@ -3555,7 +3555,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
 
     dest = _quarantine_dir() / skill_name
     if dest.exists():
-        shutil.rmtree(dest)
+        shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
 
     for rel_path, file_content in validated_files:
@@ -3596,7 +3596,7 @@ def install_from_quarantine(
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
     if install_dir.exists():
-        shutil.rmtree(install_dir)
+        shutil.rmtree(install_dir, ignore_errors=True)
 
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
@@ -3678,8 +3678,7 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
 
     if install_path.exists():
-        shutil.rmtree(install_path)
-
+        shutil.rmtree(install_path, ignore_errors=True)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
 

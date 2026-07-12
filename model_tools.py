@@ -1349,6 +1349,39 @@ def handle_function_call(
         # on the next turn.  Pattern-matching (no LLM call), safe under all
         # prompt-caching and role-alternation invariants — the annotation
         # stays inside the existing tool-result message.
+
+        # ── Execution tracer: record this tool call ─────────────────
+        try:
+            from agent.execution_tracer import trace_event
+
+            success = False
+            result_summary = ""
+            try:
+                rd = json.loads(result) if isinstance(result, str) else {}
+                success = not bool(rd.get("error")) if isinstance(rd, dict) else True
+                if isinstance(rd, dict):
+                    if rd.get("bytes_written"):
+                        result_summary = f"Wrote {rd['bytes_written']} bytes"
+                    elif rd.get("exit_code") is not None and rd["exit_code"] == 0:
+                        result_summary = "OK"
+                    elif rd.get("sent"):
+                        result_summary = "Message sent"
+                    elif rd.get("written"):
+                        result_summary = "Written"
+            except Exception:
+                pass
+
+            trace_event(
+                session_id=task_id or "",
+                tool_name=function_name,
+                duration_ms=execution_duration_ms,
+                success=success,
+                result_summary=result_summary,
+                task_id=task_id or "",
+            )
+        except Exception:
+            pass
+
         try:
             from agent.error_classifier import classify_tool_error
 
@@ -1370,6 +1403,18 @@ def handle_function_call(
             }
             if classification.known_fix:
                 recovery_annotation["known_fix"] = classification.known_fix
+
+            # ── Enrich execution trace with error details ─────────────
+            try:
+                from agent.execution_tracer import enrich_last_trace
+                enrich_last_trace(
+                    error_class=classification.reason.value,
+                    error_message=str(classification.reason.value),
+                    confidence=classification.confidence,
+                    recovery_action=classification.known_fix or "",
+                )
+            except Exception:
+                pass
 
             # ── Skill auto-patch hint ─────────────────────────────────
             # When the error class is env_issue or wrong_approach, the

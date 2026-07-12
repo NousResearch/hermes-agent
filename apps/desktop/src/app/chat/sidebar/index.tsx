@@ -86,6 +86,7 @@ import {
   $messagingSessions,
   $messagingTruncated,
   $selectedStoredSessionId,
+  $sessionPresence,
   $sessionProfileTotals,
   $sessions,
   $sessionsLoading,
@@ -94,6 +95,7 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -204,6 +206,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
+  onOpenPresenceSession?: (record: SessionPresenceRecord) => void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -250,6 +253,7 @@ export function ChatSidebar({
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
   const workingSessionIds = useStore($workingSessionIds)
+  const sessionPresence = useStore($sessionPresence)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -339,7 +343,23 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+  // Live sessions discovered via gateway presence (session.presence_list) surface
+  // as "working" rows in the virtualized list — the same accent dot the active
+  // turn uses — rather than a separate section, so presence rides the existing
+  // session rows.
+  const visibleSessionPresence = useMemo(
+    () => [...sessionPresence].sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0)),
+    [sessionPresence]
+  )
+
+  const workingSessionIdSet = useMemo(
+    () =>
+      new Set([
+        ...workingSessionIds,
+        ...visibleSessionPresence.map(record => record.session_key || record.session_id).filter(Boolean)
+      ]),
+    [visibleSessionPresence, workingSessionIds]
+  )
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.

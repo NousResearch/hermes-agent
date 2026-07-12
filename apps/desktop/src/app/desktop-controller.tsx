@@ -30,6 +30,7 @@ import {
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
   PREVIEW_PANE_ID,
+  REVIEW_PANE_MAX_WIDTH,
   restoreWorktree,
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
@@ -1239,7 +1240,7 @@ export function DesktopController() {
       hoverReveal
       id={REVIEW_PANE_ID}
       key="review"
-      maxWidth={FILE_BROWSER_MAX_WIDTH}
+      maxWidth={REVIEW_PANE_MAX_WIDTH}
       minWidth={FILE_BROWSER_MIN_WIDTH}
       // Mobile overlay sits at its min width — compact, doesn't bury the chat.
       overlayWidth={FILE_BROWSER_MIN_WIDTH}

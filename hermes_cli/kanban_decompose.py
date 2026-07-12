@@ -57,7 +57,9 @@ matching profile from the available roster.
 
 You will be given:
   - The original task title and body
-  - The list of available profiles (each with name + description)
+  - The list of available profiles (each with name + description +
+    current open-card load — how many cards are already todo/ready/
+    running/blocked/etc. assigned to that profile right now)
   - The fallback "default_assignee" used when no profile fits
 
 Output a single JSON object with this exact shape:
@@ -87,6 +89,13 @@ Rules:
   - Pick assignees from the roster by matching the task to the profile's
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
+  - LOAD IS THE TIE-BREAKER. When two or more profiles are equally
+    suitable — especially interchangeable implementers such as
+    implementer-1/implementer-2/implementer-3/implementer-codex — prefer
+    the one with the LOWEST current open-card load. NEVER stack a new
+    lane on a profile that already has >= 2 open cards while an equally-
+    suitable peer sits idle (0 open cards). Description-match comes first;
+    among equally-good matches, spread work to the least-loaded profile.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
 
@@ -214,13 +223,44 @@ def _resolve_default_assignee(cfg: dict) -> str:
         return "default"
 
 
-def _build_roster() -> tuple[list[dict], set[str]]:
+# Statuses that count as "open load" already on a profile's plate — i.e.
+# assigned work that is not terminal (done/archived) and not still in the
+# unrouted triage column. Used as the least-loaded tie-breaker so a new
+# lane is not stacked onto a profile that is already busy while a peer idles.
+_OPEN_LOAD_STATUSES = ("todo", "scheduled", "ready", "running", "blocked", "review")
+
+
+def _open_load_by_assignee(conn) -> dict[str, int]:
+    """Return ``{assignee_name: open_card_count}`` for this board.
+
+    Open cards are non-terminal, assigned tasks (see ``_OPEN_LOAD_STATUSES``).
+    Backed by ``kb.known_assignees`` — a single ``GROUP BY assignee, status``
+    query — so this is board-scoped and cheap. Never raises: on any error we
+    return an empty map and the roster simply omits load (degrades to the
+    prior description-only behaviour).
+    """
+    load: dict[str, int] = {}
+    try:
+        for entry in kb.known_assignees(conn):
+            counts = entry.get("counts") or {}
+            total = sum(int(counts.get(s, 0)) for s in _OPEN_LOAD_STATUSES)
+            load[entry["name"]] = total
+    except Exception as exc:
+        logger.warning("decompose: failed to compute per-assignee load: %s", exc)
+        return {}
+    return load
+
+
+def _build_roster(load: Optional[dict[str, int]] = None) -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
-    Each roster entry is ``{name, description, has_description}``. The
-    valid-set is used after the LLM responds to rewrite invalid
-    assignees to the default fallback.
+    Each roster entry is ``{name, description, has_description, open_load}``.
+    ``open_load`` is the number of non-terminal cards already assigned to
+    the profile (0 when unknown), surfaced to the LLM as a least-loaded
+    tie-breaker. The valid-set is used after the LLM responds to rewrite
+    invalid assignees to the default fallback.
     """
+    load = load or {}
     roster: list[dict] = []
     valid: set[str] = set()
     try:
@@ -234,6 +274,7 @@ def _build_roster() -> tuple[list[dict], set[str]]:
             "name": p.name,
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
+            "open_load": int(load.get(p.name, 0)),
         })
         valid.add(p.name)
     return roster, valid
@@ -245,7 +286,9 @@ def _format_roster(roster: list[dict]) -> str:
     lines = []
     for entry in roster:
         tag = "" if entry["has_description"] else " ⚠ undescribed"
-        lines.append(f"  - {entry['name']}{tag}: {entry['description']}")
+        load = int(entry.get("open_load", 0))
+        load_tag = f" [open cards: {load}]"
+        lines.append(f"  - {entry['name']}{tag}{load_tag}: {entry['description']}")
     return "\n".join(lines)
 
 
@@ -283,6 +326,9 @@ def decompose_task(
     """
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
+        # Snapshot per-profile open-card load on the same connection so the
+        # roster the LLM sees carries a least-loaded tie-breaker (#least-loaded).
+        load = _open_load_by_assignee(conn) if task is not None else {}
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
     if task.status != "triage":
@@ -295,7 +341,7 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
-    roster, valid_names = _build_roster()
+    roster, valid_names = _build_roster(load)
 
     try:
         from agent.auxiliary_client import (  # type: ignore

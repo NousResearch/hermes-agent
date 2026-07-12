@@ -345,3 +345,86 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+# ---------------------------------------------------------------------------
+# Least-loaded routing (anti-stack tie-breaker)
+# ---------------------------------------------------------------------------
+
+def test_system_prompt_contains_least_loaded_rule():
+    """The decomposer must instruct the LLM to break ties by load and never
+    stack a new lane onto a >=2-open profile while a peer idles."""
+    prompt = decomp._SYSTEM_PROMPT
+    assert "LOAD IS THE TIE-BREAKER" in prompt
+    assert "least-loaded" in prompt.lower()
+    assert ">= 2 open cards" in prompt
+    # Interchangeable implementers are called out by name.
+    assert "implementer-1" in prompt
+
+
+def test_build_roster_includes_open_load_counts():
+    """_build_roster surfaces each profile's open-card load to the prompt."""
+    patches = _patch_list_profiles(["implementer-1", "implementer-2", "implementer-codex"])
+    for p in patches:
+        p.start()
+    try:
+        load = {"implementer-codex": 5, "implementer-1": 0}
+        roster, valid = decomp._build_roster(load)
+    finally:
+        for p in patches:
+            p.stop()
+
+    by_name = {e["name"]: e for e in roster}
+    assert by_name["implementer-codex"]["open_load"] == 5
+    assert by_name["implementer-1"]["open_load"] == 0
+    # Profile with no entry in the load map defaults to 0.
+    assert by_name["implementer-2"]["open_load"] == 0
+    assert valid == {"implementer-1", "implementer-2", "implementer-codex"}
+
+    # The formatted roster string surfaces the counts for the LLM.
+    rendered = decomp._format_roster(roster)
+    assert "[open cards: 5]" in rendered
+    assert "[open cards: 0]" in rendered
+
+
+def test_open_load_reflects_lopsided_board(kanban_home):
+    """Given a lopsided board (all cards on one implementer), the computed
+    load map + roster surface the imbalance so the LLM can rebalance."""
+    with kb.connect() as conn:
+        # Three open cards piled onto implementer-codex, none on peers.
+        for i in range(3):
+            kb.create_task(conn, title=f"stacked {i}", assignee="implementer-codex")
+
+    with kb.connect() as conn:
+        load = decomp._open_load_by_assignee(conn)
+
+    assert load.get("implementer-codex") == 3
+    # Idle peers are absent from the map -> treated as 0 in the roster.
+    assert load.get("implementer-1", 0) == 0
+
+    patches = _patch_list_profiles(["implementer-1", "implementer-2", "implementer-codex"])
+    for p in patches:
+        p.start()
+    try:
+        roster, _ = decomp._build_roster(load)
+    finally:
+        for p in patches:
+            p.stop()
+    by_name = {e["name"]: e for e in roster}
+    assert by_name["implementer-codex"]["open_load"] == 3
+    assert by_name["implementer-1"]["open_load"] == 0
+    assert by_name["implementer-2"]["open_load"] == 0
+
+
+def test_open_load_excludes_terminal_states(kanban_home):
+    """done cards must NOT count toward a profile's open load."""
+    with kb.connect() as conn:
+        kb.create_task(conn, title="still open", assignee="worker-a")
+        done_tid = kb.create_task(conn, title="finished", assignee="worker-a")
+    # Complete one card (ready -> done); it must drop out of the open load.
+    with kb.connect() as conn:
+        assert kb.complete_task(conn, done_tid, result="ok")
+
+    with kb.connect() as conn:
+        load = decomp._open_load_by_assignee(conn)
+    assert load.get("worker-a") == 1

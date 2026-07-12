@@ -155,11 +155,18 @@ def test_compression_threshold_codex_gpt55_other_routes_unaffected() -> None:
 
 
 def test_compression_threshold_codex_gpt55_custom_codex_responses() -> None:
-    # A custom Responses route must also declare/resolve the 272K capability.
+    # A custom Responses route must declare/resolve a known bounded capability.
     kwargs = {"api_mode": "codex_responses", "context_length": 272_000}
     assert _compression_threshold_for_model("gpt-5.6-sol", "custom", **kwargs) == 0.85
     assert _compression_threshold_for_model("gpt-5.6-sol-pro", "custom", **kwargs) == 0.85
     assert _compression_threshold_for_model("gpt-5.6-luna", "sudo", **kwargs) == 0.85
+    assert _compression_threshold_for_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_mode="codex_responses",
+        context_length=372_000,
+    ) == 0.85
+
     # Wire format alone is not evidence of the Codex backend's context cap.
     assert _compression_threshold_for_model(
         "gpt-5.6-sol", "custom", api_mode="codex_responses"

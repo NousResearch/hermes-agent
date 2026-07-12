@@ -1024,12 +1024,11 @@ def test_direct_start_runtime_first_provider_names_require_explicit_custom_prefi
         assert custom_agent.context_compressor.config_context_length == 1_048_576
 
 
-@patch(
-    "agent.model_metadata.get_model_context_length",
-    side_effect=[272_000, 340_000],
-)
-def test_switch_model_threshold_round_trip(mock_ctx_len):
-    """A custom 272K Codex route raises, then GLM restores the global value."""
+@pytest.mark.parametrize("codex_context_length", [272_000, 372_000])
+@patch("agent.model_metadata.get_model_context_length")
+def test_switch_model_threshold_round_trip(mock_ctx_len, codex_context_length):
+    """A known bounded custom Codex route raises, then GLM restores global."""
+    mock_ctx_len.side_effect = [codex_context_length, 340_000]
     # Deliberately omit the new agent attributes: direct callers that construct
     # a bare agent must capture the compressor's configured 0.75 on first use.
     agent = _make_agent_with_compressor(
@@ -1047,7 +1046,7 @@ def test_switch_model_threshold_round_trip(mock_ctx_len):
     assert agent._compression_global_threshold == 0.75
     assert agent.context_compressor._configured_threshold_percent == 0.85
     assert agent.context_compressor.threshold_percent == 0.85
-    assert agent.context_compressor.threshold_tokens == int(272_000 * 0.85)
+    assert agent.context_compressor.threshold_tokens == int(codex_context_length * 0.85)
 
     agent.switch_model(
         "glm-5.2-heavy",
@@ -1064,8 +1063,10 @@ def test_switch_model_threshold_round_trip(mock_ctx_len):
     assert mock_ctx_len.call_count == 2
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
-def test_switch_model_codex_autoraise_respects_opt_out(mock_ctx_len):
+@pytest.mark.parametrize("codex_context_length", [272_000, 372_000])
+@patch("agent.model_metadata.get_model_context_length")
+def test_switch_model_codex_autoraise_respects_opt_out(mock_ctx_len, codex_context_length):
+    mock_ctx_len.return_value = codex_context_length
     agent = _make_agent_with_compressor(
         config_context_length=None, global_threshold=0.75,
     )
@@ -1082,5 +1083,5 @@ def test_switch_model_codex_autoraise_respects_opt_out(mock_ctx_len):
 
     assert agent.context_compressor._configured_threshold_percent == 0.75
     assert agent.context_compressor.threshold_percent == 0.75
-    assert agent.context_compressor.threshold_tokens == int(272_000 * 0.75)
+    assert agent.context_compressor.threshold_tokens == int(codex_context_length * 0.75)
     mock_ctx_len.assert_called_once()

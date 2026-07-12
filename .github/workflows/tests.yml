@@ -148,19 +148,37 @@ jobs:
         with:
           pattern: test-durations-slice-*
           path: durations
-          merge-multiple: true
+          # NO merge-multiple: every slice uploads the SAME inner filename
+          # (test_durations.json), so merging them into one directory makes
+          # 10 concurrent extractions race on one path — observed corrupt
+          # concatenated JSON ("Extra data", run 29165269635) and, even when
+          # it "works", silent last-writer-wins data loss of 9/10 slices.
+          # Without merge-multiple each artifact lands in its own
+          # durations/test-durations-slice-N/ subdir — no shared paths.
 
       - name: Merge into single durations file
         run: |
           python3 -c "
-          import json, glob, os
+          import json, glob, os, sys
           merged = {}
-          for f in glob.glob('durations/*test_durations.json'):
-            with open(f) as fh:
-              merged.update(json.load(fh))
+          files = sorted(glob.glob('durations/**/test_durations.json', recursive=True))
+          bad = 0
+          for f in files:
+            try:
+              with open(f) as fh:
+                merged.update(json.load(fh))
+            except (json.JSONDecodeError, OSError) as e:
+              # One unreadable slice must not sink the aggregate cache —
+              # but zero readable slices should fail loudly.
+              bad += 1
+              print(f'WARNING: skipping unreadable {f}: {e}', file=sys.stderr)
+          if not files:
+            sys.exit('no slice duration files found — artifact pattern matched nothing')
+          if bad == len(files):
+            sys.exit(f'all {bad} slice duration files unreadable')
           with open('test_durations.json', 'w') as fh:
             json.dump(merged, fh, indent=2, sort_keys=True)
-          print(f'Merged {len(merged)} file durations')
+          print(f'Merged {len(merged)} file durations from {len(files) - bad}/{len(files)} slices')
           "
 
       - name: Save merged duration cache

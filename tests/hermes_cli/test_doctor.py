@@ -89,6 +89,31 @@ class TestDoctorToolAvailabilitySummary:
 
         assert [item["name"] for item in filtered] == ["web"]
 
+    def test_image_gen_without_provider_reports_setup_hint_not_system_dependency(self, monkeypatch):
+        """image_gen declares no single env var (FAL / managed Nous / plugin providers); an
+        unconfigured backend is a setup problem and must say so, and it counts toward the
+        'run hermes setup' summary like any missing key (#9516)."""
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
+                       {"name": "homeassistant", "env_vars": [], "tools": []}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}, "homeassistant": {"name": "homeassistant"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        image_line = next(line for line in out.splitlines() if "image_gen" in line)
+        assert "hermes tools" in image_line and "system dependency" not in image_line
+        assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
+        assert any("hermes setup" in issue for issue in f.issues)
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
         class _Unavailable:

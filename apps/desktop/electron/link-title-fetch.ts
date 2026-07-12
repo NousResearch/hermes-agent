@@ -289,6 +289,8 @@ function curlArgsForTarget(target: PublicLinkTitleTarget, userAgent: string): st
     String(TITLE_TIMEOUT_SECONDS),
     '--connect-timeout',
     String(TITLE_CONNECT_TIMEOUT_SECONDS),
+    '--max-filesize',
+    String(TITLE_BYTE_BUDGET),
     '--user-agent',
     userAgent,
     '--header',

@@ -92,6 +92,8 @@ test('pins each public redirect hop and preserves a public page title response',
   assert.deepEqual(lookups, ['first.example', 'second.example'])
   assert.equal(calls.length, 2)
   assert.equal(calls[0]?.includes('--location'), false)
+  assert.ok(calls[0]?.includes('--max-filesize'))
+  assert.ok(calls[0]?.includes(String(96 * 1024)))
   assert.ok(calls[0]?.includes('first.example:443:1.1.1.1'))
   assert.ok(calls[1]?.includes('second.example:443:8.8.8.8'))
 })

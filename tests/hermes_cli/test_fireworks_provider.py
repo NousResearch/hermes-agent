@@ -142,6 +142,39 @@ class TestFireworksCredentials:
         assert creds["api_key"] == "fw_test_key"
         assert creds["base_url"] == "https://api.fireworks.ai/inference/v1"
 
+class TestFireworksSetupPicker:
+    def test_setup_uses_same_resolver_as_model_picker(self, monkeypatch):
+        from unittest.mock import patch
+
+        from hermes_cli.model_setup_flows import _model_flow_api_key_provider
+
+        resolved = [
+            "accounts/fireworks/models/kimi-k2p6",
+            "accounts/fireworks/models/kimi-k2p7-code",
+        ]
+        captured = {}
+
+        def capture_models(model_ids, **_kwargs):
+            captured["models"] = model_ids
+            return None
+
+        monkeypatch.setattr("builtins.input", lambda *_args: "")
+        with (
+            patch("hermes_cli.main._prompt_api_key", return_value=("fw_test_key", False)),
+            patch("hermes_cli.config.get_env_value", return_value=""),
+            patch("hermes_cli.config.load_config", return_value={"model": {}}),
+            patch("hermes_cli.config.save_config"),
+            patch("hermes_cli.config.save_env_value"),
+            patch("hermes_cli.auth._prompt_model_selection", side_effect=capture_models),
+            patch("hermes_cli.auth.deactivate_provider"),
+            patch("hermes_cli.models.provider_model_ids", return_value=resolved) as resolver,
+        ):
+            _model_flow_api_key_provider({}, "fireworks")
+
+        resolver.assert_called_once_with("fireworks", force_refresh=True)
+        assert captured["models"] == resolved
+
+
 class TestFireworksAuxiliary:
     """resolve_provider_client wires the BYOK key and PAYG-safe aux model."""
 

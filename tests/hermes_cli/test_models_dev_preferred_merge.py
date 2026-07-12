@@ -132,11 +132,15 @@ class TestProviderModelIdsPreferred:
             patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
             patch("hermes_cli.config.get_env_value", return_value=""),
             patch("hermes_cli.config.save_env_value"),
+            patch(
+                "hermes_cli.models.provider_model_ids",
+                return_value=["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
+            ) as resolver,
         ):
             _model_flow_kimi({}, current_model="")
 
-        assert captured["models"] == _PROVIDER_MODELS["kimi-coding"]
-        assert captured["models"][0] == "kimi-k2.7-code"
+        resolver.assert_called_once_with("kimi-coding", force_refresh=True)
+        assert captured["models"] == ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"]
 
 
 class TestOpenRouterAndNousUnchanged:

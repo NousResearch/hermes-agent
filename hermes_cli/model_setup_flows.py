@@ -1899,7 +1899,7 @@ def _model_flow_kimi(config, current_model=""):
         load_config,
         save_config,
     )
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import provider_model_ids
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -1932,8 +1932,8 @@ def _model_flow_kimi(config, current_model=""):
         save_env_value(base_url_env, "")
     print()
 
-    # Step 3: Model selection — show appropriate models for the endpoint
-    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
+    # Step 3: Model selection — use live discovery for all Kimi endpoints
+    model_list = provider_model_ids("kimi-coding", force_refresh=True)
 
     if model_list:
         selected = _prompt_model_selection(
@@ -2550,6 +2550,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         fetch_api_models,
         opencode_model_api_mode,
         normalize_opencode_model_id,
+        provider_model_ids,
     )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -2673,9 +2674,14 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
     #
-    # LM Studio: live /api/v1/models probe (no models.dev catalog).
-    # Ollama Cloud: merged discovery (live API + models.dev + disk cache).
-    if provider_id == "lmstudio":
+    # Model selection — Fireworks must use the same provider resolver as /model.
+    # Its models.dev entries include router IDs and image models that are not
+    # appropriate for the direct Fireworks agent picker.
+    if provider_id == "fireworks":
+        model_list = provider_model_ids("fireworks", force_refresh=True)
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+    elif provider_id == "lmstudio":
         from hermes_cli.auth import AuthError
         from hermes_cli.models import fetch_lmstudio_models
 

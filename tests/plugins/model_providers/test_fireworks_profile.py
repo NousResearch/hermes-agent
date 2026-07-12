@@ -79,3 +79,37 @@ class TestFireworksModelDefaults:
             assert model.startswith("accounts/fireworks/models/"), model
             assert "/routers/" not in model
             assert "turbo" not in model.lower(), model
+
+
+class TestFireworksModelDiscovery:
+    def test_keeps_agent_models_and_excludes_non_agent_models(
+        self, fireworks_profile, monkeypatch
+    ):
+        import json
+
+        payload = {
+            "models": [
+                {"name": "accounts/fireworks/models/kimi-k2p7-code", "public": True, "supportsTools": True},
+                {"name": "accounts/fireworks/models/flux-1-schnell-fp8", "public": True, "supportsTools": True},
+                {"name": "accounts/fireworks/models/bge-m3", "public": True, "supportsTools": True},
+                {"name": "accounts/fireworks/models/code-llama-7b-base", "public": True, "supportsTools": True},
+                {"name": "accounts/fireworks/models/deepseek-r1", "public": True, "supportsTools": False},
+                {"name": "accounts/fireworks/models/private-chat", "public": False, "supportsTools": True},
+            ]
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode()
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+
+        assert fireworks_profile.fetch_models(api_key="fw-test") == [
+            "accounts/fireworks/models/kimi-k2p7-code"
+        ]

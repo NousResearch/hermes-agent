@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
+import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 
@@ -16,6 +17,25 @@ function renderClarify(ui: ReactNode) {
       {ui}
     </I18nProvider>
   )
+}
+
+function settledClarifyProps(
+  args: ToolCallMessagePartProps['args'],
+  result: ToolCallMessagePartProps['result'],
+  toolCallId: string
+): ToolCallMessagePartProps {
+  return {
+    addResult: vi.fn(),
+    args,
+    argsText: JSON.stringify(args),
+    isError: false,
+    result,
+    resume: vi.fn(),
+    status: { type: 'complete' },
+    toolCallId,
+    toolName: 'clarify',
+    type: 'tool-call'
+  }
 }
 
 describe('readClarifyResult', () => {
@@ -61,16 +81,15 @@ describe('ClarifyTool settled view', () => {
   it('keeps the question and answer visible after the tool completes', () => {
     renderClarify(
       <ClarifyTool
-        args={{ question: 'Which deployment target?', choices: ['staging', 'prod'] }}
-        isError={false}
-        result={{
-          question: 'Which deployment target?',
-          choices_offered: ['staging', 'prod'],
-          user_response: 'staging'
-        }}
-        toolCallId="clarify-1"
-        toolName="clarify"
-        type="tool-call"
+        {...settledClarifyProps(
+          { question: 'Which deployment target?', choices: ['staging', 'prod'] },
+          {
+            question: 'Which deployment target?',
+            choices_offered: ['staging', 'prod'],
+            user_response: 'staging'
+          },
+          'clarify-1'
+        )}
       />
     )
 
@@ -83,12 +102,7 @@ describe('ClarifyTool settled view', () => {
   it('labels an empty response as Skipped', () => {
     renderClarify(
       <ClarifyTool
-        args={{ question: 'Anything else?' }}
-        isError={false}
-        result={{ question: 'Anything else?', user_response: '' }}
-        toolCallId="clarify-2"
-        toolName="clarify"
-        type="tool-call"
+        {...settledClarifyProps({ question: 'Anything else?' }, { question: 'Anything else?', user_response: '' }, 'clarify-2')}
       />
     )
 

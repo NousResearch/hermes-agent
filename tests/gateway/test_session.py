@@ -277,7 +277,9 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_includes_platform_notes(self):
+    def test_slack_prompt_no_tools_shows_disclaimer(self):
+        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+        from unittest.mock import patch
         config = GatewayConfig(
             platforms={
                 Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
@@ -291,7 +293,59 @@ class TestBuildSessionContextPrompt:
             user_name="bob",
         )
         ctx = build_session_context(source, config)
-        prompt = build_session_context_prompt(ctx)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        assert "cannot search" in prompt.lower()
+        assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
+        # Must NOT claim API access when tools are absent.
+        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
+
+    def test_slack_prompt_with_tools_shows_capability(self):
+        """When slack toolset is loaded, prompt must advertise API access."""
+        from unittest.mock import patch
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=True):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "Slack" in prompt
+        # Must advertise capability when tools ARE present.
+        assert "have access" in prompt.lower() or "you can" in prompt.lower()
+        # Must NOT show the stale-API disclaimer when tools are present.
+        assert "you do not have access" not in prompt.lower()
+
+    def test_slack_prompt_includes_platform_notes(self):
+        """Legacy: backward-compat alias -- no tools loaded shows disclaimer."""
+        from unittest.mock import patch
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()

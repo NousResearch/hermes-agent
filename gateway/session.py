@@ -301,6 +301,31 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def _slack_tools_loaded() -> bool:
+    """True iff the agent will actually have Slack tools this session.
+
+    Two conditions must hold:
+      1. The `slack` toolset is enabled for the Slack platform via
+         `hermes tools` (opt-in, default OFF).
+      2. `SLACK_BOT_TOKEN` is set — the tool check_fn gates on it at
+         registry time, so the toolset being enabled in config is not
+         enough if the token is missing.
+
+    Returns False (safe default — keeps the stale-API disclaimer) on any
+    error so a bad config can never silently promise tools the agent lacks.
+    """
+    if not (os.environ.get("SLACK_BOT_TOKEN") or "").strip():
+        return False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        enabled = _get_platform_tools(cfg, "slack", include_default_mcp_servers=False)
+        return "slack" in enabled
+    except Exception:
+        return False
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
 
@@ -454,15 +479,29 @@ def build_session_context_prompt(
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. The gateway may inline the "
-            "current message's Slack block/attachment payload when available, but "
-            "you still cannot call Slack APIs yourself."
-        )
+        # Inject Slack capability note only when the agent actually has
+        # Slack tools loaded this session — i.e. the user opted into
+        # `slack` via `hermes tools` AND SLACK_BOT_TOKEN is configured.
+        # Otherwise keep the stale-API disclaimer honest so we never
+        # promise tools the agent lacks.  Mirrors the Discord pattern.
+        if _slack_tools_loaded():
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack and have access "
+                "to Slack-specific tools. You CAN search channel history, post "
+                "messages, react to messages, and perform other Slack operations "
+                "via the `slack` toolset."
+            )
+        else:
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack. "
+                "You do NOT have access to Slack-specific APIs — you cannot search "
+                "channel history, pin/unpin messages, manage channels, or list users. "
+                "Do not promise to perform these actions. The gateway may inline the "
+                "current message's Slack block/attachment payload when available, but "
+                "you still cannot call Slack APIs yourself."
+            )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into

@@ -24,6 +24,7 @@ def isolate_env(monkeypatch):
         "XAI_API_KEY",
         "XAI_BASE_URL",
         "MINIMAX_API_KEY",
+        "VOICE_TOOLS_MINIMAX_KEY",
         "MISTRAL_API_KEY",
         "GEMINI_API_KEY",
         "GEMINI_BASE_URL",

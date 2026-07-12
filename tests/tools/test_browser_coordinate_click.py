@@ -541,7 +541,7 @@ class TestSessionCaching:
         cdp_server.on("Input.dispatchMouseEvent", _dispatch)
 
         # Seed cache with stale session to trigger the error path
-        browser_tool._CDP_SESSION_CACHE[cdp_server._url] = "stale-session-id"
+        browser_tool._CDP_SESSION_CACHE[(cdp_server._url, "default")] = "stale-session-id"
 
         r = json.loads(browser_tool.browser_click(x=50.0, y=60.0))
         assert r["success"] is True
@@ -549,12 +549,13 @@ class TestSessionCaching:
         assert call_count["resolve"] >= 1
 
     def test_cache_cleared_on_endpoint_change(self, monkeypatch):
-        """Cache is keyed per endpoint URL; different URL doesn't reuse cached session."""
+        """Cache is keyed per (endpoint URL, task_id); a different task_id on the
+        same endpoint does not reuse another task's cached session."""
         from tools import browser_tool
 
         browser_tool._CDP_SESSION_CACHE.clear()
-        browser_tool._CDP_SESSION_CACHE["ws://endpoint-a/"] = "sess-a"
+        browser_tool._CDP_SESSION_CACHE[("ws://endpoint-a/", "task-a")] = "sess-a"
 
-        # Endpoint B must not find endpoint A's session
-        assert browser_tool._CDP_SESSION_CACHE.get("ws://endpoint-b/") is None
+        # A different task_id on the same endpoint must not find task-a's session
+        assert browser_tool._CDP_SESSION_CACHE.get(("ws://endpoint-a/", "task-b")) is None
 

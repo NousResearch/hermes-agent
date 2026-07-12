@@ -3038,12 +3038,13 @@ def browser_snapshot(
 # process by storing it in a module-level dict.
 # ---------------------------------------------------------------------------
 
-_CDP_SESSION_CACHE: dict[str, str] = {}  # ws_url → cached session_id
+_CDP_SESSION_CACHE: dict[tuple[str, str], str] = {}  # (ws_url, task_id) → cached session_id
 
 
 async def _cdp_resolve_session(
     ws: Any,
     ws_url: str,
+    task_id: str,
     deadline: float,
     msg_id_ref: list,
 ) -> Optional[str]:
@@ -3052,7 +3053,8 @@ async def _cdp_resolve_session(
     Sends Target.getTargets + Target.attachToTarget on *ws* and caches the
     resulting session_id for future clicks.  Returns None if no page target
     is found (Input.dispatchMouseEvent will be sent at browser level, which
-    works for simple cases).
+    works for simple cases).  The cache is keyed by (ws_url, task_id) so
+    concurrent tasks sharing one browser endpoint don't collide.
     """
     import asyncio as _asyncio
 
@@ -3093,7 +3095,7 @@ async def _cdp_resolve_session(
     at_result = await _recv_until(at_id)
     session_id = at_result.get("sessionId") or None
     if session_id:
-        _CDP_SESSION_CACHE[ws_url] = session_id
+        _CDP_SESSION_CACHE[(ws_url, task_id)] = session_id
     return session_id
 
 
@@ -3101,6 +3103,7 @@ async def _cdp_coordinate_click_async(
     ws_url: str,
     x: int,
     y: int,
+    task_id: str,
     button: str,
     timeout: float,
 ) -> None:
@@ -3167,9 +3170,9 @@ async def _cdp_coordinate_click_async(
                     return msg.get("result", {})
 
         # --- resolve session (cached after first click) ---
-        session_id: Optional[str] = _CDP_SESSION_CACHE.get(ws_url)
+        session_id: Optional[str] = _CDP_SESSION_CACHE.get((ws_url, task_id))
         if not session_id:
-            session_id = await _cdp_resolve_session(ws, ws_url, deadline, msg_id_ref)
+            session_id = await _cdp_resolve_session(ws, ws_url, task_id, deadline, msg_id_ref)
 
         # --- fire mousePressed + mouseReleased without awaiting press ack ---
         # Both messages are sent before we await either response.  The browser
@@ -3177,14 +3180,16 @@ async def _cdp_coordinate_click_async(
         _press_id = await _send_mouse("mousePressed", session_id)
         release_id = await _send_mouse("mouseReleased", session_id)
         try:
+            await _recv_until(_press_id)
             await _recv_until(release_id)
         except RuntimeError as exc:
             # Stale session (e.g. after navigation) — invalidate cache, retry once
             if "Session with given id not found" in str(exc) and session_id:
-                _CDP_SESSION_CACHE.pop(ws_url, None)
-                session_id = await _cdp_resolve_session(ws, ws_url, deadline, msg_id_ref)
+                _CDP_SESSION_CACHE.pop((ws_url, task_id), None)
+                session_id = await _cdp_resolve_session(ws, ws_url, task_id, deadline, msg_id_ref)
                 _press_id = await _send_mouse("mousePressed", session_id)
                 release_id = await _send_mouse("mouseReleased", session_id)
+                await _recv_until(_press_id)
                 await _recv_until(release_id)
             else:
                 raise
@@ -3214,12 +3219,6 @@ def _cdp_coordinate_click(
             "error": "browser_cdp_tool not available — coordinate clicks require the CDP tool module.",
         }, ensure_ascii=False)
 
-    if not _WS_AVAILABLE:
-        return json.dumps({
-            "success": False,
-            "error": "The 'websockets' package is required for coordinate clicks. Install with: pip install websockets",
-        }, ensure_ascii=False)
-
     endpoint = _resolve_cdp_endpoint()
     if not endpoint:
         return _coordinate_click_via_agent_browser(x, y, task_id, button)
@@ -3227,8 +3226,16 @@ def _cdp_coordinate_click(
     if not endpoint.startswith(("ws://", "wss://")):
         return _coordinate_click_via_agent_browser(x, y, task_id, button)
 
+    # Only require websockets once we know a CDP endpoint exists; this keeps
+    # the agent-browser mouse fallback working when no CDP endpoint is set.
+    if not _WS_AVAILABLE:
+        return json.dumps({
+            "success": False,
+            "error": "The 'websockets' package is required for CDP coordinate clicks. Install with: pip install websockets",
+        }, ensure_ascii=False)
+
     try:
-        _run_async(_cdp_coordinate_click_async(endpoint, ix, iy, button, 10.0))
+        _run_async(_cdp_coordinate_click_async(endpoint, ix, iy, task_id, button, 10.0))
     except Exception as exc:
         return json.dumps({
             "success": False,

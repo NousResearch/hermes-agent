@@ -1982,6 +1982,16 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Separate, narrower approval gate that ONLY covers skill writes made
+        # by the background self-improvement review fork (not foreground
+        # writes -- those are covered by write_approval above). That fork
+        # autonomously judges its own lesson and persists it with no
+        # independent verification, which is the actual source of bad/stale
+        # skills silently entering ~/.hermes/skills. On by default: those
+        # writes stage for review (/skills pending) rather than committing
+        # immediately. Set to false to let the background fork write skills
+        # freely, matching the pre-existing (write_approval-only) behaviour.
+        "write_approval_background_review": True,
     },
 
     # Curator — background skill maintenance.

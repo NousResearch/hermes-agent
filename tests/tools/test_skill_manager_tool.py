@@ -564,7 +564,17 @@ class TestSkillManageDispatcher:
         assert rec.get("created_by") in {None, "", False}
 
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
-        """Background-review fork creates ARE marked as agent-created."""
+        """Background-review fork creates ARE marked as agent-created.
+
+        Disables the background-review write-approval gate (on by default)
+        so this exercises the actual create + marking path rather than
+        staging — that gate is covered separately in test_write_approval.py.
+        """
+        import hermes_cli.config as cfg
+        c = cfg.load_config()
+        c.setdefault("skills", {})["write_approval_background_review"] = False
+        cfg.save_config(c)
+
         from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:

@@ -48,6 +48,44 @@ def test_invalid_subsystem_is_off(hermes_home):
     assert wa.write_approval_enabled("bogus") is False
 
 
+def test_skill_gate_defaults_on_for_background_review(hermes_home):
+    """Unset config: background-review skill writes default to gated (staged
+    for approval), since that fork persists its own self-assessed lessons
+    with no independent check. Foreground writes are unaffected."""
+    from tools import write_approval as wa
+    from tools import skill_provenance as sp
+
+    assert wa.write_approval_enabled("skills") is False  # foreground default unchanged
+
+    token = sp.set_current_write_origin(sp.BACKGROUND_REVIEW)
+    try:
+        assert wa.write_approval_enabled("skills") is True
+        assert wa.write_approval_enabled("memory") is False  # only skills, not memory
+    finally:
+        sp.reset_current_write_origin(token)
+
+    assert wa.write_approval_enabled("skills") is False  # restored after reset
+
+
+def test_skill_gate_explicit_off_wins_even_in_background(hermes_home):
+    """A user who explicitly sets skills.write_approval_background_review:
+    false opts back into the old always-on-unset behaviour for the
+    background-review fork too."""
+    import hermes_cli.config as cfg
+    from tools import write_approval as wa
+    from tools import skill_provenance as sp
+
+    c = cfg.load_config()
+    c.setdefault("skills", {})["write_approval_background_review"] = False
+    cfg.save_config(c)
+
+    token = sp.set_current_write_origin(sp.BACKGROUND_REVIEW)
+    try:
+        assert wa.write_approval_enabled("skills") is False
+    finally:
+        sp.reset_current_write_origin(token)
+
+
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
     # Real bools pass through.

@@ -77,15 +77,45 @@ def write_approval_enabled(subsystem: str) -> bool:
     Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
     ``False`` (gate off — writes flow freely) for any unset / invalid value so
     existing installs keep their current behaviour until the user opts in.
+
+    For ``skills`` writes specifically, the gate is ALSO on whenever the
+    write originates from the background-review fork and
+    ``skills.write_approval_background_review`` is true (default ``True``,
+    independent of the general ``write_approval`` flag above). That fork
+    autonomously decides what "worked" and persists it with no independent
+    verification — the exact path that produced the "wrong assumptions"
+    users complained about (see module docstring). A user who explicitly
+    asks the agent to save a skill in a foreground turn is present and
+    endorsing the write, so the general flag (default off) still governs
+    that path. Set ``skills.write_approval_background_review: false`` to
+    let the background fork write skills freely again.
     """
     if subsystem not in _SUBSYSTEMS:
         return False
+    if subsystem == SKILLS and is_background() and _background_review_gate_enabled():
+        return True
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
         raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
     except Exception:
         return False
+    return _normalize_enabled(raw)
+
+
+def _background_review_gate_enabled() -> bool:
+    """Read ``skills.write_approval_background_review`` from config.yaml.
+
+    Defaults to ``True``: unlike the general per-subsystem gate, background-
+    review skill writes are approval-gated out of the box (see
+    ``write_approval_enabled`` docstring for why).
+    """
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        raw = cfg_get(cfg, SKILLS, "write_approval_background_review", default=True)
+    except Exception:
+        return True
     return _normalize_enabled(raw)
 
 

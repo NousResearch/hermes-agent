@@ -375,9 +375,23 @@ def _discord_verified_session_entry(
     verified = dict(entry)
     verified["type"] = public_type
     guild = getattr(target, "guild", None)
+    guild_id = getattr(guild, "id", None)
+    if not guild_id:
+        return None
+    verified["guild_id"] = str(guild_id)
     guild_name = getattr(guild, "name", None)
     if guild_name:
         verified["guild"] = str(guild_name)
+    if public_type == "thread":
+        parent_id = getattr(target, "parent_id", None)
+        if not parent_id:
+            return None
+        verified["parent_channel_id"] = str(parent_id)
+        verified["target_type"] = "public_guild_thread"
+    elif public_type == "forum":
+        verified["target_type"] = "public_guild_forum"
+    else:
+        verified["target_type"] = "public_guild_channel"
     return verified
 
 
@@ -399,22 +413,32 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         for ch in getattr(guild, "text_channels", None) or []:
             if public_only and not _discord_cached_public_directory_target(ch):
                 continue
+            guild_id = str(getattr(guild, "id", "") or "")
+            if public_only and not guild_id:
+                continue
             channels.append({
                 "id": str(ch.id),
                 "name": ch.name,
                 "guild": guild.name,
+                "guild_id": guild_id,
                 "type": "channel",
+                "target_type": "public_guild_channel",
             })
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for ch in forums:
             if public_only and not _discord_cached_public_directory_target(ch):
                 continue
+            guild_id = str(getattr(guild, "id", "") or "")
+            if public_only and not guild_id:
+                continue
             channels.append({
                 "id": str(ch.id),
                 "name": ch.name,
                 "guild": guild.name,
+                "guild_id": guild_id,
                 "type": "forum",
+                "target_type": "public_guild_forum",
             })
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
@@ -637,6 +661,53 @@ def is_discord_public_target(chat_id: str) -> bool:
     """
     channel_type = str(lookup_channel_type("discord", str(chat_id or "")) or "").strip().lower()
     return bool(channel_type) and channel_type not in _DISCORD_NON_PUBLIC_TYPES
+
+
+def lookup_discord_public_target(chat_id: str) -> Optional[Dict[str, str]]:
+    """Return exact non-secret guild metadata for a directory-proven target.
+
+    This cached tuple is only request construction evidence.  The privileged
+    edge independently re-reads Discord and proves the current channel type,
+    parent, guild, public visibility, and bot permissions before dispatch.
+    """
+
+    target_id = str(chat_id or "").strip()
+    if not target_id:
+        return None
+    directory = load_directory()
+    matches = []
+    for channel in directory.get("platforms", {}).get("discord", []):
+        if not isinstance(channel, dict):
+            continue
+        channel_id = str(channel.get("thread_id") or channel.get("id") or "").strip()
+        if channel_id != target_id:
+            continue
+        channel_type = str(channel.get("type") or "").strip().lower()
+        guild_id = str(channel.get("guild_id") or "").strip()
+        target_type = str(channel.get("target_type") or "").strip()
+        if (
+            not guild_id
+            or channel_type in _DISCORD_NON_PUBLIC_TYPES
+            or target_type not in {
+                "public_guild_channel",
+                "public_guild_thread",
+                "public_guild_forum",
+            }
+        ):
+            continue
+        result = {
+            "target_type": target_type,
+            "guild_id": guild_id,
+            "channel_id": target_id,
+        }
+        if target_type == "public_guild_thread":
+            parent_id = str(channel.get("parent_channel_id") or "").strip()
+            if not parent_id or parent_id == target_id:
+                continue
+            result["parent_channel_id"] = parent_id
+        matches.append(result)
+    unique = {json.dumps(item, sort_keys=True): item for item in matches}
+    return next(iter(unique.values())) if len(unique) == 1 else None
 
 
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:

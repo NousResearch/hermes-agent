@@ -60,12 +60,13 @@ fails closed.
 
 ## Fixed operation surface
 
-The protocol exposes sixteen operations:
+The protocol exposes seventeen operations:
 
 - exact case query, route-back context, active-plan match, and bounded
   projection reads;
 - model-authored event append, task-plan transition, and verification append;
-- atomic route-back claim, sent finalization, and blocked finalization;
+- atomic route-back claim, exact restart recovery, sent finalization, and
+  blocked finalization;
 - durable capability grant, consume, plan revoke, and session revoke;
 - internal lease-shadow receipt and health ping.
 
@@ -99,7 +100,7 @@ triggers, rules, policies, and inheritance, and attests the exact table
 identity in the same serializable, advisory-locked transaction as every writer
 call. Canonical schema, side-table, sequence, and function ACLs are likewise
 closed to every non-owner grantee except the runtime writer's exact `USAGE` and
-sixteen `EXECUTE` grants. The migration does not revoke unrelated shared
+seventeen `EXECUTE` grants. The migration does not revoke unrelated shared
 database/schema/function privileges as a side effect; unexpected external ACLs
 inside the Canonical boundary fail the contract closed.
 
@@ -113,39 +114,120 @@ legacy shared helper are quarantined from current operational truth until an
 owner reviews their exact schema and content and applies a separate, explicit
 reseed/reconciliation migration. They are not silently trusted or deleted.
 
+`scripts/sql/canonical_writer_legacy_reconcile_v1.sql` is the structural half
+of that reconciliation for an isolated PostgreSQL 18 canary copy only. It
+requires the exact database name `muncho_canary_brain`, a root-collected server
+identity SHA-256, source owner, frozen row count,
+fourteen-field digest, nineteen-field digest, `occurred_at` cutoff, and hashed
+owner-approval receipt as explicit session settings, and refuses the production
+database name. In one serializable, advisory-locked transaction it moves the
+untouched nineteen-column relation into the private legacy-quarantine schema,
+creates the exact fourteen-column public contract, copies the fourteen canonical
+values without semantic transformation, and records both content receipts and
+cutoffs. Reruns re-attest the same result and make no further change. A failure
+before `COMMIT` restores the pristine nineteen-column state atomically. After a
+trusted write begins, rollback is forward-only: disable mutations and repair or
+discard the isolated canary; never move the legacy table back into the runtime
+path.
+
+The reconciliation acquires its exact administrator only as a PostgreSQL 16+
+SET-only/non-inheriting member of the offline owner and temporarily grants that
+owner `CREATE` on `public` before the target ownership transfer. Both grants are
+revoked and their absence is attested before `COMMIT`; the SQL does not rely on
+Cloud SQL's provider-specific owner-transfer bypass.
+
+That structural migration intentionally inserts zero legacy IDs into
+`writer_event_provenance`. Legacy UUID derivation, content hashing, source and
+decision envelopes differ from the privileged v1 writer, so bulk provenance
+promotion would falsely claim a privileged origin and could duplicate a logical
+event after retry. Continuity therefore requires a later owner-reviewed typed
+reseed manifest, or an explicit decision to begin a new trusted truth epoch;
+neither choice is inferred by deterministic migration code.
+
 ## Route-back receipts and Discord boundary
 
 Canonical route-back follows this order:
 
 1. Resolve and authorize an exact owner-approved public channel or public
    thread.
-2. Atomically create a durable claim bound to the globally unique case plus
-   idempotency key, exact claimant session/epoch, target, and rendered content
-   hash. A retry from another authorized lane therefore observes the same
-   lifecycle instead of creating a second send authority.
-3. Only the process that inserted the claim may call the live adapter.
-4. Read the message back through the live Discord adapter.
-5. Finalize `route_back.sent` only when the receipt has exact platform,
-   channel, message ID, content hash, adapter acceptance, and verified readback.
+2. Authenticate the credential-free gateway client to the exact current
+   privileged Discord-edge systemd `MainPID`. This preconnect happens before
+   any durable dispatch authority is created.
+3. Ask the edge's exact mutation-free reconciliation endpoint before changing
+   the Canonical claim. Current signed journal evidence enters the dedicated
+   recovery path and is never resent. Only an authenticated exact `no record`
+   result permits a new claim or an epoch-only takeover to mint fresh dispatch
+   authority.
+4. Atomically create a durable claim bound to the globally unique case plus
+   caller idempotency key, exact claimant session/epoch, target, and rendered
+   content hash. The edge idempotency key is independently derived from the
+   case and caller key, so equal caller keys in different cases cannot collide.
+   A successful nonterminal claim in the exact original runtime scope rechecks
+   the current public-target ACL and returns a fresh, short-lived,
+   writer-signed Ed25519 request for the exact `public.message.send` intent.
+   The edge journal is first-wins: an exact PREPARED intent may atomically bind
+   to a strictly newer capability, while any accepted or dispatching record is
+   fenced from rebinding or a second mutation.
+5. The token-owning REST edge independently re-reads the Discord guild,
+   channel/thread parent, `@everyone` visibility, bot identity and exact
+   permissions. It commits `dispatching` before the HTTP mutation, persists a
+   signed `accepted_unverified` receipt with the returned Discord object ID
+   immediately after acceptance, then performs exact author/content/reply
+   readback. A verified result atomically upgrades that receipt; all prior
+   signed receipts remain in append-only history.
+6. The writer verifies both its own capability and the edge signature, plus
+   authorization, target, content and idempotency bindings. Only a signed
+   `verified` receipt can finalize `route_back.sent`. Before any Canonical
+   finalization, a `dispatching` observation is re-read through the exact
+   mutation-free reconciliation endpoint. A current `accepted_unverified`
+   receipt is nonterminal and leaves the claim pending because later readback
+   may still upgrade it to `verified`; a delayed older receipt therefore cannot
+   permanently win over newer journal truth. Signed `dispatch_uncertain` or
+   pre-dispatch blocked/failed evidence may finalize `route_back.blocked`.
+   Gateway booleans, adapter objects and caller-authored blocker text are not
+   delivery truth.
 
-If Discord accepted the outbound call but readback cannot be proven, the writer
-stores `route_back.blocked` with an exact six-field partial receipt and marks
-the delivery as `accepted_unverified`. A post-send timeout or exception in the
-claimant is treated as delivery-outcome-uncertain, finalized without a resend,
-and reported as such. A different request that encounters an existing
-unterminated claim may neither infer failure from its age nor send again: the
-lifecycle remains pending reconciliation until the original claimant or an
-owner-reviewed receipt reconciliation supplies a terminal fact. If adapter
-acceptance and live readback were verified but the sent terminal could not be
-persisted after bounded reconciliation/retry, the writer records the exact
-verified receipt as a distinct ledger-persistence blocker; it does not falsely
-call delivery uncertain and still forbids resend. Pre-claim validation failures
-use the typed preclaim-blocked path, which creates a terminal lifecycle and
-cannot later be converted into send authority.
+If the local transport closes after request bytes may have reached the edge but
+before its signed receipt reaches the gateway, the claim remains pending exact
+journal reconciliation. A retry always asks the mutation-free reconciliation
+endpoint first. Only an authenticated exact `no record` result permits the
+writer to issue a fresh short-lived request for the unchanged intent; the edge
+journal's first-wins/CAS rules still permit at most one Discord mutation.
+Existing accepted records perform readback-only reconciliation, including
+after the original capability deadline, and are never dispatched again. The
+gateway never fabricates `route_back.blocked`. A legacy `dispatching` record
+without accepted object evidence remains conservatively uncertain. Pre-claim
+validation or edge-preconnect failures use the typed preclaim-blocked path,
+which creates no send authority.
 
-The Canonical route-back path and the primary Discord adapter reject DMs,
-group DMs, private channels, private threads, and guild surfaces that the live
-Discord `@everyone` role cannot view. When the privileged writer policy is
+A gateway restart rotates the process capability epoch but does not change the
+canonical session. One pending route-back may cross that epoch boundary only
+through `routeback.recover`, only for the exact same session, runtime platform,
+source thread/lane, immutable case, target, rendered-content digest, and
+case-scoped idempotency key, and only after the current runtime re-proves case
+scope. A current signed edge receipt is paired with the original writer-signed
+request and may finalize already-observed truth even if the public-target ACL
+was disabled after dispatch. An authenticated exact edge `no record` result
+may instead obtain a fresh short-lived request, but it must recheck the current
+public-target ACL. Recovery creates no second lifecycle and does not rewrite
+the append-only authorization ledger. A different session, platform, or source
+lane remains blocked.
+
+This exception is route-back-specific. It never restores, copies, or advances
+a dangerous-plan approval or its usage budget. Those capabilities remain bound
+to their original session epoch and intentionally expire on gateway restart.
+
+The Canonical route-back edge rejects DMs, group DMs, private channels, private
+threads, mismatched guild/parent relationships, and guild surfaces that the
+live Discord `@everyone` role cannot view. Its API surface contains only fixed
+send/edit/thread operations; no caller controls an HTTP method or URL. It uses
+safe mentions, bounded strict JSON, no environment proxy, no redirect, and a
+hard total request deadline. Non-empty two-step text-channel thread creation is
+rejected before HTTP because it cannot provide one atomic accepted-object
+receipt; an empty thread followed by a separately receipted send, or an atomic
+forum post, is required.
+
+When the privileged writer policy is
 declared enabled, inbound DM/private interactions are ignored, native slash
 and component callbacks fail closed before responding, prompt/edit/media paths
 repeat the public-target proof, the send-message tool prefers the live adapter,
@@ -172,11 +254,13 @@ enabled in production. The legacy SQLite/synthetic gateway handoff watcher and
 its silent home-channel fallback are likewise disabled under the privileged
 policy, so returning `None` from thread creation cannot bypass Canonical truth.
 
-These are defense-in-depth code gates, not yet a global token-egress guarantee:
-the gateway still owns the Discord token, so a compromised gateway or an
-insufficiently isolated child could bypass Python call sites. A separate
-privileged Discord-token/egress boundary remains required before claiming that
-*all* Muncho Discord sends are public-only.
+The Canonical route-back gateway no longer reads its Discord token, writer
+private key, or edge private receipt key. The canary uses a distinct Discord
+application whose token is readable only by the privileged egress identity.
+This is not yet a claim that every unrelated Hermes Discord surface is globally
+token-isolated: ordinary platform ingress/reply and legacy non-route-back paths
+must either be disabled in that deployment or migrated to their own signed edge
+capabilities before production may call the entire Discord integration sealed.
 
 ## Dangerous-plan capability lifetime
 
@@ -231,10 +315,17 @@ The gateway must have none of the following:
 
 The runtime database role is not `postgres`, owns no object, has no dangerous
 role attributes or memberships, and receives only database `CONNECT`, schema
-`USAGE`, and `EXECUTE` on the exact sixteen pinned routines. It has no direct
+`USAGE`, and `EXECUTE` on the exact seventeen pinned routines. It has no direct
 table grants. The offline migration owner is `NOLOGIN`, has no dangerous role
-attributes, has neither memberships nor inheriting members, and alone owns the
-event table, private ledgers, schema, and routines.
+attributes, is `NOINHERIT`, has neither memberships nor inheriting members, and
+alone owns the event table, private ledgers, schema, and routines. A managed
+database administrator is not assumed to be PostgreSQL superuser. An approved
+migration first attests the zero-membership state, grants its exact login a
+transaction-scoped SET-only/non-inheriting owner membership, executes owner-only
+DDL through `SET LOCAL ROLE`, then resets, revokes, and re-attests zero
+membership before `COMMIT`. Temporary archive reads and database `TEMP` needed
+by migration checks are treated the same way. A crash or error rolls every
+temporary grant back atomically; no runtime process receives this path.
 
 The migration never revokes ambient `PUBLIC` privileges from unrelated shared
 database objects. Instead, startup attestation fails closed if the writer role
@@ -242,8 +333,25 @@ inherits `TEMP`, public-schema/function capability, or `CONNECT` to another
 database. Production therefore needs a dedicated Canonical database/cluster,
 or a separately owner-reviewed ambient-ACL hardening change. A default shared
 cluster is a cutover blocker, not something this migration silently rewrites.
+The one managed Cloud SQL exception is the provider-owned `cloudsqladmin`
+maintenance database: its database owner, complete ACL, `cloudsqladmin` and
+`cloudsqlsuperuser` role attributes must exactly match the pinned catalog
+fingerprint, and a fresh trusted preflight receipt must prove that direct TLS
+login is rejected by `pg_hba`. The canonical receipt binds the same writer
+host, port, CA-verified peer certificate SHA-256, user and credential path to
+database `cloudsqladmin`, exact SQLSTATE `28000`, the exact PostgreSQL TLS HBA
+rejection, observation/expiry times, and result. It is collected by root,
+digest-verified and freshness-checked by deployment preflight. If this managed
+exception is configured, writer startup repeats the active verified-TLS probe
+on every process start and fails before opening the production session when the
+receipt is stale, the certificate changes, the error differs, or login succeeds.
+A name match, catalog match, arbitrary 64-hex value, or caller-supplied boolean
+alone is insufficient; every other connectable non-template database remains
+forbidden.
 
-PostgreSQL 12 or newer is required for the pinned catalog contract. Routine
+PostgreSQL 16 or newer is required because the owner boundary depends on
+independent `ADMIN FALSE`, `INHERIT FALSE`, and `SET TRUE` membership options.
+Routine
 owner, language, `SECURITY DEFINER`/invoker mode, exact safe
 `search_path`, definition SHA-256, PUBLIC ACL absence, helper catalog, owner
 attributes, memberships, table identity, and all effective privileges are
@@ -268,6 +376,8 @@ canonical_brain:
   tools_enabled: true
   writer_boundary:
     enabled: true
+  discord_edge:
+    enabled: true
 ```
 
 The writer consumes a separate root-owned, secret-free strict JSON file. It
@@ -277,6 +387,38 @@ identities plus the reviewed private-schema identity SHA-256. Unknown fields,
 embedded secret-shaped keys, mutable modes,
 symlinks, untrusted parents, unpinned units, and shared gateway/writer UIDs are
 rejected.
+
+The same strict writer JSON must make Discord route-back authority explicit.
+The enabled shape contains paths and a pinned public-key identifier, never key
+material:
+
+```json
+{
+  "discord_edge_authority": {
+    "enabled": true,
+    "capability_private_key_file": "/etc/muncho/credentials/discord-writer-capability-private.pem",
+    "edge_receipt_public_key_file": "/etc/muncho/trust/discord-edge-receipt-public.pem",
+    "edge_receipt_public_key_id": "<lowercase-ed25519-public-key-sha256>",
+    "request_timeout_seconds": 15
+  }
+}
+```
+
+The capability private key is an unencrypted Ed25519 PKCS#8 PEM owned by the
+writer UID/GID with exact mode `0400`. The pinned edge receipt key is an
+Ed25519 SubjectPublicKeyInfo PEM owned by root, grouped to the writer, with
+exact mode `0440`; its observed key ID must equal the configured digest. Both
+must be regular non-symlink, single-link files at distinct absolute paths,
+opened with no-follow semantics and re-attested by descriptor before parsing.
+Production parent directories remain root-controlled and non-writable by
+group/world. Key paths are accepted only from this explicit config—never from
+environment variables, Secret Manager lookup, a caller payload, or automatic
+discovery. The only valid disabled shape is
+`{"discord_edge_authority":{"enabled":false}}`. If authority is enabled but
+either key is missing, malformed, misowned, incorrectly permissioned, reused
+for both roles, or does not match the pinned edge key ID, bootstrap fails
+before exposing the writer socket. With authority disabled, route-back claims
+remain fail-closed while unrelated typed writer operations can still run.
 
 The projector has no database credential. A privileged one-shot writer job may
 create an atomic, bounded, writer-owned event export for the unprivileged
@@ -331,7 +473,7 @@ Cloud deployment must remain blocked until all of the following are complete:
    database/cluster or approve a separate ACL-hardening migration; this writer
    migration will not alter unrelated workloads.
 3. **Real PostgreSQL E2E.** Apply the migration twice to a production-shaped
-   ephemeral PostgreSQL instance and execute all sixteen routines through the
+   ephemeral PostgreSQL instance and execute all seventeen routines through the
    real wire client, including idempotent retries, CAS conflicts, provenance
    quarantine, completion verification, route-back partial receipts, legacy
    column ACLs, arbitrary grantee/function ACL drift, malformed preexisting
@@ -369,7 +511,10 @@ Cloud deployment must remain blocked until all of the following are complete:
 1. Stop Canonical mutations and take the migration form of the global advisory
    lock.
 2. Apply the reviewed reconciliation and writer migration with the offline
-   migration owner.
+   migration owner. Never provide the Cloud SQL HBA digest manually or invoke
+   the SQL directly: the root-controlled probe-and-apply driver must actively
+   collect the receipt with the writer host/port/CA/user/credential and inject
+   only that canonical digest into the transaction.
 3. Provision the immutable shared release, writer identity/config/credential,
    socket group, and exact hardened units. Keep dynamic Python disabled unless
    every extension is inside the immutable release.
@@ -377,9 +522,9 @@ Cloud deployment must remain blocked until all of the following are complete:
 5. Run the trusted root collector and require every preflight invariant to pass.
 6. Start the writer, then the gateway.
 7. Canary exact query/append, plan retry/CAS, restart-invalidated approval,
-   public route-back sent receipt, accepted-unverified blocked receipt, DM and
-   private-thread rejection, child-PID rejection, writer outage behavior,
-   projection export if enabled, and a multi-step task resume.
+   public route-back sent receipt, accepted-unverified pending reconciliation,
+   DM and private-thread rejection, child-PID rejection, writer outage
+   behavior, projection export if enabled, and a multi-step task resume.
 
 Rollback is fail-closed: disable Canonical mutations and repair the writer. Do
 not restore the shared helper, `postgres` credential, broad IAM, mutable code,

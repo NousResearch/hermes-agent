@@ -52,6 +52,7 @@ class CanonicalWriterOperation(StrEnum):
     PLAN_TRANSITION = "plan.transition"
     VERIFICATION_APPEND = "verification.append"
     ROUTEBACK_CLAIM = "routeback.claim"
+    ROUTEBACK_RECOVER = "routeback.recover"
     ROUTEBACK_FINALIZE_SENT = "routeback.finalize_sent"
     ROUTEBACK_FINALIZE_BLOCKED = "routeback.finalize_blocked"
     LEASE_SHADOW_RECORD = "lease_shadow.record"

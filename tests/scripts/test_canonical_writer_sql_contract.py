@@ -60,12 +60,12 @@ def _dollar_block(name: str) -> str:
     return SQL.split(start, 1)[1].split(f"${name}$;", 1)[0]
 
 
-def test_fixed_catalog_defines_exactly_the_backend_sixteen_routines():
+def test_fixed_catalog_defines_exactly_the_backend_seventeen_routines():
     expected = set(POSTGRES_ROUTINE_BY_OPERATION.values())
 
-    assert len(expected) == 16
+    assert len(expected) == 17
     assert _writer_names() == expected
-    assert SQL.count("-- Fixed public routine ") == 16
+    assert SQL.count("-- Fixed public routine ") == 17
 
 
 def test_private_writer_tables_have_exact_ordered_columns_without_duplicates():
@@ -148,7 +148,7 @@ def test_public_routines_reraise_only_retryable_transaction_aborts():
         assert definition.count(retry_clause) == 1
         assert "RETURN canonical_brain._fail('database_failure'" in definition
 
-    assert SQL.count(retry_clause) == 16
+    assert SQL.count(retry_clause) == 17
 
 
 def test_owner_and_execute_acl_cover_exactly_public_catalog():
@@ -223,6 +223,8 @@ def test_migration_locks_and_fails_closed_on_schema_prerequisites():
     assert "public.canonical_event_log is incompatible" in SQL
     assert "pg_catalog.sha256(bytea)" in SQL
     assert "server_version_num" in SQL
+    assert "server_version_num')::integer < 160000" in SQL
+    assert "PostgreSQL 16+ SET-only role membership" in SQL
     assert (
         "canonical_brain_migration_owner must be a least-privilege NOLOGIN role"
         in SQL
@@ -242,6 +244,66 @@ def test_migration_locks_and_fails_closed_on_schema_prerequisites():
     assert "preexisting writer foreign-key contract mismatch" in SQL
     assert "(SELECT * FROM actual EXCEPT SELECT * FROM expected)" in SQL
     assert "preexisting %.% has untrusted owner %" in SQL
+
+
+def test_managed_admin_uses_only_approval_bound_transactional_owner_authority():
+    temporary = _dollar_block("temporary_owner_membership")
+    retirement = _dollar_block("retire_temporary_owner_membership")
+    final_contract = _dollar_block("final_owner_membership_contract")
+
+    assert "canonical_writer_migration_scope" in SQL
+    assert "canonical_writer_migration_database" in SQL
+    assert "canonical_writer_migration_approval_receipt_sha256" in SQL
+    assert "isolated_canary_copy" in SQL
+    assert "owner_approved_cutover" in SQL
+    assert "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE" in temporary
+    assert "WITH ADMIN FALSE'" not in temporary
+    assert "SET LOCAL ROLE canonical_brain_migration_owner;" in SQL
+    assert "GRANT TEMPORARY ON DATABASE %I" in temporary
+    assert "RESET ROLE;" in SQL
+    assert "REVOKE canonical_brain_migration_owner FROM %I" in retirement
+    assert "pg_catalog.pg_auth_members" in final_contract
+    assert "has_database_privilege" in final_contract
+    assert "'TEMP'" in final_contract
+    assert SQL.index("DO $prerequisites$") < SQL.index("DO $temporary_owner_membership$")
+    assert SQL.index("DO $temporary_owner_membership$") < SQL.index(
+        "DO $owner_schema_create$"
+    ) < SQL.index("SET LOCAL ROLE canonical_brain_migration_owner;")
+    assert (
+        "CREATE SCHEMA canonical_brain\n"
+        "            AUTHORIZATION canonical_brain_migration_owner"
+    ) in SQL
+    assert "ALTER SCHEMA canonical_brain OWNER TO" not in SQL
+    assert SQL.index("SET LOCAL ROLE canonical_brain_migration_owner;") < SQL.index(
+        "RESET ROLE;"
+    )
+    assert SQL.index("DO $final_owner_membership_contract$") < SQL.rindex("COMMIT;")
+
+
+def test_cloudsqladmin_exception_is_exact_and_requires_hba_rejection_receipt():
+    assert "_cw_managed_cloudsqladmin_exception" in SQL
+    helper = SQL.split(
+        "CREATE OR REPLACE FUNCTION pg_temp._cw_managed_cloudsqladmin_exception",
+        1,
+    )[1].split("$function$;", 1)[0]
+
+    assert "hba_rejection_sha256 ~ '^[0-9a-f]{64}$'" in helper
+    assert "datname = 'cloudsqladmin'" in helper
+    assert "owner_name = 'cloudsqladmin'" in helper
+    assert "rolname = 'cloudsqladmin'" in helper
+    assert "rolsuper" in helper
+    assert "rolreplication" in helper
+    assert "rolbypassrls" in helper
+    assert "rolname = 'cloudsqlsuperuser'" in helper
+    assert "NOT rolsuper" in helper
+    assert "pg_catalog.acldefault('d', database_row.datdba)" in helper
+    for privilege in ("'PUBLIC','cloudsqladmin','CONNECT',false",
+                      "'PUBLIC','cloudsqladmin','TEMPORARY',false",
+                      "'cloudsqladmin','cloudsqladmin','CREATE',false"):
+        assert privilege in helper
+    assert "SELECT * FROM actual_acl EXCEPT SELECT * FROM expected_acl" in helper
+    assert "SELECT * FROM expected_acl EXCEPT SELECT * FROM actual_acl" in helper
+    assert SQL.count("pg_temp._cw_managed_cloudsqladmin_exception(") >= 3
 
 
 def test_canonical_event_log_has_exact_owner_shape_and_exclusive_append_boundary():
@@ -570,6 +632,31 @@ def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():
     )
     assert claim.count("'claimed_at'") >= 2
     assert "source_thread_id" in claim
+    pending_dedupe = claim.split(
+        "SELECT * INTO existing_record", 1
+    )[1].split("IF NOT EXISTS (", 1)[0]
+    assert "terminal_record.authorization_id IS NULL" in pending_dedupe
+    for exact_scope_binding in (
+        "existing_record.session_key_sha256 IS DISTINCT FROM session_value",
+        "existing_record.capability_epoch_sha256 IS DISTINCT FROM epoch_value",
+        "existing_record.runtime_platform IS DISTINCT FROM runtime_platform_value",
+        "existing_record.source_thread_id IS DISTINCT FROM source_thread_value",
+    ):
+        assert exact_scope_binding in pending_dedupe
+    assert pending_dedupe.index("terminal_record.authorization_id IS NULL") < (
+        pending_dedupe.index("RETURN canonical_brain._ok")
+    )
+    assert "pending route-back authorization belongs to another exact runtime scope" in (
+        pending_dedupe
+    )
+    assert "writer_public_routeback_targets" in pending_dedupe
+    assert "allowed.enabled" in pending_dedupe
+    assert "allowed.target_type IN ('public_channel', 'public_thread')" in (
+        pending_dedupe
+    )
+    assert pending_dedupe.index("'scope_mismatch'") < pending_dedupe.index(
+        "'target_not_approved'"
+    ) < pending_dedupe.index("RETURN canonical_brain._ok")
     for definition in (claim, sent, blocked):
         assert "_contains_forbidden_dm_ref" in definition
     dm_helper = _function_definition("_contains_forbidden_dm_ref")
@@ -597,11 +684,9 @@ def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():
     assert "'partial_receipt', receipt_value" in blocked
     assert "receipt_readback_verified" in blocked
     assert (
-        "pg_catalog.jsonb_typeof(\n"
-        "                    receipt_value->'receipt_readback_verified'\n"
-        "                ) <> 'boolean'"
+        "receipt_value->'receipt_readback_verified'\n"
+        "                   IS DISTINCT FROM 'true'::jsonb"
     ) in blocked
-    assert "receipt_value->'receipt_readback_verified' = 'true'::jsonb" in blocked
     assert "'route_back_sent_receipt_persistence_failed'" in blocked
     assert "receipt_value->>'channel_id' <> target_id" in blocked
     assert (
@@ -609,7 +694,7 @@ def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():
         "               <> authorization_record.content_sha256"
     ) in blocked
     assert "'outbound_delivery_uncertain'" in blocked
-    assert "'accepted_unverified'" in blocked
+    assert "'accepted_unverified'" not in blocked
 
 
 def test_routeback_blocked_routine_has_typed_preclaim_without_send_authorization():
@@ -634,6 +719,30 @@ def test_routeback_blocked_routine_has_typed_preclaim_without_send_authorization
     assert "INSERT INTO canonical_brain.writer_routeback_lifecycle_terminals" in preclaim
     assert "'authorization_id'" not in preclaim
     assert "writer_routeback_finalize_preclaim" not in _writer_names()
+
+
+def test_routeback_restart_recovery_is_exact_lane_and_append_only():
+    recover = _function_definition("writer_routeback_recover")
+    sent = _function_definition("writer_routeback_finalize_sent")
+    blocked = _function_definition("writer_routeback_finalize_blocked")
+
+    assert "recovery_value NOT IN ('edge_evidence', 'edge_no_record')" in recover
+    assert "_case_scope_authorized(case_value, runtime, false)" in recover
+    assert "authorization_record.session_key_sha256 <> session_value" in recover
+    assert "authorization_record.runtime_platform <> platform_value" in recover
+    assert "authorization_record.source_thread_id <> source_thread_value" in recover
+    assert "recovery_value = 'edge_no_record'" in recover
+    assert "writer_public_routeback_targets" in recover
+    assert "allowed.enabled" in recover
+    assert "'recovered_epoch_sha256', epoch_value" in recover
+    assert "INSERT INTO canonical_brain.writer_" not in recover
+    assert "UPDATE canonical_brain.writer_" not in recover
+    assert "writer_capability_grants" not in recover
+    for finalizer in (sent, blocked):
+        assert "authorization_record.runtime_platform <> runtime->>'platform'" in finalizer
+        assert "authorization_record.source_thread_id <> COALESCE(" in finalizer
+        assert "_case_scope_authorized(" in finalizer
+        assert "authorization_record.capability_epoch_sha256" not in finalizer
 
 
 def test_plan_and_capability_transactions_are_exact_and_non_replenishing():
@@ -790,10 +899,10 @@ def test_claimed_routeback_terminal_truth_is_not_blocked_by_epoch_retirement():
             "authorization_record.session_key_sha256 "
             "<> runtime->>'session_key_sha256'"
         ) in definition
-        assert (
-            "authorization_record.capability_epoch_sha256\n"
-            "       <> runtime->>'capability_epoch_sha256'"
-        ) in definition
+        assert "authorization_record.capability_epoch_sha256" not in definition
+        assert "authorization_record.runtime_platform <> runtime->>'platform'" in definition
+        assert "authorization_record.source_thread_id <> COALESCE(" in definition
+        assert "_case_scope_authorized(" in definition
 
     # The blocked routine has one fence only, in its preclaim initiation branch;
     # the existing-claim path remains exact-claimant bound but tombstone-free.

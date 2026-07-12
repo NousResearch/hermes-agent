@@ -19,6 +19,8 @@ import socket
 import ssl
 import stat
 import struct
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -36,6 +38,10 @@ _MAX_RESULT_BYTES = 8 * 1024 * 1024
 _MAX_FIELD_BYTES = 1024 * 1024
 _MAX_ATTESTATION_ROWS = 2048
 _MAX_FIXED_TRANSACTION_ATTEMPTS = 3
+_MANAGED_HBA_RECEIPT_VERSION = "managed-cloudsqladmin-hba-rejection-v1"
+_MANAGED_HBA_RECEIPT_MAX_TTL_SECONDS = 300
+_MANAGED_HBA_DATABASE = "cloudsqladmin"
+_MANAGED_HBA_RESULT = "pg_hba_rejected"
 _RETRYABLE_TRANSACTION_ERRORS = frozenset(
     {
         "database_error_sqlstate:40001",
@@ -113,6 +119,15 @@ class FixedStatementError(CanonicalWriterDBError):
 
 class PostgresProtocolError(CanonicalWriterDBError):
     """The bounded PostgreSQL protocol exchange failed."""
+
+
+class PostgresServerError(PostgresProtocolError):
+    """A structured PostgreSQL ErrorResponse without reflected server text."""
+
+    def __init__(self, *, sqlstate: str, server_message: str) -> None:
+        self.sqlstate = sqlstate
+        self.server_message = server_message
+        super().__init__("database_error_sqlstate:" + sqlstate)
 
 
 @dataclass(frozen=True)
@@ -264,13 +279,147 @@ class WriterDBConfig:
             raise ValueError("database connect timeout is invalid")
         if not 0.1 <= self.io_timeout_seconds <= 60:
             raise ValueError("database IO timeout is invalid")
-        if (
-            not self.application_name
-            or len(self.application_name.encode("utf-8")) > 63
-        ):
+        if not self.application_name or len(self.application_name.encode("utf-8")) > 63:
             raise ValueError("database application name is invalid")
         if any(ord(char) < 32 for char in self.application_name):
             raise ValueError("database application name is invalid")
+
+
+@dataclass(frozen=True)
+class ManagedCloudSQLAdminHBAReceipt:
+    """Canonical receipt from one verified-TLS active HBA rejection probe."""
+
+    version: str
+    host: str
+    port: int
+    server_certificate_sha256: str
+    database: str
+    user: str
+    observed_at_unix: int
+    expires_at_unix: int
+    sqlstate: str
+    server_message: str
+    result: str
+    tls_peer_verified: bool
+
+    def __post_init__(self) -> None:
+        if self.version != _MANAGED_HBA_RECEIPT_VERSION:
+            raise ValueError("managed HBA receipt version is invalid")
+        if not self.host or self.host != self.host.strip():
+            raise ValueError("managed HBA receipt host is invalid")
+        _tls_server_name(self.host)
+        if isinstance(self.port, bool) or not 1 <= self.port <= 65535:
+            raise ValueError("managed HBA receipt port is invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.server_certificate_sha256):
+            raise ValueError("managed HBA peer certificate digest is invalid")
+        if self.database != _MANAGED_HBA_DATABASE:
+            raise ValueError("managed HBA receipt database is invalid")
+        _valid_identifier(self.user, "managed HBA receipt user")
+        if (
+            isinstance(self.observed_at_unix, bool)
+            or isinstance(self.expires_at_unix, bool)
+            or not isinstance(self.observed_at_unix, int)
+            or not isinstance(self.expires_at_unix, int)
+            or self.observed_at_unix < 0
+            or not 1
+            <= self.expires_at_unix - self.observed_at_unix
+            <= _MANAGED_HBA_RECEIPT_MAX_TTL_SECONDS
+        ):
+            raise ValueError("managed HBA receipt validity window is invalid")
+        if self.sqlstate != "28000":
+            raise ValueError("managed HBA receipt SQLSTATE is invalid")
+        if not _is_exact_tls_hba_rejection(
+            self.server_message,
+            user=self.user,
+            database=self.database,
+        ):
+            raise ValueError("managed HBA receipt server rejection is invalid")
+        if self.result != _MANAGED_HBA_RESULT:
+            raise ValueError("managed HBA receipt result is invalid")
+        if self.tls_peer_verified is not True:
+            raise ValueError("managed HBA receipt TLS peer was not verified")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "host": self.host,
+            "port": self.port,
+            "server_certificate_sha256": self.server_certificate_sha256,
+            "database": self.database,
+            "user": self.user,
+            "observed_at_unix": self.observed_at_unix,
+            "expires_at_unix": self.expires_at_unix,
+            "sqlstate": self.sqlstate,
+            "server_message": self.server_message,
+            "result": self.result,
+            "tls_peer_verified": self.tls_peer_verified,
+        }
+
+    @property
+    def sha256(self) -> str:
+        encoded = json.dumps(
+            self.as_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def is_fresh(self, now_unix: int) -> bool:
+        return (
+            isinstance(now_unix, int)
+            and not isinstance(now_unix, bool)
+            and self.observed_at_unix <= now_unix <= self.expires_at_unix
+        )
+
+
+_MANAGED_HBA_RECEIPT_KEYS = frozenset({
+    "version",
+    "host",
+    "port",
+    "server_certificate_sha256",
+    "database",
+    "user",
+    "observed_at_unix",
+    "expires_at_unix",
+    "sqlstate",
+    "server_message",
+    "result",
+    "tls_peer_verified",
+})
+
+
+def managed_cloudsqladmin_hba_receipt_from_mapping(
+    value: Mapping[str, Any],
+) -> ManagedCloudSQLAdminHBAReceipt:
+    """Parse an exact receipt mapping without type coercion."""
+
+    if set(value) != _MANAGED_HBA_RECEIPT_KEYS:
+        raise ValueError("managed HBA receipt fields are not exact")
+    if any(
+        not isinstance(value.get(name), str)
+        for name in (
+            "version",
+            "host",
+            "server_certificate_sha256",
+            "database",
+            "user",
+            "sqlstate",
+            "server_message",
+            "result",
+        )
+    ):
+        raise ValueError("managed HBA receipt text fields are invalid")
+    if type(value.get("port")) is not int:
+        raise ValueError("managed HBA receipt port is invalid")
+    if (
+        type(value.get("observed_at_unix")) is not int
+        or type(value.get("expires_at_unix")) is not int
+    ):
+        raise ValueError("managed HBA receipt timestamps are invalid")
+    if type(value.get("tls_peer_verified")) is not bool:
+        raise ValueError("managed HBA receipt TLS evidence is invalid")
+    return ManagedCloudSQLAdminHBAReceipt(**dict(value))
 
 
 @dataclass(frozen=True, order=True)
@@ -523,6 +672,10 @@ class WriterPrivilegePolicy:
     canonical_owner_role: str = "canonical_brain_migration_owner"
     canonical_acl_grantee_role: str = "canonical_brain_writer"
     private_schema_identity_sha256: str = ""
+    managed_cloudsqladmin_hba_rejection_receipt: (
+        ManagedCloudSQLAdminHBAReceipt | None
+    ) = None
+    managed_cloudsqladmin_hba_rejection_sha256: str = ""
     deployment_lock_key: int = CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
 
     def __post_init__(self) -> None:
@@ -545,9 +698,7 @@ class WriterPrivilegePolicy:
         if {identity.signature for identity in identities} != set(routines):
             raise ValueError("every executable routine requires a pinned identity")
         dependencies = tuple(sorted(self.dependency_routine_identities))
-        dependency_signatures = {
-            identity.signature for identity in dependencies
-        }
+        dependency_signatures = {identity.signature for identity in dependencies}
         if len(dependency_signatures) != len(dependencies):
             raise ValueError("duplicate dependency routine identity policy")
         if dependency_signatures.intersection(routines):
@@ -579,10 +730,20 @@ class WriterPrivilegePolicy:
             raise ValueError("canonical owner and ACL grantee roles must differ")
         if not re.fullmatch(r"[0-9a-f]{64}", self.private_schema_identity_sha256):
             raise ValueError("private writer schema identity digest is invalid")
-        if (
-            isinstance(self.deployment_lock_key, bool)
-            or not -(1 << 63) <= self.deployment_lock_key < (1 << 63)
+        managed_receipt = self.managed_cloudsqladmin_hba_rejection_receipt
+        managed_digest = self.managed_cloudsqladmin_hba_rejection_sha256
+        if (managed_receipt is None) != (managed_digest == ""):
+            raise ValueError(
+                "managed cloudsqladmin HBA receipt and digest must be paired"
+            )
+        if managed_receipt is not None and (
+            not re.fullmatch(r"[0-9a-f]{64}", managed_digest)
+            or not hmac.compare_digest(managed_receipt.sha256, managed_digest)
         ):
+            raise ValueError("managed cloudsqladmin HBA receipt digest is invalid")
+        if isinstance(self.deployment_lock_key, bool) or not -(
+            1 << 63
+        ) <= self.deployment_lock_key < (1 << 63):
             raise ValueError("deployment advisory lock key is invalid")
         object.__setattr__(self, "table_grants", tables)
         object.__setattr__(self, "sequence_grants", sequences)
@@ -756,9 +917,7 @@ def validate_privilege_attestation(
         raise PrivilegeAttestationError("database_role_identity_mismatch")
     if attestation.role.casefold() == "postgres":
         raise PrivilegeAttestationError("postgres_role_forbidden")
-    _validate_canonical_event_log_identity(
-        attestation.canonical_event_log_identity
-    )
+    _validate_canonical_event_log_identity(attestation.canonical_event_log_identity)
     _validate_private_writer_schema_identity(
         attestation.canonical_private_schema_identity,
         policy,
@@ -783,7 +942,10 @@ def validate_privilege_attestation(
         raise PrivilegeAttestationError("database_table_privileges_mismatch")
     if tuple(sorted(attestation.sequence_grants)) != policy.sequence_grants:
         raise PrivilegeAttestationError("database_sequence_privileges_mismatch")
-    if tuple(sorted(set(attestation.executable_routines))) != policy.executable_routines:
+    if (
+        tuple(sorted(set(attestation.executable_routines)))
+        != policy.executable_routines
+    ):
         raise PrivilegeAttestationError("database_routine_privileges_mismatch")
     identities = tuple(sorted(attestation.routine_identities))
     dependencies = tuple(sorted(attestation.dependency_routine_identities))
@@ -795,9 +957,7 @@ def validate_privilege_attestation(
     if identities != policy.routine_identities:
         raise PrivilegeAttestationError("database_routine_identity_mismatch")
     if dependencies != policy.dependency_routine_identities:
-        raise PrivilegeAttestationError(
-            "database_dependency_routine_identity_mismatch"
-        )
+        raise PrivilegeAttestationError("database_dependency_routine_identity_mismatch")
     for identity in identities + dependencies:
         search_paths = [
             item.split("=", 1)[1]
@@ -805,26 +965,20 @@ def validate_privilege_attestation(
             if item.casefold().startswith("search_path=")
         ]
         if len(search_paths) != 1:
-            raise PrivilegeAttestationError(
-                "database_routine_search_path_missing"
-            )
+            raise PrivilegeAttestationError("database_routine_search_path_missing")
         path_items = tuple(
-            part.strip().strip('"').casefold()
-            for part in search_paths[0].split(",")
+            part.strip().strip('"').casefold() for part in search_paths[0].split(",")
         )
-        if (
-            path_items != ("pg_catalog", policy.schema.casefold())
-            or any(
-                part in {"public", "pg_temp", "$user"}
-                for part in path_items
-            )
+        if path_items != ("pg_catalog", policy.schema.casefold()) or any(
+            part in {"public", "pg_temp", "$user"} for part in path_items
         ):
-            raise PrivilegeAttestationError(
-                "database_routine_search_path_unsafe"
-            )
+            raise PrivilegeAttestationError("database_routine_search_path_unsafe")
     if tuple(sorted(set(attestation.schema_privileges))) != policy.schema_privileges:
         raise PrivilegeAttestationError("database_schema_privileges_mismatch")
-    if tuple(sorted(set(attestation.database_privileges))) != policy.database_privileges:
+    if (
+        tuple(sorted(set(attestation.database_privileges)))
+        != policy.database_privileges
+    ):
         raise PrivilegeAttestationError("database_privileges_mismatch")
     if tuple(sorted(set(attestation.role_memberships))) != policy.role_memberships:
         raise PrivilegeAttestationError("database_role_memberships_mismatch")
@@ -883,7 +1037,11 @@ class FixedStatement:
         _valid_identifier(self.name, "statement name")
         if len(self.sql_template.encode("utf-8")) > _MAX_QUERY_BYTES:
             raise ValueError("fixed SQL exceeds hard bound")
-        if ";" in self.sql_template or "--" in self.sql_template or "/*" in self.sql_template:
+        if (
+            ";" in self.sql_template
+            or "--" in self.sql_template
+            or "/*" in self.sql_template
+        ):
             raise ValueError("fixed SQL must be one comment-free statement")
         if not _SAFE_FIXED_SQL.match(self.sql_template):
             raise ValueError("fixed SQL may only invoke a schema-qualified routine")
@@ -1004,12 +1162,7 @@ def _sql_literal(spec: ParameterSpec, value: Any) -> str:
     # Base64 is used instead of PostgreSQL string escaping so safety does not
     # depend on the server's standard_conforming_strings setting.
     encoded_literal = base64.b64encode(encoded).decode("ascii")
-    return (
-        "convert_from(decode('"
-        + encoded_literal
-        + "','base64'),'UTF8')"
-        + suffix
-    )
+    return "convert_from(decode('" + encoded_literal + "','base64'),'UTF8')" + suffix
 
 
 def _render_fixed(statement: FixedStatement, parameters: Mapping[str, Any]) -> str:
@@ -1033,6 +1186,10 @@ class _Session(Protocol):
 
 
 SessionFactory = Callable[[WriterDBConfig], _Session]
+ManagedHBAProbe = Callable[
+    [WriterDBConfig],
+    ManagedCloudSQLAdminHBAReceipt,
+]
 
 
 class FixedReadOnlyTransaction:
@@ -1087,12 +1244,18 @@ class CanonicalWriterDB:
         privilege_policy: WriterPrivilegePolicy,
         statements: StatementCatalog,
         _session_factory: SessionFactory | None = None,
+        _managed_hba_probe: ManagedHBAProbe | None = None,
     ) -> None:
         self._config = config
         self._policy = privilege_policy
         self._statements = statements
         self._session_factory = _session_factory or _open_postgres_session
+        self._managed_hba_probe = (
+            _managed_hba_probe or collect_managed_cloudsqladmin_hba_receipt
+        )
+        self._managed_hba_lock = threading.Lock()
         self._startup_attested = False
+        self._active_managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None = None
 
     @property
     def statement_names(self) -> tuple[str, ...]:
@@ -1104,6 +1267,26 @@ class CanonicalWriterDB:
 
     def startup_attest(self) -> PrivilegeAttestation:
         self._startup_attested = False
+        with self._managed_hba_lock:
+            self._active_managed_hba_receipt = None
+        expected_hba_receipt = self._policy.managed_cloudsqladmin_hba_rejection_receipt
+        if expected_hba_receipt is not None:
+            observed_hba_receipt = self._managed_hba_probe(self._config)
+            if not isinstance(
+                observed_hba_receipt,
+                ManagedCloudSQLAdminHBAReceipt,
+            ):
+                raise PrivilegeAttestationError(
+                    "managed_cloudsqladmin_probe_receipt_invalid"
+                )
+            _validate_active_managed_hba_receipt(
+                expected_hba_receipt,
+                observed_hba_receipt,
+                config=self._config,
+                now_unix=int(time.time()),
+            )
+            with self._managed_hba_lock:
+                self._active_managed_hba_receipt = observed_hba_receipt
         session = self._session_factory(self._config)
         try:
             _begin_locked_transaction(session, self._policy)
@@ -1112,6 +1295,7 @@ class CanonicalWriterDB:
                     session,
                     config=self._config,
                     policy=self._policy,
+                    managed_hba_receipt=self._active_managed_hba_receipt,
                 )
                 validate_privilege_attestation(
                     attestation,
@@ -1126,6 +1310,38 @@ class CanonicalWriterDB:
             session.close()
         self._startup_attested = True
         return attestation
+
+    def _managed_hba_receipt_for_runtime(
+        self,
+    ) -> ManagedCloudSQLAdminHBAReceipt | None:
+        """Return a fresh exact proof, actively refreshing after its TTL."""
+
+        expected = self._policy.managed_cloudsqladmin_hba_rejection_receipt
+        if expected is None:
+            return None
+        with self._managed_hba_lock:
+            now_unix = int(time.time())
+            active = self._active_managed_hba_receipt
+            if active is not None and active.is_fresh(now_unix):
+                return active
+            # Once a receipt has expired it can never authorize later work,
+            # even if a refresh fails or the wall clock subsequently moves.
+            self._active_managed_hba_receipt = None
+            observed = self._managed_hba_probe(self._config)
+            if not isinstance(observed, ManagedCloudSQLAdminHBAReceipt):
+                raise PrivilegeAttestationError(
+                    "managed_cloudsqladmin_probe_receipt_invalid"
+                )
+            validation_now_unix = int(time.time())
+            _validate_active_managed_hba_receipt(
+                expected,
+                observed,
+                config=self._config,
+                now_unix=validation_now_unix,
+                require_expected_fresh=False,
+            )
+            self._active_managed_hba_receipt = observed
+            return observed
 
     def query_fixed(
         self,
@@ -1156,6 +1372,7 @@ class CanonicalWriterDB:
         if not statement.returns_rows or statement.command_prefixes != ("SELECT",):
             raise FixedStatementError("fixed_statement_is_not_read_only")
 
+        managed_hba_receipt = self._managed_hba_receipt_for_runtime()
         session = self._session_factory(self._config)
         transaction_open = True
         scope: FixedReadOnlyTransaction | None = None
@@ -1165,6 +1382,7 @@ class CanonicalWriterDB:
                 session,
                 config=self._config,
                 policy=self._policy,
+                managed_hba_receipt=managed_hba_receipt,
             )
             validate_privilege_attestation(
                 attestation,
@@ -1198,6 +1416,7 @@ class CanonicalWriterDB:
             raise PrivilegeAttestationError("database_startup_attestation_required")
         sql = _render_fixed(statement, parameters)
         for attempt in range(_MAX_FIXED_TRANSACTION_ATTEMPTS):
+            managed_hba_receipt = self._managed_hba_receipt_for_runtime()
             session = self._session_factory(self._config)
             try:
                 _begin_locked_transaction(session, self._policy)
@@ -1205,6 +1424,7 @@ class CanonicalWriterDB:
                     session,
                     config=self._config,
                     policy=self._policy,
+                    managed_hba_receipt=managed_hba_receipt,
                 )
                 validate_privilege_attestation(
                     attestation,
@@ -1214,8 +1434,7 @@ class CanonicalWriterDB:
                 result = session.query(sql, maximum_rows=statement.maximum_rows)
                 command = result.command_tag.upper()
                 if not any(
-                    command.startswith(prefix)
-                    for prefix in statement.command_prefixes
+                    command.startswith(prefix) for prefix in statement.command_prefixes
                 ):
                     raise PostgresProtocolError("database_command_tag_not_allowed")
                 if len(result.rows) > statement.maximum_rows:
@@ -1288,11 +1507,57 @@ def _bool(value: str | None) -> bool:
     raise PostgresProtocolError("database_attestation_boolean_invalid")
 
 
+def _managed_cloudsqladmin_exception_attested(
+    session: _Session,
+    receipt: ManagedCloudSQLAdminHBAReceipt | None,
+) -> bool:
+    """Accept only the exact provider DB plus a trusted HBA-rejection receipt."""
+
+    if not isinstance(receipt, ManagedCloudSQLAdminHBAReceipt):
+        return False
+    result = session.query(
+        "WITH database_row AS ("
+        "SELECT database.oid, database.datname, database.datallowconn, "
+        "database.datistemplate, pg_catalog.pg_get_userbyid(database.datdba) "
+        "AS owner_name, database.datdba, database.datacl FROM "
+        "pg_catalog.pg_database AS database "
+        "WHERE database.datname = 'cloudsqladmin'), actual_acl AS ("
+        "SELECT CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE "
+        "pg_catalog.pg_get_userbyid(acl.grantee) END AS grantee, "
+        "pg_catalog.pg_get_userbyid(acl.grantor) AS grantor, "
+        "acl.privilege_type, acl.is_grantable FROM database_row "
+        "CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(database_row.datacl, "
+        "pg_catalog.acldefault('d', database_row.datdba))) AS acl), "
+        "expected_acl(grantee,grantor,privilege_type,is_grantable) AS (VALUES "
+        "('PUBLIC','cloudsqladmin','CONNECT',false),"
+        "('PUBLIC','cloudsqladmin','TEMPORARY',false),"
+        "('cloudsqladmin','cloudsqladmin','CREATE',false),"
+        "('cloudsqladmin','cloudsqladmin','CONNECT',false),"
+        "('cloudsqladmin','cloudsqladmin','TEMPORARY',false)) "
+        "SELECT EXISTS (SELECT 1 FROM database_row WHERE datallowconn "
+        "AND NOT datistemplate AND owner_name = 'cloudsqladmin') "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE "
+        "rolname = 'cloudsqladmin' AND rolcanlogin AND rolsuper AND rolcreatedb "
+        "AND rolcreaterole AND rolreplication AND rolbypassrls) "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE "
+        "rolname = 'cloudsqlsuperuser' AND rolcanlogin AND NOT rolsuper "
+        "AND rolcreatedb AND rolcreaterole AND NOT rolreplication "
+        "AND NOT rolbypassrls) AND NOT EXISTS ("
+        "(SELECT * FROM actual_acl EXCEPT SELECT * FROM expected_acl) UNION ALL "
+        "(SELECT * FROM expected_acl EXCEPT SELECT * FROM actual_acl))",
+        maximum_rows=1,
+    )
+    if len(result.rows) != 1 or len(result.rows[0]) != 1:
+        raise PostgresProtocolError("managed_cloudsqladmin_attestation_invalid")
+    return _bool(result.rows[0][0])
+
+
 def _collect_privilege_attestation(
     session: _Session,
     *,
     config: WriterDBConfig,
     policy: WriterPrivilegePolicy,
+    managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None = None,
 ) -> PrivilegeAttestation:
     role_result = session.query(
         "SELECT current_user, r.rolsuper, r.rolcreatedb, r.rolcreaterole, "
@@ -1313,8 +1578,7 @@ def _collect_privilege_attestation(
         "pg_catalog.pg_auth_members membership WHERE "
         "membership.roleid = owner.oid OR membership.member = owner.oid)) "
         "FROM pg_catalog.pg_namespace namespace JOIN pg_catalog.pg_roles owner "
-        "ON owner.oid = namespace.nspowner WHERE namespace.nspname = "
-        + schema,
+        "ON owner.oid = namespace.nspowner WHERE namespace.nspname = " + schema,
         maximum_rows=1,
     )
     if (
@@ -1417,9 +1681,7 @@ def _collect_privilege_attestation(
         maximum_rows=1,
     )
     if len(event_log_result.rows) != 1 or len(event_log_result.rows[0]) != 20:
-        raise PostgresProtocolError(
-            "database_canonical_event_log_attestation_missing"
-        )
+        raise PostgresProtocolError("database_canonical_event_log_attestation_missing")
     event_log_row = event_log_result.rows[0]
 
     def _identity_items(raw: str | None, label: str) -> tuple[str, ...]:
@@ -1474,9 +1736,7 @@ def _collect_privilege_attestation(
                 "database_private_schema_" + label + "_invalid"
             ) from exc
         if not isinstance(value, list):
-            raise PostgresProtocolError(
-                "database_private_schema_" + label + "_invalid"
-            )
+            raise PostgresProtocolError("database_private_schema_" + label + "_invalid")
         result: list[str] = []
         for item in value:
             if not isinstance(item, (dict, str)):
@@ -1658,9 +1918,7 @@ def _collect_privilege_attestation(
     private_relations: list[CanonicalPrivateRelationIdentity] = []
     for row in private_relations_result.rows:
         if len(row) != 20 or not row[0] or not row[1]:
-            raise PostgresProtocolError(
-                "database_private_relation_attestation_invalid"
-            )
+            raise PostgresProtocolError("database_private_relation_attestation_invalid")
         try:
             private_relations.append(
                 CanonicalPrivateRelationIdentity(
@@ -1698,9 +1956,7 @@ def _collect_privilege_attestation(
             relations=tuple(private_relations),
         )
     except (TypeError, ValueError) as exc:
-        raise PostgresProtocolError(
-            "database_private_schema_identity_invalid"
-        ) from exc
+        raise PostgresProtocolError("database_private_schema_identity_invalid") from exc
 
     unexpected: list[str] = []
     tables_result = session.query(
@@ -1806,9 +2062,7 @@ def _collect_privilege_attestation(
         if not isinstance(configuration_value, list) or any(
             not isinstance(item, str) for item in configuration_value
         ):
-            raise PostgresProtocolError(
-                "database_routine_configuration_invalid"
-            )
+            raise PostgresProtocolError("database_routine_configuration_invalid")
         try:
             identity = RoutineIdentity(
                 signature=row[0],
@@ -1816,15 +2070,11 @@ def _collect_privilege_attestation(
                 security_definer=_bool(row[9]),
                 language=row[10],
                 configuration=tuple(configuration_value),
-                definition_sha256=hashlib.sha256(
-                    row[12].encode("utf-8")
-                ).hexdigest(),
+                definition_sha256=hashlib.sha256(row[12].encode("utf-8")).hexdigest(),
                 owner_dangerous=any(_bool(value) for value in row[4:9]),
             )
         except (ValueError, UnicodeError) as exc:
-            raise PostgresProtocolError(
-                "database_routine_identity_invalid"
-            ) from exc
+            raise PostgresProtocolError("database_routine_identity_invalid") from exc
         if _bool(row[2]):
             routines.append(row[0])
             routine_identities.append(identity)
@@ -1911,6 +2161,10 @@ def _collect_privilege_attestation(
         + " FROM pg_catalog.pg_database d WHERE d.datallowconn ORDER BY 1",
         maximum_rows=_MAX_ATTESTATION_ROWS,
     )
+    managed_cloudsqladmin_exception = _managed_cloudsqladmin_exception_attested(
+        session,
+        managed_hba_receipt,
+    )
     database_privileges: tuple[str, ...] = ()
     for row in database_result.rows:
         if len(row) != 3 + len(_DATABASE_PRIVILEGES) or not row[0]:
@@ -1924,6 +2178,13 @@ def _collect_privilege_attestation(
             database_privileges = privileges
             if _bool(row[2]):
                 unexpected.append("database_owner:" + row[0])
+        elif (
+            row[0] == "cloudsqladmin"
+            and managed_cloudsqladmin_exception
+            and not _bool(row[2])
+            and privileges == ("CONNECT", "TEMP")
+        ):
+            continue
         elif privileges or _bool(row[2]):
             unexpected.append("database:" + row[0])
 
@@ -1947,9 +2208,7 @@ def _collect_privilege_attestation(
         "a.is_grantable) AS object_acl "
         "FROM pg_catalog.pg_namespace n CROSS JOIN LATERAL "
         "aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a "
-        "WHERE n.nspname = "
-        + schema
-        + " AND a.grantee <> n.nspowner UNION ALL "
+        "WHERE n.nspname = " + schema + " AND a.grantee <> n.nspowner UNION ALL "
         "SELECT format('%s:%s::%s:%s:%s:%s', "
         "CASE WHEN c.relkind = 'S' THEN 'sequence' ELSE 'table' END, "
         "format('%I.%I', n.nspname, c.relname), pg_get_userbyid(a.grantor), "
@@ -1989,9 +2248,7 @@ def _collect_privilege_attestation(
         "ORDER BY object_acl",
         maximum_rows=_MAX_ATTESTATION_ROWS,
     )
-    canonical_acl_grants = tuple(
-        row[0] or "" for row in canonical_acl_result.rows
-    )
+    canonical_acl_grants = tuple(row[0] or "" for row in canonical_acl_result.rows)
     public_acl_grants = tuple(
         grant for grant in canonical_acl_grants if ":PUBLIC:" in grant
     )
@@ -2008,18 +2265,14 @@ def _collect_privilege_attestation(
         sequence_grants=tuple(sorted(sequence_grants)),
         executable_routines=tuple(sorted(routines)),
         routine_identities=tuple(sorted(routine_identities)),
-        dependency_routine_identities=tuple(
-            sorted(dependency_routine_identities)
-        ),
+        dependency_routine_identities=tuple(sorted(dependency_routine_identities)),
         schema_privileges=schema_privileges,
         database_privileges=database_privileges,
         role_memberships=memberships,
         unexpected_privileges=tuple(sorted(set(unexpected))),
         public_acl_grants=public_acl_grants,
         canonical_non_owner_acl_grants=canonical_acl_grants,
-        canonical_writer_role_inheritors=tuple(
-            canonical_writer_role_inheritors
-        ),
+        canonical_writer_role_inheritors=tuple(canonical_writer_role_inheritors),
         canonical_event_log_identity=canonical_event_log_identity,
         canonical_private_schema_identity=private_schema_identity,
     )
@@ -2059,18 +2312,75 @@ def _send_message(connection: socket.socket, message_type: bytes, payload: bytes
         raise PostgresProtocolError("database_socket_write_failed") from exc
 
 
-def _error_sqlstate(payload: bytes) -> str:
+def _error_fields(payload: bytes) -> dict[bytes, str]:
+    if not payload or not payload.endswith(b"\x00"):
+        raise PostgresProtocolError("database_error_response_invalid")
+    fields: dict[bytes, str] = {}
     offset = 0
-    while offset < len(payload) and payload[offset] != 0:
+    while offset < len(payload) - 1:
         code = payload[offset : offset + 1]
         end = payload.find(b"\x00", offset + 1)
-        if end < 0:
-            break
-        if code == b"C":
-            value = payload[offset + 1 : end].decode("ascii", errors="ignore")
-            return value if re.fullmatch(r"[0-9A-Z]{5}", value) else "unknown"
+        if (
+            end < 0
+            or not re.fullmatch(rb"[A-Za-z]", code)
+            or code in fields
+            or end - offset - 1 > 8192
+        ):
+            raise PostgresProtocolError("database_error_response_invalid")
+        try:
+            fields[code] = payload[offset + 1 : end].decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise PostgresProtocolError("database_error_response_invalid") from exc
         offset = end + 1
-    return "unknown"
+    if offset != len(payload) - 1:
+        raise PostgresProtocolError("database_error_response_invalid")
+    return fields
+
+
+def _postgres_server_error(payload: bytes) -> PostgresServerError:
+    fields = _error_fields(payload)
+    sqlstate = fields.get(b"C", "")
+    message = fields.get(b"M", "")
+    if not re.fullmatch(r"[0-9A-Z]{5}", sqlstate) or not message:
+        raise PostgresProtocolError("database_error_response_invalid")
+    return PostgresServerError(sqlstate=sqlstate, server_message=message)
+
+
+def _error_sqlstate(payload: bytes) -> str:
+    """Compatibility helper backed by the strict ErrorResponse parser."""
+
+    try:
+        value = _error_fields(payload).get(b"C", "")
+    except PostgresProtocolError:
+        return "unknown"
+    return value if re.fullmatch(r"[0-9A-Z]{5}", value) else "unknown"
+
+
+def _is_exact_tls_hba_rejection(
+    message: str,
+    *,
+    user: str,
+    database: str,
+) -> bool:
+    suffix = f'", user "{user}", database "{database}", SSL encryption'
+    prefixes = (
+        'no pg_hba.conf entry for host "',
+        'pg_hba.conf rejects connection for host "',
+    )
+    prefix = next(
+        (candidate for candidate in prefixes if message.startswith(candidate)),
+        None,
+    )
+    if prefix is None or not message.endswith(suffix):
+        return False
+    remote_host = message[len(prefix) : -len(suffix)]
+    if not remote_host or len(remote_host) > 255:
+        return False
+    try:
+        ipaddress.ip_address(remote_host)
+    except ValueError:
+        return False
+    return True
 
 
 def _sasl_fields(value: bytes) -> dict[str, str]:
@@ -2160,9 +2470,7 @@ def _authenticate(
     while True:
         message_type, payload = _recv_message(connection)
         if message_type == b"E":
-            raise PostgresProtocolError(
-                "database_error_sqlstate:" + _error_sqlstate(payload)
-            )
+            raise _postgres_server_error(payload)
         if message_type == b"R":
             if len(payload) < 4:
                 raise PostgresProtocolError("database_auth_frame_invalid")
@@ -2183,7 +2491,9 @@ def _authenticate(
                     inner.encode("ascii") + auth_payload,
                     usedforsecurity=False,
                 ).hexdigest()
-                _send_message(connection, b"p", b"md5" + outer.encode("ascii") + b"\x00")
+                _send_message(
+                    connection, b"p", b"md5" + outer.encode("ascii") + b"\x00"
+                )
             elif auth_type == 10:
                 mechanisms = auth_payload.rstrip(b"\x00").split(b"\x00")
                 if b"SCRAM-SHA-256" not in mechanisms:
@@ -2250,9 +2560,7 @@ class _PostgresWireSession:
         while True:
             message_type, payload = _recv_message(self._connection)
             if message_type == b"E":
-                raise PostgresProtocolError(
-                    "database_error_sqlstate:" + _error_sqlstate(payload)
-                )
+                raise _postgres_server_error(payload)
             if message_type == b"T":
                 columns = self._parse_row_description(payload)
             elif message_type == b"D":
@@ -2320,15 +2628,17 @@ class _PostgresWireSession:
             if length == -1:
                 values.append(None)
                 continue
-            if length < 0 or length > _MAX_FIELD_BYTES or offset + length > len(payload):
+            if (
+                length < 0
+                or length > _MAX_FIELD_BYTES
+                or offset + length > len(payload)
+            ):
                 raise PostgresProtocolError("database_field_bound_exceeded")
             raw = payload[offset : offset + length]
             try:
                 values.append(raw.decode("utf-8", errors="strict"))
             except UnicodeDecodeError as exc:
-                raise PostgresProtocolError(
-                    "database_field_encoding_invalid"
-                ) from exc
+                raise PostgresProtocolError("database_field_encoding_invalid") from exc
             offset += length
             consumed += length
         if offset != len(payload):
@@ -2372,12 +2682,13 @@ def _tls_server_name(host: str) -> str:
         return normalized
 
 
-def _open_postgres_session(config: WriterDBConfig) -> _PostgresWireSession:
+def _open_verified_tls_connection(
+    config: WriterDBConfig,
+) -> tuple[ssl.SSLSocket, str]:
     _validate_ca_file(config.ca_file, config.credential.expected_uid)
-    password = _read_credential(config.credential)
     server_name = _tls_server_name(config.host)
     raw: socket.socket | None = None
-    protected: socket.socket | None = None
+    protected: ssl.SSLSocket | None = None
     ownership_transferred = False
     try:
         raw = socket.create_connection(
@@ -2399,21 +2710,163 @@ def _open_postgres_session(config: WriterDBConfig) -> _PostgresWireSession:
         protected = context.wrap_socket(raw, server_hostname=server_name)
         raw = None
         protected.settimeout(config.io_timeout_seconds)
+        certificate = protected.getpeercert(binary_form=True)
+        if (
+            not isinstance(certificate, bytes)
+            or not certificate
+            or len(certificate) > _MAX_FIELD_BYTES
+        ):
+            raise PostgresProtocolError("database_peer_certificate_invalid")
+        certificate_sha256 = hashlib.sha256(certificate).hexdigest()
+        ownership_transferred = True
+        return protected, certificate_sha256
+    except (CanonicalWriterDBError, OSError, ssl.SSLError, UnicodeError) as exc:
+        if isinstance(exc, CanonicalWriterDBError):
+            raise
+        raise PostgresProtocolError("database_connection_failed") from exc
+    finally:
+        if raw is not None:
+            try:
+                raw.close()
+            except OSError:
+                pass
+        if protected is not None and not ownership_transferred:
+            try:
+                protected.close()
+            except OSError:
+                pass
 
-        parameters = {
-            "user": config.user,
-            "database": config.database,
-            "application_name": config.application_name,
-            "client_encoding": "UTF8",
-            # A deterministic catalog rendering is required for pinned
-            # routine signatures; no user schema is visible during attestation.
-            "options": "-c search_path=pg_catalog -c standard_conforming_strings=on",
-        }
-        startup_payload = struct.pack("!I", _PROTOCOL_VERSION) + b"".join(
+
+def _send_startup_message(
+    connection: socket.socket,
+    *,
+    config: WriterDBConfig,
+    database: str,
+) -> None:
+    _valid_identifier(database, "startup database")
+    parameters = {
+        "user": config.user,
+        "database": database,
+        "application_name": config.application_name,
+        "client_encoding": "UTF8",
+        # A deterministic catalog rendering is required for pinned routine
+        # signatures; no user schema is visible during attestation.
+        "options": "-c search_path=pg_catalog -c standard_conforming_strings=on",
+    }
+    startup_payload = (
+        struct.pack("!I", _PROTOCOL_VERSION)
+        + b"".join(
             key.encode("ascii") + b"\x00" + value.encode("utf-8") + b"\x00"
             for key, value in parameters.items()
-        ) + b"\x00"
-        protected.sendall(struct.pack("!I", len(startup_payload) + 4) + startup_payload)
+        )
+        + b"\x00"
+    )
+    try:
+        connection.sendall(
+            struct.pack("!I", len(startup_payload) + 4) + startup_payload
+        )
+    except (OSError, TimeoutError) as exc:
+        raise PostgresProtocolError("database_socket_write_failed") from exc
+
+
+def collect_managed_cloudsqladmin_hba_receipt(
+    config: WriterDBConfig,
+    *,
+    now_unix: int | None = None,
+    ttl_seconds: int = _MANAGED_HBA_RECEIPT_MAX_TTL_SECONDS,
+) -> ManagedCloudSQLAdminHBAReceipt:
+    """Actively prove the provider database is denied over verified TLS."""
+
+    observed_at = int(time.time()) if now_unix is None else now_unix
+    if (
+        type(observed_at) is not int
+        or type(ttl_seconds) is not int
+        or not 1 <= ttl_seconds <= _MANAGED_HBA_RECEIPT_MAX_TTL_SECONDS
+    ):
+        raise ValueError("managed HBA probe validity window is invalid")
+    # Reading through the exact CredentialSource before the probe ensures the
+    # probe cannot silently substitute a different writer credential.  HBA
+    # rejection normally occurs before PostgreSQL requests the password.
+    password = _read_credential(config.credential)
+    protected: ssl.SSLSocket | None = None
+    try:
+        protected, certificate_sha256 = _open_verified_tls_connection(config)
+        _send_startup_message(
+            protected,
+            config=config,
+            database=_MANAGED_HBA_DATABASE,
+        )
+        try:
+            _authenticate(protected, user=config.user, password=password)
+        except PostgresServerError as exc:
+            if exc.sqlstate != "28000" or not _is_exact_tls_hba_rejection(
+                exc.server_message,
+                user=config.user,
+                database=_MANAGED_HBA_DATABASE,
+            ):
+                raise PrivilegeAttestationError(
+                    "managed_cloudsqladmin_probe_rejection_not_exact"
+                ) from exc
+            return ManagedCloudSQLAdminHBAReceipt(
+                version=_MANAGED_HBA_RECEIPT_VERSION,
+                host=config.host,
+                port=config.port,
+                server_certificate_sha256=certificate_sha256,
+                database=_MANAGED_HBA_DATABASE,
+                user=config.user,
+                observed_at_unix=observed_at,
+                expires_at_unix=observed_at + ttl_seconds,
+                sqlstate=exc.sqlstate,
+                server_message=exc.server_message,
+                result=_MANAGED_HBA_RESULT,
+                tls_peer_verified=True,
+            )
+        raise PrivilegeAttestationError(
+            "managed_cloudsqladmin_probe_unexpectedly_connected"
+        )
+    finally:
+        password = ""
+        if protected is not None:
+            try:
+                protected.close()
+            except OSError:
+                pass
+
+
+def _validate_active_managed_hba_receipt(
+    expected: ManagedCloudSQLAdminHBAReceipt,
+    observed: ManagedCloudSQLAdminHBAReceipt,
+    *,
+    config: WriterDBConfig,
+    now_unix: int,
+    require_expected_fresh: bool = True,
+) -> None:
+    if type(require_expected_fresh) is not bool:
+        raise TypeError("require_expected_fresh must be boolean")
+    binding = (config.host, config.port, _MANAGED_HBA_DATABASE, config.user)
+    if (
+        (expected.host, expected.port, expected.database, expected.user) != binding
+        or (observed.host, observed.port, observed.database, observed.user) != binding
+        or (require_expected_fresh and not expected.is_fresh(now_unix))
+        or not observed.is_fresh(now_unix)
+        or not hmac.compare_digest(
+            expected.server_certificate_sha256,
+            observed.server_certificate_sha256,
+        )
+    ):
+        raise PrivilegeAttestationError(
+            "managed_cloudsqladmin_hba_receipt_binding_invalid"
+        )
+
+
+def _open_postgres_session(config: WriterDBConfig) -> _PostgresWireSession:
+    password = _read_credential(config.credential)
+    protected: ssl.SSLSocket | None = None
+    ownership_transferred = False
+    try:
+        protected, _certificate_sha256 = _open_verified_tls_connection(config)
+
+        _send_startup_message(protected, config=config, database=config.database)
         _authenticate(protected, user=config.user, password=password)
         ownership_transferred = True
         return _PostgresWireSession(protected)
@@ -2423,11 +2876,6 @@ def _open_postgres_session(config: WriterDBConfig) -> _PostgresWireSession:
         raise PostgresProtocolError("database_connection_failed") from exc
     finally:
         password = ""
-        if raw is not None:
-            try:
-                raw.close()
-            except OSError:
-                pass
         if protected is not None and not ownership_transferred:
             try:
                 protected.close()

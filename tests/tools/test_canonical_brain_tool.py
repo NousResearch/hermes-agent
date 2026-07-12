@@ -6,19 +6,130 @@ import re
 
 import pytest
 
+from gateway.discord_edge_writer_authority import (
+    derive_routeback_edge_idempotency_key,
+)
 from tools import canonical_brain_tool as cbt
 
 
 _REAL_DISCORD_VERIFY_MESSAGE_RECEIPT = cbt._discord_verify_message_receipt
+_REAL_DISCORD_EDGE_RECONCILE = cbt._discord_edge_reconcile
+
+_DISCORD_GUILD_ID = "1282725267068157972"
+_DISCORD_CHANNEL_ID = "1504852408227069993"
+_EDGE_REQUEST_ID = "11111111-1111-4111-8111-111111111111"
+_EDGE_CAPABILITY_ID = "22222222-2222-4222-8222-222222222222"
 
 
-def _verified_delivery(message_id: str, channel_id: str, content: str) -> dict:
-    return {
-        "id": message_id,
+class _NoEdgeRecord(RuntimeError):
+    code = "discord_edge_reconciliation_not_available"
+    dispatch_uncertain = False
+
+
+def _public_edge_target(
+    *,
+    channel_id: str = _DISCORD_CHANNEL_ID,
+    target_type: str = "public_guild_channel",
+    parent_channel_id: str | None = None,
+) -> dict:
+    target = {
         "channel_id": channel_id,
-        "adapter_receipt": True,
-        "receipt_readback_verified": True,
-        "content_sha256": hashlib.sha256(str(content).encode("utf-8")).hexdigest(),
+        "channel_type": (
+            "public_thread"
+            if target_type == "public_guild_thread"
+            else "public_channel"
+        ),
+        "target_type": target_type,
+        "guild_id": _DISCORD_GUILD_ID,
+        "target_kind": "exact_public_directory_target",
+        "target_member_key": None,
+        "target_member_id": None,
+        "target_mention": None,
+    }
+    if parent_channel_id is not None:
+        target["parent_channel_id"] = parent_channel_id
+    return target
+
+
+def _signed_edge_request(
+    *,
+    content: str,
+    idempotency_key: str,
+    channel_id: str = _DISCORD_CHANNEL_ID,
+    target_type: str = "public_guild_channel",
+    parent_channel_id: str | None = None,
+) -> dict:
+    target = {
+        "target_type": target_type,
+        "guild_id": _DISCORD_GUILD_ID,
+        "channel_id": channel_id,
+    }
+    if parent_channel_id is not None:
+        target["parent_channel_id"] = parent_channel_id
+    return {
+        "protocol": "discord-edge.v1",
+        "request_id": _EDGE_REQUEST_ID,
+        "sequence": 1,
+        "deadline_unix_ms": 4_000_000_000_000,
+        "operation": "public.message.send",
+        "target": target,
+        "payload": {"content": content},
+        "idempotency_key": idempotency_key,
+        "capability": {
+            "key_id": "1" * 64,
+            "payload": {
+                "protocol": "discord-edge-capability.v1",
+                "capability_id": _EDGE_CAPABILITY_ID,
+                "operation": "public.message.send",
+                "target": target,
+                "idempotency_key": idempotency_key,
+            },
+            "signature": "A" * 86,
+        },
+    }
+
+
+def _signed_edge_receipt(
+    *,
+    outcome: str,
+    content: str,
+    idempotency_key: str,
+    channel_id: str = _DISCORD_CHANNEL_ID,
+    target_type: str = "public_guild_channel",
+    blocker_code: str | None = None,
+) -> dict:
+    content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return {
+        "key_id": "2" * 64,
+        "payload": {
+            "protocol": "discord-edge-receipt.v1",
+            "receipt_id": "33333333-3333-4333-8333-333333333333",
+            "edge_request_id": _EDGE_REQUEST_ID,
+            "capability_id": _EDGE_CAPABILITY_ID,
+            "operation": "public.message.send",
+            "target": {
+                "target_type": target_type,
+                "guild_id": _DISCORD_GUILD_ID,
+                "channel_id": channel_id,
+            },
+            "idempotency_key": idempotency_key,
+            "request_sha256": "3" * 64,
+            "content_sha256": content_sha256,
+            "outcome": outcome,
+            "discord_object_id": (
+                "1522505336614027304" if outcome == "verified" else None
+            ),
+            "bot_user_id": "1521098105041191104",
+            "adapter_accepted": outcome == "verified",
+            "readback_verified": outcome == "verified",
+            "readback_content_sha256": (
+                content_sha256 if outcome == "verified" else None
+            ),
+            "readback_thread": None,
+            "blocker_code": blocker_code,
+            "occurred_at_unix_ms": 2_000_000_000_000,
+        },
+        "signature": "B" * 86,
     }
 
 
@@ -39,6 +150,14 @@ def _verified_discord_receipt(monkeypatch):
             "content_sha256": kwargs.get("expected_content_sha256") or "a" * 64,
         },
     )
+
+    def _no_edge_record(_client, _exact_intent):
+        raise _NoEdgeRecord("no exact durable edge journal record")
+
+    # Route-back execution must now perform an authenticated mutation-free
+    # edge lookup before claiming.  Individual recovery/race tests override
+    # this default with exact durable evidence.
+    monkeypatch.setattr(cbt, "_discord_edge_reconcile", _no_edge_record)
 
 
 def test_route_back_sent_requires_live_adapter_readback(monkeypatch):
@@ -339,7 +458,7 @@ def test_route_back_target_contradictions_require_clarification(target_ref):
 
 def test_route_back_target_conflict_uses_typed_preclaim_blocker(monkeypatch):
     writer_calls = []
-    sends = []
+    edge_calls = []
 
     def _writer(operation, payload, *, idempotency_key=None):
         writer_calls.append((operation, payload, idempotency_key))
@@ -353,8 +472,8 @@ def test_route_back_target_conflict_uses_typed_preclaim_blocker(monkeypatch):
     )
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda *args, **kwargs: sends.append((args, kwargs)),
+        "_discord_edge_preconnect",
+        lambda: edge_calls.append("preconnect"),
     )
 
     data = json.loads(cbt.route_back_execute_tool(
@@ -370,7 +489,7 @@ def test_route_back_target_conflict_uses_typed_preclaim_blocker(monkeypatch):
     assert data["clarification_required"] is True
     assert "conflicting people" in data["clarification"]
     assert "Do not guess" in data["final_answer_guard"]
-    assert sends == []
+    assert edge_calls == []
     assert len(writer_calls) == 1
     operation, payload, writer_idempotency_key = writer_calls[0]
     assert operation == "routeback.finalize_blocked"
@@ -380,333 +499,342 @@ def test_route_back_target_conflict_uses_typed_preclaim_blocker(monkeypatch):
     assert writer_idempotency_key == "routeback:target-conflict:1"
 
 
-def test_route_back_execute_owner_target_sends_then_records_sent(monkeypatch):
-    fake = _FakeHelper()
-    sent = {}
-    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
-
-    def fake_post(channel_id, content, *, timeout=15):
-        sent["channel_id"] = channel_id
-        sent["content"] = content
-        return _verified_delivery("discord-msg-1", channel_id, content)
-
-    monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
-
-    out = cbt.route_back_execute_tool(
-        case_id="case:promo-product-api-1522505332318932992",
-        target_ref={"id": "1279454038731264061", "mention": "<@1279454038731264061>"},
-        message="<@1279454038731264061> Алекс предава: product id 95435.",
-        message_summary="Alex route-back to Emil with promo product API id",
-        source_refs={"platform": "discord", "thread_id": "1522505332318932992", "message_id": "1522505336614027304"},
-        idempotency_key="routeback:promo-product-api:1522505336614027304:emo:v2",
-    )
-    data = json.loads(out)
-
-    assert data["success"] is True
-    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT"
-    assert sent == {
-        "channel_id": "1504852355588423801",
-        "content": "<@1279454038731264061> Алекс предава: product id 95435.",
-    }
-    assert data["receipt"]["message_id"] == "discord-msg-1"
-    assert data["receipt"]["channel_id"] == "1504852355588423801"
-    assert data["route_back_record"]["route_back"]["mode"] == "record_sent_receipt"
-    sql = "\n".join(fake.queries)
-    assert "route_back.sent" in sql
-    assert "discord-msg-1" in sql
-    assert '"channel_type":"public_channel"' in sql
-
-
-def test_route_back_execute_send_failure_records_blocked(monkeypatch):
-    fake = _FakeHelper()
-    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
-
-    def fail_post(channel_id, content, *, timeout=15):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(cbt, "_discord_post_message", fail_post)
-
-    out = cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"lane": "emil_lomliev"},
-        message="<@1279454038731264061> route-back message",
-        message_summary="route-back to owner",
-        source_refs={"platform": "discord", "message_id": "m1"},
-        idempotency_key="idem-route-back-execute-blocked",
-    )
-    data = json.loads(out)
-
-    assert data["success"] is True
-    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert data["blocker_reason"] == (
-        "discord_post_claim_delivery_outcome_uncertain:RuntimeError"
-    )
-    assert data["delivery_outcome_uncertain"] is True
-    assert data["resend_forbidden"] is True
-    assert "Do not resend" in data["final_answer_guard"]
-    assert data["route_back_record"]["route_back"]["mode"] == "record_blocked"
-    sql = "\n".join(fake.queries)
-    assert "route_back.blocked" in sql
-    assert "discord_post_claim_delivery_outcome_uncertain:RuntimeError" in sql
-
-
-def test_route_back_execute_post_claim_timeout_is_uncertain_and_never_retried(
+def test_route_back_preconnects_then_claims_exact_edge_intent_and_finalizes_sent(
     monkeypatch,
 ):
-    sends = []
-    blocked = []
+    content = "A verified public route-back"
+    idempotency_key = "routeback:edge:verified:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_client = object()
+    order = []
+    claim_calls = []
+    terminal_calls = []
+
     monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
-    monkeypatch.setattr(
-        cbt,
-        "_record_route_back_execution_intent",
-        lambda **kwargs: json.dumps({"success": True, "inserted": True}),
-    )
-    monkeypatch.setattr(
-        cbt,
-        "_route_back_record_blocked",
-        lambda **kwargs: blocked.append(kwargs) or {"success": True},
-    )
-
-    def _timeout(channel_id, content, **kwargs):
-        sends.append((channel_id, content))
-        raise RuntimeError("discord_adapter_send_timeout")
-
-    monkeypatch.setattr(cbt, "_discord_post_message", _timeout)
-
-    data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"id": "1282940511962791959"},
-        message="timeout outcome must not be replayed",
-        message_summary="post-claim Discord timeout",
-        source_refs={"platform": "discord", "message_id": "m-timeout"},
-        idempotency_key="routeback:post-claim-timeout:1",
-    ))
-
-    assert len(sends) == 1
-    assert len(blocked) == 1
-    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert data["blocker_reason"] == (
-        "discord_post_claim_delivery_outcome_uncertain:timeout"
-    )
-    assert data["delivery_outcome_uncertain"] is True
-    assert data["resend_forbidden"] is True
-    assert "Do not resend" in data["final_answer_guard"]
-
-
-def test_route_back_execute_accepted_unverified_send_records_partial_receipt(
-    monkeypatch,
-):
-    blocked_calls = []
-    content = "accepted but readback unavailable"
-    expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
-    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
     monkeypatch.setattr(
         cbt,
         "_resolve_route_back_public_target",
-        lambda target_ref: {
-            "channel_id": "public-channel-1",
-            "channel_type": "public_channel",
-            "target_kind": "exact_public_directory_target",
-            "target_member_key": None,
-            "target_member_id": None,
-            "target_mention": None,
-        },
+        lambda _target_ref: _public_edge_target(),
     )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
     monkeypatch.setattr(
         cbt,
-        "_record_route_back_execution_intent",
-        lambda **kwargs: json.dumps({"success": True, "inserted": True}),
+        "_discord_edge_preconnect",
+        lambda: order.append("preconnect") or edge_client,
     )
+
+    class _NoEdgeRecord(RuntimeError):
+        code = "discord_edge_reconciliation_not_available"
+
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda channel_id, message, **kwargs: {
-            "id": "discord-accepted-1",
-            "channel_id": channel_id,
-            "adapter_receipt": True,
-            "receipt_readback_verified": False,
-            "content_sha256": expected_hash,
-            "receipt_verification_error": "RuntimeError",
-        },
+        "_discord_edge_reconcile",
+        lambda client, exact_intent: order.append("reconcile")
+        or (_ for _ in ()).throw(_NoEdgeRecord("no edge record")),
     )
-    monkeypatch.setattr(
-        cbt,
-        "_route_back_record_blocked",
-        lambda **kwargs: blocked_calls.append(kwargs)
-        or {
+
+    def _claim(**kwargs):
+        order.append("claim")
+        claim_calls.append(kwargs)
+        return json.dumps({
             "success": True,
-            "outcome": "blocked",
-            "partial_receipt": kwargs.get("partial_receipt"),
-        },
-    )
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        })
+
+    def _execute(client, request):
+        order.append("execute")
+        assert client is edge_client
+        assert request == edge_request
+        return {
+            "state": "verified",
+            "blocker": None,
+            "replayed": False,
+            "receipt": edge_receipt,
+        }
+
+    def _finalize(**kwargs):
+        order.append("finalize")
+        terminal_calls.append(kwargs)
+        return json.dumps({"success": True, "outcome": "sent"})
+
+    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
+    monkeypatch.setattr(cbt, "_discord_edge_execute", _execute)
+    monkeypatch.setattr(cbt, "_record_route_back_edge_terminal", _finalize)
 
     data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"channel_id": "public-channel-1"},
+        case_id="case:edge-verified",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
         message=content,
-        message_summary="accepted send with unverified readback",
+        message_summary="verified public route-back",
         source_refs={"platform": "discord", "message_id": "source-1"},
-        idempotency_key="routeback:accepted-unverified:1",
+        idempotency_key=idempotency_key,
     ))
-
-    expected_partial = {
-        "platform": "discord",
-        "adapter_receipt": True,
-        "receipt_readback_verified": False,
-        "message_id": "discord-accepted-1",
-        "channel_id": "public-channel-1",
-        "content_sha256": expected_hash,
-    }
-    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert data["delivery_outcome_uncertain"] is True
-    assert data["partial_receipt"] == expected_partial
-    assert "Do not resend" in data["final_answer_guard"]
-    assert blocked_calls == [
-        {
-            "case_id": "case:test",
-            "target_ref": {
-                "id": "public-channel-1",
-                "mention": None,
-                "channel_id": "public-channel-1",
-                "channel_type": "public_channel",
-                "target_kind": "exact_public_directory_target",
-            },
-            "message_summary": "accepted send with unverified readback",
-            "source_refs": {"platform": "discord", "message_id": "source-1"},
-            "blocker_reason": (
-                "discord_send_accepted_receipt_readback_unverified:RuntimeError"
-            ),
-            "idempotency_key": "routeback:accepted-unverified:1",
-            "execution_binding": {
-                "target_channel_id": "public-channel-1",
-                "content_sha256": expected_hash,
-            },
-            "partial_receipt": expected_partial,
-        }
-    ]
-
-
-def test_route_back_execute_registered_teammate_uses_public_default_lane(monkeypatch):
-    fake = _FakeHelper()
-    called = {"send": False}
-
-    def fake_post(channel_id, content, *, timeout=15):
-        called["send"] = True
-        called["channel_id"] = channel_id
-        return _verified_delivery("discord-msg-alex", channel_id, content)
-
-    monkeypatch.setattr(cbt, "_discord_post_message", fake_post)
-    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
-
-    out = cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"id": "1282940511962791959"},
-        message="forward this",
-        message_summary="route-back to Alex",
-        source_refs={"platform": "discord", "message_id": "m1"},
-        idempotency_key="routeback:alex:public:1",
-    )
-    data = json.loads(out)
 
     assert data["success"] is True
     assert data["status"] == "ROUTE_BACK_EXECUTE_SENT"
-    assert called["send"] is True
-    assert called["channel_id"] == "1504852408227069993"
-    assert data["route_back_record"]["route_back"]["mode"] == "record_sent_receipt"
-    assert "route_back.sent" in "\n".join(fake.queries)
+    assert data["edge_receipt"] == edge_receipt
+    assert order == ["preconnect", "reconcile", "claim", "execute", "finalize"]
+    assert claim_calls[0]["discord_edge_intent"] == {
+        "operation": "public.message.send",
+        "target": {
+            "target_type": "public_guild_channel",
+            "guild_id": _DISCORD_GUILD_ID,
+            "channel_id": _DISCORD_CHANNEL_ID,
+        },
+        "payload": {"content": content},
+        "idempotency_key": derive_routeback_edge_idempotency_key(
+            case_id="case:edge-verified",
+            canonical_idempotency_key=idempotency_key,
+        ),
+    }
+    assert claim_calls[0]["target_ref"]["guild_id"] == _DISCORD_GUILD_ID
+    assert claim_calls[0]["target_ref"]["target_type"] == "public_guild_channel"
+    assert terminal_calls == [{
+        "outcome": "sent",
+        "case_id": "case:edge-verified",
+        "target_ref": claim_calls[0]["target_ref"],
+        "message_summary": "verified public route-back",
+        "source_refs": {"platform": "discord", "message_id": "source-1"},
+        "idempotency_key": idempotency_key,
+        "execution_binding": claim_calls[0]["execution_binding"],
+        "discord_edge_request": edge_request,
+        "discord_edge_receipt": edge_receipt,
+    }]
 
 
-def test_route_back_execute_normalizes_conflicting_target_channel_fields(monkeypatch):
-    fake = _FakeHelper()
-    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+def test_discord_edge_execute_returns_only_exact_signed_receipt_mapping():
+    request = {"signed": "writer-request"}
+    receipt = {"signed": "edge-receipt"}
+
+    class _Receipt:
+        @staticmethod
+        def to_message():
+            return receipt
+
+    class _Result:
+        state = "verified"
+        blocker = None
+        replayed = False
+        receipt = _Receipt()
+
+    class _Client:
+        @staticmethod
+        def execute(discord_edge_request, *, require_preconnected):
+            assert discord_edge_request is request
+            assert require_preconnected is True
+            return _Result()
+
+    assert cbt._discord_edge_execute(_Client(), request) == {
+        "state": "verified",
+        "blocker": None,
+        "replayed": False,
+        "receipt": receipt,
+    }
+
+
+def test_discord_edge_reconcile_builds_read_only_exact_binding():
+    from gateway.discord_edge_protocol import (
+        DiscordEdgeErrorCode,
+        DiscordEdgeReconciliationQuery,
+        SignedDiscordEdgeEnvelope,
+        parse_request_for_reconciliation,
+    )
+
+    content = "Recover only exact durable evidence"
+    idempotency_key = "routeback:edge:reconcile-helper:1"
+    request_message = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    receipt_message = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    request = parse_request_for_reconciliation(request_message)
+    receipt = SignedDiscordEdgeEnvelope.from_mapping(
+        receipt_message,
+        code=DiscordEdgeErrorCode.INVALID_RECEIPT,
+        label="receipt",
+    )
+
+    class _Result:
+        state = "verified"
+        blocker = None
+        replayed = True
+
+        def __init__(self):
+            self.request = request
+            self.receipt = receipt
+
+    class _Client:
+        @staticmethod
+        def reconcile(query, *, require_preconnected):
+            assert isinstance(query, DiscordEdgeReconciliationQuery)
+            assert require_preconnected is False
+            assert query.idempotency_key == idempotency_key
+            assert query.operation.value == "public.message.send"
+            assert query.target.channel_id == _DISCORD_CHANNEL_ID
+            assert query.request_sha256 == request.intent.request_sha256
+            assert query.content_sha256 == request.intent.content_sha256
+            return _Result()
+
+    result = _REAL_DISCORD_EDGE_RECONCILE(
+        _Client(),
+        {
+            "operation": "public.message.send",
+            "target": request_message["target"],
+            "payload": request_message["payload"],
+            "idempotency_key": idempotency_key,
+        },
+    )
+
+    assert result == {
+        "request": request_message,
+        "state": "verified",
+        "blocker": None,
+        "replayed": True,
+        "receipt": receipt_message,
+    }
+
+
+def test_route_back_deduped_claim_reconciles_signed_edge_evidence_without_send(
+    monkeypatch,
+):
+    content = "Recover the exact verified edge receipt"
+    idempotency_key = "routeback:edge:deduped-reconcile:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_client = object()
+    reconciliation_calls = []
+    recovery_calls = []
+    terminal_calls = []
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
     monkeypatch.setattr(
         cbt,
         "_resolve_route_back_public_target",
-        lambda target_ref: {
-            "channel_id": "canonical-public-channel",
-            "channel_type": "public_channel",
-            "target_kind": "exact_public_directory_target",
-            "target_member_key": None,
-            "target_member_id": "member-1",
-            "target_mention": "<@member-1>",
-        },
+        lambda _target_ref: _public_edge_target(),
     )
     monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", lambda: edge_client)
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda channel_id, content, timeout=15: _verified_delivery(
-            "discord-normalized", channel_id, content
+        "_record_route_back_execution_intent",
+        lambda **kwargs: pytest.fail(
+            "durable edge evidence must recover before ordinary claim"
         ),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_recovery",
+        lambda **kwargs: recovery_calls.append(kwargs)
+        or json.dumps({
+            "success": True,
+            "authorization_id": "routeauth:recovered",
+            "recovery_kind": "edge_evidence",
+            "recovered": True,
+            "inserted": False,
+            "deduped": True,
+        }),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda *args: pytest.fail("deduped reconciliation must never dispatch"),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_reconcile",
+        lambda client, exact_intent: reconciliation_calls.append(
+            (client, exact_intent)
+        )
+        or {
+            "request": edge_request,
+            "state": "verified",
+            "blocker": None,
+            "replayed": True,
+            "receipt": edge_receipt,
+        },
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: terminal_calls.append(kwargs)
+        or json.dumps({"success": True, "outcome": "sent"}),
     )
 
     data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={
-            "id": "member-1",
-            "channel_id": "stale-channel",
-            "thread_id": "stale-thread",
-            "chat_id": "stale-chat",
-        },
-        message="normalized target",
-        message_summary="normalize conflicting channel surfaces",
-        source_refs={"platform": "discord", "message_id": "m-normalized"},
-        idempotency_key="routeback:normalize-target:1",
+        case_id="case:edge-deduped-reconcile",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="reconcile after process loss",
+        source_refs={"platform": "discord", "message_id": "source-reconcile"},
+        idempotency_key=idempotency_key,
     ))
 
-    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT"
-    sql = "\n".join(fake.queries)
-    assert "canonical-public-channel" in sql
-    assert "stale-channel" not in sql
-    assert "stale-thread" not in sql
-    assert "stale-chat" not in sql
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert data["success"] is True
+    assert data["edge_reconciled"] is True
+    assert len(reconciliation_calls) == 1
+    assert len(recovery_calls) == 1
+    assert recovery_calls[0]["recovery_kind"] == "edge_evidence"
+    assert recovery_calls[0]["discord_edge_request"] == edge_request
+    assert recovery_calls[0]["discord_edge_receipt"] == edge_receipt
+    assert terminal_calls[0]["discord_edge_request"] == edge_request
+    assert terminal_calls[0]["discord_edge_receipt"] == edge_receipt
 
 
-def test_fresh_claimed_route_back_intent_does_not_send_or_record_terminal(
+def test_route_back_deduped_claim_dispatches_fresh_request_only_after_edge_no_record(
     monkeypatch,
 ):
-    fake = _FakeHelper()
-    sends = []
-    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+    case_id = "case:edge-deduped-no-record"
+    content = "Recover a claim that never reached the edge"
+    canonical_key = "routeback:edge:deduped-no-record:1"
+    edge_key = derive_routeback_edge_idempotency_key(
+        case_id=case_id,
+        canonical_idempotency_key=canonical_key,
+    )
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=edge_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=edge_key,
+    )
+    execute_calls = []
+    reconcile_calls = []
+
+    class _NoEdgeRecord(RuntimeError):
+        code = "discord_edge_reconciliation_not_available"
+        dispatch_uncertain = False
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda channel_id, content, timeout=15: (
-            sends.append((channel_id, content))
-            or _verified_delivery("discord-msg-once", channel_id, content)
-        ),
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
     )
-    kwargs = {
-        "case_id": "case:test",
-        "target_ref": {"id": "1282940511962791959"},
-        "message": "send once",
-        "message_summary": "exactly once route-back",
-        "source_refs": {"platform": "discord", "message_id": "m-once"},
-        "idempotency_key": "routeback:exactly-once:1",
-    }
-    first = json.loads(cbt.route_back_execute_tool(**kwargs))
-    assert first["status"] == "ROUTE_BACK_EXECUTE_SENT"
-
-    fake.insert_tags_by_event_type["route_back.intent.created"] = "INSERT 0 0"
-    retry = json.loads(cbt.route_back_execute_tool(**kwargs))
-
-    assert retry["status"] == (
-        "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
-    )
-    assert retry["delivery_outcome_uncertain"] is True
-    assert retry["resend_forbidden"] is True
-    assert "Do not send" in retry["final_answer_guard"]
-    assert len(sends) == 1
-
-
-def test_old_claim_never_auto_terminalizes_blocked_or_resends(
-    monkeypatch,
-):
-    sends = []
-    blocked = []
-    old = "2000-01-01T00:00:00+00:00"
-    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
     monkeypatch.setattr(
         cbt,
         "_record_route_back_execution_intent",
@@ -714,51 +842,813 @@ def test_old_claim_never_auto_terminalizes_blocked_or_resends(
             "success": True,
             "inserted": False,
             "deduped": True,
-            "claimed_at": old,
+            "discord_edge_request": edge_request,
+        }),
+    )
+
+    def _no_record(client, exact_intent):
+        reconcile_calls.append((client, exact_intent))
+        raise _NoEdgeRecord("no exact journal row")
+
+    monkeypatch.setattr(cbt, "_discord_edge_reconcile", _no_record)
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: execute_calls.append((client, request))
+        or {
+            "state": "verified",
+            "blocker": None,
+            "replayed": False,
+            "receipt": edge_receipt,
+        },
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: json.dumps({"success": True, "outcome": "sent"}),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id=case_id,
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="claim-before-edge recovery",
+        source_refs={"platform": "discord", "message_id": "source-no-record"},
+        idempotency_key=canonical_key,
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert len(reconcile_calls) == 1
+    assert len(execute_calls) == 1
+    assert execute_calls[0][1] == edge_request
+
+
+@pytest.mark.parametrize("scope_failure", ["blocked_result", "typed_exception"])
+def test_route_back_restart_no_record_uses_exact_recovery_takeover(
+    monkeypatch,
+    scope_failure,
+):
+    case_id = "case:edge-restart-no-record"
+    content = "Continue the exact claim after an epoch-only restart"
+    canonical_key = "routeback:edge:restart-no-record:1"
+    edge_key = derive_routeback_edge_idempotency_key(
+        case_id=case_id,
+        canonical_idempotency_key=canonical_key,
+    )
+    fresh_request = _signed_edge_request(
+        content=content,
+        idempotency_key=edge_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=edge_key,
+    )
+    claim_calls = []
+    recovery_calls = []
+    execute_calls = []
+
+    class _ScopeMismatch(RuntimeError):
+        code = "scope_mismatch"
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+
+    def _claim(**kwargs):
+        claim_calls.append(kwargs)
+        if scope_failure == "typed_exception":
+            raise _ScopeMismatch("old capability epoch")
+        return json.dumps({
+            "success": False,
+            "error_code": "scope_mismatch",
+        })
+
+    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_recovery",
+        lambda **kwargs: recovery_calls.append(kwargs)
+        or json.dumps({
+            "success": True,
+            "inserted": False,
+            "deduped": True,
+            "recovered": True,
+            "recovery_kind": "edge_no_record",
+            "discord_edge_request": fresh_request,
         }),
     )
     monkeypatch.setattr(
         cbt,
-        "_route_back_record_blocked",
-        lambda **kwargs: blocked.append(kwargs) or {"success": True},
+        "_discord_edge_execute",
+        lambda client, request: execute_calls.append((client, request))
+        or {
+            "state": "verified",
+            "blocker": None,
+            "replayed": False,
+            "receipt": edge_receipt,
+        },
     )
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda *args, **kwargs: sends.append((args, kwargs)),
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: json.dumps({"success": True, "outcome": "sent"}),
     )
 
     data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"id": "1282940511962791959"},
-        message="do not resend stale uncertain intent",
-        message_summary="stale intent",
-        source_refs={"platform": "discord", "message_id": "m-stale"},
-        idempotency_key="routeback:stale-intent:1",
+        case_id=case_id,
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="restart recovery",
+        source_refs={"platform": "discord", "message_id": "source-restart"},
+        idempotency_key=canonical_key,
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert len(claim_calls) == 1
+    assert len(recovery_calls) == 1
+    assert recovery_calls[0]["recovery_kind"] == "edge_no_record"
+    assert "discord_edge_request" not in recovery_calls[0]
+    assert len(execute_calls) == 1
+    assert execute_calls[0][1] == fresh_request
+
+
+def test_route_back_nonverified_edge_evidence_finalizes_blocked(
+    monkeypatch,
+):
+    content = "Not independently verified"
+    idempotency_key = "routeback:edge:blocked:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="blocked_before_dispatch",
+        content=content,
+        idempotency_key=idempotency_key,
+        blocker_code="discord_readback_unverified",
+    )
+    terminal_calls = []
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: {
+            "state": "blocked",
+            "blocker": "discord_readback_unverified",
+            "replayed": False,
+            "receipt": edge_receipt,
+        },
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: terminal_calls.append(kwargs)
+        or json.dumps({"success": True, "outcome": "blocked"}),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-blocked",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="edge could not verify delivery",
+        source_refs={"platform": "discord", "message_id": "source-blocked"},
+        idempotency_key=idempotency_key,
+    ))
+
+    assert data["success"] is False
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert terminal_calls[0]["outcome"] == "blocked"
+    assert terminal_calls[0]["discord_edge_request"] == edge_request
+    assert terminal_calls[0]["discord_edge_receipt"] == edge_receipt
+
+
+def test_route_back_delayed_accepted_receipt_cannot_beat_current_verified(
+    monkeypatch,
+):
+    content = "Current verified truth wins over a delayed accepted receipt"
+    idempotency_key = "routeback:edge:accepted-then-verified:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    delayed_receipt = _signed_edge_receipt(
+        outcome="accepted_unverified",
+        content=content,
+        idempotency_key=idempotency_key,
+        blocker_code="readback_timeout",
+    )
+    verified_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    order = []
+    terminal_calls = []
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: order.append("execute")
+        or {
+            "state": "dispatching",
+            "blocker": "readback_timeout",
+            "replayed": False,
+            "receipt": delayed_receipt,
+        },
+    )
+
+    def _reconcile_after_dispatch(client, exact_intent):
+        order.append("reconcile")
+        if order.count("reconcile") == 1:
+            raise _NoEdgeRecord("preclaim journal is empty")
+        return {
+            "request": edge_request,
+            "state": "verified",
+            "blocker": None,
+            "replayed": True,
+            "receipt": verified_receipt,
+        }
+
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_reconcile",
+        _reconcile_after_dispatch,
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: order.append("finalize")
+        or terminal_calls.append(kwargs)
+        or json.dumps({"success": True, "outcome": "sent"}),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-accepted-then-verified",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="monotonic edge receipt",
+        source_refs={"platform": "discord", "message_id": "source-race"},
+        idempotency_key=idempotency_key,
+    ))
+
+    assert data["success"] is True
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert order == ["reconcile", "execute", "reconcile", "finalize"]
+    assert len(terminal_calls) == 1
+    assert terminal_calls[0]["outcome"] == "sent"
+    assert terminal_calls[0]["discord_edge_receipt"] == verified_receipt
+    assert terminal_calls[0]["discord_edge_receipt"] != delayed_receipt
+
+
+def test_route_back_current_accepted_receipt_keeps_claim_pending(monkeypatch):
+    content = "Accepted mutation still awaits exact readback"
+    idempotency_key = "routeback:edge:accepted-pending:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    accepted_receipt = _signed_edge_receipt(
+        outcome="accepted_unverified",
+        content=content,
+        idempotency_key=idempotency_key,
+        blocker_code="readback_timeout",
+    )
+    terminal_calls = []
+    reconcile_calls = []
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: {
+            "state": "dispatching",
+            "blocker": "readback_timeout",
+            "replayed": False,
+            "receipt": accepted_receipt,
+        },
+    )
+
+    def _reconcile_accepted(client, exact_intent):
+        reconcile_calls.append(exact_intent)
+        if len(reconcile_calls) == 1:
+            raise _NoEdgeRecord("preclaim journal is empty")
+        return {
+            "request": edge_request,
+            "state": "dispatching",
+            "blocker": "readback_timeout",
+            "replayed": True,
+            "receipt": accepted_receipt,
+        }
+
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_reconcile",
+        _reconcile_accepted,
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: terminal_calls.append(kwargs)
+        or pytest.fail("accepted_unverified must not become Canonical terminal"),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-accepted-pending",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="readback remains pending",
+        source_refs={"platform": "discord", "message_id": "source-pending"},
+        idempotency_key=idempotency_key,
+    ))
+
+    assert data["success"] is False
+    assert data["status"] == (
+        "ROUTE_BACK_EXECUTE_EDGE_ACCEPTED_PENDING_VERIFICATION"
+    )
+    assert data["edge_receipt"] == accepted_receipt
+    assert data["edge_reconciled"] is True
+    assert data["resend_forbidden"] is True
+    assert len(reconcile_calls) == 2
+    assert terminal_calls == []
+
+
+def test_route_back_dispatch_uncertain_reconciles_then_finalizes_blocked(monkeypatch):
+    content = "Dispatch outcome remains durably uncertain"
+    idempotency_key = "routeback:edge:dispatch-uncertain:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    uncertain_receipt = _signed_edge_receipt(
+        outcome="dispatch_uncertain",
+        content=content,
+        idempotency_key=idempotency_key,
+        blocker_code="transport_closed",
+    )
+    terminal_calls = []
+    reconcile_calls = []
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: {
+            "state": "dispatching",
+            "blocker": "transport_closed",
+            "replayed": False,
+            "receipt": uncertain_receipt,
+        },
+    )
+
+    def _reconcile_uncertain(client, exact_intent):
+        reconcile_calls.append(exact_intent)
+        if len(reconcile_calls) == 1:
+            raise _NoEdgeRecord("preclaim journal is empty")
+        return {
+            "request": edge_request,
+            "state": "dispatching",
+            "blocker": "transport_closed",
+            "replayed": True,
+            "receipt": uncertain_receipt,
+        }
+
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_reconcile",
+        _reconcile_uncertain,
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: terminal_calls.append(kwargs)
+        or json.dumps({"success": True, "outcome": "blocked"}),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-dispatch-uncertain",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="durably uncertain dispatch",
+        source_refs={"platform": "discord", "message_id": "source-uncertain"},
+        idempotency_key=idempotency_key,
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED_RECONCILED"
+    assert terminal_calls[0]["outcome"] == "blocked"
+    assert terminal_calls[0]["discord_edge_receipt"] == uncertain_receipt
+
+
+def test_route_back_preconnect_failure_records_only_safe_preclaim_blocker(monkeypatch):
+    blocked_calls = []
+    claim_calls = []
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_preconnect",
+        lambda: (_ for _ in ()).throw(ConnectionError("edge unavailable")),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: claim_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: blocked_calls.append(kwargs)
+        or {"success": True, "outcome": "blocked", "preclaim": True},
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-preconnect",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message="No claim without an authenticated edge",
+        message_summary="edge unavailable before claim",
+        source_refs={"platform": "discord", "message_id": "source-preconnect"},
+        idempotency_key="routeback:edge:preconnect:1",
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert data["blocker_reason"] == "discord_edge_preconnect_failed:ConnectionError"
+    assert claim_calls == []
+    assert "execution_binding" not in blocked_calls[0]
+
+
+def test_route_back_post_claim_transport_loss_stays_pending_without_terminal_or_retry(
+    monkeypatch,
+):
+    content = "Transport loss has an uncertain delivery outcome"
+    idempotency_key = "routeback:edge:transport-loss:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    execute_calls = []
+    terminal_calls = []
+    blocked_calls = []
+
+    class _TransportLoss(RuntimeError):
+        dispatch_uncertain = True
+        code = "response_lost_after_dispatch"
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+
+    def _lose_transport(client, request):
+        execute_calls.append((client, request))
+        raise _TransportLoss("edge response was lost")
+
+    monkeypatch.setattr(cbt, "_discord_edge_execute", _lose_transport)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: terminal_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_route_back_record_blocked",
+        lambda **kwargs: blocked_calls.append(kwargs),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-transport-loss",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="transport outcome uncertain",
+        source_refs={"platform": "discord", "message_id": "source-loss"},
+        idempotency_key=idempotency_key,
     ))
 
     assert data["status"] == (
-        "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
+        "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_PENDING_RECONCILIATION"
     )
     assert data["delivery_outcome_uncertain"] is True
     assert data["resend_forbidden"] is True
-    assert "Do not send" in data["final_answer_guard"]
-    assert sends == []
-    assert blocked == []
+    assert data["edge_error"] == "response_lost_after_dispatch"
+    assert len(execute_calls) == 1
+    assert terminal_calls == []
+    assert blocked_calls == []
 
 
-def test_sent_receipt_finalize_exception_retries_once_without_resend(monkeypatch):
-    sends = []
+def test_route_back_post_claim_transport_loss_reconciles_without_resend(monkeypatch):
+    content = "The edge persisted the receipt before transport loss"
+    idempotency_key = "routeback:edge:transport-reconcile:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    execute_calls = []
+    reconcile_calls = []
+    terminal_calls = []
+
+    class _TransportLoss(RuntimeError):
+        dispatch_uncertain = True
+        code = "response_lost_after_dispatch"
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+
+    def _lose_transport(client, request):
+        execute_calls.append((client, request))
+        raise _TransportLoss("response lost")
+
+    monkeypatch.setattr(cbt, "_discord_edge_execute", _lose_transport)
+
+    def _reconcile_after_transport(client, exact_intent):
+        reconcile_calls.append((client, exact_intent))
+        if len(reconcile_calls) == 1:
+            raise _NoEdgeRecord("preclaim journal is empty")
+        return {
+            "request": edge_request,
+            "state": "verified",
+            "blocker": None,
+            "replayed": True,
+            "receipt": edge_receipt,
+        }
+
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_reconcile",
+        _reconcile_after_transport,
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: terminal_calls.append(kwargs)
+        or json.dumps({"success": True, "outcome": "sent"}),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:edge-transport-reconcile",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="transport loss recovery",
+        source_refs={"platform": "discord", "message_id": "source-recovery"},
+        idempotency_key=idempotency_key,
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+    assert data["edge_reconciled"] is True
+    assert len(execute_calls) == 1
+    assert len(reconcile_calls) == 2
+    assert len(terminal_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("claim", "expected_status"),
+    [
+        (
+            {"success": False, "inserted": False, "error": "writer unavailable"},
+            "ROUTE_BACK_EXECUTE_INTENT_FAILED",
+        ),
+        (
+            {"success": True, "inserted": False, "deduped": True},
+            "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION",
+        ),
+    ],
+)
+def test_route_back_never_dispatches_without_fresh_writer_authority(
+    monkeypatch,
+    claim,
+    expected_status,
+):
+    edge_calls = []
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps(claim),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda *args: edge_calls.append(args),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:no-new-claim",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message="Never dispatch without fresh writer authority",
+        message_summary="claim gate",
+        source_refs={"platform": "discord", "message_id": "source-claim"},
+        idempotency_key="routeback:edge:no-new-claim:1",
+    ))
+
+    assert data["status"] == expected_status
+    assert edge_calls == []
+
+
+def test_route_back_thread_target_binds_exact_guild_parent_and_target_type(
+    monkeypatch,
+):
+    thread_id = "1522505332318932992"
+    parent_id = "1504852408227069993"
+    content = "Reply in the exact public guild thread"
+    idempotency_key = "routeback:edge:thread:1"
     claim_calls = []
-    finalize_calls = []
-    claim_results = iter([
-        {"success": True, "inserted": True},
-        {"success": True, "inserted": False},
-    ])
 
-    def _claim(**kwargs):
-        claim_calls.append(kwargs)
-        return json.dumps(next(claim_results))
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(
+            channel_id=thread_id,
+            target_type="public_guild_thread",
+            parent_channel_id=parent_id,
+        ),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: claim_calls.append(kwargs)
+        or json.dumps({"success": False, "inserted": False}),
+    )
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:thread-binding",
+        target_ref={"thread_id": thread_id},
+        message=content,
+        message_summary="exact public thread",
+        source_refs={"platform": "discord", "message_id": "source-thread"},
+        idempotency_key=idempotency_key,
+    ))
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_INTENT_FAILED"
+    assert claim_calls[0]["discord_edge_intent"]["target"] == {
+        "target_type": "public_guild_thread",
+        "guild_id": _DISCORD_GUILD_ID,
+        "channel_id": thread_id,
+        "parent_channel_id": parent_id,
+    }
+    assert claim_calls[0]["target_ref"]["target_type"] == "public_guild_thread"
+    assert claim_calls[0]["target_ref"]["parent_channel_id"] == parent_id
+
+
+def test_route_back_finalizer_retries_signed_evidence_without_resending(monkeypatch):
+    content = "Edge delivered exactly once"
+    idempotency_key = "routeback:edge:finalize-retry:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
+    )
+    execute_calls = []
+    finalize_calls = []
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_execution_intent",
+        lambda **kwargs: json.dumps({
+            "success": True,
+            "inserted": True,
+            "discord_edge_request": edge_request,
+        }),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: execute_calls.append((client, request))
+        or {
+            "state": "verified",
+            "blocker": None,
+            "replayed": False,
+            "receipt": edge_receipt,
+        },
+    )
 
     def _finalize(**kwargs):
         finalize_calls.append(kwargs)
@@ -766,400 +1656,106 @@ def test_sent_receipt_finalize_exception_retries_once_without_resend(monkeypatch
             raise TimeoutError("writer response lost")
         return json.dumps({"success": True, "outcome": "sent"})
 
-    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
-    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
-    monkeypatch.setattr(cbt, "_record_route_back_sent_receipt", _finalize)
-    monkeypatch.setattr(
-        cbt,
-        "_route_back_record_blocked",
-        lambda **kwargs: pytest.fail("successful bounded retry must not record blocked"),
-    )
-    monkeypatch.setattr(
-        cbt,
-        "_discord_post_message",
-        lambda channel_id, content, **kwargs: (
-            sends.append((channel_id, content))
-            or _verified_delivery("discord-receipt", channel_id, content)
-        ),
-    )
+    monkeypatch.setattr(cbt, "_record_route_back_edge_terminal", _finalize)
+
     data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"id": "1282940511962791959"},
-        message="delivered once",
-        message_summary="receipt persistence failure",
-        source_refs={"platform": "discord", "message_id": "m-receipt"},
-        idempotency_key="routeback:receipt-failure:1",
+        case_id="case:finalize-retry",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="bounded terminal retry",
+        source_refs={"platform": "discord", "message_id": "source-finalize"},
+        idempotency_key=idempotency_key,
     ))
 
     assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
-    assert len(sends) == 1
-    assert len(claim_calls) == 2
+    assert len(execute_calls) == 1
     assert len(finalize_calls) == 2
-    assert data["receipt"]["message_id"] == "discord-receipt"
+    assert finalize_calls[0]["discord_edge_request"] == edge_request
+    assert finalize_calls[1]["discord_edge_receipt"] == edge_receipt
 
 
-def test_sent_receipt_lost_retry_response_reconciles_terminal_without_resend(
-    monkeypatch,
-):
-    sends = []
-    claim_calls = []
-    finalize_calls = []
-    claim_results = iter([
-        {"success": True, "inserted": True},
-        {"success": True, "inserted": False},
-        {
-            "success": True,
-            "inserted": False,
-            "terminal_event_type": "route_back.sent",
-        },
-    ])
-
-    def _claim(**kwargs):
-        claim_calls.append(kwargs)
-        return json.dumps(next(claim_results))
-
-    def _finalize(**kwargs):
-        finalize_calls.append(kwargs)
-        raise TimeoutError("writer response lost")
-
-    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
-    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
-    monkeypatch.setattr(cbt, "_record_route_back_sent_receipt", _finalize)
-    monkeypatch.setattr(
-        cbt,
-        "_route_back_record_blocked",
-        lambda **kwargs: pytest.fail("terminal reconciliation must not record blocked"),
+def test_route_back_terminal_persistence_failure_never_invents_blocked(monkeypatch):
+    content = "Verified edge evidence awaits Canonical persistence"
+    idempotency_key = "routeback:edge:terminal-pending:1"
+    edge_request = _signed_edge_request(
+        content=content,
+        idempotency_key=idempotency_key,
     )
-    monkeypatch.setattr(
-        cbt,
-        "_discord_post_message",
-        lambda channel_id, content, **kwargs: (
-            sends.append((channel_id, content))
-            or _verified_delivery("discord-lost-retry", channel_id, content)
-        ),
+    edge_receipt = _signed_edge_receipt(
+        outcome="verified",
+        content=content,
+        idempotency_key=idempotency_key,
     )
-
-    data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"id": "1282940511962791959"},
-        message="delivered exactly once",
-        message_summary="lost sent finalizer response",
-        source_refs={"platform": "discord", "message_id": "m-lost"},
-        idempotency_key="routeback:lost-retry-response:1",
-    ))
-
-    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
-    assert len(sends) == 1
-    assert len(finalize_calls) == 2
-    assert len(claim_calls) == 3
-
-
-def test_sent_receipt_persistence_failure_blocks_after_one_bounded_retry(
-    monkeypatch,
-):
-    sends = []
     claim_calls = []
-    finalize_calls = []
     blocked_calls = []
-    claim_results = iter([
-        {"success": True, "inserted": True},
-        {"success": True, "inserted": False},
-        {"success": True, "inserted": False},
-    ])
+
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
+    monkeypatch.setattr(
+        cbt,
+        "_resolve_route_back_public_target",
+        lambda _target_ref: _public_edge_target(),
+    )
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", object)
 
     def _claim(**kwargs):
         claim_calls.append(kwargs)
-        return json.dumps(next(claim_results))
+        if len(claim_calls) == 1:
+            return json.dumps({
+                "success": True,
+                "inserted": True,
+                "discord_edge_request": edge_request,
+            })
+        return json.dumps({"success": True, "inserted": False})
 
-    def _finalize(**kwargs):
-        finalize_calls.append(kwargs)
-        return json.dumps({"success": False, "error": "writer unavailable"})
-
-    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **kwargs: {})
     monkeypatch.setattr(cbt, "_record_route_back_execution_intent", _claim)
-    monkeypatch.setattr(cbt, "_record_route_back_sent_receipt", _finalize)
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_execute",
+        lambda client, request: {
+            "state": "verified",
+            "blocker": None,
+            "replayed": False,
+            "receipt": edge_receipt,
+        },
+    )
+    monkeypatch.setattr(
+        cbt,
+        "_record_route_back_edge_terminal",
+        lambda **kwargs: json.dumps({"success": False, "error": "writer unavailable"}),
+    )
     monkeypatch.setattr(
         cbt,
         "_route_back_record_blocked",
-        lambda **kwargs: blocked_calls.append(kwargs) or {"success": True},
-    )
-    monkeypatch.setattr(
-        cbt,
-        "_discord_post_message",
-        lambda channel_id, content, **kwargs: (
-            sends.append((channel_id, content))
-            or _verified_delivery("discord-persist-fail", channel_id, content)
-        ),
+        lambda **kwargs: blocked_calls.append(kwargs),
     )
 
     data = json.loads(cbt.route_back_execute_tool(
-        case_id="case:test",
-        target_ref={"id": "1282940511962791959"},
-        message="delivered but canonical finalizer unavailable",
-        message_summary="bounded sent persistence failure",
-        source_refs={"platform": "discord", "message_id": "m-persist"},
-        idempotency_key="routeback:persist-failure:1",
+        case_id="case:terminal-pending",
+        target_ref={"channel_id": _DISCORD_CHANNEL_ID},
+        message=content,
+        message_summary="Canonical terminal pending",
+        source_refs={"platform": "discord", "message_id": "source-pending"},
+        idempotency_key=idempotency_key,
     ))
 
-    assert data["status"] == "ROUTE_BACK_EXECUTE_SENT_RECEIPT_RECORD_BLOCKED"
+    assert data["status"] == "ROUTE_BACK_EXECUTE_CANONICAL_TERMINAL_PENDING"
     assert data["delivery_outcome_verified"] is True
     assert data["resend_forbidden"] is True
-    assert "Never resend" in data["final_answer_guard"]
-    assert len(sends) == 1
-    assert len(finalize_calls) == 2
-    assert len(claim_calls) == 3
-    assert len(blocked_calls) == 1
-    assert blocked_calls[0]["blocker_reason"] == (
-        "route_back_sent_receipt_persistence_failed"
-    )
-    assert blocked_calls[0]["partial_receipt"]["receipt_readback_verified"] is True
+    assert len(claim_calls) == 2
+    assert blocked_calls == []
 
 
-def test_discord_post_message_uses_gateway_loop_and_cancels_timeout(monkeypatch):
-    import concurrent.futures
-    from types import SimpleNamespace
-
-    from gateway.config import Platform
-
-    class _Loop:
-        @staticmethod
-        def is_running():
-            return True
-
-    class _Adapter:
-        MAX_MESSAGE_LENGTH = 2000
-
-        @staticmethod
-        def format_message(content):
-            return content
-
-        @staticmethod
-        def truncate_message(content, max_length):
-            return [content]
-
-        async def send(self, channel_id, content, metadata=None):
-            return SimpleNamespace(success=True, message_id="never")
-
-    class _Future:
-        cancelled = False
-
-        def result(self, timeout):
-            assert timeout == 3
-            raise concurrent.futures.TimeoutError
-
-        def cancel(self):
-            self.cancelled = True
-
-    future = _Future()
-
-    def _schedule(coro, loop):
-        assert isinstance(loop, _Loop)
-        coro.close()
-        return future
-
-    runner = SimpleNamespace(
-        adapters={Platform.DISCORD: _Adapter()},
-        _gateway_loop=_Loop(),
-    )
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
-    monkeypatch.setattr(cbt.asyncio, "run_coroutine_threadsafe", _schedule)
-
-    with pytest.raises(RuntimeError, match="discord_adapter_send_timeout"):
-        cbt._discord_post_message("channel-1", "hello", timeout=3)
-    assert future.cancelled is True
-
-
-@pytest.mark.parametrize(
-    ("field", "wrong_value"),
-    [
-        ("channel_id", "wrong-channel"),
-        ("message_id", "wrong-message"),
-        ("content_sha256", "b" * 64),
-    ],
-)
-def test_discord_receipt_verifier_requires_exact_returned_fields(
-    monkeypatch,
-    field,
-    wrong_value,
-):
-    from types import SimpleNamespace
-
-    from gateway.config import Platform
-
-    class _Loop:
-        @staticmethod
-        def is_running():
-            return True
-
-    class _Adapter:
-        async def verify_public_message_receipt(self, **kwargs):
-            return kwargs
-
-    returned = {
-        "verified": True,
-        "channel_id": "channel-1",
-        "message_id": "message-1",
-        "content_sha256": "a" * 64,
-    }
-    returned[field] = wrong_value
-
-    class _Future:
-        @staticmethod
-        def result(timeout):
-            return returned
-
-    def _schedule(coro, loop):
-        coro.close()
-        return _Future()
-
-    runner = SimpleNamespace(
-        adapters={Platform.DISCORD: _Adapter()},
-        _gateway_loop=_Loop(),
-    )
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
-    monkeypatch.setattr(cbt.asyncio, "run_coroutine_threadsafe", _schedule)
-
-    with pytest.raises(RuntimeError, match=f"{field}_mismatch"):
+def test_legacy_gateway_discord_receipt_verifier_is_fail_closed():
+    with pytest.raises(
+        RuntimeError,
+        match="discord_receipt_verification_requires_privileged_edge",
+    ):
         _REAL_DISCORD_VERIFY_MESSAGE_RECEIPT(
-            channel_id="channel-1",
-            message_id="message-1",
+            channel_id=_DISCORD_CHANNEL_ID,
+            message_id="1522505336614027304",
             expected_content_sha256="a" * 64,
         )
-
-
-def test_discord_post_message_binds_live_readback_to_rendered_content(monkeypatch):
-    from types import SimpleNamespace
-
-    from gateway.config import Platform
-
-    expected = hashlib.sha256(b"rendered content").hexdigest()
-    captured = {}
-
-    class _Loop:
-        @staticmethod
-        def is_running():
-            return True
-
-    class _Adapter:
-        MAX_MESSAGE_LENGTH = 2000
-
-        @staticmethod
-        def format_message(content):
-            return "rendered content"
-
-        @staticmethod
-        def truncate_message(content, max_length):
-            return [content]
-
-        def send(self, channel_id, content, metadata=None):
-            captured["metadata"] = metadata
-
-            async def _send():
-                return SimpleNamespace(success=True, message_id="message-1")
-
-            return _send()
-
-    class _Future:
-        @staticmethod
-        def result(timeout):
-            return SimpleNamespace(success=True, message_id="message-1")
-
-    def _schedule(coro, loop):
-        coro.close()
-        return _Future()
-
-    runner = SimpleNamespace(
-        adapters={Platform.DISCORD: _Adapter()},
-        _gateway_loop=_Loop(),
-    )
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
-    monkeypatch.setattr(cbt.asyncio, "run_coroutine_threadsafe", _schedule)
-    monkeypatch.setattr(
-        cbt,
-        "_discord_verify_message_receipt",
-        lambda **kwargs: captured.update(kwargs) or {
-            "verified": True,
-            "content_sha256": kwargs["expected_content_sha256"],
-        },
-    )
-    # Use the real renderer/hash helper rather than the autouse test stub.
-    monkeypatch.setattr(
-        cbt,
-        "_discord_expected_content_sha256",
-        lambda content: expected,
-    )
-
-    result = cbt._discord_post_message("channel-1", "source markdown")
-
-    assert captured["expected_content_sha256"] == expected
-    assert captured["metadata"] == {"require_single_public_receipt": True}
-    assert result["content_sha256"] == expected
-
-
-def test_discord_post_message_preserves_adapter_receipt_when_readback_fails(
-    monkeypatch,
-):
-    from types import SimpleNamespace
-
-    from gateway.config import Platform
-
-    expected = hashlib.sha256(b"rendered content").hexdigest()
-
-    class _Loop:
-        @staticmethod
-        def is_running():
-            return True
-
-    class _Adapter:
-        MAX_MESSAGE_LENGTH = 2000
-
-        @staticmethod
-        def format_message(content):
-            return "rendered content"
-
-        @staticmethod
-        def truncate_message(content, max_length):
-            return [content]
-
-        async def send(self, channel_id, content, metadata=None):
-            return SimpleNamespace(success=True, message_id="message-accepted")
-
-    class _Future:
-        @staticmethod
-        def result(timeout):
-            return SimpleNamespace(success=True, message_id="message-accepted")
-
-    def _schedule(coro, loop):
-        coro.close()
-        return _Future()
-
-    runner = SimpleNamespace(
-        adapters={Platform.DISCORD: _Adapter()},
-        _gateway_loop=_Loop(),
-    )
-    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
-    monkeypatch.setattr(cbt.asyncio, "run_coroutine_threadsafe", _schedule)
-    monkeypatch.setattr(
-        cbt,
-        "_discord_expected_content_sha256",
-        lambda content: expected,
-    )
-    monkeypatch.setattr(
-        cbt,
-        "_discord_verify_message_receipt",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("readback down")),
-    )
-
-    result = cbt._discord_post_message("channel-1", "source markdown")
-
-    assert result == {
-        "id": "message-accepted",
-        "channel_id": "channel-1",
-        "adapter_receipt": True,
-        "content_sha256": expected,
-        "receipt_readback_verified": False,
-        "receipt_verification_error": "RuntimeError",
-    }
 
 
 def test_canonical_event_append_blocks_keyword_authority_secret_like_payload():
@@ -2573,12 +3169,12 @@ def test_task_plan_rejects_dependency_cycle_and_invalid_active_cursor(monkeypatc
 
 def test_route_back_dm_block_is_sanitized_and_durably_verified(monkeypatch):
     fake = _FakeHelper()
-    sent = {"called": False}
+    edge = {"called": False}
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda *args, **kwargs: sent.update(called=True),
+        "_discord_edge_preconnect",
+        lambda: edge.update(called=True),
     )
 
     data = json.loads(cbt.route_back_execute_tool(
@@ -2592,7 +3188,7 @@ def test_route_back_dm_block_is_sanitized_and_durably_verified(monkeypatch):
 
     assert data["success"] is True
     assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert sent["called"] is False
+    assert edge["called"] is False
     sql = "\n".join(fake.queries)
     assert "route_back.blocked" in sql
     assert "dm_channel_id" not in sql
@@ -2740,11 +3336,11 @@ def test_route_back_direct_target_requires_config_or_runtime_case_link(monkeypat
             "target_mention": None,
         },
     )
-    sent = {"called": False}
+    edge = {"called": False}
     monkeypatch.setattr(
         cbt,
-        "_discord_post_message",
-        lambda *args, **kwargs: sent.update(called=True),
+        "_discord_edge_preconnect",
+        lambda: edge.update(called=True),
     )
     data = json.loads(cbt.route_back_execute_tool(
         case_id="case:p0",
@@ -2755,7 +3351,7 @@ def test_route_back_direct_target_requires_config_or_runtime_case_link(monkeypat
         idempotency_key="routeback:unlinked",
     ))
     assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert sent["called"] is False
+    assert edge["called"] is False
     assert data["blocker_reason"].startswith("target_not_approved_or_unresolved")
 
 

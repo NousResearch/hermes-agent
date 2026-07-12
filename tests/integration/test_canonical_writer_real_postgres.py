@@ -11,6 +11,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import datetime as dt
+import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -21,10 +22,12 @@ import time
 import uuid
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway.canonical_writer_db import (
     CanonicalWriterDB,
     CredentialSource,
+    ManagedCloudSQLAdminHBAReceipt,
     RoutineIdentity,
     WriterDBConfig,
     WriterPrivilegePolicy,
@@ -33,7 +36,9 @@ from gateway.canonical_writer_db import (
     validate_privilege_attestation,
 )
 from gateway.canonical_writer_handlers import (
+    CanonicalWriterError,
     CanonicalWriterHandlers,
+    RouteBackTerminalRequest,
     RuntimeContext,
 )
 from gateway.canonical_writer_postgres_backend import (
@@ -46,22 +51,43 @@ from gateway.canonical_writer_postgres_backend import (
     PostgresCanonicalWriterBackend,
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
+from gateway.discord_edge_protocol import (
+    DiscordEdgeReceiptOutcome,
+    parse_request_for_reconciliation,
+    sign_receipt,
+    verify_request_capability_for_reconciliation,
+)
+from gateway.discord_edge_writer_authority import (
+    CanonicalWriterDiscordAuthority,
+    derive_routeback_edge_idempotency_key,
+)
 
 
 pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "scripts" / "sql" / "canonical_writer_v1.sql"
+LEGACY_RECONCILIATION = (
+    ROOT / "scripts" / "sql" / "canonical_writer_legacy_reconcile_v1.sql"
+)
 IMAGE = "postgres:18"
 DATABASE = "canonical_writer_e2e"
 LOGIN = "canonical_writer_login"
-PUBLIC_CHANNEL = "public-channel-e2e"
+DISCORD_GUILD_ID = "100000000000000001"
+PUBLIC_CHANNEL = "100000000000000002"
+DISCORD_MESSAGE_ID = "100000000000000003"
+DISCORD_BOT_ID = "100000000000000004"
 
 SESSION = "a" * 64
 EPOCH = "b" * 64
 COMMAND = "c" * 64
 SOURCE = "d" * 64
-CONTENT = "e" * 64
+ROUTEBACK_CONTENT = "Real PostgreSQL route-back payload"
+CONTENT = hashlib.sha256(ROUTEBACK_CONTENT.encode("utf-8")).hexdigest()
+RACE_ROUTEBACK_CONTENT = "One global route-back payload"
+RACE_CONTENT = hashlib.sha256(RACE_ROUTEBACK_CONTENT.encode("utf-8")).hexdigest()
+WRITER_CAPABILITY_PRIVATE_KEY = Ed25519PrivateKey.generate()
+EDGE_RECEIPT_PRIVATE_KEY = Ed25519PrivateKey.generate()
 
 
 def _run(
@@ -112,32 +138,57 @@ def _generate_tls(directory: Path) -> tuple[Path, Path, Path]:
     server_cert = directory / "server.crt"
     extensions = directory / "server.ext"
     extensions.write_text(
-        "subjectAltName=DNS:localhost,IP:127.0.0.1\n"
-        "extendedKeyUsage=serverAuth\n",
+        "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n",
         encoding="utf-8",
     )
-    _run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", str(ca_key), "-out", str(ca_cert), "-days", "1",
-            "-subj", "/CN=Hermes Canonical Writer E2E CA",
-        ]
-    )
-    _run(
-        [
-            "openssl", "req", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", str(server_key), "-out", str(server_csr),
-            "-subj", "/CN=localhost",
-        ]
-    )
-    _run(
-        [
-            "openssl", "x509", "-req", "-in", str(server_csr),
-            "-CA", str(ca_cert), "-CAkey", str(ca_key), "-CAcreateserial",
-            "-out", str(server_cert), "-days", "1", "-sha256",
-            "-extfile", str(extensions),
-        ]
-    )
+    _run([
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        str(ca_key),
+        "-out",
+        str(ca_cert),
+        "-days",
+        "1",
+        "-subj",
+        "/CN=Hermes Canonical Writer E2E CA",
+    ])
+    _run([
+        "openssl",
+        "req",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        str(server_key),
+        "-out",
+        str(server_csr),
+        "-subj",
+        "/CN=localhost",
+    ])
+    _run([
+        "openssl",
+        "x509",
+        "-req",
+        "-in",
+        str(server_csr),
+        "-CA",
+        str(ca_cert),
+        "-CAkey",
+        str(ca_key),
+        "-CAcreateserial",
+        "-out",
+        str(server_cert),
+        "-days",
+        "1",
+        "-sha256",
+        "-extfile",
+        str(extensions),
+    ])
     ca_cert.chmod(0o600)
     server_key.chmod(0o600)
     return ca_cert, server_cert, server_key
@@ -163,7 +214,96 @@ def _psql(name: str, database: str, sql: str, *, secrets_: tuple[str, ...] = ())
     )
 
 
-def _seed_policy() -> WriterPrivilegePolicy:
+def _psql_as(name: str, database: str, user: str, sql: str) -> None:
+    _run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            name,
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            user,
+            "-d",
+            database,
+        ],
+        input_text=sql,
+        timeout=180,
+    )
+
+
+def _psql_fields(name: str, database: str, sql: str) -> list[str]:
+    completed = _run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            name,
+            "psql",
+            "-X",
+            "-q",
+            "-A",
+            "-t",
+            "-F",
+            "|",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "postgres",
+            "-d",
+            database,
+        ],
+        input_text=sql,
+        timeout=180,
+    )
+    return completed.stdout.strip().split("|")
+
+
+def _migration_invocation(
+    database: str,
+    migration_sql: str,
+    *,
+    include_cloudsqladmin_hba_receipt: bool = True,
+) -> str:
+    prefix = (
+        "SET muncho.canonical_writer_migration_scope = 'isolated_canary_copy';\n"
+        f"SET muncho.canonical_writer_migration_database = '{database}';\n"
+        "SET muncho.canonical_writer_migration_approval_receipt_sha256 = "
+        f"'{('a' * 64)}';\n"
+    )
+    if include_cloudsqladmin_hba_receipt:
+        prefix += (
+            "SET muncho.canonical_writer_cloudsqladmin_hba_rejection_sha256 = "
+            f"'{('e' * 64)}';\n"
+        )
+    return prefix + migration_sql
+
+
+def _test_managed_hba_receipt(config: WriterDBConfig) -> ManagedCloudSQLAdminHBAReceipt:
+    observed_at = int(time.time())
+    return ManagedCloudSQLAdminHBAReceipt(
+        version="managed-cloudsqladmin-hba-rejection-v1",
+        host=config.host,
+        port=config.port,
+        server_certificate_sha256="e" * 64,
+        database="cloudsqladmin",
+        user=config.user,
+        observed_at_unix=observed_at,
+        expires_at_unix=observed_at + 300,
+        sqlstate="28000",
+        server_message=(
+            f'no pg_hba.conf entry for host "127.0.0.1", user "{config.user}", '
+            'database "cloudsqladmin", SSL encryption'
+        ),
+        result="pg_hba_rejected",
+        tls_peer_verified=True,
+    )
+
+
+def _seed_policy(config: WriterDBConfig) -> WriterPrivilegePolicy:
     def identity(signature: str, security_definer: bool) -> RoutineIdentity:
         return RoutineIdentity(
             signature=signature,
@@ -174,26 +314,32 @@ def _seed_policy() -> WriterPrivilegePolicy:
             definition_sha256="0" * 64,
         )
 
+    managed_hba_receipt = _test_managed_hba_receipt(config)
     return WriterPrivilegePolicy(
         schema=CANONICAL_WRITER_SCHEMA,
         executable_routines=EXPECTED_ROUTINE_SIGNATURES,
-        routine_identities=tuple(identity(value, True) for value in EXPECTED_ROUTINE_SIGNATURES),
+        routine_identities=tuple(
+            identity(value, True) for value in EXPECTED_ROUTINE_SIGNATURES
+        ),
         dependency_routine_identities=tuple(
             identity(value, False) for value in EXPECTED_HELPER_ROUTINE_SIGNATURES
         ),
         role_memberships=(CANONICAL_WRITER_ROLE,),
         private_schema_identity_sha256="0" * 64,
+        managed_cloudsqladmin_hba_rejection_receipt=managed_hba_receipt,
+        managed_cloudsqladmin_hba_rejection_sha256=managed_hba_receipt.sha256,
     )
 
 
 def _production_policy(config: WriterDBConfig) -> WriterPrivilegePolicy:
-    seed = _seed_policy()
+    seed = _seed_policy(config)
     session = _open_postgres_session(config)
     try:
         observed = _collect_privilege_attestation(
             session,
             config=config,
             policy=seed,
+            managed_hba_receipt=(seed.managed_cloudsqladmin_hba_rejection_receipt),
         )
     finally:
         session.close()
@@ -209,6 +355,12 @@ def _production_policy(config: WriterDBConfig) -> WriterPrivilegePolicy:
         private_schema_identity_sha256=(
             observed.canonical_private_schema_identity.sha256
         ),
+        managed_cloudsqladmin_hba_rejection_receipt=(
+            seed.managed_cloudsqladmin_hba_rejection_receipt
+        ),
+        managed_cloudsqladmin_hba_rejection_sha256=(
+            seed.managed_cloudsqladmin_hba_rejection_sha256
+        ),
     )
     validate_privilege_attestation(observed, policy, expected_user=LOGIN)
     return policy
@@ -218,9 +370,7 @@ def _production_policy(config: WriterDBConfig) -> WriterPrivilegePolicy:
 def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterStack:
     if shutil.which("docker") is None or shutil.which("openssl") is None:
         pytest.skip("Docker and OpenSSL are required")
-    if subprocess.run(
-        ["docker", "info"], capture_output=True, check=False
-    ).returncode:
+    if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode:
         pytest.skip("Docker daemon is unavailable")
 
     directory = tmp_path_factory.mktemp("canonical-writer-real-pg")
@@ -238,9 +388,18 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
         _run(["docker", "pull", IMAGE], timeout=300)
         _run(
             [
-                "docker", "run", "-d", "--name", name,
-                "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256",
-                "-p", "127.0.0.1::5432", IMAGE,
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "-e",
+                "POSTGRES_PASSWORD",
+                "-e",
+                "POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256",
+                "-p",
+                "127.0.0.1::5432",
+                IMAGE,
             ],
             env=environment,
             timeout=180,
@@ -250,13 +409,17 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
 
         _run(["docker", "cp", str(server_cert), f"{name}:/tmp/cw-server.crt"])
         _run(["docker", "cp", str(server_key), f"{name}:/tmp/cw-server.key"])
-        _run(
-            [
-                "docker", "exec", "-u", "0", name, "sh", "-ec",
-                "chown postgres:postgres /tmp/cw-server.crt /tmp/cw-server.key; "
-                "chmod 0644 /tmp/cw-server.crt; chmod 0600 /tmp/cw-server.key",
-            ]
-        )
+        _run([
+            "docker",
+            "exec",
+            "-u",
+            "0",
+            name,
+            "sh",
+            "-ec",
+            "chown postgres:postgres /tmp/cw-server.crt /tmp/cw-server.key; "
+            "chmod 0644 /tmp/cw-server.crt; chmod 0600 /tmp/cw-server.key",
+        ])
         _psql(
             name,
             "postgres",
@@ -273,18 +436,33 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             "postgres",
             "REVOKE ALL ON DATABASE postgres FROM PUBLIC;\n"
             "REVOKE ALL ON DATABASE template1 FROM PUBLIC;\n"
-            f"CREATE ROLE {CANONICAL_WRITER_MIGRATION_OWNER} NOLOGIN "
+            f"CREATE ROLE {CANONICAL_WRITER_MIGRATION_OWNER} NOLOGIN NOINHERIT "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"CREATE ROLE {CANONICAL_WRITER_ROLE} NOLOGIN "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"CREATE ROLE {LOGIN} LOGIN INHERIT PASSWORD '{escaped_password}' "
             "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
             f"GRANT {CANONICAL_WRITER_ROLE} TO {LOGIN};\n"
+            "CREATE ROLE cloudsqladmin LOGIN SUPERUSER CREATEDB CREATEROLE "
+            "REPLICATION BYPASSRLS;\n"
+            "CREATE ROLE cloudsqlsuperuser LOGIN NOSUPERUSER CREATEDB CREATEROLE "
+            "NOREPLICATION NOBYPASSRLS;\n"
+            "CREATE DATABASE cloudsqladmin OWNER cloudsqladmin;\n"
             f"CREATE DATABASE {DATABASE};\n"
             f"REVOKE ALL ON DATABASE {DATABASE} FROM PUBLIC;\n"
             f"GRANT CONNECT ON DATABASE {DATABASE} TO {CANONICAL_WRITER_ROLE};\n",
             secrets_=(writer_password,),
         )
+        # Cloud SQL PostgreSQL 18 currently represents the provider-owned
+        # cloudsqladmin database with a NULL datacl.  PostgreSQL defines that
+        # as the exact default database ACL (PUBLIC CONNECT/TEMPORARY plus all
+        # owner privileges), so leave the Docker fixture in that live shape.
+        assert _psql_fields(
+            name,
+            "postgres",
+            "SELECT datacl IS NULL FROM pg_database "
+            "WHERE datname = 'cloudsqladmin';",
+        ) == ["t"]
         _psql(
             name,
             DATABASE,
@@ -301,8 +479,27 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             f"ALTER TABLE public.canonical_event_log OWNER TO {CANONICAL_WRITER_MIGRATION_OWNER};\n",
         )
         migration_sql = MIGRATION.read_text(encoding="utf-8")
-        _psql(name, DATABASE, migration_sql)
-        _psql(name, DATABASE, migration_sql)
+        with pytest.raises(RuntimeError, match="can CONNECT to another database"):
+            _psql(
+                name,
+                DATABASE,
+                _migration_invocation(
+                    DATABASE,
+                    migration_sql,
+                    include_cloudsqladmin_hba_receipt=False,
+                ),
+            )
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT to_regnamespace('canonical_brain') IS NULL,"
+            "(SELECT count(*) FROM pg_auth_members AS membership "
+            "JOIN pg_roles AS owner_role ON owner_role.rolname = "
+            "'canonical_brain_migration_owner' WHERE membership.roleid = "
+            "owner_role.oid OR membership.member = owner_role.oid);",
+        ) == ["t", "0"]
+        _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
+        _psql(name, DATABASE, _migration_invocation(DATABASE, migration_sql))
         _psql(
             name,
             DATABASE,
@@ -321,17 +518,29 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             ca_file=ca_cert,
             credential=CredentialSource(expected_uid=os.getuid(), path=credential),
         )
+        policy = _production_policy(config)
         database = CanonicalWriterDB(
             config=config,
-            privilege_policy=_production_policy(config),
+            privilege_policy=policy,
             statements=PRODUCTION_STATEMENT_CATALOG,
+            _managed_hba_probe=lambda _config: (
+                policy.managed_cloudsqladmin_hba_rejection_receipt
+            ),
         )
         database.startup_attest()
         backend = PostgresCanonicalWriterBackend(database)
         yield RealWriterStack(
             name=name,
             backend=backend,
-            handlers=CanonicalWriterHandlers(backend),
+            handlers=CanonicalWriterHandlers(
+                backend,
+                discord_edge_authority=CanonicalWriterDiscordAuthority(
+                    capability_private_key=WRITER_CAPABILITY_PRIVATE_KEY,
+                    edge_receipt_public_key=(
+                        EDGE_RECEIPT_PRIVATE_KEY.public_key()
+                    ),
+                ),
+            ),
             migration_runs=2,
         )
     finally:
@@ -393,6 +602,27 @@ def _dispatch(
     return response["result"]
 
 
+def _verified_discord_receipt(edge_request: dict[str, object]) -> dict[str, object]:
+    request = parse_request_for_reconciliation(edge_request)
+    capability = verify_request_capability_for_reconciliation(
+        request,
+        WRITER_CAPABILITY_PRIVATE_KEY.public_key(),
+    )
+    return sign_receipt(
+        EDGE_RECEIPT_PRIVATE_KEY,
+        request,
+        capability,
+        outcome=DiscordEdgeReceiptOutcome.VERIFIED,
+        discord_object_id=DISCORD_MESSAGE_ID,
+        bot_user_id=DISCORD_BOT_ID,
+        adapter_accepted=True,
+        readback_verified=True,
+        readback_content_sha256=request.intent.content_sha256,
+        blocker_code=None,
+        occurred_at_unix_ms=int(time.time() * 1_000),
+    ).to_message()
+
+
 def _seed_plan(
     stack: RealWriterStack,
     *,
@@ -415,7 +645,7 @@ def _seed_plan(
     )
 
 
-def test_migration_twice_and_all_sixteen_production_routines(
+def test_migration_twice_and_all_seventeen_production_routines(
     real_writer_stack: RealWriterStack,
 ) -> None:
     stack = real_writer_stack
@@ -424,98 +654,202 @@ def test_migration_twice_and_all_sixteen_production_routines(
     plan_id = "plan:real-pg-all-ops"
     seen: set[CanonicalWriterOperation] = set()
 
-    def call(operation: CanonicalWriterOperation, payload: dict[str, object], rt=runtime):
+    def call(
+        operation: CanonicalWriterOperation, payload: dict[str, object], rt=runtime
+    ):
         seen.add(operation)
         return _dispatch(stack, operation, payload, rt)
 
     assert stack.migration_runs == 2
     call(CanonicalWriterOperation.PING, {})
-    call(CanonicalWriterOperation.EVENT_APPEND_MODEL, {
-        "event_type": "case.note", "case_id": case_id,
-        "summary": "Real PostgreSQL model event",
-        "source_refs": {"thread_id": runtime.thread_id}, "payload": {},
-        "idempotency_key": "real-pg:event",
-    })
-    call(CanonicalWriterOperation.PLAN_TRANSITION, {
-        "case_id": case_id, "summary": "Real PostgreSQL plan",
-        "source_refs": {"thread_id": runtime.thread_id},
-        "payload": {"plan": _plan(plan_id)}, "idempotency_key": "real-pg:plan",
-    })
-    call(CanonicalWriterOperation.VERIFICATION_APPEND, {
-        "case_id": case_id, "summary": "Real PostgreSQL verification",
-        "source_refs": {"thread_id": runtime.thread_id},
-        "payload": {"verification": {
-            "verification_id": "verification:real-pg",
-            "plan_id": plan_id, "plan_revision": 1,
-            "summary": "Bounded real database check passed", "outcome": "passed",
-            "criterion_ids": ["verified"],
-            "receipt": {"kind": "test", "ref": "pytest:real-postgres"},
-        }},
-        "idempotency_key": "real-pg:verification",
-    })
-    call(CanonicalWriterOperation.CASE_QUERY, {
-        "case_id": case_id, "limit": 80, "view": "resume_bundle",
-    })
-    call(CanonicalWriterOperation.PLAN_ACTIVE_MATCH, {
-        "case_id": case_id, "plan_id": plan_id,
-    })
-    call(CanonicalWriterOperation.LEASE_SHADOW_RECORD, {
-        "intent_event_id": "11111111-1111-4111-8111-111111111111",
-        "intent_kind": "discord_send", "case": {"case_id": case_id},
-        "runtime_lease_enforcement": {"blocking_effective": True},
-        "enforcement_enabled": True, "send_path_blocking_enabled": True,
-        "audit_runtime_id": "real-pg-e2e", "source_platform": "discord",
-        "session_key_ref": "urn:hermes:session:real-pg",
-    })
+    call(
+        CanonicalWriterOperation.EVENT_APPEND_MODEL,
+        {
+            "event_type": "case.note",
+            "case_id": case_id,
+            "summary": "Real PostgreSQL model event",
+            "source_refs": {"thread_id": runtime.thread_id},
+            "payload": {},
+            "idempotency_key": "real-pg:event",
+        },
+    )
+    call(
+        CanonicalWriterOperation.PLAN_TRANSITION,
+        {
+            "case_id": case_id,
+            "summary": "Real PostgreSQL plan",
+            "source_refs": {"thread_id": runtime.thread_id},
+            "payload": {"plan": _plan(plan_id)},
+            "idempotency_key": "real-pg:plan",
+        },
+    )
+    call(
+        CanonicalWriterOperation.VERIFICATION_APPEND,
+        {
+            "case_id": case_id,
+            "summary": "Real PostgreSQL verification",
+            "source_refs": {"thread_id": runtime.thread_id},
+            "payload": {
+                "verification": {
+                    "verification_id": "verification:real-pg",
+                    "plan_id": plan_id,
+                    "plan_revision": 1,
+                    "summary": "Bounded real database check passed",
+                    "outcome": "passed",
+                    "criterion_ids": ["verified"],
+                    "receipt": {"kind": "test", "ref": "pytest:real-postgres"},
+                }
+            },
+            "idempotency_key": "real-pg:verification",
+        },
+    )
+    call(
+        CanonicalWriterOperation.CASE_QUERY,
+        {
+            "case_id": case_id,
+            "limit": 80,
+            "view": "resume_bundle",
+        },
+    )
+    call(
+        CanonicalWriterOperation.PLAN_ACTIVE_MATCH,
+        {
+            "case_id": case_id,
+            "plan_id": plan_id,
+        },
+    )
+    call(
+        CanonicalWriterOperation.LEASE_SHADOW_RECORD,
+        {
+            "intent_event_id": "11111111-1111-4111-8111-111111111111",
+            "intent_kind": "discord_send",
+            "case": {"case_id": case_id},
+            "runtime_lease_enforcement": {"blocking_effective": True},
+            "enforcement_enabled": True,
+            "send_path_blocking_enabled": True,
+            "audit_runtime_id": "real-pg-e2e",
+            "source_platform": "discord",
+            "session_key_ref": "urn:hermes:session:real-pg",
+        },
+    )
     claim = {
         "case_id": case_id,
-        "target_ref": {"channel_id": PUBLIC_CHANNEL, "channel_type": "public_channel"},
+        "target_ref": {
+            "channel_id": PUBLIC_CHANNEL,
+            "channel_type": "public_channel",
+            "guild_id": DISCORD_GUILD_ID,
+        },
         "message_summary": "Real PostgreSQL route-back",
         "source_refs": {"thread_id": runtime.thread_id},
-        "execution_binding": {"target_channel_id": PUBLIC_CHANNEL, "content_sha256": CONTENT},
-        "idempotency_key": "real-pg:routeback:sent",
-    }
-    call(CanonicalWriterOperation.ROUTEBACK_CLAIM, claim)
-    call(CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT, {
-        **claim,
-        "receipt": {
-            "platform": "discord", "adapter_receipt": True,
-            "receipt_readback_verified": True, "message_id": "message-routeback-e2e",
-            "channel_id": PUBLIC_CHANNEL, "content_sha256": CONTENT,
+        "execution_binding": {
+            "target_channel_id": PUBLIC_CHANNEL,
+            "content_sha256": CONTENT,
         },
-    })
+        "idempotency_key": "real-pg:routeback:sent",
+        "discord_edge_intent": {
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "public_guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": PUBLIC_CHANNEL,
+            },
+            "payload": {"content": ROUTEBACK_CONTENT},
+            "idempotency_key": derive_routeback_edge_idempotency_key(
+                case_id=case_id,
+                canonical_idempotency_key="real-pg:routeback:sent",
+            ),
+        },
+    }
+    claim_result = call(CanonicalWriterOperation.ROUTEBACK_CLAIM, claim)
+    edge_request = claim_result["discord_edge_request"]
+    edge_receipt = _verified_discord_receipt(edge_request)
+    call(
+        CanonicalWriterOperation.ROUTEBACK_RECOVER,
+        {
+            **claim,
+            "recovery_kind": "edge_evidence",
+            "discord_edge_request": edge_request,
+            "discord_edge_receipt": edge_receipt,
+        },
+    )
+    call(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
+        {
+            **{
+                key: claim[key]
+                for key in (
+                    "case_id",
+                    "target_ref",
+                    "message_summary",
+                    "source_refs",
+                    "execution_binding",
+                    "idempotency_key",
+                )
+            },
+            "discord_edge_request": edge_request,
+            "discord_edge_receipt": edge_receipt,
+        },
+    )
     call(
         CanonicalWriterOperation.ROUTEBACK_CONTEXT,
         {"thread_id": PUBLIC_CHANNEL},
         _runtime("routeback-context", thread_id=PUBLIC_CHANNEL, owner=False),
     )
-    call(CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED, {
-        "preclaim": True, "case_id": case_id,
-        "target_ref": {"id": "unresolved-public-target-e2e"},
-        "message_summary": "Real PostgreSQL preclaim blocker",
-        "source_refs": {"thread_id": runtime.thread_id},
-        "blocker_reason": "public target unresolved",
-        "idempotency_key": "real-pg:routeback:blocked",
-    })
-    call(CanonicalWriterOperation.CAPABILITY_GRANT, {
-        "approval_id": "approval:real-pg", "case_id": case_id,
-        "plan_id": plan_id, "plan_revision": 1,
-        "approval_source_sha256": SOURCE, "command_hashes": [COMMAND],
-        "expires_at": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat(),
-        "max_uses": 2,
-    })
-    call(CanonicalWriterOperation.CAPABILITY_CONSUME, {
-        "command_sha256": COMMAND, "idempotency_key": "real-pg:consume",
-    })
-    call(CanonicalWriterOperation.CAPABILITY_REVOKE, {
-        "plan_id": plan_id, "reason": "real PostgreSQL E2E complete",
-    })
-    call(CanonicalWriterOperation.CAPABILITY_REVOKE_SESSION, {
-        "reason": "real PostgreSQL session epoch complete",
-    })
-    call(CanonicalWriterOperation.PROJECTION_READ_EVENTS, {
-        "case_id": case_id, "after_event_id": "", "limit": 100,
-    })
+    call(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED,
+        {
+            "preclaim": True,
+            "case_id": case_id,
+            "target_ref": {"id": "unresolved-public-target-e2e"},
+            "message_summary": "Real PostgreSQL preclaim blocker",
+            "source_refs": {"thread_id": runtime.thread_id},
+            "blocker_reason": "public target unresolved",
+            "idempotency_key": "real-pg:routeback:blocked",
+        },
+    )
+    call(
+        CanonicalWriterOperation.CAPABILITY_GRANT,
+        {
+            "approval_id": "approval:real-pg",
+            "case_id": case_id,
+            "plan_id": plan_id,
+            "plan_revision": 1,
+            "approval_source_sha256": SOURCE,
+            "command_hashes": [COMMAND],
+            "expires_at": (
+                dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+            ).isoformat(),
+            "max_uses": 2,
+        },
+    )
+    call(
+        CanonicalWriterOperation.CAPABILITY_CONSUME,
+        {
+            "command_sha256": COMMAND,
+            "idempotency_key": "real-pg:consume",
+        },
+    )
+    call(
+        CanonicalWriterOperation.CAPABILITY_REVOKE,
+        {
+            "plan_id": plan_id,
+            "reason": "real PostgreSQL E2E complete",
+        },
+    )
+    call(
+        CanonicalWriterOperation.CAPABILITY_REVOKE_SESSION,
+        {
+            "reason": "real PostgreSQL session epoch complete",
+        },
+    )
+    call(
+        CanonicalWriterOperation.PROJECTION_READ_EVENTS,
+        {
+            "case_id": case_id,
+            "after_event_id": "",
+            "limit": 100,
+        },
+    )
 
     assert seen == set(CanonicalWriterOperation)
 
@@ -528,14 +862,26 @@ def test_real_postgres_capability_consume_is_atomic(
     case_id = "case:real-pg-capability-race"
     plan_id = "plan:real-pg-capability-race"
     command = "3" * 64
-    _seed_plan(stack, case_id=case_id, plan_id=plan_id, runtime=runtime, key="cap-race:plan")
-    _dispatch(stack, CanonicalWriterOperation.CAPABILITY_GRANT, {
-        "approval_id": "approval:cap-race", "case_id": case_id,
-        "plan_id": plan_id, "plan_revision": 1,
-        "approval_source_sha256": "4" * 64, "command_hashes": [command],
-        "expires_at": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat(),
-        "max_uses": 1,
-    }, runtime)
+    _seed_plan(
+        stack, case_id=case_id, plan_id=plan_id, runtime=runtime, key="cap-race:plan"
+    )
+    _dispatch(
+        stack,
+        CanonicalWriterOperation.CAPABILITY_GRANT,
+        {
+            "approval_id": "approval:cap-race",
+            "case_id": case_id,
+            "plan_id": plan_id,
+            "plan_revision": 1,
+            "approval_source_sha256": "4" * 64,
+            "command_hashes": [command],
+            "expires_at": (
+                dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+            ).isoformat(),
+            "max_uses": 1,
+        },
+        runtime,
+    )
     barrier = threading.Barrier(8)
 
     def consume(index: int) -> dict[str, object]:
@@ -543,38 +889,63 @@ def test_real_postgres_capability_consume_is_atomic(
         return stack.handlers.dispatch(
             CanonicalWriterOperation.CAPABILITY_CONSUME.value,
             {"command_sha256": command, "idempotency_key": f"cap-race:{index}"},
-            runtime=_runtime(
-                f"cap-consume-{index}", session="1" * 64, epoch="2" * 64
-            ),
+            runtime=_runtime(f"cap-consume-{index}", session="1" * 64, epoch="2" * 64),
         )
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(consume, range(8)))
     assert sum(result.get("ok") is True for result in results) == 1, results
-    assert {
-        result["error"]["code"] for result in results if not result.get("ok")
-    } == {"capability_exhausted"}
+    assert {result["error"]["code"] for result in results if not result.get("ok")} == {
+        "capability_exhausted"
+    }
 
 
-def test_real_postgres_routeback_claim_is_global_across_epochs(
+def test_real_postgres_routeback_claim_has_global_identity_and_exact_pending_scope(
     real_writer_stack: RealWriterStack,
 ) -> None:
     stack = real_writer_stack
     case_id = "case:real-pg-routeback-race"
     seed_runtime = _runtime("route-seed", session="5" * 64, epoch="6" * 64)
-    _dispatch(stack, CanonicalWriterOperation.EVENT_APPEND_MODEL, {
-        "event_type": "case.note", "case_id": case_id,
-        "summary": "Seed global route-back race",
-        "source_refs": {"thread_id": seed_runtime.thread_id}, "payload": {},
-        "idempotency_key": "route-race:seed",
-    }, seed_runtime)
+    _dispatch(
+        stack,
+        CanonicalWriterOperation.EVENT_APPEND_MODEL,
+        {
+            "event_type": "case.note",
+            "case_id": case_id,
+            "summary": "Seed global route-back race",
+            "source_refs": {"thread_id": seed_runtime.thread_id},
+            "payload": {},
+            "idempotency_key": "route-race:seed",
+        },
+        seed_runtime,
+    )
     claim = {
         "case_id": case_id,
-        "target_ref": {"channel_id": PUBLIC_CHANNEL, "channel_type": "public_channel"},
+        "target_ref": {
+            "channel_id": PUBLIC_CHANNEL,
+            "channel_type": "public_channel",
+            "guild_id": DISCORD_GUILD_ID,
+        },
         "message_summary": "One global route-back claim",
         "source_refs": {"thread_id": seed_runtime.thread_id},
-        "execution_binding": {"target_channel_id": PUBLIC_CHANNEL, "content_sha256": "7" * 64},
+        "execution_binding": {
+            "target_channel_id": PUBLIC_CHANNEL,
+            "content_sha256": RACE_CONTENT,
+        },
         "idempotency_key": "route-race:claim",
+        "discord_edge_intent": {
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "public_guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": PUBLIC_CHANNEL,
+            },
+            "payload": {"content": RACE_ROUTEBACK_CONTENT},
+            "idempotency_key": derive_routeback_edge_idempotency_key(
+                case_id=case_id,
+                canonical_idempotency_key="route-race:claim",
+            ),
+        },
     }
     barrier = threading.Barrier(6)
 
@@ -595,22 +966,45 @@ def test_real_postgres_routeback_claim_is_global_across_epochs(
     with ThreadPoolExecutor(max_workers=6) as pool:
         attempts = list(pool.map(claim_once, range(6)))
     responses = [response for _, response in attempts]
-    assert all(response.get("ok") is True for response in responses), responses
-    assert sum(response["result"].get("inserted") is True for response in responses) == 1
-    assert len({response["result"]["authorization_id"] for response in responses}) == 1
+    assert sum(response.get("ok") is True for response in responses) == 1, responses
+    assert {
+        response["error"]["code"]
+        for response in responses
+        if response.get("ok") is not True
+    } == {"scope_mismatch"}
     winner_runtime = next(
         runtime
         for runtime, response in attempts
-        if response["result"].get("inserted") is True
+        if response.get("ok") is True
     )
-    loser_runtime = next(runtime for runtime, _ in attempts if runtime != winner_runtime)
+    winner_result = next(
+        response["result"]
+        for _, response in attempts
+        if response.get("ok") is True
+    )
+    loser_runtime = next(
+        runtime
+        for runtime, response in attempts
+        if response.get("ok") is not True
+    )
+    assert winner_result["inserted"] is True
+    edge_receipt = _verified_discord_receipt(
+        winner_result["discord_edge_request"]
+    )
     terminal = {
-        **claim,
-        "receipt": {
-            "platform": "discord", "adapter_receipt": True,
-            "receipt_readback_verified": True, "message_id": "route-race-message",
-            "channel_id": PUBLIC_CHANNEL, "content_sha256": "7" * 64,
+        **{
+            key: claim[key]
+            for key in (
+                "case_id",
+                "target_ref",
+                "message_summary",
+                "source_refs",
+                "execution_binding",
+                "idempotency_key",
+            )
         },
+        "discord_edge_request": winner_result["discord_edge_request"],
+        "discord_edge_receipt": edge_receipt,
     }
     wrong = stack.handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value,
@@ -618,12 +1012,153 @@ def test_real_postgres_routeback_claim_is_global_across_epochs(
         runtime=loser_runtime,
     )
     assert wrong["error"]["code"] == "scope_mismatch"
-    _dispatch(
-        stack,
-        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
-        terminal,
-        winner_runtime,
+    _psql(
+        stack.name,
+        DATABASE,
+        "UPDATE canonical_brain.writer_public_routeback_targets "
+        f"SET enabled = false WHERE channel_id = '{PUBLIC_CHANNEL}';",
     )
+    try:
+        disabled_retry = stack.handlers.dispatch(
+            CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+            claim,
+            runtime=winner_runtime,
+        )
+        assert disabled_retry["error"]["code"] == "target_not_approved"
+
+        restarted_runtime = _runtime(
+            "route-restart-recovery",
+            session=winner_runtime.session_key_sha256,
+            epoch="f" * 64,
+            thread_id=winner_runtime.thread_id,
+        )
+        no_record_recovery = stack.handlers.dispatch(
+            CanonicalWriterOperation.ROUTEBACK_RECOVER.value,
+            {
+                **claim,
+                "recovery_kind": "edge_no_record",
+            },
+            runtime=restarted_runtime,
+        )
+        assert no_record_recovery["error"]["code"] == "target_not_approved"
+
+        evidence_recovery = _dispatch(
+            stack,
+            CanonicalWriterOperation.ROUTEBACK_RECOVER,
+            {
+                **claim,
+                "recovery_kind": "edge_evidence",
+                "discord_edge_request": winner_result["discord_edge_request"],
+                "discord_edge_receipt": edge_receipt,
+            },
+            restarted_runtime,
+        )
+        assert evidence_recovery["recovered"] is True
+        assert evidence_recovery["recovered_epoch_sha256"] == "f" * 64
+
+        _dispatch(
+            stack,
+            CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
+            terminal,
+            restarted_runtime,
+        )
+        terminal_replay = stack.handlers.dispatch(
+            CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+            claim,
+            runtime=loser_runtime,
+        )
+        assert terminal_replay["ok"] is True
+        assert terminal_replay["result"]["terminal_event_type"] == (
+            "route_back.sent"
+        )
+        assert "discord_edge_request" not in terminal_replay["result"]
+    finally:
+        _psql(
+            stack.name,
+            DATABASE,
+            "UPDATE canonical_brain.writer_public_routeback_targets "
+            f"SET enabled = true WHERE channel_id = '{PUBLIC_CHANNEL}';",
+        )
+
+
+def test_real_postgres_rejects_false_readback_nonempty_blocked_receipt(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    runtime = _runtime(
+        "routeback-false-readback",
+        session="7" * 64,
+        epoch="8" * 64,
+        thread_id="routeback-false-readback-thread",
+    )
+    case_id = "case:real-pg-false-readback-rejected"
+    key = "real-pg:routeback:false-readback"
+    claim = {
+        "case_id": case_id,
+        "target_ref": {
+            "channel_id": PUBLIC_CHANNEL,
+            "channel_type": "public_channel",
+            "guild_id": DISCORD_GUILD_ID,
+        },
+        "message_summary": "Reject unverified nonempty receipt in SQL",
+        "source_refs": {"thread_id": runtime.thread_id},
+        "execution_binding": {
+            "target_channel_id": PUBLIC_CHANNEL,
+            "content_sha256": RACE_CONTENT,
+        },
+        "idempotency_key": key,
+        "discord_edge_intent": {
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "public_guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": PUBLIC_CHANNEL,
+            },
+            "payload": {"content": RACE_ROUTEBACK_CONTENT},
+            "idempotency_key": derive_routeback_edge_idempotency_key(
+                case_id=case_id,
+                canonical_idempotency_key=key,
+            ),
+        },
+    }
+    claimed = _dispatch(
+        stack,
+        CanonicalWriterOperation.ROUTEBACK_CLAIM,
+        claim,
+        runtime,
+    )
+
+    with pytest.raises(CanonicalWriterError) as rejected:
+        stack.backend.routeback_terminal(
+            RouteBackTerminalRequest(
+                authorization_id=str(claimed["authorization_id"]),
+                outcome="blocked",
+                receipt={
+                    "platform": "discord",
+                    "adapter_receipt": True,
+                    "receipt_readback_verified": False,
+                    "message_id": DISCORD_MESSAGE_ID,
+                    "channel_id": PUBLIC_CHANNEL,
+                    "content_sha256": RACE_CONTENT,
+                },
+                blocker_reason="route_back_sent_receipt_persistence_failed",
+            ),
+            runtime,
+        )
+
+    assert rejected.value.code == "invalid_request"
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM canonical_brain.writer_routeback_terminals "
+        f"WHERE authorization_id = '{claimed['authorization_id']}';",
+    ) == ["0"]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        f"WHERE case_id = '{case_id}' AND event_type = 'route_back.blocked';",
+    ) == ["0"]
 
 
 def test_real_postgres_session_epoch_revoke_linearizes_with_append(
@@ -673,3 +1208,321 @@ def test_real_postgres_session_epoch_revoke_linearizes_with_append(
         runtime=runtime,
     )
     assert retry["error"]["code"] == "session_epoch_retired"
+
+
+def test_real_postgres_legacy_reconciliation_is_atomic_and_quarantined() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("Docker is required")
+
+    name = f"canonical-writer-reconcile-{uuid.uuid4().hex[:10]}"
+    database = "muncho_canary_brain"
+    approval_sha = "b" * 64
+    reconciliation_sql = LEGACY_RECONCILIATION.read_text(encoding="utf-8")
+    migration_sql = MIGRATION.read_text(encoding="utf-8")
+    _run([
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        name,
+        "-e",
+        "POSTGRES_PASSWORD=canonical-reconcile-test",
+        IMAGE,
+    ])
+    try:
+        _wait_ready(name)
+        _psql(
+            name,
+            "postgres",
+            "REVOKE ALL ON DATABASE postgres FROM PUBLIC;\n"
+            "REVOKE ALL ON DATABASE template1 FROM PUBLIC;\n"
+            f"CREATE ROLE {CANONICAL_WRITER_MIGRATION_OWNER} NOLOGIN NOINHERIT "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"CREATE ROLE {CANONICAL_WRITER_ROLE} NOLOGIN "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n"
+            f"CREATE DATABASE {database};\n"
+            f"REVOKE ALL ON DATABASE {database} FROM PUBLIC;\n"
+            f"GRANT CONNECT ON DATABASE {database} TO {CANONICAL_WRITER_ROLE};\n",
+        )
+        _psql(
+            name,
+            database,
+            "REVOKE ALL ON SCHEMA public FROM PUBLIC;\n"
+            f"GRANT USAGE ON SCHEMA public TO {CANONICAL_WRITER_MIGRATION_OWNER};\n"
+            "CREATE TABLE public.canonical_event_log (\n"
+            " event_id uuid PRIMARY KEY, schema_version text NOT NULL,\n"
+            " event_type text NOT NULL, occurred_at timestamptz NOT NULL,\n"
+            " case_id text NOT NULL, source jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " actor jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " subject jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " evidence jsonb NOT NULL DEFAULT '[]'::jsonb,\n"
+            " decision jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " status jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " next_action jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " safety jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " payload jsonb NOT NULL DEFAULT '{}'::jsonb,\n"
+            " inserted_at timestamptz NOT NULL DEFAULT now(),\n"
+            " idempotency_key text, source_spool text,\n"
+            " spool_line_number integer, raw_event_sha256 text\n"
+            ");\n"
+            "CREATE INDEX idx_canonical_event_log_case_id "
+            "ON public.canonical_event_log(case_id);\n"
+            "CREATE INDEX idx_canonical_event_log_event_type "
+            "ON public.canonical_event_log(event_type);\n"
+            "CREATE INDEX idx_canonical_event_log_occurred_at "
+            "ON public.canonical_event_log(occurred_at);\n"
+            "CREATE UNIQUE INDEX idx_canonical_event_log_idempotency_key "
+            "ON public.canonical_event_log(idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL;\n"
+            "INSERT INTO public.canonical_event_log (\n"
+            " event_id,schema_version,event_type,occurred_at,case_id,source,actor,\n"
+            " subject,evidence,decision,status,next_action,safety,payload,\n"
+            " inserted_at,idempotency_key,source_spool,spool_line_number,raw_event_sha256\n"
+            ") VALUES\n"
+            " ('11111111-1111-4111-8111-111111111111','canonical_event.v1',\n"
+            "  'case.note','2026-07-12T10:00:00Z','case:legacy:1',\n"
+            '  \'{"system":"legacy"}\',\'{"type":"agent"}\',\n'
+            "  '{\"type\":\"case\"}','[]','{}','{\"state\":\"noted\"}',\n"
+            "  '{}','{}','{\"summary\":\"one\"}',\n"
+            "  '2026-07-12T10:00:01Z','legacy:1','/legacy/spool',1,repeat('a',64)),\n"
+            " ('22222222-2222-4222-8222-222222222222','canonical_event.v1',\n"
+            "  'task.plan.updated','2026-07-12T10:01:00Z','case:legacy:2',\n"
+            "  '{}','{}','{}','[]','{}','{}','{}','{}',\n"
+            "  '{\"summary\":\"two\"}','2026-07-12T10:01:01Z',\n"
+            "  NULL,NULL,NULL,NULL);\n",
+        )
+
+        fields = _psql_fields(
+            name,
+            database,
+            "SET TimeZone='UTC';\n"
+            "WITH row_receipts AS (\n"
+            " SELECT event_id,\n"
+            " encode(sha256(convert_to(jsonb_build_object(\n"
+            "  'event_id',to_jsonb(e)->'event_id',\n"
+            "  'schema_version',to_jsonb(e)->'schema_version',\n"
+            "  'event_type',to_jsonb(e)->'event_type',\n"
+            "  'occurred_at',to_jsonb(e)->'occurred_at',\n"
+            "  'case_id',to_jsonb(e)->'case_id','source',to_jsonb(e)->'source',\n"
+            "  'actor',to_jsonb(e)->'actor','subject',to_jsonb(e)->'subject',\n"
+            "  'evidence',to_jsonb(e)->'evidence',\n"
+            "  'decision',to_jsonb(e)->'decision','status',to_jsonb(e)->'status',\n"
+            "  'next_action',to_jsonb(e)->'next_action',\n"
+            "  'safety',to_jsonb(e)->'safety','payload',to_jsonb(e)->'payload'\n"
+            " )::text,'UTF8')),'hex') AS h14,\n"
+            " encode(sha256(convert_to(to_jsonb(e)::text,'UTF8')),'hex') AS h19\n"
+            " FROM public.canonical_event_log AS e\n"
+            ") SELECT count(*),\n"
+            " encode(sha256(convert_to(\n"
+            "  'canonical-writer-legacy-reconcile-v1:canonical14'||E'\\n'||\n"
+            "  string_agg(event_id::text||':'||h14,E'\\n' ORDER BY event_id),\n"
+            "  'UTF8')),'hex'),\n"
+            " encode(sha256(convert_to(\n"
+            "  'canonical-writer-legacy-reconcile-v1:extended19'||E'\\n'||\n"
+            "  string_agg(event_id::text||':'||h19,E'\\n' ORDER BY event_id),\n"
+            "  'UTF8')),'hex'), max(occurred_at)\n"
+            " FROM row_receipts JOIN public.canonical_event_log USING(event_id);\n",
+        )
+        assert len(fields) == 4
+        row_count, canonical_hash, extended_hash, cutoff = fields
+        assert row_count == "2"
+
+        def invocation(canonical_expectation: str = canonical_hash) -> str:
+            return (
+                "SET muncho.canonical_writer_reconcile_scope = "
+                "'isolated_canary_copy';\n"
+                f"SET muncho.canonical_writer_reconcile_database = '{database}';\n"
+                "SET muncho.canonical_writer_reconcile_server_identity_sha256 = "
+                f"'{('c' * 64)}';\n"
+                "SET muncho.canonical_writer_reconcile_source_owner = 'postgres';\n"
+                f"SET muncho.canonical_writer_reconcile_expected_row_count = '{row_count}';\n"
+                "SET muncho.canonical_writer_reconcile_expected_canonical14_sha256 = "
+                f"'{canonical_expectation}';\n"
+                "SET muncho.canonical_writer_reconcile_expected_extended19_sha256 = "
+                f"'{extended_hash}';\n"
+                "SET muncho.canonical_writer_reconcile_expected_occurred_at_cutoff = "
+                f"'{cutoff}';\n"
+                "SET muncho.canonical_writer_reconcile_approval_receipt_sha256 = "
+                f"'{approval_sha}';\n" + reconciliation_sql
+            )
+
+        with pytest.raises(RuntimeError, match="count/hash/cutoff drifted"):
+            _psql(name, database, invocation("0" * 64))
+        assert _psql_fields(
+            name,
+            database,
+            "SELECT count(*), "
+            "to_regclass('canonical_brain_legacy_quarantine."
+            "canonical_event_log_legacy_v1') IS NULL "
+            "FROM public.canonical_event_log;",
+        ) == ["2", "t"]
+
+        _psql(name, database, invocation())
+        _psql(name, database, invocation())
+        assert _psql_fields(
+            name,
+            database,
+            "SELECT "
+            "(SELECT count(*) FROM public.canonical_event_log),"
+            "(SELECT count(*) FROM canonical_brain_legacy_quarantine."
+            "canonical_event_log_legacy_v1),"
+            "(SELECT count(*) FROM canonical_brain_legacy_quarantine."
+            "reconciliation_receipts),"
+            "(SELECT count(*) FROM pg_attribute WHERE attrelid = "
+            "'public.canonical_event_log'::regclass AND attnum > 0 AND NOT attisdropped),"
+            "(SELECT count(*) FROM pg_attribute WHERE attrelid = "
+            "'canonical_brain_legacy_quarantine.canonical_event_log_legacy_v1'::regclass "
+            "AND attnum > 0 AND NOT attisdropped),"
+            "(SELECT canonical14_sha256 FROM canonical_brain_legacy_quarantine."
+            "reconciliation_receipts),"
+            "(SELECT extended19_sha256 FROM canonical_brain_legacy_quarantine."
+            "reconciliation_receipts),"
+            "pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = "
+            "'public.canonical_event_log'::regclass)),"
+            "(SELECT count(*) FROM pg_auth_members AS membership "
+            "JOIN pg_roles AS owner_role ON owner_role.rolname = "
+            "'canonical_brain_migration_owner' WHERE membership.roleid = "
+            "owner_role.oid OR membership.member = owner_role.oid),"
+            "has_schema_privilege('canonical_brain_migration_owner',"
+            "'canonical_brain_legacy_quarantine','USAGE');",
+        ) == [
+            "2",
+            "2",
+            "1",
+            "14",
+            "19",
+            canonical_hash,
+            extended_hash,
+            CANONICAL_WRITER_MIGRATION_OWNER,
+            "0",
+            "f",
+        ]
+
+        _psql(
+            name,
+            database,
+            "CREATE ROLE managed_admin_probe LOGIN CREATEROLE NOSUPERUSER "
+            "NOCREATEDB NOREPLICATION NOBYPASSRLS;\n"
+            f"GRANT CONNECT ON DATABASE {database} TO managed_admin_probe;\n"
+            f"GRANT CREATE ON DATABASE {database} TO managed_admin_probe;\n"
+            "GRANT USAGE, CREATE ON SCHEMA public TO managed_admin_probe;\n",
+        )
+        # Stock PostgreSQL can reproduce the post-transfer REVOKE failure.  It
+        # cannot reproduce Cloud SQL's provider-specific ability for a
+        # zero-membership non-superuser admin to grant the owner role; that
+        # exact capability is verified by the isolated Cloud rollback probe.
+        with pytest.raises(RuntimeError, match="permission denied"):
+            _psql_as(
+                name,
+                database,
+                "managed_admin_probe",
+                "REVOKE ALL ON TABLE public.canonical_event_log FROM PUBLIC;",
+            )
+        with pytest.raises(RuntimeError, match="must be able to SET ROLE"):
+            _psql_as(
+                name,
+                database,
+                "managed_admin_probe",
+                "CREATE SCHEMA managed_admin_probe_schema "
+                "AUTHORIZATION canonical_brain_migration_owner;",
+            )
+        _psql_as(
+            name,
+            database,
+            "managed_admin_probe",
+            "CREATE TABLE public.managed_admin_owner_probe (id integer);",
+        )
+        with pytest.raises(RuntimeError, match="must be able to SET ROLE"):
+            _psql_as(
+                name,
+                database,
+                "managed_admin_probe",
+                "ALTER TABLE public.managed_admin_owner_probe "
+                "OWNER TO canonical_brain_migration_owner;",
+            )
+        _psql(
+            name,
+            database,
+            "GRANT canonical_brain_migration_owner TO managed_admin_probe "
+            "WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;\n"
+            "GRANT CREATE ON SCHEMA public "
+            "TO canonical_brain_migration_owner;",
+        )
+        _psql_as(
+            name,
+            database,
+            "managed_admin_probe",
+            "CREATE SCHEMA managed_admin_probe_schema "
+            "AUTHORIZATION canonical_brain_migration_owner;",
+        )
+        _psql_as(
+            name,
+            database,
+            "managed_admin_probe",
+            "ALTER TABLE public.managed_admin_owner_probe "
+            "OWNER TO canonical_brain_migration_owner;",
+        )
+        assert _psql_fields(
+            name,
+            database,
+            "SELECT pg_get_userbyid(nspowner) FROM pg_namespace "
+            "WHERE nspname = 'managed_admin_probe_schema';",
+        ) == [CANONICAL_WRITER_MIGRATION_OWNER]
+        _psql(
+            name,
+            database,
+            "DROP SCHEMA managed_admin_probe_schema;\n"
+            "DROP TABLE public.managed_admin_owner_probe;\n"
+            "REVOKE CREATE ON SCHEMA public "
+            "FROM canonical_brain_migration_owner;\n"
+            "REVOKE canonical_brain_migration_owner FROM managed_admin_probe;\n"
+            "REVOKE USAGE, CREATE ON SCHEMA public FROM managed_admin_probe;\n"
+            f"REVOKE CREATE, CONNECT ON DATABASE {database} "
+            "FROM managed_admin_probe;\n"
+            "DROP ROLE managed_admin_probe;\n",
+        )
+
+        _psql(name, database, _migration_invocation(database, migration_sql))
+        _psql(name, database, _migration_invocation(database, migration_sql))
+        _psql(name, database, invocation())
+        assert _psql_fields(
+            name,
+            database,
+            "WITH answer AS (SELECT canonical_brain.writer_case_query("
+            '\'{"case_id":"case:legacy:1","limit":80,'
+            '"view":"resume_bundle"}\'::jsonb,'
+            '\'{"request_id":"legacy-reconcile-e2e",'
+            '"platform":"discord","owner_authenticated":true}\'::jsonb'
+            ") AS value) SELECT "
+            "(value->'result'->>'event_count'),"
+            "((value->'result'->'support_incomplete_reasons') "
+            "? 'legacy_events_quarantined'),"
+            "(SELECT count(*) FROM canonical_brain.writer_event_provenance),"
+            "has_schema_privilege('canonical_brain_writer',"
+            "'canonical_brain_legacy_quarantine','USAGE'),"
+            "(SELECT count(*) FROM pg_auth_members AS membership "
+            "JOIN pg_roles AS owner_role ON owner_role.rolname = "
+            "'canonical_brain_migration_owner' WHERE membership.roleid = "
+            "owner_role.oid OR membership.member = owner_role.oid),"
+            "has_database_privilege('canonical_brain_migration_owner',"
+            f"'{database}','TEMP') FROM answer;",
+        ) == ["0", "t", "0", "f", "0", "f"]
+
+        _psql(
+            name,
+            database,
+            "INSERT INTO canonical_brain.writer_event_provenance ("
+            "event_id,canonical_content_sha256,origin,trusted_runtime,appended_at"
+            ") VALUES ('11111111-1111-4111-8111-111111111111',"
+            f"'{('c' * 64)}','forged-test','{{}}'::jsonb,clock_timestamp());",
+        )
+        with pytest.raises(RuntimeError, match="must not be auto-promoted"):
+            _psql(name, database, invocation())
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )

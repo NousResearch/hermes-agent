@@ -27,6 +27,15 @@ from gateway.canonical_writer_protocol import (
     CanonicalWriterOperation,
     WriterRequest,
 )
+from gateway.discord_edge_protocol import (
+    DiscordEdgeIntent,
+    DiscordEdgeReceiptOutcome,
+)
+from gateway.discord_edge_writer_authority import (
+    CanonicalWriterDiscordAuthority,
+    DiscordEdgeWriterAuthorityError,
+    derive_routeback_edge_idempotency_key,
+)
 
 
 OP_PING = CanonicalWriterOperation.PING.value
@@ -37,6 +46,7 @@ OP_CASE_QUERY = CanonicalWriterOperation.CASE_QUERY.value
 OP_PLAN_ACTIVE_MATCH = CanonicalWriterOperation.PLAN_ACTIVE_MATCH.value
 OP_ROUTEBACK_CONTEXT = CanonicalWriterOperation.ROUTEBACK_CONTEXT.value
 OP_ROUTEBACK_CLAIM = CanonicalWriterOperation.ROUTEBACK_CLAIM.value
+OP_ROUTEBACK_RECOVER = CanonicalWriterOperation.ROUTEBACK_RECOVER.value
 OP_ROUTEBACK_FINALIZE_SENT = CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value
 OP_ROUTEBACK_FINALIZE_BLOCKED = CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value
 OP_LEASE_SHADOW_RECORD = CanonicalWriterOperation.LEASE_SHADOW_RECORD.value
@@ -358,6 +368,17 @@ class RouteBackAuthorizeRequest:
 
 
 @dataclass(frozen=True)
+class RouteBackRecoveryRequest:
+    case_id: str
+    target_ref: Mapping[str, Any]
+    message_summary: str
+    source_refs: Mapping[str, Any]
+    content_sha256: str
+    idempotency_key: str
+    recovery_kind: str
+
+
+@dataclass(frozen=True)
 class RouteBackTerminalRequest:
     authorization_id: str
     outcome: str
@@ -412,6 +433,7 @@ class CanonicalWriterBackend(Protocol):
     def plan_active_match(self, request: PlanActiveMatchRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def routeback_context(self, request: RouteBackContextRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def routeback_authorize(self, request: RouteBackAuthorizeRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
+    def routeback_recover(self, request: RouteBackRecoveryRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def routeback_terminal(self, request: RouteBackTerminalRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def lease_shadow_record(self, payload: Mapping[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def capability_grant(self, request: CapabilityGrantRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
@@ -449,16 +471,20 @@ REQUEST_SCHEMAS: Mapping[str, Mapping[str, frozenset[str]]] = {
         "required": frozenset({"thread_id"}),
     },
     OP_ROUTEBACK_CLAIM: {
-        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding"}),
-        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding"}),
+        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_intent"}),
+        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_intent"}),
+    },
+    OP_ROUTEBACK_RECOVER: {
+        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_intent", "recovery_kind", "discord_edge_request", "discord_edge_receipt"}),
+        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_intent", "recovery_kind"}),
     },
     OP_ROUTEBACK_FINALIZE_SENT: {
-        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "receipt", "idempotency_key", "execution_binding"}),
-        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "receipt", "idempotency_key", "execution_binding"}),
+        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_request", "discord_edge_receipt"}),
+        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_request", "discord_edge_receipt"}),
     },
     OP_ROUTEBACK_FINALIZE_BLOCKED: {
-        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "blocker_reason", "partial_receipt", "idempotency_key", "execution_binding", "preclaim"}),
-        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "blocker_reason", "idempotency_key"}),
+        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "blocker_reason", "idempotency_key", "execution_binding", "preclaim", "discord_edge_request", "discord_edge_receipt"}),
+        "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key"}),
     },
     OP_LEASE_SHADOW_RECORD: {
         "allowed": frozenset({"intent_event_id", "intent_kind", "case", "runtime_lease_enforcement", "enforcement_enabled", "send_path_blocking_enabled", "audit_runtime_id", "source_platform", "session_key_ref"}),
@@ -490,8 +516,24 @@ REQUEST_SCHEMAS: Mapping[str, Mapping[str, frozenset[str]]] = {
 class CanonicalWriterHandlers:
     """Exact typed dispatcher used by the authenticated writer service."""
 
-    def __init__(self, backend: CanonicalWriterBackend):
+    def __init__(
+        self,
+        backend: CanonicalWriterBackend,
+        *,
+        discord_edge_authority: CanonicalWriterDiscordAuthority | None = None,
+    ):
         self.backend = backend
+        if (
+            discord_edge_authority is not None
+            and not isinstance(
+                discord_edge_authority,
+                CanonicalWriterDiscordAuthority,
+            )
+        ):
+            raise TypeError(
+                "discord_edge_authority must be CanonicalWriterDiscordAuthority"
+            )
+        self.discord_edge_authority = discord_edge_authority
         self._handlers: Mapping[str, Callable[[dict[str, Any], RuntimeContext], Mapping[str, Any]]] = {
             OP_PING: self._ping,
             OP_EVENT_APPEND_MODEL: self._event_append,
@@ -505,6 +547,7 @@ class CanonicalWriterHandlers:
             OP_PLAN_ACTIVE_MATCH: self._plan_active_match,
             OP_ROUTEBACK_CONTEXT: self._routeback_context,
             OP_ROUTEBACK_CLAIM: self._routeback_authorize,
+            OP_ROUTEBACK_RECOVER: self._routeback_recover,
             OP_ROUTEBACK_FINALIZE_SENT: lambda payload, runtime: self._routeback_terminal(
                 payload, runtime, outcome="sent"
             ),
@@ -695,6 +738,7 @@ class CanonicalWriterHandlers:
 
     def _routeback_authorize(self, p: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
         _require_exact_runtime_epoch(runtime)
+        authority = self._require_discord_edge_authority()
         target = _require_mapping(p["target_ref"], "payload.target_ref")
         if _contains_forbidden_dm_ref(target):
             raise CanonicalWriterError("dm_forbidden", "Discord DM route-back is forbidden")
@@ -712,16 +756,260 @@ class CanonicalWriterHandlers:
         )
         if target_channel_id != target_id:
             raise CanonicalWriterError("scope_mismatch", "execution binding target differs from target_ref")
-        return self.backend.routeback_authorize(RouteBackAuthorizeRequest(
-            case_id=_case_identifier(p["case_id"], "payload.case_id"),
+        case_id = _case_identifier(p["case_id"], "payload.case_id")
+        idempotency_key = _idempotency_key(
+            p["idempotency_key"], "payload.idempotency_key"
+        )
+        intent = self._parse_discord_edge_intent(p["discord_edge_intent"])
+        self._require_routeback_intent_binding(
+            intent,
+            case_id=case_id,
+            target_ref=target,
+            target_channel_id=target_channel_id,
+            content_sha256=content_sha256,
+            idempotency_key=idempotency_key,
+        )
+        authorization_id = "routeauth:" + _digest({
+            "case_id": case_id,
+            "idempotency_key": idempotency_key,
+        })[:40]
+        result = dict(self.backend.routeback_authorize(RouteBackAuthorizeRequest(
+            case_id=case_id,
             target_ref=target,
             message_summary=_text(p["message_summary"], "payload.message_summary"),
             source_refs=_require_mapping(p["source_refs"], "payload.source_refs"),
             content_sha256=content_sha256,
-            idempotency_key=_idempotency_key(
-                p["idempotency_key"], "payload.idempotency_key"
+            idempotency_key=idempotency_key,
+        ), runtime))
+        inserted = result.get("inserted")
+        if type(inserted) is not bool:
+            raise CanonicalWriterError(
+                "invalid_backend_result",
+                "route-back claim did not return an exact inserted decision",
+            )
+        terminal_event_type = str(result.get("terminal_event_type") or "")
+        if terminal_event_type:
+            return result
+        if result.get("authorization_id") != authorization_id:
+            raise CanonicalWriterError(
+                "invalid_backend_result",
+                "route-back claim returned a mismatched authorization",
+            )
+        try:
+            edge_request = authority.issue_routeback_request(
+                intent,
+                authorization_id=authorization_id,
+            )
+        except DiscordEdgeWriterAuthorityError as exc:
+            raise CanonicalWriterError(exc.code, exc.message) from None
+        # A nonterminal deduped claim receives a fresh short-lived request.
+        # The edge's durable idempotency journal remains the global one-send
+        # fence; this closes a gateway crash between Canonical COMMIT and IPC.
+        result["discord_edge_request"] = edge_request.to_message()
+        return result
+
+    def _routeback_recover(
+        self,
+        p: dict[str, Any],
+        runtime: RuntimeContext,
+    ) -> Mapping[str, Any]:
+        """Take over one exact pending lifecycle after an epoch-only restart.
+
+        The caller cannot choose delivery truth. ``edge_evidence`` requires the
+        original writer request plus its current edge-signed receipt;
+        ``edge_no_record`` is used only by the gateway after authenticated,
+        mutation-free edge lookup proved that no durable outcome exists.  The
+        backend still enforces same session/platform/source lane and current
+        case scope, and only the no-record path rechecks the live target ACL.
+        """
+
+        _require_exact_runtime_epoch(runtime)
+        authority = self._require_discord_edge_authority()
+        recovery_kind = str(p.get("recovery_kind") or "")
+        if recovery_kind not in {"edge_evidence", "edge_no_record"}:
+            raise CanonicalWriterError(
+                "invalid_request",
+                "route-back recovery kind is invalid",
+            )
+        target = _require_mapping(p["target_ref"], "payload.target_ref")
+        if _contains_forbidden_dm_ref(target):
+            raise CanonicalWriterError(
+                "dm_forbidden",
+                "Discord DM route-back is forbidden",
+            )
+        target_id = str(
+            target.get("thread_id") or target.get("channel_id") or ""
+        ).strip()
+        if not target_id:
+            raise CanonicalWriterError(
+                "invalid_request",
+                "target_ref requires public thread_id or channel_id",
+            )
+        binding = _require_mapping(
+            p["execution_binding"],
+            "payload.execution_binding",
+        )
+        content_sha256 = _sha256(
+            binding.get("content_sha256"),
+            "payload.execution_binding.content_sha256",
+        )
+        target_channel_id = _identifier(
+            binding.get("target_channel_id"),
+            "payload.execution_binding.target_channel_id",
+        )
+        if target_channel_id != target_id:
+            raise CanonicalWriterError(
+                "scope_mismatch",
+                "execution binding target differs from target_ref",
+            )
+        case_id = _case_identifier(p["case_id"], "payload.case_id")
+        idempotency_key = _idempotency_key(
+            p["idempotency_key"],
+            "payload.idempotency_key",
+        )
+        intent = self._parse_discord_edge_intent(p["discord_edge_intent"])
+        self._require_routeback_intent_binding(
+            intent,
+            case_id=case_id,
+            target_ref=target,
+            target_channel_id=target_channel_id,
+            content_sha256=content_sha256,
+            idempotency_key=idempotency_key,
+        )
+        authorization_id = "routeauth:" + _digest({
+            "case_id": case_id,
+            "idempotency_key": idempotency_key,
+        })[:40]
+        evidence: VerifiedDiscordEdgeEvidence | None = None
+        if recovery_kind == "edge_evidence":
+            if any(
+                key not in p
+                for key in ("discord_edge_request", "discord_edge_receipt")
+            ):
+                raise CanonicalWriterError(
+                    "invalid_request",
+                    "edge evidence recovery requires signed request and receipt",
+                )
+            try:
+                evidence = authority.verify_routeback_evidence(
+                    request_value=p["discord_edge_request"],
+                    receipt_value=p["discord_edge_receipt"],
+                    authorization_id=authorization_id,
+                )
+            except DiscordEdgeWriterAuthorityError as exc:
+                raise CanonicalWriterError(exc.code, exc.message) from None
+            if evidence.request.intent != intent:
+                raise CanonicalWriterError(
+                    "scope_mismatch",
+                    "recovery evidence differs from the exact route-back intent",
+                )
+        elif any(
+            key in p for key in ("discord_edge_request", "discord_edge_receipt")
+        ):
+            raise CanonicalWriterError(
+                "invalid_request",
+                "edge no-record recovery forbids receipt evidence",
+            )
+
+        result = dict(self.backend.routeback_recover(RouteBackRecoveryRequest(
+            case_id=case_id,
+            target_ref=target,
+            message_summary=_text(
+                p["message_summary"],
+                "payload.message_summary",
             ),
-        ), runtime)
+            source_refs=_require_mapping(
+                p["source_refs"],
+                "payload.source_refs",
+            ),
+            content_sha256=content_sha256,
+            idempotency_key=idempotency_key,
+            recovery_kind=recovery_kind,
+        ), runtime))
+        terminal_event_type = str(result.get("terminal_event_type") or "")
+        if terminal_event_type:
+            return result
+        if result.get("authorization_id") != authorization_id:
+            raise CanonicalWriterError(
+                "invalid_backend_result",
+                "route-back recovery returned a mismatched authorization",
+            )
+        if (
+            result.get("recovered") is not True
+            or result.get("recovered_epoch_sha256")
+            != runtime.capability_epoch_sha256
+        ):
+            raise CanonicalWriterError(
+                "invalid_backend_result",
+                "route-back recovery did not attest the exact current epoch",
+            )
+        if recovery_kind == "edge_no_record":
+            try:
+                edge_request = authority.issue_routeback_request(
+                    intent,
+                    authorization_id=authorization_id,
+                )
+            except DiscordEdgeWriterAuthorityError as exc:
+                raise CanonicalWriterError(exc.code, exc.message) from None
+            result["discord_edge_request"] = edge_request.to_message()
+        else:
+            assert evidence is not None
+            result["discord_edge_evidence"] = {
+                "request": evidence.request.to_message(),
+                "receipt": dict(p["discord_edge_receipt"]),
+                "outcome": evidence.receipt.outcome.value,
+                "blocker_code": evidence.receipt.blocker_code,
+            }
+        return result
+
+    def _require_discord_edge_authority(self) -> CanonicalWriterDiscordAuthority:
+        if self.discord_edge_authority is None:
+            raise CanonicalWriterError(
+                "discord_edge_authority_unavailable",
+                "writer-owned Discord edge authority is unavailable",
+            )
+        return self.discord_edge_authority
+
+    @staticmethod
+    def _parse_discord_edge_intent(value: Any) -> DiscordEdgeIntent:
+        try:
+            return CanonicalWriterDiscordAuthority.parse_public_send_intent(value)
+        except DiscordEdgeWriterAuthorityError as exc:
+            raise CanonicalWriterError(exc.code, exc.message) from None
+
+    @staticmethod
+    def _require_routeback_intent_binding(
+        intent: DiscordEdgeIntent,
+        *,
+        case_id: str,
+        target_ref: Mapping[str, Any],
+        target_channel_id: str,
+        content_sha256: str,
+        idempotency_key: str,
+    ) -> None:
+        expected_edge_idempotency_key = derive_routeback_edge_idempotency_key(
+            case_id=case_id,
+            canonical_idempotency_key=idempotency_key,
+        )
+        if (
+            intent.target.channel_id != target_channel_id
+            or intent.content_sha256 != content_sha256
+            or intent.idempotency_key != expected_edge_idempotency_key
+        ):
+            raise CanonicalWriterError(
+                "scope_mismatch",
+                "Discord edge intent differs from the claimed target, content, or idempotency binding",
+            )
+        optional_exact_bindings = {
+            "guild_id": intent.target.guild_id,
+            "parent_channel_id": intent.target.parent_channel_id,
+        }
+        for key, expected in optional_exact_bindings.items():
+            if key in target_ref and target_ref.get(key) != expected:
+                raise CanonicalWriterError(
+                    "scope_mismatch",
+                    f"Discord edge intent differs from target_ref.{key}",
+                )
 
     def _routeback_terminal(
         self,
@@ -741,108 +1029,87 @@ class CanonicalWriterHandlers:
                 "invalid_request",
                 "preclaim is available only for blocked finalization",
             )
-        receipt_field = "receipt" if outcome == "sent" else "partial_receipt"
-        receipt = _require_mapping(
-            p.get(receipt_field, {}),
-            f"payload.{receipt_field}",
-        )
         if _contains_forbidden_dm_ref(p):
             raise CanonicalWriterError("dm_forbidden", "Discord DM route-back is forbidden")
         blocker = str(p.get("blocker_reason") or "").strip()
-        if outcome == "sent" and not receipt:
-            raise CanonicalWriterError("invalid_request", "sent outcome requires receipt")
-        if outcome == "sent":
-            allowed_receipt_keys = {
-                "platform",
-                "adapter_receipt",
-                "receipt_readback_verified",
-                "message_id",
-                "channel_id",
-                "chat_id",
-                "channel_type",
-                "target_kind",
-                "content_sha256",
-            }
-            required_receipt_keys = {
-                "platform",
-                "adapter_receipt",
-                "receipt_readback_verified",
-                "message_id",
-                "channel_id",
-                "content_sha256",
-            }
-            if (
-                not required_receipt_keys.issubset(receipt)
-                or not set(receipt).issubset(allowed_receipt_keys)
-                or receipt.get("platform") != "discord"
-                or receipt.get("adapter_receipt") is not True
-                or receipt.get("receipt_readback_verified") is not True
-                or not isinstance(receipt.get("message_id"), str)
-                or _identifier(
-                    receipt.get("message_id"),
-                    "payload.receipt.message_id",
+        case_id = _case_identifier(p["case_id"], "payload.case_id")
+        idempotency_key = _idempotency_key(
+            p["idempotency_key"], "payload.idempotency_key"
+        )
+        _require_exact_runtime_epoch(runtime)
+        target_ref = _require_mapping(p["target_ref"], "payload.target_ref")
+        message_summary = _text(
+            p["message_summary"],
+            "payload.message_summary",
+        )
+        source_refs = _require_mapping(p["source_refs"], "payload.source_refs")
+        authorization_id = "routeauth:" + _digest({
+            "case_id": case_id,
+            "idempotency_key": idempotency_key,
+        })[:40]
+        if preclaim:
+            if outcome != "blocked" or not blocker:
+                raise CanonicalWriterError(
+                    "invalid_request",
+                    "preclaim blocked finalization requires blocker_reason",
                 )
-                != receipt.get("message_id")
-                or not isinstance(receipt.get("channel_id"), str)
-                or _identifier(
-                    receipt.get("channel_id"),
-                    "payload.receipt.channel_id",
+            if not isinstance(p["blocker_reason"], str):
+                raise CanonicalWriterError(
+                    "invalid_request",
+                    "payload.blocker_reason must be a string",
                 )
-                != receipt.get("channel_id")
-                or not isinstance(receipt.get("content_sha256"), str)
-                or _sha256(
-                    receipt.get("content_sha256"),
-                    "payload.receipt.content_sha256",
-                )
-                != receipt.get("content_sha256")
-                or (
-                    "chat_id" in receipt
-                    and receipt.get("chat_id") != receipt.get("channel_id")
-                )
-                or any(
-                    _identifier(receipt[key], f"payload.receipt.{key}")
-                    != receipt[key]
-                    for key in ("channel_type", "target_kind")
-                    if key in receipt
+            blocker = _text(
+                p["blocker_reason"],
+                "payload.blocker_reason",
+                maximum=1_000,
+            )
+            if any(
+                key in p
+                for key in (
+                    "execution_binding",
+                    "discord_edge_request",
+                    "discord_edge_receipt",
                 )
             ):
                 raise CanonicalWriterError(
-                    "invalid_receipt",
-                    "sent outcome requires an exact verified Discord adapter receipt",
+                    "invalid_request",
+                    "preclaim blocked finalization forbids dispatch evidence",
                 )
-        if outcome == "blocked" and not blocker:
-            raise CanonicalWriterError("invalid_request", "blocked outcome requires blocker_reason")
-        if preclaim and (receipt or "execution_binding" in p):
-            raise CanonicalWriterError(
-                "invalid_request",
-                "preclaim blocked finalization forbids send or authorization evidence",
-            )
-        if not preclaim and "execution_binding" not in p:
-            raise CanonicalWriterError(
-                "invalid_request",
-                "claimed blocked finalization requires execution_binding",
-            )
-        if outcome == "blocked" and receipt:
-            expected_keys = {
-                "platform",
-                "adapter_receipt",
-                "receipt_readback_verified",
-                "message_id",
-                "channel_id",
-                "content_sha256",
-            }
-            if set(receipt) != expected_keys:
+            authorization_id = ""
+            receipt: Mapping[str, Any] = {}
+        else:
+            if blocker:
                 raise CanonicalWriterError(
-                    "invalid_receipt",
-                    "blocked partial_receipt has an invalid exact shape",
+                    "invalid_request",
+                    "claimed finalization derives blocker truth from signed edge evidence",
                 )
+            if any(
+                key not in p
+                for key in (
+                    "execution_binding",
+                    "discord_edge_request",
+                    "discord_edge_receipt",
+                )
+            ):
+                raise CanonicalWriterError(
+                    "invalid_request",
+                    "claimed finalization requires exact signed Discord edge evidence",
+                )
+            authority = self._require_discord_edge_authority()
+            try:
+                evidence = authority.verify_routeback_evidence(
+                    request_value=p["discord_edge_request"],
+                    receipt_value=p["discord_edge_receipt"],
+                    authorization_id=authorization_id,
+                )
+            except DiscordEdgeWriterAuthorityError as exc:
+                raise CanonicalWriterError(exc.code, exc.message) from None
             binding = _require_mapping(
                 p["execution_binding"],
                 "payload.execution_binding",
             )
-            target = _require_mapping(p["target_ref"], "payload.target_ref")
             target_id = _identifier(
-                target.get("thread_id") or target.get("channel_id"),
+                target_ref.get("thread_id") or target_ref.get("channel_id"),
                 "payload.target_ref.channel_id",
             )
             bound_channel_id = _identifier(
@@ -853,55 +1120,48 @@ class CanonicalWriterHandlers:
                 binding.get("content_sha256"),
                 "payload.execution_binding.content_sha256",
             )
-            message_id = receipt.get("message_id")
-            channel_id = receipt.get("channel_id")
-            content_sha256 = receipt.get("content_sha256")
-            readback_verified = receipt.get("receipt_readback_verified")
+            self._require_routeback_intent_binding(
+                evidence.request.intent,
+                case_id=case_id,
+                target_ref=target_ref,
+                target_channel_id=bound_channel_id,
+                content_sha256=bound_content_sha256,
+                idempotency_key=idempotency_key,
+            )
+            if target_id != bound_channel_id:
+                raise CanonicalWriterError(
+                    "scope_mismatch",
+                    "execution binding target differs from target_ref",
+                )
             if (
-                receipt.get("platform") != "discord"
-                or receipt.get("adapter_receipt") is not True
-                or type(readback_verified) is not bool
-                or (
-                    readback_verified is True
-                    and blocker
-                    != "route_back_sent_receipt_persistence_failed"
-                )
-                or not isinstance(message_id, str)
-                or _identifier(
-                    message_id,
-                    "payload.partial_receipt.message_id",
-                )
-                != message_id
-                or not isinstance(channel_id, str)
-                or _identifier(
-                    channel_id,
-                    "payload.partial_receipt.channel_id",
-                )
-                != target_id
-                or channel_id != bound_channel_id
-                or not isinstance(content_sha256, str)
-                or _sha256(
-                    content_sha256,
-                    "payload.partial_receipt.content_sha256",
-                )
-                != bound_content_sha256
-                or content_sha256 != bound_content_sha256
+                outcome == "sent"
+                and evidence.receipt.outcome
+                is not DiscordEdgeReceiptOutcome.VERIFIED
             ):
                 raise CanonicalWriterError(
-                    "invalid_receipt",
-                    "blocked partial_receipt must exactly bind the accepted Discord send and blocker",
+                    "invalid_discord_edge_outcome",
+                    "only a signed verified edge outcome may finalize route_back.sent",
                 )
-        case_id = _case_identifier(p["case_id"], "payload.case_id")
-        idempotency_key = _idempotency_key(
-            p["idempotency_key"], "payload.idempotency_key"
-        )
-        _require_exact_runtime_epoch(runtime)
-        authorization_id = "routeauth:" + _digest({
-            "case_id": case_id,
-            "idempotency_key": idempotency_key,
-        })[:40]
-        if preclaim:
-            authorization_id = ""
+            if (
+                outcome == "blocked"
+                and evidence.receipt.outcome
+                is DiscordEdgeReceiptOutcome.VERIFIED
+            ):
+                raise CanonicalWriterError(
+                    "invalid_discord_edge_outcome",
+                    "a signed verified edge outcome cannot finalize route_back.blocked",
+                )
+            if (
+                outcome == "blocked"
+                and evidence.receipt.outcome
+                is DiscordEdgeReceiptOutcome.ACCEPTED_UNVERIFIED
+            ):
+                raise CanonicalWriterError(
+                    "discord_edge_outcome_pending",
+                    "accepted_unverified edge evidence is nonterminal and may still upgrade to verified",
+                )
+            receipt = evidence.canonical_receipt
+            blocker = evidence.blocker_reason
         result = dict(self.backend.routeback_terminal(RouteBackTerminalRequest(
             authorization_id=authorization_id,
             outcome=outcome,
@@ -909,16 +1169,20 @@ class CanonicalWriterHandlers:
             blocker_reason=blocker,
             preclaim=preclaim,
             case_id=case_id,
-            target_ref=_require_mapping(p["target_ref"], "payload.target_ref"),
-            message_summary=_text(
-                p["message_summary"],
-                "payload.message_summary",
-            ),
-            source_refs=_require_mapping(p["source_refs"], "payload.source_refs"),
+            target_ref=target_ref,
+            message_summary=message_summary,
+            source_refs=source_refs,
             idempotency_key=idempotency_key,
         ), runtime))
         if outcome == "blocked":
             result.setdefault("partial_receipt", receipt)
+        if not preclaim:
+            result["discord_edge_evidence"] = {
+                "request": evidence.request.to_message(),
+                "receipt": dict(p["discord_edge_receipt"]),
+                "outcome": evidence.receipt.outcome.value,
+                "blocker_code": evidence.receipt.blocker_code,
+            }
         return result
 
     def _lease_shadow_record(self, p: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
@@ -1208,9 +1472,15 @@ class InMemoryCanonicalWriterBackend:
         store: InMemoryCanonicalWriterStore | None = None,
         *,
         clock: Callable[[], dt.datetime] | None = None,
+        public_routeback_targets: frozenset[str] | None = None,
     ):
         self.store = store or InMemoryCanonicalWriterStore()
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        self._public_routeback_targets = (
+            None
+            if public_routeback_targets is None
+            else frozenset(str(value) for value in public_routeback_targets)
+        )
 
     def _now(self) -> dt.datetime:
         value = self._clock()
@@ -1454,8 +1724,11 @@ class InMemoryCanonicalWriterBackend:
                 "message_summary": request.message_summary,
                 "source_refs": _json_copy(request.source_refs),
                 "content_sha256": request.content_sha256,
+                "idempotency_key": request.idempotency_key,
                 "session_key_sha256": runtime.session_key_sha256,
                 "capability_epoch_sha256": runtime.capability_epoch_sha256,
+                "runtime_platform": runtime.platform,
+                "source_thread_id": runtime.thread_id or runtime.chat_id,
                 "state": "authorized",
                 "terminal": None,
             }
@@ -1468,6 +1741,7 @@ class InMemoryCanonicalWriterBackend:
                     "message_summary",
                     "source_refs",
                     "content_sha256",
+                    "idempotency_key",
                 }
                 if any(
                     existing.get(key) != candidate.get(key)
@@ -1475,6 +1749,21 @@ class InMemoryCanonicalWriterBackend:
                 ):
                     raise CanonicalWriterError("idempotency_conflict", "route-back authorization conflicts")
                 terminal = existing.get("terminal") or {}
+                if not terminal:
+                    exact_scope = {
+                        "session_key_sha256": runtime.session_key_sha256,
+                        "capability_epoch_sha256": runtime.capability_epoch_sha256,
+                        "runtime_platform": runtime.platform,
+                        "source_thread_id": runtime.thread_id or runtime.chat_id,
+                    }
+                    if any(
+                        existing.get(key) != value
+                        for key, value in exact_scope.items()
+                    ):
+                        raise CanonicalWriterError(
+                            "scope_mismatch",
+                            "pending route-back authorization belongs to another exact runtime scope",
+                        )
                 terminal_outcome = str(terminal.get("outcome") or "")
                 return {
                     **copy.deepcopy(existing),
@@ -1497,6 +1786,129 @@ class InMemoryCanonicalWriterBackend:
                 origin="routeback_authorize",
             )
             return {"success": True, **copy.deepcopy(candidate), **appended}
+
+    def routeback_recover(
+        self,
+        request: RouteBackRecoveryRequest,
+        runtime: RuntimeContext,
+    ) -> Mapping[str, Any]:
+        with self.store.lock:
+            self._require_initiating_epoch_active_locked(runtime)
+            if request.recovery_kind not in {"edge_evidence", "edge_no_record"}:
+                raise CanonicalWriterError(
+                    "invalid_request",
+                    "route-back recovery kind is invalid",
+                )
+            lifecycle_id = "routeblock:" + _digest({
+                "case_id": request.case_id,
+                "idempotency_key": request.idempotency_key,
+            })[:40]
+            lifecycle = self.store.routeback_lifecycle_terminals.get(lifecycle_id)
+            if lifecycle:
+                expected = {
+                    "case_id": request.case_id,
+                    "target_ref": _json_copy(request.target_ref),
+                    "message_summary": request.message_summary,
+                    "source_refs": _json_copy(request.source_refs),
+                }
+                if any(
+                    lifecycle.get(key) != value for key, value in expected.items()
+                ):
+                    raise CanonicalWriterError(
+                        "idempotency_conflict",
+                        "route-back lifecycle identity conflicts",
+                    )
+                return {
+                    "success": True,
+                    "preclaim": True,
+                    "preclaim_block_id": lifecycle_id,
+                    "terminal_event_type": "route_back.blocked",
+                    "terminal_payload": {
+                        "outcome": "blocked",
+                        "receipt": {},
+                        "blocker_reason": lifecycle["blocker_reason"],
+                    },
+                    "inserted": False,
+                    "deduped": True,
+                }
+            authorization_id = "routeauth:" + _digest({
+                "case_id": request.case_id,
+                "idempotency_key": request.idempotency_key,
+            })[:40]
+            authorization = self.store.routeback_authorizations.get(
+                authorization_id
+            )
+            if not authorization:
+                raise CanonicalWriterError(
+                    "authorization_missing",
+                    "route-back recovery requires an existing claim",
+                )
+            exact = {
+                "case_id": request.case_id,
+                "target_ref": _json_copy(request.target_ref),
+                "message_summary": request.message_summary,
+                "source_refs": _json_copy(request.source_refs),
+                "content_sha256": request.content_sha256,
+                "idempotency_key": request.idempotency_key,
+            }
+            if any(
+                authorization.get(key) != value for key, value in exact.items()
+            ):
+                raise CanonicalWriterError(
+                    "idempotency_conflict",
+                    "route-back recovery identity conflicts",
+                )
+            terminal = authorization.get("terminal") or {}
+            if terminal:
+                outcome = str(terminal.get("outcome") or "")
+                return {
+                    "success": True,
+                    "authorization_id": authorization_id,
+                    "terminal_event_type": f"route_back.{outcome}",
+                    "terminal_payload": copy.deepcopy(terminal),
+                    "inserted": False,
+                    "deduped": True,
+                }
+            exact_lane = {
+                "session_key_sha256": runtime.session_key_sha256,
+                "runtime_platform": runtime.platform,
+                "source_thread_id": runtime.thread_id or runtime.chat_id,
+            }
+            if any(
+                authorization.get(key) != value
+                for key, value in exact_lane.items()
+            ):
+                raise CanonicalWriterError(
+                    "scope_mismatch",
+                    "route-back recovery cannot cross session or source lane",
+                )
+            target_id = str(
+                request.target_ref.get("thread_id")
+                or request.target_ref.get("channel_id")
+                or ""
+            )
+            if (
+                request.recovery_kind == "edge_no_record"
+                and self._public_routeback_targets is not None
+                and target_id not in self._public_routeback_targets
+            ):
+                raise CanonicalWriterError(
+                    "target_not_approved",
+                    "route-back recovery target is not currently approved",
+                )
+            return {
+                "success": True,
+                "authorization_id": authorization_id,
+                "case_id": authorization["case_id"],
+                "target_ref": copy.deepcopy(authorization["target_ref"]),
+                "content_sha256": authorization["content_sha256"],
+                "state": "authorized",
+                "recovery_kind": request.recovery_kind,
+                "recovered_epoch_sha256": runtime.capability_epoch_sha256,
+                "recovered": True,
+                "inserted": False,
+                "deduped": True,
+            }
 
     def routeback_terminal(self, request: RouteBackTerminalRequest, runtime: RuntimeContext) -> Mapping[str, Any]:
         with self.store.lock:
@@ -1624,15 +2036,18 @@ class InMemoryCanonicalWriterBackend:
             authorization = self.store.routeback_authorizations.get(request.authorization_id)
             if not authorization:
                 raise CanonicalWriterError("authorization_missing", "route-back authorization not found")
-            if authorization["session_key_sha256"] != runtime.session_key_sha256:
-                raise CanonicalWriterError("scope_mismatch", "route-back session does not match")
-            if (
-                authorization.get("capability_epoch_sha256")
-                != runtime.capability_epoch_sha256
+            exact_lane = {
+                "session_key_sha256": runtime.session_key_sha256,
+                "runtime_platform": runtime.platform,
+                "source_thread_id": runtime.thread_id or runtime.chat_id,
+            }
+            if any(
+                authorization.get(key) != value
+                for key, value in exact_lane.items()
             ):
                 raise CanonicalWriterError(
                     "scope_mismatch",
-                    "route-back routing epoch does not match",
+                    "route-back finalization cannot cross session or source lane",
                 )
             terminal = {
                 "outcome": request.outcome,
@@ -2059,6 +2474,7 @@ __all__ = [
     "PlanActiveMatchRequest",
     "RouteBackContextRequest",
     "RouteBackAuthorizeRequest",
+    "RouteBackRecoveryRequest",
     "RouteBackTerminalRequest",
     "CapabilityGrantRequest",
     "CapabilityConsumeRequest",
@@ -2080,6 +2496,7 @@ __all__ = [
     "OP_ROUTEBACK_CONTEXT",
     "OP_ROUTEBACK_AUTHORIZE",
     "OP_ROUTEBACK_CLAIM",
+    "OP_ROUTEBACK_RECOVER",
     "OP_ROUTEBACK_FINALIZE_SENT",
     "OP_ROUTEBACK_FINALIZE_BLOCKED",
     "OP_LEASE_SHADOW_RECORD",

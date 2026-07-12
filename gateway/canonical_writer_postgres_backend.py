@@ -38,6 +38,7 @@ from gateway.canonical_writer_handlers import (
     QueryRequest,
     RouteBackAuthorizeRequest,
     RouteBackContextRequest,
+    RouteBackRecoveryRequest,
     RouteBackTerminalRequest,
     RuntimeContext,
 )
@@ -60,6 +61,7 @@ POSTGRES_ROUTINE_BY_OPERATION: Mapping[CanonicalWriterOperation, str] = (
             CanonicalWriterOperation.PLAN_TRANSITION: "writer_plan_transition",
             CanonicalWriterOperation.VERIFICATION_APPEND: "writer_verification_append",
             CanonicalWriterOperation.ROUTEBACK_CLAIM: "writer_routeback_claim",
+            CanonicalWriterOperation.ROUTEBACK_RECOVER: "writer_routeback_recover",
             CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT: (
                 "writer_routeback_finalize_sent"
             ),
@@ -327,6 +329,13 @@ class PostgresCanonicalWriterBackend:
         runtime: RuntimeContext,
     ) -> Mapping[str, Any]:
         return self._invoke(CanonicalWriterOperation.ROUTEBACK_CLAIM, request, runtime)
+
+    def routeback_recover(
+        self,
+        request: RouteBackRecoveryRequest,
+        runtime: RuntimeContext,
+    ) -> Mapping[str, Any]:
+        return self._invoke(CanonicalWriterOperation.ROUTEBACK_RECOVER, request, runtime)
 
     def routeback_terminal(
         self,

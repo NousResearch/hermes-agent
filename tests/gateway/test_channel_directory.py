@@ -19,6 +19,7 @@ from gateway.channel_directory import (
     _build_from_sessions,
     _build_slack,
     is_discord_public_target,
+    lookup_discord_public_target,
 )
 
 
@@ -80,6 +81,42 @@ class TestLoadDirectory:
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
             result = load_directory()
         assert result["updated_at"] is None
+
+    def test_exact_public_edge_target_requires_unique_guild_metadata(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {
+                    "id": "10:30",
+                    "thread_id": "30",
+                    "parent_channel_id": "10",
+                    "name": "public thread",
+                    "type": "thread",
+                    "target_type": "public_guild_thread",
+                    "guild_id": "1",
+                },
+                {
+                    "id": "40",
+                    "name": "ops",
+                    "type": "channel",
+                    "target_type": "public_guild_channel",
+                    "guild_id": "1",
+                },
+                {"id": "50", "name": "legacy", "type": "channel"},
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            assert lookup_discord_public_target("30") == {
+                "target_type": "public_guild_thread",
+                "guild_id": "1",
+                "channel_id": "30",
+                "parent_channel_id": "10",
+            }
+            assert lookup_discord_public_target("40") == {
+                "target_type": "public_guild_channel",
+                "guild_id": "1",
+                "channel_id": "40",
+            }
+            assert lookup_discord_public_target("50") is None
 
 
 class TestBuildChannelDirectoryWrites:
@@ -160,6 +197,7 @@ class TestBuildDiscordPublicBoundary:
             guild=guild,
             type=channel_type,
             permissions_for=permissions_for,
+            parent_id=10 if type_value in {10, 11, 12} else None,
         )
 
     def test_writer_policy_keeps_only_everyone_visible_public_surfaces(self):

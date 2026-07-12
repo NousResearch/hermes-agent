@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from copy import deepcopy
 from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_writer_db as writer_db
 from gateway.canonical_writer_db import CanonicalWriterDB, QueryResult
@@ -21,6 +26,8 @@ from gateway.canonical_writer_postgres_backend import (
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
 from gateway.canonical_writer_boundary import DEFAULT_SOCKET_PATH
+from gateway.discord_edge_protocol import ed25519_public_key_id
+from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
 from scripts.canonical_brain_event_projector import read_events
 from scripts.canonical_writer_bootstrap import (
     build_service,
@@ -74,7 +81,54 @@ class _ProjectionProtocolSession:
         self.closed = True
 
 
+def _managed_hba_receipt(*, observed_at=None):
+    observed_at = int(time.time()) if observed_at is None else observed_at
+    return {
+        "version": "managed-cloudsqladmin-hba-rejection-v1",
+        "host": "db.internal",
+        "port": 5432,
+        "server_certificate_sha256": "d" * 64,
+        "database": "cloudsqladmin",
+        "user": "canonical_writer",
+        "observed_at_unix": observed_at,
+        "expires_at_unix": observed_at + 300,
+        "sqlstate": "28000",
+        "server_message": (
+            'no pg_hba.conf entry for host "10.0.0.8", user '
+            '"canonical_writer", database "cloudsqladmin", SSL encryption'
+        ),
+        "result": "pg_hba_rejected",
+        "tls_peer_verified": True,
+    }
+
+
 def _config_value(tmp_path):
+    writer_private = Ed25519PrivateKey.generate()
+    edge_private = Ed25519PrivateKey.generate()
+    writer_key_path = tmp_path / "discord-writer-capability-private.pem"
+    edge_key_path = tmp_path / "discord-edge-receipt-public.pem"
+    for path in (writer_key_path, edge_key_path):
+        if path.exists():
+            path.chmod(0o600)
+    writer_key_path.write_bytes(
+        writer_private.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    writer_key_path.chmod(0o400)
+    edge_key_path.write_bytes(
+        edge_private.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    edge_key_path.chmod(0o440)
+    managed_hba_receipt = _managed_hba_receipt()
+    managed_hba_digest = writer_db.managed_cloudsqladmin_hba_receipt_from_mapping(
+        managed_hba_receipt
+    ).sha256
     return {
         "service": {
             "socket_path": str(DEFAULT_SOCKET_PATH),
@@ -106,9 +160,7 @@ def _config_value(tmp_path):
                     "owner": CANONICAL_WRITER_MIGRATION_OWNER,
                     "security_definer": True,
                     "language": "plpgsql",
-                    "configuration": [
-                        "search_path=pg_catalog, canonical_brain"
-                    ],
+                    "configuration": ["search_path=pg_catalog, canonical_brain"],
                     "definition_sha256": "a" * 64,
                 }
                 for signature in EXPECTED_ROUTINE_SIGNATURES
@@ -119,9 +171,7 @@ def _config_value(tmp_path):
                     "owner": CANONICAL_WRITER_MIGRATION_OWNER,
                     "security_definer": False,
                     "language": "sql",
-                    "configuration": [
-                        "search_path=pg_catalog, canonical_brain"
-                    ],
+                    "configuration": ["search_path=pg_catalog, canonical_brain"],
                     "definition_sha256": "b" * 64,
                 }
                 for signature in EXPECTED_HELPER_ROUTINE_SIGNATURES
@@ -130,7 +180,18 @@ def _config_value(tmp_path):
             "database_privileges": ["CONNECT"],
             "role_memberships": [CANONICAL_WRITER_ROLE],
             "private_schema_identity_sha256": "c" * 64,
+            "managed_cloudsqladmin_hba_rejection_receipt": managed_hba_receipt,
+            "managed_cloudsqladmin_hba_rejection_sha256": managed_hba_digest,
             "deployment_lock_key": 4_841_739_663_211_427_921,
+        },
+        "discord_edge_authority": {
+            "enabled": True,
+            "capability_private_key_file": str(writer_key_path),
+            "edge_receipt_public_key_file": str(edge_key_path),
+            "edge_receipt_public_key_id": ed25519_public_key_id(
+                edge_private.public_key()
+            ),
+            "request_timeout_seconds": 15,
         },
     }
 
@@ -171,7 +232,23 @@ def test_loads_explicit_secret_free_config_and_pins_routine_catalog(tmp_path):
     assert config.privileges.database_privileges == ("CONNECT",)
     assert config.privileges.role_memberships == (CANONICAL_WRITER_ROLE,)
     assert config.privileges.private_schema_identity_sha256 == "c" * 64
+    assert config.privileges.managed_cloudsqladmin_hba_rejection_receipt is not None
+    assert (
+        config.privileges.managed_cloudsqladmin_hba_rejection_sha256
+        == config.privileges.managed_cloudsqladmin_hba_rejection_receipt.sha256
+    )
     assert config.privileges.deployment_lock_key == 4_841_739_663_211_427_921
+    assert config.discord_edge_authority.enabled is True
+    assert isinstance(
+        config.discord_edge_authority.capability_private_key,
+        Ed25519PrivateKey,
+    )
+    assert config.discord_edge_authority.edge_receipt_public_key_id == (
+        ed25519_public_key_id(
+            config.discord_edge_authority.edge_receipt_public_key
+        )
+    )
+    assert config.discord_edge_authority.request_timeout_seconds == 15
 
 
 @pytest.mark.parametrize("mode", [0o600, 0o640, 0o644, 0o660])
@@ -299,6 +376,18 @@ def test_config_requires_exact_private_schema_identity_digest(tmp_path, digest):
         _load(_write_config(tmp_path, value))
 
 
+@pytest.mark.parametrize("digest", ["d" * 63, "D" * 64, "g" * 64])
+def test_config_rejects_invalid_managed_cloudsqladmin_hba_receipt(
+    tmp_path,
+    digest,
+):
+    value = _config_value(tmp_path)
+    value["privileges"]["managed_cloudsqladmin_hba_rejection_sha256"] = digest
+
+    with pytest.raises(ValueError, match="cloudsqladmin HBA receipt"):
+        _load(_write_config(tmp_path, value))
+
+
 def test_config_rejects_duplicate_json_keys(tmp_path):
     path = tmp_path / "writer.json"
     path.write_text('{"service":{},"service":{}}', encoding="utf-8")
@@ -306,6 +395,205 @@ def test_config_rejects_duplicate_json_keys(tmp_path):
 
     with pytest.raises(ValueError, match="strict UTF-8 JSON"):
         _load(path)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "capability_private_key_file",
+        "edge_receipt_public_key_file",
+        "edge_receipt_public_key_id",
+        "request_timeout_seconds",
+    ],
+)
+def test_enabled_discord_edge_authority_requires_exact_key_config(
+    tmp_path,
+    missing_field,
+):
+    value = _config_value(tmp_path)
+    del value["discord_edge_authority"][missing_field]
+
+    with pytest.raises(ValueError, match="requires exact key configuration"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_writer_config_requires_explicit_discord_edge_authority_policy(tmp_path):
+    value = _config_value(tmp_path)
+    del value["discord_edge_authority"]
+
+    with pytest.raises(ValueError, match="discord_edge_authority"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_disabled_discord_edge_authority_forbids_key_fields(tmp_path):
+    value = _config_value(tmp_path)
+    value["discord_edge_authority"] = {"enabled": False}
+    config = _load(_write_config(tmp_path, value))
+
+    assert config.discord_edge_authority.enabled is False
+    assert config.discord_edge_authority.capability_private_key is None
+    assert config.discord_edge_authority.edge_receipt_public_key is None
+
+    value = _config_value(tmp_path)
+    value["discord_edge_authority"]["enabled"] = False
+    with pytest.raises(ValueError, match="only enabled=false"):
+        _load(_write_config(tmp_path, value))
+
+
+@pytest.mark.parametrize(
+    "key_name,mode",
+    [
+        ("capability_private_key_file", 0o600),
+        ("capability_private_key_file", 0o440),
+        ("edge_receipt_public_key_file", 0o400),
+        ("edge_receipt_public_key_file", 0o444),
+    ],
+)
+def test_discord_edge_key_files_require_exact_modes(tmp_path, key_name, mode):
+    value = _config_value(tmp_path)
+    Path(value["discord_edge_authority"][key_name]).chmod(mode)
+
+    with pytest.raises(ValueError, match="mode must"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_discord_edge_key_files_reject_symlinks_and_hardlinks(tmp_path):
+    value = _config_value(tmp_path)
+    private_path = Path(
+        value["discord_edge_authority"]["capability_private_key_file"]
+    )
+    private_link = tmp_path / "writer-private-link.pem"
+    private_link.symlink_to(private_path)
+    value["discord_edge_authority"]["capability_private_key_file"] = str(
+        private_link
+    )
+    with pytest.raises(ValueError, match="regular non-symlink"):
+        _load(_write_config(tmp_path, value))
+
+    value = _config_value(tmp_path)
+    public_path = Path(
+        value["discord_edge_authority"]["edge_receipt_public_key_file"]
+    )
+    os.link(public_path, tmp_path / "edge-public-hardlink.pem")
+    with pytest.raises(ValueError, match="exactly one filesystem link"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_enabled_discord_edge_authority_rejects_missing_or_relative_key_path(
+    tmp_path,
+):
+    value = _config_value(tmp_path)
+    private_path = Path(
+        value["discord_edge_authority"]["capability_private_key_file"]
+    )
+    private_path.unlink()
+    with pytest.raises(ValueError, match="private key is unavailable"):
+        _load(_write_config(tmp_path, value))
+
+    value = _config_value(tmp_path)
+    value["discord_edge_authority"]["edge_receipt_public_key_file"] = (
+        "edge-public.pem"
+    )
+    with pytest.raises(ValueError, match="absolute normalized path"):
+        _load(_write_config(tmp_path, value))
+
+
+@pytest.mark.parametrize("identity", ["owner", "group"])
+def test_discord_writer_private_key_requires_exact_writer_identity(
+    tmp_path,
+    identity,
+):
+    value = _config_value(tmp_path)
+    if identity == "owner":
+        value["service"]["writer_uid"] = os.getuid() + 10
+        value["service"]["gateway_uid"] = os.getuid() + 11
+        expected = "owner is not trusted"
+    else:
+        value["service"]["writer_gid"] = os.getgid() + 10
+        expected = "group is not the writer group"
+
+    with pytest.raises(ValueError, match=expected):
+        _load(_write_config(tmp_path, value))
+
+
+def test_discord_edge_public_key_is_pinned_and_must_be_ed25519(tmp_path):
+    value = _config_value(tmp_path)
+    value["discord_edge_authority"]["edge_receipt_public_key_id"] = "f" * 64
+    with pytest.raises(ValueError, match="pinned key ID"):
+        _load(_write_config(tmp_path, value))
+
+    value = _config_value(tmp_path)
+    value["discord_edge_authority"]["edge_receipt_public_key_id"] = value[
+        "discord_edge_authority"
+    ]["edge_receipt_public_key_id"].upper()
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        _load(_write_config(tmp_path, value))
+
+    value = _config_value(tmp_path)
+    public_path = Path(
+        value["discord_edge_authority"]["edge_receipt_public_key_file"]
+    )
+    public_path.chmod(0o600)
+    public_path.write_text("not a PEM key\n", encoding="utf-8")
+    public_path.chmod(0o440)
+    with pytest.raises(ValueError, match="public key is not PEM"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_discord_writer_private_key_must_be_unencrypted_ed25519_pem(tmp_path):
+    value = _config_value(tmp_path)
+    private_path = Path(
+        value["discord_edge_authority"]["capability_private_key_file"]
+    )
+    private_path.chmod(0o600)
+    private_path.write_text("not a PEM key\n", encoding="utf-8")
+    private_path.chmod(0o400)
+
+    with pytest.raises(ValueError, match="private key is not unencrypted PEM"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_discord_edge_keys_reject_trailing_or_noncanonical_pem_data(tmp_path):
+    value = _config_value(tmp_path)
+    public_path = Path(
+        value["discord_edge_authority"]["edge_receipt_public_key_file"]
+    )
+    original = public_path.read_bytes()
+    public_path.chmod(0o600)
+    public_path.write_bytes(original + b"ignored trailing data\n")
+    public_path.chmod(0o440)
+
+    with pytest.raises(ValueError, match="exact SubjectPublicKeyInfo PEM"):
+        _load(_write_config(tmp_path, value))
+
+
+def test_discord_writer_and_edge_receipt_keys_must_be_distinct(tmp_path):
+    value = _config_value(tmp_path)
+    private_path = Path(
+        value["discord_edge_authority"]["capability_private_key_file"]
+    )
+    private_key = serialization.load_pem_private_key(
+        private_path.read_bytes(),
+        password=None,
+    )
+    assert isinstance(private_key, Ed25519PrivateKey)
+    public_path = Path(
+        value["discord_edge_authority"]["edge_receipt_public_key_file"]
+    )
+    public_path.chmod(0o600)
+    public_path.write_bytes(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    public_path.chmod(0o440)
+    value["discord_edge_authority"]["edge_receipt_public_key_id"] = (
+        ed25519_public_key_id(private_key.public_key())
+    )
+
+    with pytest.raises(ValueError, match="keys must be distinct"):
+        _load(_write_config(tmp_path, value))
 
 
 class _FakeDatabase:
@@ -346,6 +634,10 @@ def test_build_service_attests_before_exposing_typed_dispatch(tmp_path):
 
     assert bootstrap.database.attested is True
     assert bootstrap.database.statement_catalog_sha256 == PRODUCTION_CATALOG_SHA256
+    assert isinstance(
+        bootstrap.handlers.discord_edge_authority,
+        CanonicalWriterDiscordAuthority,
+    )
     assert response.status == "ok"
     assert response.result == {"pong": True}
     assert bootstrap.database.calls[0][0] == "op_ping"
@@ -354,10 +646,40 @@ def test_build_service_attests_before_exposing_typed_dispatch(tmp_path):
 def test_build_service_rejects_runtime_identity_drift(tmp_path):
     value = deepcopy(_config_value(tmp_path))
     value["service"]["writer_uid"] = os.getuid() + 10
+    value["discord_edge_authority"] = {"enabled": False}
     config = _load(_write_config(tmp_path, value))
 
     with pytest.raises(PermissionError, match="UID/GID"):
         build_service(config, _database_factory=_FakeDatabase)
+
+
+def test_build_service_fails_closed_if_enabled_authority_lacks_loaded_key(
+    tmp_path,
+):
+    config = _load(_write_config(tmp_path, _config_value(tmp_path)))
+    broken_authority = replace(
+        config.discord_edge_authority,
+        capability_private_key=None,
+    )
+    broken_config = replace(
+        config,
+        discord_edge_authority=broken_authority,
+    )
+
+    with pytest.raises(RuntimeError, match="lacks writer-owned Ed25519 authority"):
+        build_service(broken_config, _database_factory=_FakeDatabase)
+
+
+def test_build_service_keeps_routeback_fail_closed_when_authority_disabled(
+    tmp_path,
+):
+    value = _config_value(tmp_path)
+    value["discord_edge_authority"] = {"enabled": False}
+    config = _load(_write_config(tmp_path, value))
+
+    bootstrap = build_service(config, _database_factory=_FakeDatabase)
+
+    assert bootstrap.handlers.discord_edge_authority is None
 
 
 def _snapshot_backend(tmp_path, monkeypatch, pages):
@@ -389,6 +711,9 @@ def _snapshot_backend(tmp_path, monkeypatch, pages):
         privilege_policy=config.privileges,
         statements=PRODUCTION_STATEMENT_CATALOG,
         _session_factory=session_factory,
+        _managed_hba_probe=lambda _config: (
+            config.privileges.managed_cloudsqladmin_hba_rejection_receipt
+        ),
     )
     database.startup_attest()
     return (

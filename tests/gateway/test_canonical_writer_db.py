@@ -6,6 +6,7 @@ import json
 import socket
 import ssl
 import struct
+import time
 from dataclasses import replace
 
 import pytest
@@ -13,7 +14,9 @@ import pytest
 from gateway import canonical_writer_db as writer_db
 
 
-_ROUTINE_DEFINITION = "CREATE FUNCTION canonical_brain.append_event(jsonb) RETURNS jsonb"
+_ROUTINE_DEFINITION = (
+    "CREATE FUNCTION canonical_brain.append_event(jsonb) RETURNS jsonb"
+)
 _ROUTINE_IDENTITY = writer_db.RoutineIdentity(
     signature="canonical_brain.append_event(jsonb)",
     owner="canonical_owner",
@@ -125,6 +128,46 @@ def _policy() -> writer_db.WriterPrivilegePolicy:
         canonical_owner_role="canonical_owner",
         private_schema_identity_sha256=_PRIVATE_SCHEMA_IDENTITY.sha256,
     )
+
+
+def _managed_hba_receipt(
+    *,
+    certificate_sha256="d" * 64,
+    observed_at_unix=2_000_000_000,
+):
+    return writer_db.ManagedCloudSQLAdminHBAReceipt(
+        version="managed-cloudsqladmin-hba-rejection-v1",
+        host="db.internal",
+        port=5432,
+        server_certificate_sha256=certificate_sha256,
+        database="cloudsqladmin",
+        user="canonical_writer",
+        observed_at_unix=observed_at_unix,
+        expires_at_unix=observed_at_unix + 300,
+        sqlstate="28000",
+        server_message=(
+            'no pg_hba.conf entry for host "10.0.0.8", user '
+            '"canonical_writer", database "cloudsqladmin", SSL encryption'
+        ),
+        result="pg_hba_rejected",
+        tls_peer_verified=True,
+    )
+
+
+def test_managed_hba_policy_rejects_arbitrary_digest_without_canonical_receipt():
+    with pytest.raises(ValueError, match="receipt and digest must be paired"):
+        replace(
+            _policy(),
+            managed_cloudsqladmin_hba_rejection_sha256="d" * 64,
+        )
+
+    receipt = _managed_hba_receipt()
+    with pytest.raises(ValueError, match="receipt digest"):
+        replace(
+            _policy(),
+            managed_cloudsqladmin_hba_rejection_receipt=receipt,
+            managed_cloudsqladmin_hba_rejection_sha256="e" * 64,
+        )
 
 
 def _attestation(**changes) -> writer_db.PrivilegeAttestation:
@@ -665,6 +708,14 @@ class _FixedStatementFailureSession(_FakeSession):
         return super().query(sql, maximum_rows=maximum_rows)
 
 
+class _ManagedHBAFakeSession(_FakeSession):
+    def query(self, sql, *, maximum_rows):
+        if sql.startswith("WITH database_row AS"):
+            self.queries.append((sql, maximum_rows))
+            return writer_db.QueryResult((), (("t",),), "SELECT 1")
+        return super().query(sql, maximum_rows=maximum_rows)
+
+
 class _DriftedCanonicalAclSession(_FakeSession):
     def query(self, sql, *, maximum_rows):
         if "SELECT object_acl FROM" in sql:
@@ -772,6 +823,213 @@ def test_db_requires_startup_attestation_and_reattests_each_session(tmp_path):
     assert "a.is_grantable" in canonical_acl_query
     assert not hasattr(database, "query")
     assert not hasattr(database, "password")
+
+
+def test_managed_hba_exception_is_actively_reprobed_on_every_startup(
+    tmp_path,
+    monkeypatch,
+):
+    now_unix = 2_000_000_000
+    monkeypatch.setattr(time, "time", lambda: now_unix)
+    expected = _managed_hba_receipt(observed_at_unix=now_unix)
+    policy = replace(
+        _policy(),
+        managed_cloudsqladmin_hba_rejection_receipt=expected,
+        managed_cloudsqladmin_hba_rejection_sha256=expected.sha256,
+    )
+    sessions = []
+    probes = []
+
+    def session_factory(_config):
+        session = _ManagedHBAFakeSession()
+        sessions.append(session)
+        return session
+
+    def probe(config):
+        probes.append(config)
+        return _managed_hba_receipt(observed_at_unix=now_unix)
+
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=policy,
+        statements=writer_db.StatementCatalog(()),
+        _session_factory=session_factory,
+        _managed_hba_probe=probe,
+    )
+
+    database.startup_attest()
+    database.startup_attest()
+
+    assert len(probes) == 2
+    assert len(sessions) == 2
+    assert all(session.closed for session in sessions)
+    managed_acl_queries = [
+        sql
+        for session in sessions
+        for sql, _ in session.queries
+        if sql.startswith("WITH database_row AS")
+    ]
+    assert len(managed_acl_queries) == 2
+    assert all(
+        "pg_catalog.acldefault('d', database_row.datdba)" in sql
+        for sql in managed_acl_queries
+    )
+
+
+def test_managed_hba_startup_rejects_stale_or_different_peer_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    now_unix = 2_000_000_000
+    monkeypatch.setattr(time, "time", lambda: now_unix)
+    expected = _managed_hba_receipt(observed_at_unix=now_unix)
+    policy = replace(
+        _policy(),
+        managed_cloudsqladmin_hba_rejection_receipt=expected,
+        managed_cloudsqladmin_hba_rejection_sha256=expected.sha256,
+    )
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=policy,
+        statements=writer_db.StatementCatalog(()),
+        _session_factory=lambda _config: pytest.fail(
+            "database session must not open after HBA peer mismatch"
+        ),
+        _managed_hba_probe=lambda _config: _managed_hba_receipt(
+            certificate_sha256="e" * 64,
+            observed_at_unix=now_unix,
+        ),
+    )
+
+    with pytest.raises(writer_db.PrivilegeAttestationError, match="binding"):
+        database.startup_attest()
+
+
+def test_managed_hba_runtime_refreshes_expired_proof_before_fixed_db_work(
+    tmp_path,
+    monkeypatch,
+):
+    current_unix = [2_000_000_000]
+    monkeypatch.setattr(time, "time", lambda: current_unix[0])
+    expected = _managed_hba_receipt(observed_at_unix=current_unix[0])
+    policy = replace(
+        _policy(),
+        managed_cloudsqladmin_hba_rejection_receipt=expected,
+        managed_cloudsqladmin_hba_rejection_sha256=expected.sha256,
+    )
+    events = []
+    sessions = []
+
+    def probe(config):
+        events.append(("probe", current_unix[0], config.host))
+        return _managed_hba_receipt(observed_at_unix=current_unix[0])
+
+    def session_factory(config):
+        events.append(("session", current_unix[0], config.host))
+        session = _ManagedHBAFakeSession()
+        sessions.append(session)
+        return session
+
+    statement = writer_db.FixedStatement(
+        name="append_event",
+        sql_template="SELECT * FROM canonical_brain.append_event({{payload}})",
+        parameters=(
+            writer_db.ParameterSpec("payload", writer_db.ParameterKind.JSON),
+        ),
+    )
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=policy,
+        statements=writer_db.StatementCatalog((statement,)),
+        _session_factory=session_factory,
+        _managed_hba_probe=probe,
+    )
+
+    database.startup_attest()
+    current_unix[0] += 300
+    database.query_fixed("append_event", {"payload": {"case": 1}})
+    current_unix[0] += 1
+    database.query_fixed("append_event", {"payload": {"case": 2}})
+
+    assert events == [
+        ("probe", 2_000_000_000, "db.internal"),
+        ("session", 2_000_000_000, "db.internal"),
+        ("session", 2_000_000_300, "db.internal"),
+        ("probe", 2_000_000_301, "db.internal"),
+        ("session", 2_000_000_301, "db.internal"),
+    ]
+    assert len(sessions) == 3
+    assert all(session.closed for session in sessions)
+
+
+@pytest.mark.parametrize("runtime_path", ["fixed", "projection"])
+def test_managed_hba_runtime_refresh_failure_prevents_any_database_session(
+    tmp_path,
+    monkeypatch,
+    runtime_path,
+):
+    current_unix = [2_000_000_000]
+    monkeypatch.setattr(time, "time", lambda: current_unix[0])
+    expected = _managed_hba_receipt(observed_at_unix=current_unix[0])
+    policy = replace(
+        _policy(),
+        managed_cloudsqladmin_hba_rejection_receipt=expected,
+        managed_cloudsqladmin_hba_rejection_sha256=expected.sha256,
+    )
+    probes = []
+    sessions = []
+
+    def probe(_config):
+        probes.append(current_unix[0])
+        return _managed_hba_receipt(
+            certificate_sha256=("d" if len(probes) == 1 else "e") * 64,
+            observed_at_unix=current_unix[0],
+        )
+
+    def session_factory(_config):
+        session = _ManagedHBAFakeSession()
+        sessions.append(session)
+        return session
+
+    if runtime_path == "fixed":
+        statement = writer_db.FixedStatement(
+            name="append_event",
+            sql_template="SELECT * FROM canonical_brain.append_event({{payload}})",
+            parameters=(
+                writer_db.ParameterSpec("payload", writer_db.ParameterKind.JSON),
+            ),
+        )
+    else:
+        statement = writer_db.FixedStatement(
+            name="op_projection_read_events",
+            sql_template=(
+                "SELECT * FROM canonical_brain.writer_projection_read_events"
+                "({{request}})"
+            ),
+            parameters=(
+                writer_db.ParameterSpec("request", writer_db.ParameterKind.JSON),
+            ),
+        )
+    database = writer_db.CanonicalWriterDB(
+        config=_config(tmp_path),
+        privilege_policy=policy,
+        statements=writer_db.StatementCatalog((statement,)),
+        _session_factory=session_factory,
+        _managed_hba_probe=probe,
+    )
+    database.startup_attest()
+    current_unix[0] += 301
+
+    with pytest.raises(writer_db.PrivilegeAttestationError, match="binding"):
+        if runtime_path == "fixed":
+            database.query_fixed("append_event", {"payload": {"case": 1}})
+        else:
+            with database.projection_read_transaction():
+                pass
+
+    assert probes == [2_000_000_000, 2_000_000_301]
+    assert len(sessions) == 1
+    assert sessions[0].closed is True
 
 
 def _retry_test_database(tmp_path, sessions):
@@ -1009,12 +1267,101 @@ class _MemorySocket:
     def settimeout(self, value):
         self.timeouts.append(value)
 
+    def getpeercert(self, *, binary_form=False):
+        return b"verified-peer-certificate" if binary_form else {}
+
     def close(self):
         self.closed = True
 
 
 def _message(kind: bytes, payload: bytes) -> bytes:
     return kind + struct.pack("!I", len(payload) + 4) + payload
+
+
+def _error_response(*, sqlstate="28000", message=None):
+    message = message or (
+        'no pg_hba.conf entry for host "10.0.0.8", user '
+        '"canonical_writer", database "cloudsqladmin", SSL encryption'
+    )
+    return _message(
+        b"E",
+        b"SFATAL\x00"
+        + b"C"
+        + sqlstate.encode("ascii")
+        + b"\x00M"
+        + message.encode("utf-8")
+        + b"\x00\x00",
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        None,
+        'pg_hba.conf rejects connection for host "10.0.0.8", user '
+        '"canonical_writer", database "cloudsqladmin", SSL encryption',
+    ],
+)
+def test_active_managed_hba_probe_parses_exact_wire_rejection_and_binds_peer(
+    tmp_path,
+    monkeypatch,
+    message,
+):
+    protected = _MemorySocket(_error_response(message=message))
+    monkeypatch.setattr(
+        writer_db,
+        "_open_verified_tls_connection",
+        lambda _config: (protected, "f" * 64),
+    )
+
+    receipt = writer_db.collect_managed_cloudsqladmin_hba_receipt(
+        _config(tmp_path),
+        now_unix=2_000_000_000,
+        ttl_seconds=60,
+    )
+
+    assert receipt.server_certificate_sha256 == "f" * 64
+    assert receipt.sqlstate == "28000"
+    assert receipt.result == "pg_hba_rejected"
+    assert receipt.tls_peer_verified is True
+    assert receipt.is_fresh(2_000_000_060)
+    assert b"cloudsqladmin" in protected.sent[0]
+    assert protected.closed is True
+
+
+@pytest.mark.parametrize(
+    "sqlstate,message",
+    [
+        ("28P01", None),
+        ("28000", "permission denied"),
+        (
+            "28000",
+            'no pg_hba.conf entry for host "10.0.0.8", user '
+            '"canonical_writer", database "cloudsqladmin", no encryption',
+        ),
+    ],
+)
+def test_active_managed_hba_probe_rejects_non_exact_server_errors(
+    tmp_path,
+    monkeypatch,
+    sqlstate,
+    message,
+):
+    protected = _MemorySocket(_error_response(sqlstate=sqlstate, message=message))
+    monkeypatch.setattr(
+        writer_db,
+        "_open_verified_tls_connection",
+        lambda _config: (protected, "f" * 64),
+    )
+
+    with pytest.raises(
+        writer_db.PrivilegeAttestationError,
+        match="rejection_not_exact",
+    ):
+        writer_db.collect_managed_cloudsqladmin_hba_receipt(
+            _config(tmp_path),
+            now_unix=2_000_000_000,
+        )
 
 
 @pytest.mark.parametrize("host", ["db.internal", "10.20.30.40", "2001:db8::10"])

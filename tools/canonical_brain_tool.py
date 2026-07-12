@@ -8,8 +8,6 @@ exists, then calls these tools to persist canonical events or route-back state.
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import datetime as dt
 import hashlib
 import json
@@ -27,6 +25,7 @@ from tools.registry import registry, tool_error
 
 from gateway.support_ops_team_registry import (
     SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    SKYVISION_GUILD_ID,
     TeamMember,
     resolve_team_member,
 )
@@ -1997,6 +1996,7 @@ def _record_route_back_execution_intent(
     source_refs: Dict[str, Any],
     idempotency_key: str,
     execution_binding: Dict[str, Any],
+    discord_edge_intent: Dict[str, Any],
 ) -> str:
     from gateway.canonical_writer_protocol import CanonicalWriterOperation
 
@@ -2009,6 +2009,7 @@ def _record_route_back_execution_intent(
             "source_refs": source_refs,
             "idempotency_key": idempotency_key,
             "execution_binding": execution_binding,
+            "discord_edge_intent": discord_edge_intent,
         },
         idempotency_key=idempotency_key,
     )
@@ -2025,44 +2026,100 @@ def _record_route_back_execution_intent(
     )
 
 
-def _record_route_back_sent_receipt(
+def _record_route_back_recovery(
     *,
     case_id: str,
     target_ref: Dict[str, Any],
     message_summary: str,
     source_refs: Dict[str, Any],
-    receipt: Dict[str, Any],
     idempotency_key: str,
     execution_binding: Dict[str, Any],
+    discord_edge_intent: Dict[str, Any],
+    recovery_kind: str,
+    discord_edge_request: Optional[Dict[str, Any]] = None,
+    discord_edge_receipt: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Invoke the exact same-session restart takeover operation."""
+
+    from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+    payload: Dict[str, Any] = {
+        "case_id": case_id,
+        "target_ref": target_ref,
+        "message_summary": message_summary,
+        "source_refs": source_refs,
+        "idempotency_key": idempotency_key,
+        "execution_binding": execution_binding,
+        "discord_edge_intent": discord_edge_intent,
+        "recovery_kind": recovery_kind,
+    }
+    if recovery_kind == "edge_evidence":
+        if not isinstance(discord_edge_request, dict) or not isinstance(
+            discord_edge_receipt,
+            dict,
+        ):
+            raise ValueError("route-back evidence recovery requires signed evidence")
+        payload["discord_edge_request"] = discord_edge_request
+        payload["discord_edge_receipt"] = discord_edge_receipt
+    elif recovery_kind != "edge_no_record":
+        raise ValueError("route-back recovery kind is invalid")
+    proxy = _writer_proxy_result(
+        CanonicalWriterOperation.ROUTEBACK_RECOVER.value,
+        payload,
+        idempotency_key=idempotency_key,
+    )
+    if proxy is None:
+        raise RuntimeError("route-back recovery requires the writer boundary")
+    return json.dumps(proxy, ensure_ascii=False, sort_keys=True)
+
+
+def _record_route_back_edge_terminal(
+    *,
+    outcome: str,
+    case_id: str,
+    target_ref: Dict[str, Any],
+    message_summary: str,
+    source_refs: Dict[str, Any],
+    idempotency_key: str,
+    execution_binding: Dict[str, Any],
+    discord_edge_request: Dict[str, Any],
+    discord_edge_receipt: Dict[str, Any],
 ) -> str:
     from gateway.canonical_writer_protocol import CanonicalWriterOperation
 
+    operation = {
+        "sent": CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
+        "blocked": CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED,
+    }.get(outcome)
+    if operation is None:
+        raise ValueError("route-back edge terminal outcome is invalid")
     proxy = _writer_proxy_result(
-        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value,
+        operation.value,
         {
             "case_id": case_id,
             "target_ref": target_ref,
             "message_summary": message_summary,
             "source_refs": source_refs,
-            "receipt": receipt,
             "idempotency_key": idempotency_key,
             "execution_binding": execution_binding,
+            "discord_edge_request": discord_edge_request,
+            "discord_edge_receipt": discord_edge_receipt,
         },
         idempotency_key=idempotency_key,
     )
     if proxy is not None:
         return json.dumps(proxy, ensure_ascii=False, sort_keys=True)
-    return _route_back_state_impl(
-        case_id=case_id,
-        target_ref=target_ref,
-        message_summary=message_summary,
-        source_refs=source_refs,
-        mode="record_sent_receipt",
-        receipt=receipt,
-        idempotency_key=idempotency_key,
-        _internal_sent=True,
-        _execution_binding=execution_binding,
+    raise RuntimeError(
+        "privileged Discord edge evidence requires the Canonical Writer boundary"
     )
+
+
+def _record_route_back_sent_receipt(
+    **kwargs: Any,
+) -> str:
+    """Compatibility-named wrapper for the writer-verified sent finalizer."""
+
+    return _record_route_back_edge_terminal(outcome="sent", **kwargs)
 
 
 def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, Any]:
@@ -2143,6 +2200,8 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
         return {
             "channel_id": resolved_member.default_channel_id,
             "channel_type": "public_channel",
+            "target_type": "public_guild_channel",
+            "guild_id": SKYVISION_GUILD_ID,
             "target_kind": "member_default_public_channel",
             "target_member_key": resolved_member.key,
             "target_member_id": resolved_member.discord_user_id,
@@ -2160,6 +2219,8 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
         return {
             "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
             "channel_type": "public_channel",
+            "target_type": "public_guild_channel",
+            "guild_id": SKYVISION_GUILD_ID,
             "target_kind": "owner_public_channel",
             "target_member_key": "emil_lomliev",
             "target_member_id": "1279454038731264061",
@@ -2171,13 +2232,24 @@ def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, A
             raise ValueError(
                 "route_back_execute target_ref contains unresolved identity fields; ask requester to clarify the public target"
             )
-        from gateway.channel_directory import is_discord_public_target
+        from gateway.channel_directory import lookup_discord_public_target
 
-        if not is_discord_public_target(channel_id):
-            raise ValueError("route_back_execute requires a directory-confirmed public Discord channel/thread")
+        exact_target = lookup_discord_public_target(channel_id)
+        if exact_target is None or exact_target.get("target_type") not in {
+            "public_guild_channel",
+            "public_guild_thread",
+        }:
+            raise ValueError(
+                "route_back_execute requires a directory-confirmed public Discord channel/thread"
+            )
+        channel_type = (
+            "public_thread"
+            if exact_target["target_type"] == "public_guild_thread"
+            else "public_channel"
+        )
         return {
-            "channel_id": channel_id,
-            "channel_type": "public_channel_or_thread",
+            **exact_target,
+            "channel_type": channel_type,
             "target_kind": "exact_public_directory_target",
             "target_member_key": None,
             "target_member_id": None,
@@ -2311,122 +2383,87 @@ LIMIT 1;
     return {"event_type": event_type, "payload": payload}
 
 
-def _discord_verify_message_receipt(
-    *,
-    channel_id: str,
-    message_id: str,
-    expected_content_sha256: str | None = None,
-    timeout: int = 15,
-) -> Dict[str, Any]:
-    from gateway.config import Platform
-    from gateway.run import _gateway_runner_ref
+def _discord_verify_message_receipt(**_kwargs: Any) -> Dict[str, Any]:
+    """Legacy gateway-token receipt verification is intentionally disabled."""
 
-    runner = _gateway_runner_ref()
-    adapter = runner.adapters.get(Platform.DISCORD) if runner is not None else None
-    verifier = getattr(adapter, "verify_public_message_receipt", None)
-    loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
-    if adapter is None or not callable(verifier) or loop is None or not loop.is_running():
-        raise RuntimeError("live_discord_receipt_verifier_unavailable")
-    future = asyncio.run_coroutine_threadsafe(
-        verifier(
-            channel_id=str(channel_id),
-            message_id=str(message_id),
-            expected_content_sha256=expected_content_sha256,
-        ),
-        loop,
-    )
-    try:
-        result = future.result(timeout=max(1, min(int(timeout), 60)))
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        raise RuntimeError("discord_receipt_verification_timeout") from None
-    if not isinstance(result, dict) or result.get("verified") is not True:
-        raise RuntimeError("discord_receipt_verification_failed")
-    expected_fields = {
-        "channel_id": str(channel_id),
-        "message_id": str(message_id),
-    }
-    if expected_content_sha256:
-        expected_fields["content_sha256"] = str(expected_content_sha256)
-    for key, expected in expected_fields.items():
-        if str(result.get(key) or "") != expected:
-            raise RuntimeError(f"discord_receipt_verification_{key}_mismatch")
-    return result
+    raise RuntimeError("discord_receipt_verification_requires_privileged_edge")
 
 
 def _discord_expected_content_sha256(content: str) -> str:
-    """Hash the one exact Discord-rendered message the adapter will send."""
-    from gateway.config import Platform
-    from gateway.run import _gateway_runner_ref
+    """Hash the exact UTF-8 content bound into the privileged REST request."""
 
-    runner = _gateway_runner_ref()
-    adapter = runner.adapters.get(Platform.DISCORD) if runner is not None else None
-    if adapter is None:
-        raise RuntimeError("live_discord_adapter_unavailable")
-    rendered = adapter.format_message(str(content))
-    chunks = adapter.truncate_message(rendered, adapter.MAX_MESSAGE_LENGTH)
-    if len(chunks) != 1:
-        raise RuntimeError("discord_route_back_requires_one_rendered_message")
-    return hashlib.sha256(chunks[0].encode("utf-8")).hexdigest()
+    rendered = str(content)
+    if not rendered or len(rendered) > MAX_ROUTE_BACK_MESSAGE_CHARS:
+        raise ValueError("discord_route_back_content_out_of_bounds")
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
-def _discord_post_message(channel_id: str, content: str, *, timeout: int = 15) -> Dict[str, Any]:
-    from gateway.config import Platform
-    from gateway.run import _gateway_runner_ref
+def _discord_edge_preconnect() -> Any:
+    """Authenticate the token-owning edge before a durable claim is minted."""
 
-    runner = _gateway_runner_ref()
-    adapter = runner.adapters.get(Platform.DISCORD) if runner is not None else None
-    if adapter is None:
-        raise RuntimeError("live_discord_adapter_unavailable")
-    loop = getattr(runner, "_gateway_loop", None)
-    if loop is None or not loop.is_running():
-        raise RuntimeError("live_discord_gateway_loop_unavailable")
-    expected_content_sha256 = _discord_expected_content_sha256(content)
-    future = asyncio.run_coroutine_threadsafe(
-        adapter.send(
-            str(channel_id),
-            content,
-            metadata={"require_single_public_receipt": True},
-        ),
-        loop,
-    )
-    try:
-        result = future.result(timeout=max(1, min(int(timeout), 60)))
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        raise RuntimeError("discord_adapter_send_timeout") from None
-    if not getattr(result, "success", False):
-        raise RuntimeError(str(getattr(result, "error", None) or "discord_adapter_send_failed"))
-    message_id = str(getattr(result, "message_id", None) or "")
-    delivery = {
-        "id": message_id,
-        "channel_id": str(channel_id),
-        "adapter_receipt": True,
-        # This is the digest of the exact single rendered chunk accepted by
-        # adapter.send.  It remains useful partial evidence if Discord accepts
-        # the send but the subsequent live readback cannot be established.
-        "content_sha256": expected_content_sha256,
-        "receipt_readback_verified": False,
+    from gateway.canonical_writer_boundary import privileged_discord_edge_client
+
+    client = privileged_discord_edge_client()
+    client.connect()
+    return client
+
+
+def _discord_edge_execute(
+    client: Any,
+    discord_edge_request: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Dispatch once; Canonical Writer later decides receipt authenticity."""
+
+    result = client.execute(discord_edge_request, require_preconnected=True)
+    return {
+        "state": result.state,
+        "blocker": result.blocker,
+        "replayed": result.replayed,
+        "receipt": result.receipt.to_message(),
     }
-    if not message_id:
-        delivery["receipt_verification_error"] = "missing_message_id"
-        return delivery
-    try:
-        verified = _discord_verify_message_receipt(
-            channel_id=str(channel_id),
-            message_id=message_id,
-            expected_content_sha256=expected_content_sha256,
-            timeout=timeout,
-        )
-    except Exception as exc:
-        # Do not collapse an adapter-accepted send into "send failed".  The
-        # caller durably finalizes this claim as blocked/accepted-unverified,
-        # preserves the partial receipt, and forbids an automatic resend.
-        delivery["receipt_verification_error"] = type(exc).__name__
-        return delivery
-    delivery["content_sha256"] = str(verified.get("content_sha256") or "")
-    delivery["receipt_readback_verified"] = True
-    return delivery
+
+
+def _discord_edge_reconcile(
+    client: Any,
+    discord_edge_intent: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Read one exact durable edge outcome without carrying send authority."""
+
+    from gateway.discord_edge_protocol import (
+        DiscordEdgeIntent,
+        DiscordEdgeReconciliationQuery,
+    )
+
+    if not isinstance(discord_edge_intent, dict) or set(discord_edge_intent) != {
+        "operation",
+        "target",
+        "payload",
+        "idempotency_key",
+    }:
+        raise ValueError("discord_edge_reconciliation_intent_invalid")
+    intent = DiscordEdgeIntent.from_parts(
+        operation=discord_edge_intent["operation"],
+        target=discord_edge_intent["target"],
+        payload=discord_edge_intent["payload"],
+        idempotency_key=discord_edge_intent["idempotency_key"],
+    )
+    query = DiscordEdgeReconciliationQuery(
+        idempotency_key=intent.idempotency_key,
+        operation=intent.operation,
+        target=intent.target,
+        request_sha256=intent.request_sha256,
+        content_sha256=intent.content_sha256,
+    )
+    result = client.reconcile(query, require_preconnected=False)
+    if result.replayed is not True:
+        raise ValueError("discord_edge_reconciliation_not_replayed")
+    return {
+        "request": result.request.to_message(),
+        "state": result.state,
+        "blocker": result.blocker,
+        "replayed": result.replayed,
+        "receipt": result.receipt.to_message(),
+    }
 
 
 def _route_back_record_blocked(
@@ -2437,8 +2474,6 @@ def _route_back_record_blocked(
     source_refs: Dict[str, Any],
     blocker_reason: str,
     idempotency_key: Optional[str],
-    execution_binding: Optional[Dict[str, Any]] = None,
-    partial_receipt: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from gateway.canonical_writer_protocol import CanonicalWriterOperation
 
@@ -2449,16 +2484,11 @@ def _route_back_record_blocked(
         "source_refs": source_refs,
         "blocker_reason": blocker_reason,
         "idempotency_key": idempotency_key,
+        "preclaim": True,
     }
-    if execution_binding is None:
-        # Target/render blockers happen before an execution claim can exist.
-        # They still cross the same typed, privileged terminal boundary rather
-        # than minting route_back.blocked through model event append.
-        writer_payload["preclaim"] = True
-    else:
-        writer_payload["execution_binding"] = execution_binding
-    if partial_receipt is not None:
-        writer_payload["partial_receipt"] = partial_receipt
+    # Claimed outcomes require writer/edge-signed evidence and go only through
+    # _record_route_back_edge_terminal.  This helper cannot downgrade an
+    # uncertain post-claim send using caller-authored blocker text.
     try:
         proxy = _writer_proxy_result(
             CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
@@ -2582,11 +2612,11 @@ def route_back_execute_tool(
 ) -> str:
     """Deliver an exact public route-back and record the terminal outcome.
 
-    This is the send+receipt executor counterpart to ``route_back_state``. It
-    never sends DMs. If it cannot send to an approved public target before or
-    during its own claimed attempt, it records ``route_back.blocked``. A retry
-    that observes another worker's unterminated claim remains pending exact
-    reconciliation and never infers failure or resends from claim age.
+    This is the send+receipt executor counterpart to ``route_back_state``. The
+    gateway owns no Discord credential: it preconnects to the privileged edge,
+    obtains one writer-signed request from the durable claim, dispatches that
+    request once, and returns the edge-signed receipt to the writer. A retry
+    never infers failure or resends from claim age.
     """
     try:
         target_ref = _normalize_dict(target_ref, "target_ref")
@@ -2600,6 +2630,17 @@ def route_back_execute_tool(
             )
         if not message:
             raise ValueError("message is required")
+        if _contains_forbidden_dm_route_ref(target_ref):
+            blocker_reason = "discord_dm_target_forbidden"
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=_sanitized_blocked_target_ref(target_ref),
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=blocker_reason,
+                idempotency_key=idempotency_key,
+            )
+            return _blocked_execution_result(blocker_reason, blocked)
         if len(message) > MAX_ROUTE_BACK_MESSAGE_CHARS:
             blocker_reason = f"message_too_long:{len(message)}>{MAX_ROUTE_BACK_MESSAGE_CHARS}"
             blocked = _route_back_record_blocked(
@@ -2669,18 +2710,38 @@ def route_back_execute_tool(
                 ),
             }, ensure_ascii=False, sort_keys=True)
 
-        resolved_target_ref = {
+        resolved_target_ref: Dict[str, Any] = {
             **{
                 key: value
                 for key, value in target_ref.items()
-                if key not in {"channel_id", "thread_id", "chat_id"}
+                if key
+                not in {
+                    "channel_id",
+                    "thread_id",
+                    "chat_id",
+                    "guild_id",
+                    "parent_channel_id",
+                    "target_type",
+                    "channel_type",
+                }
             },
-            "id": target_ref.get("id") or public_target.get("target_member_id") or public_target["channel_id"],
-            "mention": target_ref.get("mention") or public_target.get("target_mention"),
+            "id": (
+                target_ref.get("id")
+                or public_target.get("target_member_id")
+                or public_target["channel_id"]
+            ),
             "channel_id": public_target["channel_id"],
             "channel_type": public_target["channel_type"],
+            "target_type": public_target["target_type"],
+            "guild_id": public_target["guild_id"],
             "target_kind": public_target["target_kind"],
         }
+        mention = target_ref.get("mention") or public_target.get("target_mention")
+        if mention:
+            resolved_target_ref["mention"] = mention
+        parent_channel_id = public_target.get("parent_channel_id")
+        if parent_channel_id:
+            resolved_target_ref["parent_channel_id"] = parent_channel_id
 
         try:
             expected_content_sha256 = _discord_expected_content_sha256(message)
@@ -2699,6 +2760,27 @@ def route_back_execute_tool(
             "target_channel_id": str(public_target["channel_id"]),
             "content_sha256": expected_content_sha256,
         }
+        discord_target = {
+            "target_type": public_target["target_type"],
+            "guild_id": public_target["guild_id"],
+            "channel_id": public_target["channel_id"],
+        }
+        if parent_channel_id:
+            discord_target["parent_channel_id"] = parent_channel_id
+        from gateway.discord_edge_writer_authority import (
+            derive_routeback_edge_idempotency_key,
+        )
+
+        edge_idempotency_key = derive_routeback_edge_idempotency_key(
+            case_id=case_id,
+            canonical_idempotency_key=idempotency_key,
+        )
+        discord_edge_intent = {
+            "operation": "public.message.send",
+            "target": discord_target,
+            "payload": {"content": message},
+            "idempotency_key": edge_idempotency_key,
+        }
 
         _block_secret_like_fields(
             target_ref=resolved_target_ref,
@@ -2707,21 +2789,167 @@ def route_back_execute_tool(
             source_refs=source_refs,
         )
 
-        # Claim one durable execution intent before sending. Only the runtime
-        # that inserts the intent may perform the outbound mutation; retries or
-        # concurrent workers fail closed instead of duplicating a public post.
-        intent_raw = _record_route_back_execution_intent(
-            case_id=case_id,
-            target_ref=resolved_target_ref,
-            message_summary=message_summary,
-            source_refs=source_refs,
-            idempotency_key=idempotency_key,
-            execution_binding=execution_binding,
-        )
+        # Authenticate the exact token-owning process before the durable claim.
+        # If this fails, no dispatch authority exists and a preclaim blocker is
+        # safe to record.  After the claim, every outcome requires edge-signed
+        # evidence and the gateway never invents delivery truth.
+        try:
+            edge_client = _discord_edge_preconnect()
+        except Exception as exc:
+            blocker_reason = f"discord_edge_preconnect_failed:{type(exc).__name__}"
+            blocked = _route_back_record_blocked(
+                case_id=case_id,
+                target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
+                message_summary=message_summary,
+                source_refs=source_refs,
+                blocker_reason=blocker_reason,
+                idempotency_key=idempotency_key,
+            )
+            return _blocked_execution_result(blocker_reason, blocked)
+
+        def reconcile_edge_result() -> tuple[Dict[str, Any], Dict[str, Any]]:
+            reconciled = _discord_edge_reconcile(edge_client, discord_edge_intent)
+            if not isinstance(reconciled, dict) or set(reconciled) != {
+                "request",
+                "state",
+                "blocker",
+                "replayed",
+                "receipt",
+            }:
+                raise ValueError("discord_edge_reconciliation_response_invalid")
+            reconciled_request = reconciled.get("request")
+            if not isinstance(reconciled_request, dict):
+                raise ValueError("discord_edge_reconciliation_request_missing")
+            return reconciled_request, {
+                "state": reconciled.get("state"),
+                "blocker": reconciled.get("blocker"),
+                "replayed": reconciled.get("replayed"),
+                "receipt": reconciled.get("receipt"),
+            }
+
+        # Read the edge's immutable idempotency journal before touching the
+        # Canonical claim.  This ordering is load-bearing after a gateway
+        # restart: an old writer-signed request may already have a durable edge
+        # outcome while the new process has a different capability epoch.  A
+        # current signed outcome is recovered as truth; only an authenticated
+        # exact no-record result permits a fresh claim/takeover path.
+        preclaim_edge_request: Optional[Dict[str, Any]] = None
+        preclaim_edge_result: Optional[Dict[str, Any]] = None
+        edge_no_record_observed = False
+        try:
+            preclaim_edge_request, preclaim_edge_result = reconcile_edge_result()
+        except Exception as exc:
+            reconciliation_code = str(
+                getattr(exc, "code", type(exc).__name__)
+            )[:128]
+            if reconciliation_code == "discord_edge_reconciliation_not_available":
+                edge_no_record_observed = True
+            else:
+                return json.dumps({
+                    "success": False,
+                    "status": (
+                        "ROUTE_BACK_EXECUTE_PREFLIGHT_RECONCILIATION_PENDING"
+                    ),
+                    "delivery_outcome_uncertain": True,
+                    "resend_forbidden": True,
+                    "reconciliation_error": reconciliation_code,
+                    "final_answer_guard": (
+                        "The privileged edge could not prove either an exact durable "
+                        "outcome or an authenticated no-record result. No Canonical "
+                        "claim was changed and no public send was attempted."
+                    ),
+                }, ensure_ascii=False, sort_keys=True)
+
+        if preclaim_edge_result is not None:
+            preclaim_receipt = preclaim_edge_result.get("receipt")
+            if not isinstance(preclaim_receipt, dict):
+                return json.dumps({
+                    "success": False,
+                    "status": "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_INVALID",
+                    "resend_forbidden": True,
+                    "final_answer_guard": (
+                        "The edge reconciliation result lacked exact signed receipt "
+                        "evidence. No Canonical claim was changed and no send may start."
+                    ),
+                }, ensure_ascii=False, sort_keys=True)
+            intent_raw = _record_route_back_recovery(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+                discord_edge_intent=discord_edge_intent,
+                recovery_kind="edge_evidence",
+                discord_edge_request=preclaim_edge_request,
+                discord_edge_receipt=preclaim_receipt,
+            )
+        else:
+            try:
+                intent_raw = _record_route_back_execution_intent(
+                    case_id=case_id,
+                    target_ref=resolved_target_ref,
+                    message_summary=message_summary,
+                    source_refs=source_refs,
+                    idempotency_key=idempotency_key,
+                    execution_binding=execution_binding,
+                    discord_edge_intent=discord_edge_intent,
+                )
+            except Exception as exc:
+                # Transport wrappers and test doubles may surface a typed
+                # failure instead of the normal blocked result object.  Only
+                # exact epoch-scope mismatch, after authenticated edge
+                # no-record, is eligible for takeover; every other writer
+                # failure remains fail closed.
+                if (
+                    edge_no_record_observed
+                    and str(getattr(exc, "code", "")) == "scope_mismatch"
+                ):
+                    intent_raw = _record_route_back_recovery(
+                        case_id=case_id,
+                        target_ref=resolved_target_ref,
+                        message_summary=message_summary,
+                        source_refs=source_refs,
+                        idempotency_key=idempotency_key,
+                        execution_binding=execution_binding,
+                        discord_edge_intent=discord_edge_intent,
+                        recovery_kind="edge_no_record",
+                    )
+                else:
+                    raise
         try:
             intent = json.loads(intent_raw)
         except Exception:
             intent = {"success": False, "raw": intent_raw}
+
+        # A pending claim from the same canonical session but an older gateway
+        # epoch deliberately rejects an ordinary claim replay.  The edge has
+        # already authenticated exact no-record, so use the dedicated takeover
+        # operation.  It re-proves current case scope and the live public ACL,
+        # attests the active epoch without rewriting the original claim, and
+        # returns fresh short-lived edge authority without creating a second
+        # lifecycle.
+        if (
+            preclaim_edge_result is None
+            and edge_no_record_observed
+            and isinstance(intent, dict)
+            and intent.get("success") is not True
+            and intent.get("error_code") == "scope_mismatch"
+        ):
+            recovery_raw = _record_route_back_recovery(
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+                discord_edge_intent=discord_edge_intent,
+                recovery_kind="edge_no_record",
+            )
+            try:
+                intent = json.loads(recovery_raw)
+            except Exception:
+                intent = {"success": False, "raw": recovery_raw}
         terminal_type = (
             str(intent.get("terminal_event_type") or "")
             if isinstance(intent, dict)
@@ -2766,228 +2994,372 @@ def route_back_execute_tool(
                     "could not be verified. Report the blocker and do not claim delivery."
                 ),
             }, ensure_ascii=False, sort_keys=True)
-        if intent.get("inserted") is not True:
-            # An external Discord send cannot be fenced by a database lease.
-            # Age alone therefore never turns another claimant's nonterminal
-            # lifecycle into route_back.blocked: the original process may
-            # resume and complete a real send.  Reconciliation is the only
-            # safe next step, and every retry remains no-resend.
+        discord_edge_request = intent.get("discord_edge_request")
+        edge_reconciled = False
+        edge_result: Dict[str, Any]
+        if preclaim_edge_result is not None:
+            # Keep the original writer-signed request paired with the current
+            # edge-signed receipt.  Recovery never mints or executes a second
+            # request on this path.
+            discord_edge_request = preclaim_edge_request
+            edge_result = preclaim_edge_result
+            edge_reconciled = True
+        elif (
+            edge_no_record_observed
+            and isinstance(discord_edge_request, dict)
+        ):
+            # The mutation-free preflight already authenticated exact
+            # no-record.  The claim/recovery response therefore carries the
+            # only fresh request permitted to enter the edge fence; do not
+            # repeat the lookup before executing it.
+            try:
+                edge_result = _discord_edge_execute(
+                    edge_client,
+                    discord_edge_request,
+                )
+                edge_reconciled = intent.get("inserted") is not True
+            except Exception as execute_exc:
+                try:
+                    discord_edge_request, edge_result = reconcile_edge_result()
+                    edge_reconciled = True
+                except Exception as reconciliation_exc:
+                    return json.dumps({
+                        "success": False,
+                        "status": (
+                            "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_PENDING_RECONCILIATION"
+                        ),
+                        "delivery_outcome_uncertain": bool(
+                            getattr(execute_exc, "dispatch_uncertain", False)
+                        ),
+                        "resend_forbidden": True,
+                        "edge_error": str(
+                            getattr(
+                                execute_exc,
+                                "code",
+                                type(execute_exc).__name__,
+                            )
+                        )[:128],
+                        "reconciliation_error": str(
+                            getattr(
+                                reconciliation_exc,
+                                "code",
+                                type(reconciliation_exc).__name__,
+                            )
+                        )[:128],
+                        "route_back_record": intent,
+                        "final_answer_guard": (
+                            "The fresh recovery request entered the edge boundary, "
+                            "but no exact signed result is available. Never submit "
+                            "another request; retry only mutation-free reconciliation."
+                        ),
+                    }, ensure_ascii=False, sort_keys=True)
+        elif intent.get("inserted") is not True:
+            # First recover an existing edge outcome without dispatch.  If and
+            # only if the authenticated edge says no durable record exists, the
+            # fresh short-lived request returned by the writer may enter the
+            # edge's one-use idempotency fence.  Concurrent old/new requests are
+            # safe: only one PREPARED record can win and only that record claims
+            # DISPATCHING.
+            try:
+                discord_edge_request, edge_result = reconcile_edge_result()
+                edge_reconciled = True
+            except Exception as exc:
+                reconciliation_code = str(
+                    getattr(exc, "code", type(exc).__name__)
+                )[:128]
+                if (
+                    reconciliation_code
+                    != "discord_edge_reconciliation_not_available"
+                    or not isinstance(discord_edge_request, dict)
+                ):
+                    return json.dumps({
+                        "success": False,
+                        "status": (
+                            "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
+                        ),
+                        "delivery_outcome_uncertain": True,
+                        "resend_forbidden": True,
+                        "reconciliation_error": reconciliation_code,
+                        "route_back_record": intent,
+                        "final_answer_guard": (
+                            "The exact Canonical claim exists, but the privileged edge "
+                            "has not returned a matching durable signed outcome or an "
+                            "authenticated no-record result with fresh writer authority. "
+                            "Do not resend or infer blocked/sent; keep it pending."
+                        ),
+                    }, ensure_ascii=False, sort_keys=True)
+                try:
+                    edge_result = _discord_edge_execute(
+                        edge_client,
+                        discord_edge_request,
+                    )
+                    edge_reconciled = True
+                except Exception as execute_exc:
+                    try:
+                        discord_edge_request, edge_result = reconcile_edge_result()
+                        edge_reconciled = True
+                    except Exception as reconciliation_exc:
+                        return json.dumps({
+                            "success": False,
+                            "status": (
+                                "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_PENDING_RECONCILIATION"
+                            ),
+                            "delivery_outcome_uncertain": bool(
+                                getattr(execute_exc, "dispatch_uncertain", False)
+                            ),
+                            "resend_forbidden": True,
+                            "edge_error": str(
+                                getattr(
+                                    execute_exc,
+                                    "code",
+                                    type(execute_exc).__name__,
+                                )
+                            )[:128],
+                            "reconciliation_error": str(
+                                getattr(
+                                    reconciliation_exc,
+                                    "code",
+                                    type(reconciliation_exc).__name__,
+                                )
+                            )[:128],
+                            "route_back_record": intent,
+                            "final_answer_guard": (
+                                "The recovery request entered the edge boundary, but no "
+                                "exact signed result is available. Never submit another "
+                                "request; retry only mutation-free reconciliation."
+                            ),
+                        }, ensure_ascii=False, sort_keys=True)
+        elif not isinstance(discord_edge_request, dict):
+            # This is a writer-boundary fault, but a durable edge result may still
+            # exist if the response was truncated after the edge request escaped.
+            try:
+                discord_edge_request, edge_result = reconcile_edge_result()
+                edge_reconciled = True
+            except Exception as exc:
+                return json.dumps({
+                    "success": False,
+                    "status": "ROUTE_BACK_EXECUTE_AUTHORITY_EVIDENCE_MISSING",
+                    "delivery_outcome_uncertain": False,
+                    "resend_forbidden": True,
+                    "reconciliation_error": str(
+                        getattr(exc, "code", type(exc).__name__)
+                    )[:128],
+                    "route_back_record": intent,
+                    "final_answer_guard": (
+                        "The durable claim was inserted but no exact writer request or "
+                        "matching edge journal record is available. No send may be "
+                        "started from this retry; repair the writer boundary and keep "
+                        "the claim pending."
+                    ),
+                }, ensure_ascii=False, sort_keys=True)
+        else:
+            try:
+                edge_result = _discord_edge_execute(
+                    edge_client,
+                    discord_edge_request,
+                )
+            except Exception as exc:
+                dispatch_uncertain = bool(
+                    getattr(exc, "dispatch_uncertain", False)
+                )
+                try:
+                    discord_edge_request, edge_result = reconcile_edge_result()
+                    edge_reconciled = True
+                except Exception as reconciliation_exc:
+                    return json.dumps({
+                        "success": False,
+                        "status": (
+                            "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_PENDING_RECONCILIATION"
+                        ),
+                        "delivery_outcome_uncertain": dispatch_uncertain,
+                        "resend_forbidden": True,
+                        "edge_error": str(
+                            getattr(exc, "code", type(exc).__name__)
+                        )[:128],
+                        "reconciliation_error": str(
+                            getattr(
+                                reconciliation_exc,
+                                "code",
+                                type(reconciliation_exc).__name__,
+                            )
+                        )[:128],
+                        "route_back_record": intent,
+                        "final_answer_guard": (
+                            "The durable claim exists but no exact edge-signed outcome "
+                            "is currently available. Do not resend and do not fabricate "
+                            "route_back.sent or route_back.blocked; retry only the "
+                            "mutation-free edge reconciliation path."
+                        ),
+                    }, ensure_ascii=False, sort_keys=True)
+
+        if not isinstance(edge_result, dict) or set(edge_result) != {
+            "state",
+            "blocker",
+            "replayed",
+            "receipt",
+        }:
             return json.dumps({
                 "success": False,
-                "status": (
-                    "ROUTE_BACK_EXECUTE_OUTCOME_UNCERTAIN_PENDING_RECONCILIATION"
-                ),
-                "delivery_outcome_uncertain": True,
+                "status": "ROUTE_BACK_EXECUTE_EDGE_RESPONSE_INVALID",
                 "resend_forbidden": True,
                 "route_back_record": intent,
                 "final_answer_guard": (
-                    "Another worker owns this exact durable route-back claim and "
-                    "may still complete the Discord send. Do not send or write a "
-                    "blocked terminal based on claim age. Reconcile the exact "
-                    "Canonical lifecycle and Discord receipt before any next action."
+                    "The edge response shape was invalid after a durable claim. Do not "
+                    "resend; reconcile the exact signed request and edge journal."
                 ),
             }, ensure_ascii=False, sort_keys=True)
+        discord_edge_receipt = edge_result.get("receipt")
+        edge_state = edge_result.get("state")
+        if not isinstance(discord_edge_receipt, dict) or edge_state not in {
+            "verified",
+            "blocked",
+            "dispatching",
+        }:
+            return json.dumps({
+                "success": False,
+                "status": "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_INVALID",
+                "resend_forbidden": True,
+                "route_back_record": intent,
+            }, ensure_ascii=False, sort_keys=True)
 
-        try:
-            delivery = _discord_post_message(public_target["channel_id"], message)
-        except Exception as exc:
-            failure_kind = (
-                "timeout"
-                if isinstance(exc, TimeoutError)
-                or str(exc).strip() == "discord_adapter_send_timeout"
-                else type(exc).__name__
-            )
-            blocker_reason = (
-                "discord_post_claim_delivery_outcome_uncertain:" + failure_kind
-            )
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason=blocker_reason,
-                idempotency_key=idempotency_key,
-                execution_binding=execution_binding,
-            )
-            return _blocked_execution_result(
-                blocker_reason,
-                blocked,
-                delivery_outcome_uncertain=True,
-            )
-
-        message_id = str(delivery.get("id") or "").strip() if isinstance(delivery, dict) else ""
-        receipt = {
-            "platform": "discord",
-            "message_id": message_id,
-            "channel_id": public_target["channel_id"],
-            "chat_id": public_target["channel_id"],
-            "channel_type": public_target["channel_type"],
-            "target_kind": public_target["target_kind"],
-            "content_sha256": str(
-                delivery.get("content_sha256")
-                or hashlib.sha256(message.encode("utf-8")).hexdigest()
-            ),
-            "adapter_receipt": delivery.get("adapter_receipt") is True,
-            "receipt_readback_verified": (
-                delivery.get("receipt_readback_verified") is True
-            ),
-        }
-        adapter_accepted = receipt["adapter_receipt"] is True
-        if not message_id:
-            blocker_reason = (
-                "discord_send_accepted_missing_message_id_receipt"
-                if adapter_accepted
-                else "discord_send_missing_message_id_receipt"
-            )
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=resolved_target_ref,
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason=blocker_reason,
-                idempotency_key=idempotency_key,
-                execution_binding=execution_binding,
-            )
-            return _blocked_execution_result(
-                blocker_reason,
-                blocked,
-                observed_receipt=receipt,
-                delivery_outcome_uncertain=adapter_accepted,
-            )
-
-        if adapter_accepted and receipt["receipt_readback_verified"] is not True:
-            verification_error = str(
-                delivery.get("receipt_verification_error") or "unverified"
-            )
-            verification_error = re.sub(
-                r"[^A-Za-z0-9_.:-]+",
-                "_",
-                verification_error,
-            )[:120]
-            blocker_reason = (
-                "discord_send_accepted_receipt_readback_unverified:"
-                + verification_error
-            )
-            partial_receipt = {
-                "platform": "discord",
-                "adapter_receipt": True,
-                "receipt_readback_verified": False,
-                "message_id": message_id,
-                "channel_id": str(public_target["channel_id"]),
-                "content_sha256": receipt["content_sha256"],
-            }
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=resolved_target_ref,
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason=blocker_reason,
-                idempotency_key=idempotency_key,
-                execution_binding=execution_binding,
-                partial_receipt=partial_receipt,
-            )
-            return _blocked_execution_result(
-                blocker_reason,
-                blocked,
-                observed_receipt=partial_receipt,
-                delivery_outcome_uncertain=True,
-            )
-
-        if receipt["content_sha256"] != expected_content_sha256:
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason="discord_send_content_hash_mismatch",
-                idempotency_key=idempotency_key,
-                execution_binding=execution_binding,
-            )
-            return _blocked_execution_result(
-                "discord_send_content_hash_mismatch",
-                blocked,
-                observed_receipt=receipt,
-                delivery_outcome_uncertain=adapter_accepted,
-            )
-        try:
-            result = _record_route_back_sent_receipt(
-                case_id=case_id,
-                target_ref=resolved_target_ref,
-                message_summary=message_summary,
-                source_refs=source_refs,
-                receipt=receipt,
-                idempotency_key=idempotency_key,
-                execution_binding=execution_binding,
-            )
+        # ``dispatching`` is not a terminal edge state.  In particular, an
+        # accepted_unverified receipt may be an older journal observation that
+        # has already been atomically upgraded to VERIFIED.  Always ask the
+        # exact read-only reconciliation endpoint for current durable evidence
+        # before considering Canonical finalization.  This call cannot carry
+        # send authority and is deliberately bounded to one attempt.
+        if edge_state == "dispatching":
+            prior_dispatching_receipt = discord_edge_receipt
             try:
-                record_data = json.loads(result)
-            except Exception:
-                record_data = {"success": False, "raw": result}
+                discord_edge_request, edge_result = reconcile_edge_result()
+                edge_reconciled = True
+            except Exception as exc:
+                return json.dumps({
+                    "success": False,
+                    "status": (
+                        "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_PENDING_RECONCILIATION"
+                    ),
+                    "delivery_outcome_uncertain": True,
+                    "resend_forbidden": True,
+                    "edge_receipt": prior_dispatching_receipt,
+                    "reconciliation_error": str(
+                        getattr(exc, "code", type(exc).__name__)
+                    )[:128],
+                    "route_back_record": intent,
+                    "final_answer_guard": (
+                        "The edge returned signed nonterminal dispatch evidence, "
+                        "but its exact current journal outcome could not be read. "
+                        "Keep the Canonical claim pending; never resend and do not "
+                        "claim route_back.sent or route_back.blocked."
+                    ),
+                }, ensure_ascii=False, sort_keys=True)
+            if not isinstance(edge_result, dict) or set(edge_result) != {
+                "state",
+                "blocker",
+                "replayed",
+                "receipt",
+            }:
+                return json.dumps({
+                    "success": False,
+                    "status": "ROUTE_BACK_EXECUTE_EDGE_RESPONSE_INVALID",
+                    "resend_forbidden": True,
+                    "route_back_record": intent,
+                }, ensure_ascii=False, sort_keys=True)
+            discord_edge_receipt = edge_result.get("receipt")
+            edge_state = edge_result.get("state")
+            if not isinstance(discord_edge_receipt, dict) or edge_state not in {
+                "verified",
+                "blocked",
+                "dispatching",
+            }:
+                return json.dumps({
+                    "success": False,
+                    "status": "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_INVALID",
+                    "resend_forbidden": True,
+                    "route_back_record": intent,
+                }, ensure_ascii=False, sort_keys=True)
+
+        receipt_payload = discord_edge_receipt.get("payload")
+        receipt_outcome = (
+            receipt_payload.get("outcome")
+            if isinstance(receipt_payload, dict)
+            else None
+        )
+        if edge_state == "dispatching" and receipt_outcome == "accepted_unverified":
+            # Acceptance evidence is useful partial truth, but readback can
+            # still upgrade it to VERIFIED.  A terminal blocked event here
+            # would make the older receipt win permanently over newer truth.
+            return json.dumps({
+                "success": False,
+                "status": "ROUTE_BACK_EXECUTE_EDGE_ACCEPTED_PENDING_VERIFICATION",
+                "delivery_outcome_uncertain": True,
+                "resend_forbidden": True,
+                "edge_receipt": discord_edge_receipt,
+                "edge_replayed": edge_result.get("replayed") is True,
+                "edge_reconciled": edge_reconciled,
+                "route_back_record": intent,
+                "final_answer_guard": (
+                    "Discord accepted the exact signed mutation, but current "
+                    "readback is still unverified. Keep the Canonical claim "
+                    "pending and retry only mutation-free reconciliation; never "
+                    "resend or claim route_back.sent/blocked."
+                ),
+            }, ensure_ascii=False, sort_keys=True)
+        if edge_state == "dispatching" and receipt_outcome != "dispatch_uncertain":
+            return json.dumps({
+                "success": False,
+                "status": "ROUTE_BACK_EXECUTE_EDGE_RECEIPT_INVALID",
+                "resend_forbidden": True,
+                "route_back_record": intent,
+            }, ensure_ascii=False, sort_keys=True)
+
+        terminal_outcome = "sent" if edge_state == "verified" else "blocked"
+
+        def finalize() -> Dict[str, Any]:
+            result = _record_route_back_edge_terminal(
+                outcome=terminal_outcome,
+                case_id=case_id,
+                target_ref=resolved_target_ref,
+                message_summary=message_summary,
+                source_refs=source_refs,
+                idempotency_key=idempotency_key,
+                execution_binding=execution_binding,
+                discord_edge_request=discord_edge_request,
+                discord_edge_receipt=discord_edge_receipt,
+            )
+            parsed = json.loads(result)
+            return parsed if isinstance(parsed, dict) else {"success": False}
+
+        try:
+            record_data = finalize()
         except Exception as exc:
             record_data = {
                 "success": False,
-                "error": f"route_back_sent_finalize_failed:{type(exc).__name__}",
+                "error": f"route_back_terminal_finalize_failed:{type(exc).__name__}",
             }
         if not isinstance(record_data, dict) or not record_data.get("success"):
-            # Reconcile before downgrading a proven external delivery. The
-            # exact claim and sent finalizer are both idempotent: a lost
-            # success response is recovered as an existing sent terminal, and
-            # a transient writer failure gets one bounded retry without any
-            # second Discord send.
             try:
-                reconcile_claim = json.loads(
-                    _record_route_back_execution_intent(
-                        case_id=case_id,
-                        target_ref=resolved_target_ref,
-                        message_summary=message_summary,
-                        source_refs=source_refs,
-                        idempotency_key=idempotency_key,
-                        execution_binding=execution_binding,
-                    )
-                )
-            except Exception:
-                reconcile_claim = {}
-            if (
-                isinstance(reconcile_claim, dict)
-                and reconcile_claim.get("terminal_event_type")
-                == "route_back.sent"
-            ):
-                return json.dumps({
-                    "success": True,
-                    "status": "ROUTE_BACK_EXECUTE_SENT_RECONCILED",
-                    "receipt": receipt,
-                    "route_back_record": reconcile_claim,
-                }, ensure_ascii=False, sort_keys=True)
-
-            try:
-                retry_result = _record_route_back_sent_receipt(
-                    case_id=case_id,
-                    target_ref=resolved_target_ref,
-                    message_summary=message_summary,
-                    source_refs=source_refs,
-                    receipt=receipt,
-                    idempotency_key=idempotency_key,
-                    execution_binding=execution_binding,
-                )
-                try:
-                    retry_record = json.loads(retry_result)
-                except Exception:
-                    retry_record = {"success": False, "raw": retry_result}
+                retry_record = finalize()
             except Exception as exc:
                 retry_record = {
                     "success": False,
-                    "error": f"route_back_sent_finalize_retry_failed:{type(exc).__name__}",
+                    "error": (
+                        "route_back_terminal_finalize_retry_failed:"
+                        + type(exc).__name__
+                    ),
                 }
             if isinstance(retry_record, dict) and retry_record.get("success"):
                 return json.dumps({
-                    "success": True,
-                    "status": "ROUTE_BACK_EXECUTE_SENT_RECONCILED",
-                    "receipt": receipt,
+                    "success": terminal_outcome == "sent",
+                    "status": (
+                        "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+                        if terminal_outcome == "sent"
+                        else "ROUTE_BACK_EXECUTE_BLOCKED_RECONCILED"
+                    ),
+                    "edge_receipt": discord_edge_receipt,
                     "route_back_record": retry_record,
                 }, ensure_ascii=False, sort_keys=True)
 
-            # The retry can commit successfully and still lose its response.
-            # Perform one final exact claim readback before writing a blocker.
             try:
                 final_reconcile_claim = json.loads(
                     _record_route_back_execution_intent(
@@ -2997,67 +3369,62 @@ def route_back_execute_tool(
                         source_refs=source_refs,
                         idempotency_key=idempotency_key,
                         execution_binding=execution_binding,
+                        discord_edge_intent=discord_edge_intent,
                     )
                 )
             except Exception:
                 final_reconcile_claim = {}
+            expected_terminal = "route_back." + terminal_outcome
             if (
                 isinstance(final_reconcile_claim, dict)
                 and final_reconcile_claim.get("terminal_event_type")
-                == "route_back.sent"
+                == expected_terminal
             ):
                 return json.dumps({
-                    "success": True,
-                    "status": "ROUTE_BACK_EXECUTE_SENT_RECONCILED",
-                    "receipt": receipt,
+                    "success": terminal_outcome == "sent",
+                    "status": (
+                        "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+                        if terminal_outcome == "sent"
+                        else "ROUTE_BACK_EXECUTE_BLOCKED_RECONCILED"
+                    ),
+                    "edge_receipt": discord_edge_receipt,
                     "route_back_record": final_reconcile_claim,
                 }, ensure_ascii=False, sort_keys=True)
 
-            verified_receipt = {
-                "platform": "discord",
-                "adapter_receipt": True,
-                "receipt_readback_verified": True,
-                "message_id": message_id,
-                "channel_id": str(public_target["channel_id"]),
-                "content_sha256": receipt["content_sha256"],
-            }
-            blocked = _route_back_record_blocked(
-                case_id=case_id,
-                target_ref=_sanitized_blocked_target_ref(resolved_target_ref),
-                message_summary=message_summary,
-                source_refs=source_refs,
-                blocker_reason="route_back_sent_receipt_persistence_failed",
-                idempotency_key=idempotency_key,
-                execution_binding=execution_binding,
-                partial_receipt=verified_receipt,
-            )
             return json.dumps({
                 "success": False,
-                "status": (
-                    "ROUTE_BACK_EXECUTE_SENT_RECEIPT_RECORD_BLOCKED"
-                    if isinstance(blocked, dict) and blocked.get("success")
-                    else "ROUTE_BACK_EXECUTE_SENT_RECEIPT_AND_BLOCK_RECORD_FAILED"
-                ),
-                "receipt": receipt,
+                "status": "ROUTE_BACK_EXECUTE_CANONICAL_TERMINAL_PENDING",
+                "edge_receipt": discord_edge_receipt,
                 "route_back_record": record_data,
                 "route_back_retry_record": retry_record,
                 "route_back_final_reconcile_record": final_reconcile_claim,
-                "blocked_record": blocked,
-                "delivery_outcome_verified": True,
+                "delivery_outcome_verified": terminal_outcome == "sent",
                 "resend_forbidden": True,
                 "final_answer_guard": (
-                    "The public Discord delivery was verified by exact live readback, but "
-                    "durable route_back.sent recording failed after one bounded retry and "
-                    "reconciliation. Never resend this delivery. Report the verified receipt, "
-                    "the Canonical recording blocker, and whether route_back.blocked was "
-                    "durably recorded for that blocker."
+                    "The edge returned signed evidence, but the Canonical terminal did "
+                    "not reconcile after one bounded retry. Never resend. Report the "
+                    "signed edge evidence and the Canonical recording blocker."
                 ),
             }, ensure_ascii=False, sort_keys=True)
 
         return json.dumps({
-            "success": True,
-            "status": "ROUTE_BACK_EXECUTE_SENT",
-            "receipt": receipt,
+            "success": terminal_outcome == "sent",
+            "status": (
+                (
+                    "ROUTE_BACK_EXECUTE_SENT_RECONCILED"
+                    if edge_reconciled
+                    else "ROUTE_BACK_EXECUTE_SENT"
+                )
+                if terminal_outcome == "sent"
+                else (
+                    "ROUTE_BACK_EXECUTE_BLOCKED_RECONCILED"
+                    if edge_reconciled
+                    else "ROUTE_BACK_EXECUTE_BLOCKED"
+                )
+            ),
+            "edge_receipt": discord_edge_receipt,
+            "edge_replayed": edge_result.get("replayed") is True,
+            "edge_reconciled": edge_reconciled,
             "route_back_record": record_data,
         }, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
@@ -3869,11 +4236,12 @@ ROUTE_BACK_EXECUTE_SCHEMA = {
         "Execute an exact approved public route-back for private/runtime Canonical Brain cases. "
         "Use this when the route-back target is already known and is a directory-confirmed public "
         "Discord channel/thread or an exact registered teammate public lane. The tool first creates "
-        "an atomic durable execution claim, sends through the live adapter, verifies live readback, "
-        "then finalizes route_back.sent with the real Discord receipt/message_id. If it cannot send "
-        "safely in its own claimed attempt, it finalizes route_back.blocked. If another worker "
-        "already owns an unterminated claim, it returns pending reconciliation and forbids resend "
-        "instead of inferring a terminal outcome from claim age."
+        "an atomic durable execution claim, reconciles the privileged Discord edge before any "
+        "retry, verifies live readback, then finalizes route_back.sent with the real Discord "
+        "receipt/message_id. Signed pre-dispatch failure or dispatch-uncertain evidence may "
+        "finalize route_back.blocked; accepted-but-unverified delivery remains pending until "
+        "readback resolves it. Unterminated claims never infer a terminal outcome from age, and "
+        "the edge journal fences retries to at most one Discord mutation."
     ),
     "parameters": {
         "type": "object",

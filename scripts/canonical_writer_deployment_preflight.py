@@ -21,12 +21,14 @@ from gateway.canonical_writer_db import (
     CanonicalEventLogIdentity,
     CanonicalPrivateRelationIdentity,
     CanonicalPrivateSchemaIdentity,
+    ManagedCloudSQLAdminHBAReceipt,
     PrivilegeAttestation,
     PrivilegeAttestationError,
     RoutineIdentity,
     SequencePrivilegeGrant,
     TablePrivilegeGrant,
     WriterPrivilegePolicy,
+    managed_cloudsqladmin_hba_receipt_from_mapping,
     validate_privilege_attestation,
 )
 from gateway.canonical_writer_postgres_backend import (
@@ -455,12 +457,8 @@ def _writer_deployment_checks(
         module = str(policy.get("module") or "")
         module_origin = _absolute_normalized_path(policy.get("module_origin"))
         config_path = _absolute_normalized_path(policy.get("config_path"))
-        working_directory = _absolute_normalized_path(
-            policy.get("working_directory")
-        )
-        runtime_directory = _absolute_normalized_path(
-            policy.get("runtime_directory")
-        )
+        working_directory = _absolute_normalized_path(policy.get("working_directory"))
+        runtime_directory = _absolute_normalized_path(policy.get("runtime_directory"))
         export_directory = _absolute_normalized_path(
             policy.get("projection_export_directory")
         )
@@ -506,16 +504,14 @@ def _writer_deployment_checks(
         )
         required_kinds = {item[0] for item in import_policy.values()}
         protected_paths_inside_artifact = bool(artifact_root) and all(
-            _path_is_within(path, artifact_root or "")
-            for path in import_policy
+            _path_is_within(path, artifact_root or "") for path in import_policy
         )
         artifact_policy = import_policy.get(artifact_root or "")
         interpreter_policy = import_policy.get(interpreter or "")
         site_package_roots = tuple(
             path
             for path, expected in import_policy.items()
-            if expected[0] == "site_packages"
-            and expected[2] == "directory"
+            if expected[0] == "site_packages" and expected[2] == "directory"
         )
         expected_module_relative = Path(*_WRITER_BOOTSTRAP_MODULE.split("."))
         expected_module_relative = expected_module_relative.with_suffix(".py")
@@ -564,8 +560,7 @@ def _writer_deployment_checks(
             and import_policy_shape_ok
             and required_kinds >= _REQUIRED_IMPORT_KINDS
             and protected_paths_inside_artifact
-            and artifact_policy
-            == ("application", artifact_digest, "directory")
+            and artifact_policy == ("application", artifact_digest, "directory")
             and interpreter_policy is not None
             and interpreter_policy[0] == "interpreter"
             and interpreter_policy[2] == "regular_file"
@@ -589,9 +584,7 @@ def _writer_deployment_checks(
             and unit.get("artifact_digest_sha256") == artifact_digest
             and _empty_sequence(unit.get("alternate_exec_commands"))
             and _empty_sequence(unit.get("environment_files"))
-            and _empty_sequence(
-                unit.get("code_injection_environment_variable_names")
-            )
+            and _empty_sequence(unit.get("code_injection_environment_variable_names"))
             and _empty_sequence(unit.get("environment_pythonpath"))
             and _disabled_or_empty(unit.get("environment_pythonhome"))
             and type(unit.get("user_uid")) is int
@@ -607,10 +600,7 @@ def _writer_deployment_checks(
             and artifact.get("digest_sha256") == artifact_digest
         )
         artifact_immutable = _protected_path_is_immutable(
-            {
-                key: artifact.get(key)
-                for key in _PROTECTED_PATH_EVIDENCE_KEYS
-            },
+            {key: artifact.get(key) for key in _PROTECTED_PATH_EVIDENCE_KEYS},
             expected_path=artifact_root or "",
             expected_kind="application",
             expected_digest=artifact_digest or "",
@@ -636,9 +626,7 @@ def _writer_deployment_checks(
                 )
                 if isinstance(path, str):
                     observed_paths[path] = item
-        closure_exact = (
-            observed_shape_ok and set(observed_paths) == set(import_policy)
-        )
+        closure_exact = observed_shape_ok and set(observed_paths) == set(import_policy)
         closure_immutable = closure_exact and all(
             _protected_path_is_immutable(
                 observed_paths[path],
@@ -659,9 +647,7 @@ def _writer_deployment_checks(
         process_pid = _integer(process.get("pid"))
         process_main_pid = _integer(process.get("systemd_main_pid"))
         process_start = _integer(process.get("process_start_time_ticks"))
-        process_main_start = _integer(
-            process.get("systemd_main_pid_start_time_ticks")
-        )
+        process_main_start = _integer(process.get("systemd_main_pid_start_time_ticks"))
         process_fresh = (
             process_shape_ok
             and collected_at_unix >= 0
@@ -685,15 +671,9 @@ def _writer_deployment_checks(
             and process.get("artifact_digest_sha256") == artifact_digest
             and process.get("bootstrap_module_origin") == module_origin
         )
-        effective_import_paths = _strings(
-            process.get("effective_import_paths")
-        )
-        loaded_module_origins = _strings(
-            process.get("loaded_module_origins")
-        )
-        mapped_executable_paths = _strings(
-            process.get("mapped_executable_paths")
-        )
+        effective_import_paths = _strings(process.get("effective_import_paths"))
+        loaded_module_origins = _strings(process.get("loaded_module_origins"))
+        mapped_executable_paths = _strings(process.get("mapped_executable_paths"))
         expected_import_paths = tuple(
             sorted(
                 path
@@ -720,13 +700,14 @@ def _writer_deployment_checks(
             and bool(loaded_module_origins)
             and module_origin in loaded_module_origins
             and len(set(loaded_module_origins)) == len(loaded_module_origins)
-            and all(covered_by_immutable_closure(path) for path in loaded_module_origins)
+            and all(
+                covered_by_immutable_closure(path) for path in loaded_module_origins
+            )
             and process.get("mapped_executable_paths_complete") is True
             and interpreter in mapped_executable_paths
             and len(set(mapped_executable_paths)) == len(mapped_executable_paths)
             and all(
-                covered_by_immutable_closure(path)
-                for path in mapped_executable_paths
+                covered_by_immutable_closure(path) for path in mapped_executable_paths
             )
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
@@ -740,9 +721,7 @@ def _writer_deployment_checks(
         )
         observed_read_write = _strings(mounts.get("read_write_paths"))
         observed_bind = _strings(mounts.get("bind_paths"))
-        observed_bind_read_only = _strings(
-            mounts.get("bind_read_only_paths")
-        )
+        observed_bind_read_only = _strings(mounts.get("bind_read_only_paths"))
         mounts_exact = (
             mounts_shape_ok
             and observed_read_write == read_write_paths
@@ -752,7 +731,9 @@ def _writer_deployment_checks(
         mounts_minimal = (
             mounts_exact
             and read_write_paths == expected_write_paths
-            and all(_absolute_normalized_path(path) == path for path in read_write_paths)
+            and all(
+                _absolute_normalized_path(path) == path for path in read_write_paths
+            )
             and not bind_paths
             and bind_read_only_paths == (artifact_root,)
             and paths_do_not_overlap_writes
@@ -2173,6 +2154,8 @@ def _canonical_private_schema_identity(
 
 def _parse_database_attestation(
     value: Any,
+    *,
+    collected_at_unix: int,
 ) -> tuple[str, WriterPrivilegePolicy, PrivilegeAttestation]:
     database = _mapping(value)
     expected_user = str(database.get("expected_user") or "")
@@ -2183,19 +2166,29 @@ def _parse_database_attestation(
     )
     raw_database_privileges = tuple(
         sorted(
-            value.upper()
-            for value in _strings(policy_raw.get("database_privileges"))
+            value.upper() for value in _strings(policy_raw.get("database_privileges"))
         )
     )
-    raw_role_memberships = tuple(
-        sorted(_strings(policy_raw.get("role_memberships")))
-    )
+    raw_role_memberships = tuple(sorted(_strings(policy_raw.get("role_memberships"))))
     if raw_schema_privileges != ("USAGE",):
         raise ValueError("writer schema privileges must be exactly USAGE")
     if raw_database_privileges != ("CONNECT",):
         raise ValueError("writer database privileges must be exactly CONNECT")
     if raw_role_memberships != (CANONICAL_WRITER_ROLE,):
         raise ValueError("writer role membership does not match production")
+    managed_hba_receipt_raw = policy_raw.get(
+        "managed_cloudsqladmin_hba_rejection_receipt"
+    )
+    managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None = None
+    if managed_hba_receipt_raw is not None:
+        if not isinstance(managed_hba_receipt_raw, Mapping):
+            raise ValueError("managed HBA policy receipt must be an object")
+        managed_hba_receipt = managed_cloudsqladmin_hba_receipt_from_mapping(
+            managed_hba_receipt_raw
+        )
+    managed_hba_digest = str(
+        policy_raw.get("managed_cloudsqladmin_hba_rejection_sha256") or ""
+    )
     policy = WriterPrivilegePolicy(
         schema=str(policy_raw.get("schema") or ""),
         table_grants=_table_grants(policy_raw.get("table_grants", ())),
@@ -2213,7 +2206,76 @@ def _parse_database_attestation(
         private_schema_identity_sha256=str(
             policy_raw.get("private_schema_identity_sha256") or ""
         ),
+        managed_cloudsqladmin_hba_rejection_receipt=managed_hba_receipt,
+        managed_cloudsqladmin_hba_rejection_sha256=managed_hba_digest,
     )
+    if (
+        str(attestation_raw.get("managed_cloudsqladmin_hba_rejection_sha256") or "")
+        != managed_hba_digest
+    ):
+        raise ValueError(
+            "managed cloudsqladmin HBA rejection receipt does not match production"
+        )
+    if managed_hba_receipt is not None:
+        connection = _mapping(database.get("connection"))
+        evidence = _mapping(
+            database.get("managed_cloudsqladmin_hba_rejection_evidence")
+        )
+        evidence_receipt_raw = evidence.get("receipt")
+        if not isinstance(evidence_receipt_raw, Mapping):
+            raise ValueError("managed HBA root evidence receipt is missing")
+        evidence_receipt = managed_cloudsqladmin_hba_receipt_from_mapping(
+            evidence_receipt_raw
+        )
+        if set(connection) != {"host", "port", "database", "user"}:
+            raise ValueError("managed HBA connection evidence is not exact")
+        if set(evidence) != {
+            "complete",
+            "collector_uid",
+            "source_owner_uid",
+            "source_mode",
+            "source_symlink",
+            "same_host",
+            "same_port",
+            "same_ca",
+            "same_user",
+            "same_credential",
+            "receipt_sha256",
+            "receipt",
+        }:
+            raise ValueError("managed HBA root evidence fields are not exact")
+        if (
+            connection.get("host") != managed_hba_receipt.host
+            or type(connection.get("port")) is not int
+            or connection.get("port") != managed_hba_receipt.port
+            or connection.get("database") == "cloudsqladmin"
+            or connection.get("user") != expected_user
+            or managed_hba_receipt.user != expected_user
+            or evidence.get("complete") is not True
+            or evidence.get("collector_uid") != 0
+            or evidence.get("source_owner_uid") != 0
+            or _mode(evidence.get("source_mode")) not in {0o400, 0o440}
+            or evidence.get("source_symlink") is not False
+            or any(
+                evidence.get(name) is not True
+                for name in (
+                    "same_host",
+                    "same_port",
+                    "same_ca",
+                    "same_user",
+                    "same_credential",
+                )
+            )
+            or evidence_receipt != managed_hba_receipt
+            or evidence.get("receipt_sha256") != managed_hba_digest
+            or not managed_hba_receipt.is_fresh(collected_at_unix)
+        ):
+            raise ValueError("managed HBA root evidence is invalid or stale")
+    elif database.get("managed_cloudsqladmin_hba_rejection_evidence") not in (
+        None,
+        {},
+    ):
+        raise ValueError("managed HBA evidence exists without a policy exception")
     attested_schema_privileges = tuple(
         sorted(
             value.upper()
@@ -2253,12 +2315,8 @@ def _parse_database_attestation(
             attestation_raw.get("routine_owner"), "attestation routine_owner"
         ),
         table_grants=_table_grants(attestation_raw.get("table_grants", ())),
-        sequence_grants=_sequence_grants(
-            attestation_raw.get("sequence_grants", ())
-        ),
-        executable_routines=_strings(
-            attestation_raw.get("executable_routines", ())
-        ),
+        sequence_grants=_sequence_grants(attestation_raw.get("sequence_grants", ())),
+        executable_routines=_strings(attestation_raw.get("executable_routines", ())),
         routine_identities=_routine_identities(
             attestation_raw.get("routine_identities", ())
         ),
@@ -2293,9 +2351,9 @@ def _parse_database_attestation(
         raise ValueError("writer role must have zero table and sequence grants")
     if policy.executable_routines != EXPECTED_ROUTINE_SIGNATURES:
         raise ValueError("writer executable routine set does not match production")
-    if {
-        identity.signature for identity in policy.dependency_routine_identities
-    } != set(EXPECTED_HELPER_ROUTINE_SIGNATURES):
+    if {identity.signature for identity in policy.dependency_routine_identities} != set(
+        EXPECTED_HELPER_ROUTINE_SIGNATURES
+    ):
         raise ValueError("writer helper routine identity set does not match production")
     if policy.schema_privileges != ("USAGE",):
         raise ValueError("writer schema privileges must be exactly USAGE")
@@ -2313,8 +2371,7 @@ def _parse_database_attestation(
     if any(not identity.security_definer for identity in policy.routine_identities):
         raise ValueError("public writer routines must be SECURITY DEFINER")
     if any(
-        identity.security_definer
-        for identity in policy.dependency_routine_identities
+        identity.security_definer for identity in policy.dependency_routine_identities
     ):
         raise ValueError("dependency helper routines must be SECURITY INVOKER")
     if attested_schema_privileges != raw_schema_privileges:
@@ -2517,9 +2574,7 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
             collected_at_unix=collected_at_unix,
         )
     )
-    checks.extend(
-        _runtime_secret_source_checks(snapshot.get("runtime_secret_sources"))
-    )
+    checks.extend(_runtime_secret_source_checks(snapshot.get("runtime_secret_sources")))
     checks.extend(
         _writer_deployment_checks(
             snapshot.get("writer_deployment"),
@@ -2586,25 +2641,23 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
         permission.startswith(("cloudsql.", "secretmanager."))
         for permission in permissions
     )
-    checks.extend(
-        (
-            PreflightCheck(
-                "iam.gateway_evidence_complete",
-                iam_shape_ok,
-                "effective gateway IAM evidence must be explicitly complete",
-            ),
-            PreflightCheck(
-                "iam.gateway_roles",
-                roles_ok,
-                "gateway must have no Cloud SQL, Secret Manager, owner, or editor role",
-            ),
-            PreflightCheck(
-                "iam.gateway_permissions",
-                permissions_ok,
-                "gateway must have no effective Cloud SQL or Secret Manager permission",
-            ),
-        )
-    )
+    checks.extend((
+        PreflightCheck(
+            "iam.gateway_evidence_complete",
+            iam_shape_ok,
+            "effective gateway IAM evidence must be explicitly complete",
+        ),
+        PreflightCheck(
+            "iam.gateway_roles",
+            roles_ok,
+            "gateway must have no Cloud SQL, Secret Manager, owner, or editor role",
+        ),
+        PreflightCheck(
+            "iam.gateway_permissions",
+            permissions_ok,
+            "gateway must have no effective Cloud SQL or Secret Manager permission",
+        ),
+    ))
 
     writer_iam = _mapping(snapshot.get("writer_iam"))
     try:
@@ -2629,29 +2682,28 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
         permission.startswith(("cloudsql.", "secretmanager."))
         for permission in writer_permissions
     )
-    checks.extend(
-        (
-            PreflightCheck(
-                "iam.writer_evidence_complete",
-                writer_iam_shape_ok,
-                "effective writer IAM evidence must be explicitly complete",
-            ),
-            PreflightCheck(
-                "iam.writer_roles",
-                writer_roles_ok,
-                "writer must not depend on ambient Cloud SQL or Secret Manager roles",
-            ),
-            PreflightCheck(
-                "iam.writer_permissions",
-                writer_permissions_ok,
-                "writer must not have ambient Cloud SQL or Secret Manager permissions",
-            ),
-        )
-    )
+    checks.extend((
+        PreflightCheck(
+            "iam.writer_evidence_complete",
+            writer_iam_shape_ok,
+            "effective writer IAM evidence must be explicitly complete",
+        ),
+        PreflightCheck(
+            "iam.writer_roles",
+            writer_roles_ok,
+            "writer must not depend on ambient Cloud SQL or Secret Manager roles",
+        ),
+        PreflightCheck(
+            "iam.writer_permissions",
+            writer_permissions_ok,
+            "writer must not have ambient Cloud SQL or Secret Manager permissions",
+        ),
+    ))
 
     try:
         expected_user, policy, attestation = _parse_database_attestation(
-            snapshot.get("database")
+            snapshot.get("database"),
+            collected_at_unix=collected_at_unix,
         )
         validate_privilege_attestation(
             attestation,

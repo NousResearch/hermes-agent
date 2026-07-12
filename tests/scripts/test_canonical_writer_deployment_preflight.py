@@ -12,6 +12,7 @@ from gateway.canonical_writer_db import (
     CANONICAL_PRIVATE_WRITER_TABLES,
     CanonicalPrivateRelationIdentity,
     CanonicalPrivateSchemaIdentity,
+    managed_cloudsqladmin_hba_receipt_from_mapping,
 )
 from gateway.canonical_writer_postgres_backend import (
     CANONICAL_WRITER_MIGRATION_OWNER,
@@ -24,9 +25,7 @@ from scripts import canonical_writer_deployment_preflight as preflight
 
 _WRITER_REVISION = "1" * 40
 _WRITER_ARTIFACT_DIGEST = "2" * 64
-_WRITER_ARTIFACT_ROOT = (
-    f"/opt/muncho-canonical-writer/releases/{_WRITER_REVISION}"
-)
+_WRITER_ARTIFACT_ROOT = f"/opt/muncho-canonical-writer/releases/{_WRITER_REVISION}"
 _WRITER_INTERPRETER = f"{_WRITER_ARTIFACT_ROOT}/venv/bin/python3.12"
 _WRITER_MODULE_ORIGIN = (
     f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages/"
@@ -114,9 +113,7 @@ def _writer_deployment():
             "object_type": "directory",
         },
         {
-            "path": (
-                f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages"
-            ),
+            "path": (f"{_WRITER_ARTIFACT_ROOT}/venv/lib/python3.12/site-packages"),
             "kind": "site_packages",
             "digest_sha256": "5" * 64,
             "object_type": "directory",
@@ -191,9 +188,10 @@ def _writer_deployment():
                 "revision": _WRITER_REVISION,
                 "artifact_digest_sha256": _WRITER_ARTIFACT_DIGEST,
                 "bootstrap_module_origin": _WRITER_MODULE_ORIGIN,
-                "effective_import_paths": sorted(
-                    [import_paths[2]["path"], import_paths[3]["path"]]
-                ),
+                "effective_import_paths": sorted([
+                    import_paths[2]["path"],
+                    import_paths[3]["path"],
+                ]),
                 "loaded_module_origins_complete": True,
                 "loaded_module_origins": [_WRITER_MODULE_ORIGIN],
                 "mapped_executable_paths_complete": True,
@@ -478,24 +476,44 @@ def _private_schema_identity_sha256(identity):
     ).sha256
 
 
+def _managed_hba_receipt():
+    return {
+        "version": "managed-cloudsqladmin-hba-rejection-v1",
+        "host": "db.internal",
+        "port": 5432,
+        "server_certificate_sha256": "d" * 64,
+        "database": "cloudsqladmin",
+        "user": "canonical_writer",
+        "observed_at_unix": 1_799_999_900,
+        "expires_at_unix": 1_800_000_200,
+        "sqlstate": "28000",
+        "server_message": (
+            'no pg_hba.conf entry for host "10.0.0.8", user '
+            '"canonical_writer", database "cloudsqladmin", SSL encryption'
+        ),
+        "result": "pg_hba_rejected",
+        "tls_peer_verified": True,
+    }
+
+
 def _good_snapshot():
     writer_deployment = _writer_deployment()
-    hardened = {
-        name: "yes" for name in preflight._HARDENED_TRUE_PROPERTIES
-    }
-    hardened.update(
-        {
-            "ProtectSystem": "strict",
-            "ProtectHome": "yes",
-            "ProtectProc": "invisible",
-            "ProcSubset": "pid",
-            "UMask": "0077",
-            "CapabilityBoundingSet": "",
-            "AmbientCapabilities": "",
-            "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
-        }
-    )
+    hardened = {name: "yes" for name in preflight._HARDENED_TRUE_PROPERTIES}
+    hardened.update({
+        "ProtectSystem": "strict",
+        "ProtectHome": "yes",
+        "ProtectProc": "invisible",
+        "ProcSubset": "pid",
+        "UMask": "0077",
+        "CapabilityBoundingSet": "",
+        "AmbientCapabilities": "",
+        "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
+    })
     private_schema_identity = _private_schema_identity()
+    managed_hba_receipt = _managed_hba_receipt()
+    managed_hba_digest = managed_cloudsqladmin_hba_receipt_from_mapping(
+        managed_hba_receipt
+    ).sha256
     return {
         "collected_at_unix": 1_800_000_000,
         "gateway_uid": 1001,
@@ -616,15 +634,33 @@ def _good_snapshot():
         },
         "writer_deployment": writer_deployment,
         "gateway_deployment": _gateway_deployment(writer_deployment),
-        "writer_authority_surface": _writer_authority_surface(
-            writer_deployment
-        ),
+        "writer_authority_surface": _writer_authority_surface(writer_deployment),
         "systemd_properties": hardened,
         "gateway_systemd_properties": copy.deepcopy(hardened),
         "gateway_iam": {"complete": True, "roles": [], "permissions": []},
         "writer_iam": {"complete": True, "roles": [], "permissions": []},
         "database": {
             "expected_user": "canonical_writer",
+            "connection": {
+                "host": "db.internal",
+                "port": 5432,
+                "database": "canonical",
+                "user": "canonical_writer",
+            },
+            "managed_cloudsqladmin_hba_rejection_evidence": {
+                "complete": True,
+                "collector_uid": 0,
+                "source_owner_uid": 0,
+                "source_mode": "0400",
+                "source_symlink": False,
+                "same_host": True,
+                "same_port": True,
+                "same_ca": True,
+                "same_user": True,
+                "same_credential": True,
+                "receipt_sha256": managed_hba_digest,
+                "receipt": copy.deepcopy(managed_hba_receipt),
+            },
             "policy": {
                 "schema": "canonical_brain",
                 "table_grants": [],
@@ -638,8 +674,13 @@ def _good_snapshot():
                 "private_schema_identity_sha256": (
                     _private_schema_identity_sha256(private_schema_identity)
                 ),
+                "managed_cloudsqladmin_hba_rejection_receipt": (
+                    copy.deepcopy(managed_hba_receipt)
+                ),
+                "managed_cloudsqladmin_hba_rejection_sha256": managed_hba_digest,
             },
             "attestation": {
+                "managed_cloudsqladmin_hba_rejection_sha256": managed_hba_digest,
                 "role": "canonical_writer",
                 "superuser": False,
                 "createdb": False,
@@ -658,12 +699,8 @@ def _good_snapshot():
                 "role_memberships": [CANONICAL_WRITER_ROLE],
                 "unexpected_privileges": [],
                 "public_acl_grants": [],
-                "canonical_non_owner_acl_grants": (
-                    _canonical_non_owner_acl_grants()
-                ),
-                "canonical_writer_role_inheritors": [
-                    "canonical_writer:1:t:f"
-                ],
+                "canonical_non_owner_acl_grants": (_canonical_non_owner_acl_grants()),
+                "canonical_writer_role_inheritors": ["canonical_writer:1:t:f"],
                 "canonical_event_log_identity": {
                     "table": CANONICAL_EVENT_LOG_TABLE,
                     "owner": CANONICAL_EVENT_LOG_OWNER,
@@ -713,15 +750,11 @@ def _enable_projection_exporter(snapshot):
             "module_origin": policy["module_origin"],
             "read_write_paths": copy.deepcopy(policy["read_write_paths"]),
             "bind_paths": [],
-            "bind_read_only_paths": copy.deepcopy(
-                policy["bind_read_only_paths"]
-            ),
+            "bind_read_only_paths": copy.deepcopy(policy["bind_read_only_paths"]),
             "alternate_exec_commands": [],
             "environment_files": [],
             "code_injection_environment_variable_names": [],
-            "systemd_properties": copy.deepcopy(
-                snapshot["systemd_properties"]
-            ),
+            "systemd_properties": copy.deepcopy(snapshot["systemd_properties"]),
         },
         "timer": {
             "name": policy["timer_name"],
@@ -731,9 +764,10 @@ def _enable_projection_exporter(snapshot):
         },
     }
     inventory = surface["privileged_execution_inventory"]
-    inventory["writer_uid_service_units"] = sorted(
-        ["muncho-canonical-writer.service", policy["unit_name"]]
-    )
+    inventory["writer_uid_service_units"] = sorted([
+        "muncho-canonical-writer.service",
+        policy["unit_name"],
+    ])
     inventory["writer_uid_timer_units"] = [policy["timer_name"]]
 
 
@@ -978,9 +1012,9 @@ def test_preflight_hard_pins_production_database_privileges(field, value):
 
 def test_preflight_rejects_private_schema_structure_drift():
     snapshot = _good_snapshot()
-    snapshot["database"]["attestation"][
-        "canonical_private_schema_identity"
-    ]["relations"][0]["columns"] = ["{\"name\":\"drifted\"}"]
+    snapshot["database"]["attestation"]["canonical_private_schema_identity"][
+        "relations"
+    ][0]["columns"] = ['{"name":"drifted"}']
 
     assert "database.least_privilege" in _failed_names(snapshot)
 
@@ -1075,6 +1109,41 @@ def test_preflight_requires_exact_private_schema_policy_digest(digest):
         snapshot["database"]["policy"][
             "private_schema_identity_sha256"
         ] = digest
+
+    assert "database.least_privilege" in _failed_names(snapshot)
+
+
+@pytest.mark.parametrize("digest", ["d" * 63, "D" * 64, "g" * 64])
+def test_preflight_rejects_invalid_managed_cloudsqladmin_hba_receipt(digest):
+    snapshot = _good_snapshot()
+    snapshot["database"]["policy"]["managed_cloudsqladmin_hba_rejection_sha256"] = (
+        digest
+    )
+
+    assert "database.least_privilege" in _failed_names(snapshot)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda database: database[
+            "managed_cloudsqladmin_hba_rejection_evidence"
+        ].update(collector_uid=1002),
+        lambda database: database[
+            "managed_cloudsqladmin_hba_rejection_evidence"
+        ].update(source_owner_uid=1002),
+        lambda database: database[
+            "managed_cloudsqladmin_hba_rejection_evidence"
+        ].update(same_credential=False),
+        lambda database: database["managed_cloudsqladmin_hba_rejection_evidence"][
+            "receipt"
+        ].update(expires_at_unix=1_799_999_999),
+        lambda database: database["connection"].update(host="other.internal"),
+    ],
+)
+def test_preflight_requires_fresh_root_collected_bound_hba_evidence(mutate):
+    snapshot = _good_snapshot()
+    mutate(snapshot["database"])
 
     assert "database.least_privilege" in _failed_names(snapshot)
 

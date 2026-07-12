@@ -30,6 +30,9 @@ from gateway.canonical_writer_postgres_backend import (
     PRODUCTION_CATALOG_SHA256,
     PRODUCTION_STATEMENT_CATALOG,
 )
+from gateway.discord_edge_writer_authority import (
+    derive_routeback_edge_idempotency_key,
+)
 from scripts.canonical_writer_bootstrap import build_service
 from scripts.canonical_writer_service import DispatchContext, PeerCredentials
 import tools.canonical_brain_tool as canonical_tool
@@ -43,6 +46,10 @@ LEGACY_CREDENTIAL_CALL_SITES = (
     REPO_ROOT / "scripts" / "canonical_brain_event_projector.py",
 )
 
+DISCORD_GUILD_ID = "1282725267068157972"
+DISCORD_CHANNEL_ID = "1504852408227069993"
+EDGE_REQUEST_ID = "11111111-1111-4111-8111-111111111111"
+
 
 def _enable_boundary(monkeypatch, call):
     monkeypatch.setattr(writer_boundary, "writer_boundary_configured", lambda *_: True)
@@ -52,8 +59,10 @@ def _enable_boundary(monkeypatch, call):
 
 def _public_target(_target_ref):
     return {
-        "channel_id": "public-channel-1",
+        "channel_id": DISCORD_CHANNEL_ID,
         "channel_type": "public_channel",
+        "target_type": "public_guild_channel",
+        "guild_id": DISCORD_GUILD_ID,
         "target_kind": "exact_public_directory_target",
         "target_member_key": None,
         "target_member_id": None,
@@ -64,7 +73,7 @@ def _public_target(_target_ref):
 def _routeback_kwargs():
     return {
         "case_id": "case:writer-boundary",
-        "target_ref": {"channel_id": "public-channel-1"},
+        "target_ref": {"channel_id": DISCORD_CHANNEL_ID},
         "message": "A verified public route-back",
         "message_summary": "public route-back",
         "source_refs": {
@@ -83,6 +92,72 @@ def _prepare_routeback_execution(monkeypatch):
         "_discord_expected_content_sha256",
         lambda _message: "a" * 64,
     )
+    monkeypatch.setattr(canonical_tool, "_discord_edge_preconnect", object)
+
+    class _NoEdgeRecord(RuntimeError):
+        code = "discord_edge_reconciliation_not_available"
+        dispatch_uncertain = False
+
+    monkeypatch.setattr(
+        canonical_tool,
+        "_discord_edge_reconcile",
+        lambda _client, _intent: (_ for _ in ()).throw(
+            _NoEdgeRecord("no exact durable edge record")
+        ),
+    )
+
+
+def _signed_edge_request():
+    return {
+        "protocol": "discord-edge.v1",
+        "request_id": EDGE_REQUEST_ID,
+        "sequence": 1,
+        "deadline_unix_ms": 4_000_000_000_000,
+        "operation": "public.message.send",
+        "target": {
+            "target_type": "public_guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+        },
+        "payload": {"content": "A verified public route-back"},
+        "idempotency_key": derive_routeback_edge_idempotency_key(
+            case_id="case:writer-boundary",
+            canonical_idempotency_key="routeback:writer-boundary:1",
+        ),
+        "capability": {
+            "key_id": "1" * 64,
+            "payload": {
+                "protocol": "discord-edge-capability.v1",
+                "capability_id": "22222222-2222-4222-8222-222222222222",
+            },
+            "signature": "A" * 86,
+        },
+    }
+
+
+def _signed_edge_receipt(*, outcome="blocked_before_dispatch"):
+    return {
+        "key_id": "2" * 64,
+        "payload": {
+            "protocol": "discord-edge-receipt.v1",
+            "receipt_id": "33333333-3333-4333-8333-333333333333",
+            "edge_request_id": EDGE_REQUEST_ID,
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "public_guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": DISCORD_CHANNEL_ID,
+            },
+            "idempotency_key": derive_routeback_edge_idempotency_key(
+                case_id="case:writer-boundary",
+                canonical_idempotency_key="routeback:writer-boundary:1",
+            ),
+            "content_sha256": "a" * 64,
+            "outcome": outcome,
+            "blocker_code": "discord_permission_denied",
+        },
+        "signature": "B" * 86,
+    }
 
 
 def test_model_append_runs_authoritative_validation_before_writer(monkeypatch):
@@ -224,24 +299,37 @@ def test_gateway_and_projector_have_no_legacy_helper_or_secret_path():
 )
 def test_routeback_never_sends_without_new_durable_claim(monkeypatch, claim):
     operations: list[str] = []
-    sends: list[tuple[str, str]] = []
+    edge_calls: list[tuple[object, dict]] = []
 
     def call(operation, payload, *, idempotency_key=None):
         operations.append(str(operation))
         assert operation == CanonicalWriterOperation.ROUTEBACK_CLAIM.value
+        assert payload["discord_edge_intent"] == {
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "public_guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": DISCORD_CHANNEL_ID,
+            },
+            "payload": {"content": "A verified public route-back"},
+            "idempotency_key": derive_routeback_edge_idempotency_key(
+                case_id="case:writer-boundary",
+                canonical_idempotency_key="routeback:writer-boundary:1",
+            ),
+        }
         return dict(claim)
 
     _enable_boundary(monkeypatch, call)
     _prepare_routeback_execution(monkeypatch)
     monkeypatch.setattr(
         canonical_tool,
-        "_discord_post_message",
-        lambda channel_id, content, **_kwargs: sends.append((channel_id, content)),
+        "_discord_edge_execute",
+        lambda client, request: edge_calls.append((client, request)),
     )
 
     result = json.loads(canonical_tool.route_back_execute_tool(**_routeback_kwargs()))
 
-    assert sends == []
+    assert edge_calls == []
     assert operations == [CanonicalWriterOperation.ROUTEBACK_CLAIM.value]
     assert result["status"] in {
         "ROUTE_BACK_EXECUTE_INTENT_FAILED",
@@ -286,8 +374,10 @@ def test_child_owned_client_and_fake_writer_identity_cannot_forge_claim(monkeypa
     assert authorizer.authorize(ServerPeerCredentials(9001, 2001, 2002)) is False
 
 
-def test_post_claim_send_failure_uses_typed_finalize_blocked(monkeypatch):
+def test_nonverified_edge_receipt_uses_typed_writer_finalize_blocked(monkeypatch):
     calls: list[tuple[str, dict, str | None]] = []
+    edge_request = _signed_edge_request()
+    edge_receipt = _signed_edge_receipt()
 
     def call(operation, payload, *, idempotency_key=None):
         calls.append((str(operation), dict(payload), idempotency_key))
@@ -296,14 +386,13 @@ def test_post_claim_send_failure_uses_typed_finalize_blocked(monkeypatch):
                 "success": True,
                 "inserted": True,
                 "readback_verified": True,
-                "authorization_id": "routeauth:durable-1",
+                "discord_edge_request": edge_request,
             }
         if operation == CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value:
             return {
                 "success": True,
                 "inserted": True,
                 "outcome": "blocked",
-                "authorization_id": "routeauth:durable-1",
             }
         pytest.fail(f"unexpected writer operation: {operation}")
 
@@ -311,24 +400,26 @@ def test_post_claim_send_failure_uses_typed_finalize_blocked(monkeypatch):
     _prepare_routeback_execution(monkeypatch)
     monkeypatch.setattr(
         canonical_tool,
-        "_discord_post_message",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("network down")),
+        "_discord_edge_execute",
+        lambda client, request: {
+            "state": "blocked",
+            "blocker": "discord_permission_denied",
+            "replayed": False,
+            "receipt": edge_receipt,
+        },
     )
 
     result = json.loads(canonical_tool.route_back_execute_tool(**_routeback_kwargs()))
 
     assert result["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
-    assert result["blocker_reason"] == (
-        "discord_post_claim_delivery_outcome_uncertain:RuntimeError"
-    )
     assert [item[0] for item in calls] == [
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
     ]
     assert calls[0][1]["execution_binding"] == calls[1][1]["execution_binding"]
-    assert calls[1][1]["blocker_reason"] == (
-        "discord_post_claim_delivery_outcome_uncertain:RuntimeError"
-    )
+    assert calls[1][1]["discord_edge_request"] == edge_request
+    assert calls[1][1]["discord_edge_receipt"] == edge_receipt
+    assert "blocker_reason" not in calls[1][1]
 
 
 def test_public_query_active_plan_and_routeback_context_contracts(monkeypatch):
@@ -513,6 +604,7 @@ def test_bootstrap_dispatcher_preserves_flat_public_writer_contract(monkeypatch)
         max_connections=1,
         database=object(),
         privileges=object(),
+        discord_edge_authority=SimpleNamespace(enabled=False),
     )
     monkeypatch.setattr(os, "getuid", lambda: 2002)
     monkeypatch.setattr(os, "getgid", lambda: 2002)

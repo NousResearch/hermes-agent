@@ -10,17 +10,36 @@
 -- The existing public.canonical_event_log and PostgreSQL's core
 -- pg_catalog.sha256(bytea) routine are explicit prerequisites.  The runtime
 -- writer role receives no table privileges and no
--- general SQL surface: only the sixteen fixed (jsonb, jsonb) routines at the
+-- general SQL surface: only the seventeen fixed (jsonb, jsonb) routines at the
 -- end of this file are executable by it.
 --
--- PostgreSQL 12+ is required because exact generated-column attestation uses
--- pg_attribute.attgenerated.  This v1 artifact pins the current fourteen-column
+-- Applying the contract is an owner-approved operation.  The invoking session
+-- must pin these settings before BEGIN:
+--
+--   muncho.canonical_writer_migration_scope
+--       = isolated_canary_copy | owner_approved_cutover
+--   muncho.canonical_writer_migration_database = current_database()
+--   muncho.canonical_writer_migration_approval_receipt_sha256 = 64 lowercase hex
+--   muncho.canonical_writer_cloudsqladmin_hba_rejection_sha256
+--       = digest emitted and injected only by the root-controlled active-TLS
+--         probe-and-apply driver (never an operator-supplied placeholder)
+--
+-- Managed PostgreSQL administrators are not necessarily superusers.  After
+-- preflight proves that the offline owner has zero memberships, this migration
+-- grants the invoking SESSION_USER one transaction-scoped SET-only membership,
+-- executes owner operations with SET LOCAL ROLE, then revokes and re-attests
+-- that membership before COMMIT.  Errors and process loss roll the grant back
+-- with the rest of this transaction.
+--
+-- PostgreSQL 16+ is required because the transaction-scoped owner boundary
+-- depends on independent ADMIN, INHERIT, and SET membership options.  This v1
+-- artifact pins the current fourteen-column
 -- event envelope exactly.
 -- It deliberately does not guess compatibility for the legacy Cloud shape
 -- known to have carried idempotency_key/source_spool/spool_line_number/
 -- raw_event_sha256 columns.  A read-only production schema attestation and a
 -- separately reviewed reconciliation migration are mandatory before cutover;
--- applying this artifact directly to a legacy eighteen-column table must fail.
+-- applying this artifact directly to a legacy nineteen-column table must fail.
 
 BEGIN;
 
@@ -29,14 +48,108 @@ BEGIN;
 -- against a partially installed contract.
 SELECT pg_catalog.pg_advisory_xact_lock(4841739663211427921);
 
+-- Cloud SQL exposes one provider-owned maintenance database through PUBLIC
+-- catalog ACLs while rejecting direct TLS connections to it in pg_hba.  It is
+-- the sole cross-database exception, and only with this exact managed catalog
+-- fingerprint plus a trusted-preflight rejection receipt.
+CREATE OR REPLACE FUNCTION pg_temp._cw_managed_cloudsqladmin_exception(
+    database_oid oid,
+    hba_rejection_sha256 text
+)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = pg_catalog
+AS $function$
+    WITH database_row AS (
+        SELECT database.oid, database.datname, database.datallowconn,
+               database.datistemplate,
+               pg_catalog.pg_get_userbyid(database.datdba) AS owner_name,
+               database.datdba, database.datacl
+          FROM pg_catalog.pg_database AS database
+         WHERE database.oid = database_oid
+    ), actual_acl AS (
+        SELECT CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_catalog.pg_get_userbyid(acl.grantee) END AS grantee,
+               pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
+               acl.privilege_type, acl.is_grantable
+          FROM database_row
+          CROSS JOIN LATERAL pg_catalog.aclexplode(
+              COALESCE(
+                  database_row.datacl,
+                  pg_catalog.acldefault('d', database_row.datdba)
+              )
+          ) AS acl
+    ), expected_acl(grantee, grantor, privilege_type, is_grantable) AS (
+        VALUES
+          ('PUBLIC','cloudsqladmin','CONNECT',false),
+          ('PUBLIC','cloudsqladmin','TEMPORARY',false),
+          ('cloudsqladmin','cloudsqladmin','CREATE',false),
+          ('cloudsqladmin','cloudsqladmin','CONNECT',false),
+          ('cloudsqladmin','cloudsqladmin','TEMPORARY',false)
+    )
+    SELECT COALESCE(
+               hba_rejection_sha256 ~ '^[0-9a-f]{64}$', false
+           )
+       AND EXISTS (
+            SELECT 1 FROM database_row
+             WHERE datname = 'cloudsqladmin'
+               AND datallowconn AND NOT datistemplate
+               AND owner_name = 'cloudsqladmin'
+       )
+       AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles
+             WHERE rolname = 'cloudsqladmin'
+               AND rolcanlogin AND rolsuper AND rolcreatedb AND rolcreaterole
+               AND rolreplication AND rolbypassrls
+       )
+       AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles
+             WHERE rolname = 'cloudsqlsuperuser'
+               AND rolcanlogin AND NOT rolsuper AND rolcreatedb AND rolcreaterole
+               AND NOT rolreplication AND NOT rolbypassrls
+       )
+       AND NOT EXISTS (
+            (SELECT * FROM actual_acl EXCEPT SELECT * FROM expected_acl)
+            UNION ALL
+            (SELECT * FROM expected_acl EXCEPT SELECT * FROM actual_acl)
+       )
+$function$;
+
+REVOKE ALL ON FUNCTION pg_temp._cw_managed_cloudsqladmin_exception(oid,text)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+    pg_temp._cw_managed_cloudsqladmin_exception(oid,text)
+    TO canonical_brain_migration_owner;
+
 DO $prerequisites$
 DECLARE
     missing_columns text;
+    migration_scope text := pg_catalog.current_setting(
+        'muncho.canonical_writer_migration_scope', true
+    );
+    migration_database text := pg_catalog.current_setting(
+        'muncho.canonical_writer_migration_database', true
+    );
+    migration_approval text := pg_catalog.current_setting(
+        'muncho.canonical_writer_migration_approval_receipt_sha256', true
+    );
+    cloudsqladmin_hba_receipt text := pg_catalog.current_setting(
+        'muncho.canonical_writer_cloudsqladmin_hba_rejection_sha256', true
+    );
 BEGIN
+    IF migration_scope NOT IN (
+        'isolated_canary_copy', 'owner_approved_cutover'
+    ) OR migration_database IS DISTINCT FROM pg_catalog.current_database()
+       OR migration_approval !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION
+            'canonical writer migration lacks exact scope/database/approval binding';
+    END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname = 'canonical_brain_migration_owner'
           AND rolcanlogin IS FALSE
+          AND rolinherit IS FALSE
           AND rolsuper IS FALSE
           AND rolcreatedb IS FALSE
           AND rolcreaterole IS FALSE
@@ -133,6 +246,9 @@ BEGIN
            AND pg_catalog.has_database_privilege(
                'canonical_brain_writer', database.datname, 'CONNECT'
            )
+           AND NOT pg_temp._cw_managed_cloudsqladmin_exception(
+               database.oid, cloudsqladmin_hba_receipt
+           )
     ) THEN
         RAISE EXCEPTION
             'canonical_brain_writer can CONNECT to another database; revoke that authority before migration';
@@ -157,10 +273,10 @@ BEGIN
         RAISE EXCEPTION
             'prerequisite missing: canonical_brain_migration_owner requires USAGE-only effective authority on public schema';
     END IF;
-    IF pg_catalog.current_setting('server_version_num')::integer < 120000
+    IF pg_catalog.current_setting('server_version_num')::integer < 160000
        OR pg_catalog.to_regprocedure('pg_catalog.sha256(bytea)') IS NULL THEN
         RAISE EXCEPTION
-            'prerequisite missing: PostgreSQL 12+ core pg_catalog.sha256(bytea)';
+            'prerequisite missing: PostgreSQL 16+ SET-only role membership and core pg_catalog.sha256(bytea)';
     END IF;
 
     SELECT pg_catalog.string_agg(required.name, ',' ORDER BY required.name)
@@ -186,6 +302,84 @@ BEGIN
     END IF;
 END
 $prerequisites$;
+
+-- Reject a preexisting schema unless it already belongs to the exact offline
+-- owner.  Creation happens only after the administrator has acquired the
+-- transaction-scoped SET-only membership below.
+DO $owner_schema_prerequisite$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_namespace AS namespace
+         WHERE namespace.nspname = 'canonical_brain'
+           AND pg_catalog.pg_get_userbyid(namespace.nspowner)
+               <> 'canonical_brain_migration_owner'
+    ) THEN
+        RAISE EXCEPTION
+            'preexisting canonical_brain schema has an untrusted owner';
+    END IF;
+END
+$owner_schema_prerequisite$;
+
+DO $temporary_owner_membership$
+DECLARE
+    admin_name text := SESSION_USER;
+    membership_valid boolean;
+BEGIN
+    IF admin_name = 'canonical_brain_migration_owner' THEN
+        RAISE EXCEPTION 'offline migration owner cannot be the login session';
+    END IF;
+    PERFORM pg_catalog.set_config(
+        'muncho.canonical_writer_migration_admin', admin_name, true
+    );
+    EXECUTE pg_catalog.format(
+        'GRANT TEMPORARY ON DATABASE %I TO canonical_brain_migration_owner',
+        pg_catalog.current_database()
+    );
+    EXECUTE pg_catalog.format(
+        'GRANT canonical_brain_migration_owner TO %I '
+        'WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
+        admin_name
+    );
+    SELECT NOT membership.admin_option
+           AND NOT membership.inherit_option
+           AND membership.set_option
+      INTO membership_valid
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS owner_role
+        ON owner_role.oid = membership.roleid
+      JOIN pg_catalog.pg_roles AS admin_role
+        ON admin_role.oid = membership.member
+     WHERE owner_role.rolname = 'canonical_brain_migration_owner'
+       AND admin_role.rolname = admin_name;
+    IF membership_valid IS DISTINCT FROM true
+       OR NOT pg_catalog.pg_has_role(
+            admin_name, 'canonical_brain_migration_owner', 'MEMBER'
+       ) THEN
+        RAISE EXCEPTION
+            'transaction-scoped migration-owner membership was not exact';
+    END IF;
+END
+$temporary_owner_membership$;
+
+-- The managed administrator now has SET authority for the exact NOLOGIN
+-- owner, so PostgreSQL permits AUTHORIZATION without granting the owner any
+-- database CREATE capability.  This DDL and the membership share one rollback
+-- boundary.
+DO $owner_schema_create$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_namespace AS namespace
+         WHERE namespace.nspname = 'canonical_brain'
+    ) THEN
+        CREATE SCHEMA canonical_brain
+            AUTHORIZATION canonical_brain_migration_owner;
+    END IF;
+END
+$owner_schema_create$;
+
+SET LOCAL ROLE canonical_brain_migration_owner;
 
 LOCK TABLE public.canonical_event_log IN ACCESS EXCLUSIVE MODE;
 
@@ -508,10 +702,6 @@ BEGIN
     END IF;
 END
 $event_log_exclusivity$;
-
-CREATE SCHEMA IF NOT EXISTS canonical_brain
-    AUTHORIZATION canonical_brain_migration_owner;
-ALTER SCHEMA canonical_brain OWNER TO canonical_brain_migration_owner;
 
 DO $preexisting_tables$
 DECLARE
@@ -2402,7 +2592,7 @@ BEGIN
 END
 $function$;
 
--- Fixed public routine 1/16.
+-- Fixed public routine 1/17.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_ping(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -2428,7 +2618,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 2/16.  This is an exact bounded event query, never a
+-- Fixed public routine 2/17.  This is an exact bounded event query, never a
 -- semantic classifier.  The model chooses case/thread and requested view.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_case_query(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -2834,7 +3024,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 3/16.  Only exact sent authorizations are projected
+-- Fixed public routine 3/17.  Only exact sent authorizations are projected
 -- back to their source thread, and the result is hard bounded to three cases.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_context(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -2904,7 +3094,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 4/16.
+-- Fixed public routine 4/17.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_plan_active_match(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -2958,7 +3148,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 5/16.  Privileged receipt types and task CAS events are
+-- Fixed public routine 5/17.  Privileged receipt types and task CAS events are
 -- unavailable through this model-authored append entry point.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_event_append_model(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3050,7 +3240,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 6/16.  Plan revision validation and the append share a
+-- Fixed public routine 6/17.  Plan revision validation and the append share a
 -- case-scoped transaction advisory lock, providing the canonical CAS point.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_plan_transition(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3392,7 +3582,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 7/16.  Verification is bound to the exact canonical
+-- Fixed public routine 7/17.  Verification is bound to the exact canonical
 -- plan head; the model remains the author of the structured outcome.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_verification_append(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3556,7 +3746,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 8/16.  Claiming is an atomic, durable authorization for
+-- Fixed public routine 8/17.  Claiming is an atomic, durable authorization for
 -- one exact public target and one exact rendered-content digest.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_claim(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -3569,6 +3759,12 @@ DECLARE
     case_value text := COALESCE(request->>'case_id', '');
     session_value text := COALESCE(runtime->>'session_key_sha256', '');
     epoch_value text := COALESCE(runtime->>'capability_epoch_sha256', '');
+    runtime_platform_value text := COALESCE(runtime->>'platform', '');
+    source_thread_value text := COALESCE(
+        NULLIF(runtime->>'thread_id', ''),
+        runtime->>'chat_id',
+        ''
+    );
     target_value jsonb := request->'target_ref';
     target_id text;
     authorization_value text;
@@ -3596,6 +3792,7 @@ BEGIN
        )
        OR case_value !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
        OR pg_catalog.jsonb_typeof(target_value) <> 'object'
+       OR pg_catalog.jsonb_typeof(request->'source_refs') <> 'object'
        OR canonical_brain._contains_forbidden_dm_ref(target_value)
        OR COALESCE(request->>'content_sha256', '') !~ '^[0-9a-f]{64}$'
        OR pg_catalog.length(COALESCE(request->>'message_summary', '')) NOT BETWEEN 1 AND 4000
@@ -3603,7 +3800,7 @@ BEGIN
           NOT BETWEEN 1 AND 256 THEN
         RETURN canonical_brain._fail('invalid_request', 'route-back claim is invalid');
     END IF;
-    IF COALESCE(NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', '') = '' THEN
+    IF source_thread_value = '' THEN
         RETURN canonical_brain._fail(
             'invalid_runtime',
             'route-back claim requires an exact observed source thread'
@@ -3714,6 +3911,31 @@ BEGIN
         SELECT * INTO terminal_record
           FROM canonical_brain.writer_routeback_terminals AS terminal
          WHERE terminal.authorization_id = authorization_value;
+        IF terminal_record.authorization_id IS NULL
+           AND (
+               existing_record.session_key_sha256 IS DISTINCT FROM session_value
+               OR existing_record.capability_epoch_sha256 IS DISTINCT FROM epoch_value
+               OR existing_record.runtime_platform IS DISTINCT FROM runtime_platform_value
+               OR existing_record.source_thread_id IS DISTINCT FROM source_thread_value
+           ) THEN
+            RETURN canonical_brain._fail(
+                'scope_mismatch',
+                'pending route-back authorization belongs to another exact runtime scope'
+            );
+        END IF;
+        IF terminal_record.authorization_id IS NULL
+           AND NOT EXISTS (
+               SELECT 1
+                 FROM canonical_brain.writer_public_routeback_targets AS allowed
+                WHERE allowed.channel_id = target_id
+                  AND allowed.enabled
+                  AND allowed.target_type IN ('public_channel', 'public_thread')
+           ) THEN
+            RETURN canonical_brain._fail(
+                'target_not_approved',
+                'route-back target is not in the owner-provisioned public target ACL'
+            );
+        END IF;
         RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
             'success', true,
             'authorization_id', authorization_value,
@@ -3789,8 +4011,8 @@ BEGIN
         authorization_value, case_value, target_value,
         request->>'message_summary', request->'source_refs',
         request->>'content_sha256', session_value, epoch_value,
-        COALESCE(runtime->>'platform', ''),
-        COALESCE(NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', ''),
+        runtime_platform_value,
+        source_thread_value,
         request->>'idempotency_key',
         request_hash, claimed_at_value, intent_uuid
     );
@@ -3814,7 +4036,198 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 9/16.
+-- Fixed public routine 9/17.  Epoch-only restart recovery is a separate typed
+-- operation.  It never creates a lifecycle and can cross only the capability
+-- epoch of the exact same session/platform/source lane.  Signed edge evidence
+-- may recover terminal truth after an ACL change; only authenticated no-record
+-- recovery can mint fresh dispatch authority and therefore rechecks the ACL.
+CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_recover(request jsonb, runtime jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, canonical_brain
+AS $function$
+DECLARE
+    case_value text := COALESCE(request->>'case_id', '');
+    session_value text := COALESCE(runtime->>'session_key_sha256', '');
+    epoch_value text := COALESCE(runtime->>'capability_epoch_sha256', '');
+    platform_value text := COALESCE(runtime->>'platform', '');
+    source_thread_value text := COALESCE(
+        NULLIF(runtime->>'thread_id', ''),
+        runtime->>'chat_id',
+        ''
+    );
+    target_value jsonb := request->'target_ref';
+    target_id text;
+    recovery_value text := COALESCE(request->>'recovery_kind', '');
+    authorization_value text;
+    request_hash text;
+    authorization_record canonical_brain.writer_routeback_authorizations%ROWTYPE;
+    terminal_record canonical_brain.writer_routeback_terminals%ROWTYPE;
+BEGIN
+    IF NOT canonical_brain._runtime_valid(runtime)
+       OR session_value !~ '^[0-9a-f]{64}$'
+       OR epoch_value !~ '^[0-9a-f]{64}$'
+       OR source_thread_value = '' THEN
+        RETURN canonical_brain._fail(
+            'invalid_runtime',
+            'route-back recovery requires exact current runtime scope'
+        );
+    END IF;
+    IF NOT canonical_brain._keys_valid(
+            request,
+            ARRAY['case_id','target_ref','message_summary','source_refs',
+                  'content_sha256','idempotency_key','recovery_kind'],
+            ARRAY['case_id','target_ref','message_summary','source_refs',
+                  'content_sha256','idempotency_key','recovery_kind']
+       )
+       OR recovery_value NOT IN ('edge_evidence', 'edge_no_record')
+       OR case_value !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
+       OR pg_catalog.jsonb_typeof(target_value) <> 'object'
+       OR canonical_brain._contains_forbidden_dm_ref(target_value)
+       OR COALESCE(request->>'content_sha256', '') !~ '^[0-9a-f]{64}$'
+       OR pg_catalog.length(COALESCE(request->>'message_summary', ''))
+          NOT BETWEEN 1 AND 4000
+       OR pg_catalog.octet_length(COALESCE(request->>'idempotency_key', ''))
+          NOT BETWEEN 1 AND 256 THEN
+        RETURN canonical_brain._fail(
+            'invalid_request',
+            'route-back recovery request is invalid'
+        );
+    END IF;
+    target_id := COALESCE(
+        target_value->>'thread_id',
+        target_value->>'channel_id',
+        ''
+    );
+    IF pg_catalog.length(target_id) NOT BETWEEN 1 AND 240 THEN
+        RETURN canonical_brain._fail(
+            'invalid_request',
+            'route-back recovery requires an exact public target'
+        );
+    END IF;
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'capability-scope:' || session_value || ':' || epoch_value, 0
+        )
+    );
+    IF EXISTS (
+        SELECT 1
+          FROM canonical_brain.writer_capability_revocation_scopes AS scope
+         WHERE scope.scope_type = 'session'
+           AND scope.session_key_sha256 = session_value
+           AND scope.capability_epoch_sha256 = epoch_value
+    ) THEN
+        RETURN canonical_brain._fail(
+            'session_epoch_retired',
+            'current recovery epoch has been durably retired'
+        );
+    END IF;
+    IF NOT canonical_brain._case_scope_authorized(case_value, runtime, false) THEN
+        RETURN canonical_brain._fail(
+            'scope_mismatch',
+            'current runtime is not linked to the canonical case'
+        );
+    END IF;
+    authorization_value := 'routeauth:' || pg_catalog.substr(
+        canonical_brain._sha256_text(
+            '{"case_id":' || pg_catalog.to_json(case_value)::text
+            || ',"idempotency_key":'
+            || pg_catalog.to_json(request->>'idempotency_key')::text || '}'
+        ),
+        1,
+        40
+    );
+    request_hash := canonical_brain._sha256_json(pg_catalog.jsonb_build_object(
+        'authorization_id', authorization_value,
+        'case_id', case_value,
+        'target_ref', target_value,
+        'message_summary', request->>'message_summary',
+        'source_refs', request->'source_refs',
+        'content_sha256', request->>'content_sha256'
+    ));
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            'routeback-authorization:' || authorization_value, 0
+        )
+    );
+    SELECT * INTO authorization_record
+      FROM canonical_brain.writer_routeback_authorizations AS authorization_row
+     WHERE authorization_row.authorization_id = authorization_value;
+    IF NOT FOUND THEN
+        RETURN canonical_brain._fail(
+            'authorization_missing',
+            'route-back recovery requires an existing claim'
+        );
+    END IF;
+    IF authorization_record.request_sha256 <> request_hash THEN
+        RETURN canonical_brain._fail(
+            'idempotency_conflict',
+            'route-back recovery identity is bound to different content'
+        );
+    END IF;
+    IF authorization_record.session_key_sha256 <> session_value
+       OR authorization_record.runtime_platform <> platform_value
+       OR authorization_record.source_thread_id <> source_thread_value THEN
+        RETURN canonical_brain._fail(
+            'scope_mismatch',
+            'route-back recovery cannot cross session or source lane'
+        );
+    END IF;
+    SELECT * INTO terminal_record
+      FROM canonical_brain.writer_routeback_terminals AS terminal
+     WHERE terminal.authorization_id = authorization_value;
+    IF FOUND THEN
+        RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+            'success', true,
+            'authorization_id', authorization_value,
+            'state', terminal_record.outcome,
+            'terminal_event_type', 'route_back.' || terminal_record.outcome,
+            'terminal_payload', pg_catalog.jsonb_build_object(
+                'outcome', terminal_record.outcome,
+                'receipt', terminal_record.receipt,
+                'blocker_reason', terminal_record.blocker_reason
+            ),
+            'inserted', false,
+            'deduped', true
+        ));
+    END IF;
+    IF recovery_value = 'edge_no_record'
+       AND NOT EXISTS (
+           SELECT 1
+             FROM canonical_brain.writer_public_routeback_targets AS allowed
+            WHERE allowed.channel_id = target_id
+              AND allowed.enabled
+              AND allowed.target_type IN ('public_channel', 'public_thread')
+       ) THEN
+        RETURN canonical_brain._fail(
+            'target_not_approved',
+            'no-record recovery target is not currently approved'
+        );
+    END IF;
+    RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
+        'success', true,
+        'authorization_id', authorization_value,
+        'case_id', authorization_record.case_id,
+        'target_ref', authorization_record.target_ref,
+        'content_sha256', authorization_record.content_sha256,
+        'state', 'authorized',
+        'recovery_kind', recovery_value,
+        'recovered_epoch_sha256', epoch_value,
+        'recovered', true,
+        'inserted', false,
+        'deduped', true
+    ));
+EXCEPTION
+WHEN serialization_failure OR deadlock_detected THEN
+    RAISE;
+WHEN OTHERS THEN
+    RETURN canonical_brain._fail('database_failure', 'route-back recovery failed');
+END
+$function$;
+
+-- Fixed public routine 10/17.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_finalize_sent(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -3890,13 +4303,17 @@ BEGIN
     IF NOT FOUND THEN
         RETURN canonical_brain._fail('authorization_missing', 'route-back authorization not found');
     END IF;
-    IF authorization_record.session_key_sha256 <> runtime->>'session_key_sha256' THEN
-        RETURN canonical_brain._fail('scope_mismatch', 'route-back session does not match');
-    END IF;
-    IF authorization_record.capability_epoch_sha256
-       <> runtime->>'capability_epoch_sha256' THEN
+    IF authorization_record.session_key_sha256 <> runtime->>'session_key_sha256'
+       OR authorization_record.runtime_platform <> runtime->>'platform'
+       OR authorization_record.source_thread_id <> COALESCE(
+            NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', ''
+       )
+       OR NOT canonical_brain._case_scope_authorized(
+            authorization_record.case_id, runtime, false
+       ) THEN
         RETURN canonical_brain._fail(
-            'scope_mismatch', 'route-back routing epoch does not match'
+            'scope_mismatch',
+            'route-back finalization cannot cross session or source lane'
         );
     END IF;
     target_id := COALESCE(
@@ -3996,7 +4413,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 10/16.
+-- Fixed public routine 11/17.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_routeback_finalize_blocked(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -4273,14 +4690,10 @@ BEGIN
                 )
                 OR receipt_value->>'platform' <> 'discord'
                 OR receipt_value->'adapter_receipt' IS DISTINCT FROM 'true'::jsonb
-                OR pg_catalog.jsonb_typeof(
-                    receipt_value->'receipt_readback_verified'
-                ) <> 'boolean'
-                OR (
-                    receipt_value->'receipt_readback_verified' = 'true'::jsonb
-                    AND blocker_value
-                        <> 'route_back_sent_receipt_persistence_failed'
-                )
+                OR receipt_value->'receipt_readback_verified'
+                   IS DISTINCT FROM 'true'::jsonb
+                OR blocker_value
+                   <> 'route_back_sent_receipt_persistence_failed'
                 OR COALESCE(receipt_value->>'message_id', '')
                    !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
                 OR COALESCE(receipt_value->>'channel_id', '')
@@ -4304,13 +4717,17 @@ BEGIN
     IF NOT FOUND THEN
         RETURN canonical_brain._fail('authorization_missing', 'route-back authorization not found');
     END IF;
-    IF authorization_record.session_key_sha256 <> runtime->>'session_key_sha256' THEN
-        RETURN canonical_brain._fail('scope_mismatch', 'route-back session does not match');
-    END IF;
-    IF authorization_record.capability_epoch_sha256
-       <> runtime->>'capability_epoch_sha256' THEN
+    IF authorization_record.session_key_sha256 <> runtime->>'session_key_sha256'
+       OR authorization_record.runtime_platform <> runtime->>'platform'
+       OR authorization_record.source_thread_id <> COALESCE(
+            NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', ''
+       )
+       OR NOT canonical_brain._case_scope_authorized(
+            authorization_record.case_id, runtime, false
+       ) THEN
         RETURN canonical_brain._fail(
-            'scope_mismatch', 'route-back routing epoch does not match'
+            'scope_mismatch',
+            'route-back finalization cannot cross session or source lane'
         );
     END IF;
     target_id := COALESCE(
@@ -4380,9 +4797,7 @@ BEGIN
                 'partial_receipt', receipt_value,
                 'delivery_state', CASE
                     WHEN receipt_value = '{}'::jsonb THEN 'not_verified'
-                    WHEN receipt_value->'receipt_readback_verified' = 'true'::jsonb
-                        THEN 'verified_but_sent_terminal_persistence_failed'
-                    ELSE 'accepted_unverified'
+                    ELSE 'verified_but_sent_terminal_persistence_failed'
                 END,
                 'blocker_reason', blocker_value,
                 'execution_binding', pg_catalog.jsonb_build_object(
@@ -4396,8 +4811,7 @@ BEGIN
         ),
         pg_catalog.jsonb_build_object(
             'outbound_delivery_uncertain',
-                receipt_value = '{}'::jsonb
-                OR receipt_value->'receipt_readback_verified' = 'false'::jsonb,
+                receipt_value = '{}'::jsonb,
             'adapter_acceptance_observed', receipt_value <> '{}'::jsonb,
             'outbound_delivery_verified_but_terminal_blocked',
                 receipt_value <> '{}'::jsonb
@@ -4437,7 +4851,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 11/16.
+-- Fixed public routine 12/17.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_lease_shadow_record(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -4504,7 +4918,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 12/16.  Approval-source uniqueness is the replay
+-- Fixed public routine 13/17.  Approval-source uniqueness is the replay
 -- boundary.  Grant insertion, receipt append, and exact active-plan check are
 -- serialized by source, approval, routing epoch, and case advisory locks.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_grant(request jsonb, runtime jsonb)
@@ -4805,7 +5219,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 13/16.  Idempotency lookup, exact session/command/plan
+-- Fixed public routine 14/17.  Idempotency lookup, exact session/command/plan
 -- checks, decrement, durable use row, and audit receipt are one transaction.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_consume(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -5077,7 +5491,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 14/16.
+-- Fixed public routine 15/17.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_revoke(request jsonb, runtime jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -5198,7 +5612,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 15/16.  The request's session digest must exactly equal
+-- Fixed public routine 16/17.  The request's session digest must exactly equal
 -- the authenticated runtime digest; callers cannot revoke another session.
 CREATE OR REPLACE FUNCTION canonical_brain.writer_capability_revoke_session(request jsonb, runtime jsonb)
 RETURNS jsonb
@@ -5318,7 +5732,7 @@ WHEN OTHERS THEN
 END
 $function$;
 
--- Fixed public routine 16/16.  Ordinary calls are exact-case scoped.  Only an
+-- Fixed public routine 17/17.  Ordinary calls are exact-case scoped.  Only an
 -- in-process writer job may set trusted runtime.service_internal=true and read
 -- the global append log.  Cursor order is (occurred_at,event_id), never UUID
 -- alone, and every non-empty page advances to its last returned event.
@@ -5512,6 +5926,8 @@ ALTER FUNCTION canonical_brain.writer_verification_append(jsonb,jsonb)
     OWNER TO canonical_brain_migration_owner;
 ALTER FUNCTION canonical_brain.writer_routeback_claim(jsonb,jsonb)
     OWNER TO canonical_brain_migration_owner;
+ALTER FUNCTION canonical_brain.writer_routeback_recover(jsonb,jsonb)
+    OWNER TO canonical_brain_migration_owner;
 ALTER FUNCTION canonical_brain.writer_routeback_finalize_sent(jsonb,jsonb)
     OWNER TO canonical_brain_migration_owner;
 ALTER FUNCTION canonical_brain.writer_routeback_finalize_blocked(jsonb,jsonb)
@@ -5663,6 +6079,8 @@ GRANT EXECUTE ON FUNCTION canonical_brain.writer_verification_append(jsonb,jsonb
     TO canonical_brain_writer;
 GRANT EXECUTE ON FUNCTION canonical_brain.writer_routeback_claim(jsonb,jsonb)
     TO canonical_brain_writer;
+GRANT EXECUTE ON FUNCTION canonical_brain.writer_routeback_recover(jsonb,jsonb)
+    TO canonical_brain_writer;
 GRANT EXECUTE ON FUNCTION canonical_brain.writer_routeback_finalize_sent(jsonb,jsonb)
     TO canonical_brain_writer;
 GRANT EXECUTE ON FUNCTION canonical_brain.writer_routeback_finalize_blocked(jsonb,jsonb)
@@ -5799,7 +6217,8 @@ BEGIN
                 'writer_ping','writer_case_query','writer_routeback_context',
                 'writer_plan_active_match','writer_event_append_model',
                 'writer_plan_transition','writer_verification_append',
-                'writer_routeback_claim','writer_routeback_finalize_sent',
+                'writer_routeback_claim','writer_routeback_recover',
+                'writer_routeback_finalize_sent',
                 'writer_routeback_finalize_blocked','writer_lease_shadow_record',
                 'writer_capability_grant','writer_capability_consume',
                 'writer_capability_revoke','writer_capability_revoke_session',
@@ -5895,6 +6314,10 @@ END
 $canonical_default_acl_contract$;
 
 DO $effective_writer_acl$
+DECLARE
+    cloudsqladmin_hba_receipt text := pg_catalog.current_setting(
+        'muncho.canonical_writer_cloudsqladmin_hba_rejection_sha256', true
+    );
 BEGIN
     IF NOT pg_catalog.has_database_privilege(
         'canonical_brain_writer', pg_catalog.current_database(), 'CONNECT'
@@ -5971,11 +6394,72 @@ BEGIN
            AND pg_catalog.has_database_privilege(
                'canonical_brain_writer', database.datname, 'CONNECT'
            )
+           AND NOT pg_temp._cw_managed_cloudsqladmin_exception(
+               database.oid, cloudsqladmin_hba_receipt
+           )
     ) THEN
         RAISE EXCEPTION
             'canonical_brain_writer retains CONNECT on another database';
     END IF;
 END
 $effective_writer_acl$;
+
+RESET ROLE;
+
+DO $retire_temporary_owner_database_acl$
+BEGIN
+    EXECUTE pg_catalog.format(
+        'REVOKE TEMPORARY ON DATABASE %I FROM canonical_brain_migration_owner',
+        pg_catalog.current_database()
+    );
+END
+$retire_temporary_owner_database_acl$;
+
+DO $retire_temporary_owner_membership$
+DECLARE
+    admin_name text := pg_catalog.current_setting(
+        'muncho.canonical_writer_migration_admin'
+    );
+BEGIN
+    IF CURRENT_USER <> SESSION_USER OR CURRENT_USER <> admin_name THEN
+        RAISE EXCEPTION
+            'migration administrator identity changed before membership retirement';
+    END IF;
+    EXECUTE pg_catalog.format(
+        'REVOKE canonical_brain_migration_owner FROM %I', admin_name
+    );
+END
+$retire_temporary_owner_membership$;
+
+DO $final_owner_membership_contract$
+DECLARE
+    admin_name text := pg_catalog.current_setting(
+        'muncho.canonical_writer_migration_admin'
+    );
+    admin_superuser boolean;
+BEGIN
+    SELECT rolsuper INTO STRICT admin_superuser
+      FROM pg_catalog.pg_roles WHERE rolname = admin_name;
+    IF EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_auth_members AS membership
+          JOIN pg_catalog.pg_roles AS owner_role
+            ON owner_role.rolname = 'canonical_brain_migration_owner'
+         WHERE membership.roleid = owner_role.oid
+            OR membership.member = owner_role.oid
+    ) OR (
+        NOT admin_superuser
+        AND pg_catalog.pg_has_role(
+            admin_name, 'canonical_brain_migration_owner', 'MEMBER'
+        )
+    ) OR pg_catalog.has_database_privilege(
+        'canonical_brain_migration_owner',
+        pg_catalog.current_database(), 'TEMP'
+    ) THEN
+        RAISE EXCEPTION
+            'migration-owner membership survived transaction-scoped retirement';
+    END IF;
+END
+$final_owner_membership_contract$;
 
 COMMIT;

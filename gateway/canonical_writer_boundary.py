@@ -29,6 +29,9 @@ DEFAULT_SOCKET_PATH = Path("/run/muncho-canonical-writer/writer.sock")
 DEFAULT_GATEWAY_UNIT = "hermes-cloud-gateway.service"
 DEFAULT_WRITER_UNIT = "muncho-canonical-writer.service"
 DEFAULT_WRITER_USER = "muncho-canonical-writer"
+DEFAULT_DISCORD_EDGE_SOCKET_PATH = Path("/run/muncho-discord-egress/edge.sock")
+DEFAULT_DISCORD_EDGE_UNIT = "muncho-discord-egress.service"
+DEFAULT_DISCORD_EDGE_USER = "muncho-discord-egress"
 _MAX_RUNTIME_VALUE_CHARS = 1024
 
 
@@ -43,6 +46,11 @@ class CanonicalWriterBoundaryConfig:
     writer_unit: str = DEFAULT_WRITER_UNIT
     connect_timeout_seconds: float = 2.0
     request_timeout_seconds: float = 12.0
+    discord_edge_enabled: bool = False
+    discord_edge_socket_path: Path = DEFAULT_DISCORD_EDGE_SOCKET_PATH
+    discord_edge_unit: str = DEFAULT_DISCORD_EDGE_UNIT
+    discord_edge_connect_timeout_seconds: float = 2.0
+    discord_edge_request_timeout_seconds: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,7 @@ _SERVICE_CONTEXT: contextvars.ContextVar[WriterServiceContext | None] = (
 )
 _CLIENT_LOCK = threading.Lock()
 _CLIENTS: dict[CanonicalWriterBoundaryConfig, Any] = {}
+_DISCORD_EDGE_CLIENTS: dict[CanonicalWriterBoundaryConfig, Any] = {}
 _CONFIG_LOCK = threading.Lock()
 _FROZEN_CONFIG: CanonicalWriterBoundaryConfig | None = None
 _FROZEN_CONFIG_ERROR: str | None = None
@@ -120,6 +129,8 @@ def load_writer_boundary_config(config: Mapping[str, Any] | None = None) -> Cano
     audit_bridge = audit_bridge if isinstance(audit_bridge, Mapping) else {}
     raw = canonical.get("writer_boundary")
     raw = raw if isinstance(raw, Mapping) else {}
+    edge = canonical.get("discord_edge")
+    edge = edge if isinstance(edge, Mapping) else {}
 
     socket_raw = str(raw.get("socket_path") or DEFAULT_SOCKET_PATH).strip()
     socket_path = Path(socket_raw)
@@ -140,12 +151,30 @@ def load_writer_boundary_config(config: Mapping[str, Any] | None = None) -> Cano
             "canonical_brain.writer_boundary.writer_unit is production-pinned"
         )
 
+    edge_socket_raw = str(
+        edge.get("socket_path") or DEFAULT_DISCORD_EDGE_SOCKET_PATH
+    ).strip()
+    edge_socket_path = Path(edge_socket_raw)
+    if not edge_socket_path.is_absolute():
+        raise ValueError("canonical_brain.discord_edge.socket_path must be absolute")
+    if edge_socket_path != DEFAULT_DISCORD_EDGE_SOCKET_PATH:
+        raise ValueError("canonical_brain.discord_edge.socket_path is production-pinned")
+    edge_unit = str(edge.get("unit") or DEFAULT_DISCORD_EDGE_UNIT).strip()
+    if edge_unit != DEFAULT_DISCORD_EDGE_UNIT:
+        raise ValueError("canonical_brain.discord_edge.unit is production-pinned")
+
     connect_timeout = float(raw.get("connect_timeout_seconds") or 2.0)
     request_timeout = float(raw.get("request_timeout_seconds") or 12.0)
     if not 0.1 <= connect_timeout <= 10.0:
         raise ValueError("writer connect_timeout_seconds must be between 0.1 and 10")
     if not 0.5 <= request_timeout <= 30.0:
         raise ValueError("writer request_timeout_seconds must be between 0.5 and 30")
+    edge_connect_timeout = float(edge.get("connect_timeout_seconds") or 2.0)
+    edge_request_timeout = float(edge.get("request_timeout_seconds") or 20.0)
+    if not 0.1 <= edge_connect_timeout <= 10.0:
+        raise ValueError("Discord edge connect_timeout_seconds must be between 0.1 and 10")
+    if not 0.5 <= edge_request_timeout <= 30.0:
+        raise ValueError("Discord edge request_timeout_seconds must be between 0.5 and 30")
 
     return CanonicalWriterBoundaryConfig(
         enabled=_coerce_bool(raw.get("enabled"), False),
@@ -158,6 +187,11 @@ def load_writer_boundary_config(config: Mapping[str, Any] | None = None) -> Cano
         writer_unit=writer_unit,
         connect_timeout_seconds=connect_timeout,
         request_timeout_seconds=request_timeout,
+        discord_edge_enabled=_coerce_bool(edge.get("enabled"), False),
+        discord_edge_socket_path=edge_socket_path,
+        discord_edge_unit=edge_unit,
+        discord_edge_connect_timeout_seconds=edge_connect_timeout,
+        discord_edge_request_timeout_seconds=edge_request_timeout,
     )
 
 
@@ -183,6 +217,16 @@ def canonical_model_tools_configured() -> bool:
     except Exception:
         return False
     return bool(config.enabled and config.model_tools_enabled)
+
+
+def discord_edge_configured() -> bool:
+    """Return the restart-frozen privileged Discord route-back policy."""
+
+    try:
+        config = frozen_writer_boundary_config()
+    except Exception:
+        return False
+    return bool(config.enabled and config.discord_edge_enabled)
 
 
 def writer_boundary_policy_required(
@@ -455,12 +499,61 @@ def canonical_writer_call(
     }
 
 
+def privileged_discord_edge_client() -> Any:
+    """Return the cached credential-free edge client for the gateway PID.
+
+    The caller preconnects this client before claiming an outbound mutation.
+    Neither this factory nor the client can read the Discord token or either
+    Ed25519 private key.
+    """
+
+    config = frozen_writer_boundary_config()
+    if not config.enabled or not config.discord_edge_enabled:
+        raise RuntimeError("privileged_discord_edge_not_configured")
+    from gateway.canonical_writer_client import (
+        ExactServerMainPidAuthorizer,
+        SystemctlServerMainPidProvider,
+    )
+    from gateway.discord_edge_client import DiscordEdgeClient
+
+    with _CLIENT_LOCK:
+        client = _DISCORD_EDGE_CLIENTS.get(config)
+        if client is None:
+            try:
+                import pwd
+            except ImportError as exc:
+                raise RuntimeError(
+                    "privileged_discord_edge_requires_linux_peer_credentials"
+                ) from exc
+            try:
+                edge_uid = pwd.getpwnam(DEFAULT_DISCORD_EDGE_USER).pw_uid
+            except KeyError as exc:
+                raise RuntimeError("privileged_discord_edge_identity_missing") from exc
+            client = DiscordEdgeClient(
+                config.discord_edge_socket_path,
+                connect_timeout_seconds=(
+                    config.discord_edge_connect_timeout_seconds
+                ),
+                request_timeout_seconds=(
+                    config.discord_edge_request_timeout_seconds
+                ),
+                server_authorizer=ExactServerMainPidAuthorizer(
+                    server_unit=config.discord_edge_unit,
+                    expected_server_uid=edge_uid,
+                    main_pid_provider=SystemctlServerMainPidProvider(),
+                ),
+            )
+            _DISCORD_EDGE_CLIENTS[config] = client
+    return client
+
+
 def close_canonical_writer_clients() -> None:
     """Close cached clients during process shutdown and in isolated tests."""
 
     with _CLIENT_LOCK:
-        clients = list(_CLIENTS.values())
+        clients = [*_CLIENTS.values(), *_DISCORD_EDGE_CLIENTS.values()]
         _CLIENTS.clear()
+        _DISCORD_EDGE_CLIENTS.clear()
     for client in clients:
         try:
             client.close()

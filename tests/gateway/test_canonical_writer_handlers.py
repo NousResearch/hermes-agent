@@ -1,8 +1,10 @@
 import datetime as dt
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import threading
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway.canonical_writer_handlers import (
     MODEL_FORBIDDEN_EVENT_TYPES,
@@ -15,6 +17,16 @@ from gateway.canonical_writer_handlers import (
     RuntimeContext,
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation, make_request
+from gateway.discord_edge_protocol import (
+    DiscordEdgeReceiptOutcome,
+    parse_request_for_reconciliation,
+    sign_receipt,
+    verify_request_capability_for_reconciliation,
+)
+from gateway.discord_edge_writer_authority import (
+    CanonicalWriterDiscordAuthority,
+    derive_routeback_edge_idempotency_key,
+)
 from scripts.canonical_writer_service import DispatchContext, PeerCredentials
 
 
@@ -22,16 +34,29 @@ NOW = dt.datetime(2026, 7, 12, 8, 0, tzinfo=dt.timezone.utc)
 SESSION_HASH = "a" * 64
 COMMAND_HASH = "b" * 64
 SOURCE_HASH = "c" * 64
-CONTENT_HASH = "d" * 64
+ROUTEBACK_CONTENT = "Exact handler route-back content"
+CONTENT_HASH = hashlib.sha256(ROUTEBACK_CONTENT.encode("utf-8")).hexdigest()
 CAPABILITY_EPOCH_HASH = "e" * 64
+DISCORD_GUILD_ID = "100000000000000001"
+DISCORD_CHANNEL_ID = "100000000000000002"
+DISCORD_MESSAGE_ID = "100000000000000003"
+DISCORD_BOT_ID = "100000000000000004"
+WRITER_PRIVATE_KEY = Ed25519PrivateKey.generate()
+EDGE_PRIVATE_KEY = Ed25519PrivateKey.generate()
 
 
-def _runtime(*, session_hash=SESSION_HASH, thread_id="requester-thread"):
+def _runtime(
+    *,
+    session_hash=SESSION_HASH,
+    epoch_hash=CAPABILITY_EPOCH_HASH,
+    thread_id="requester-thread",
+    platform="discord",
+):
     return RuntimeContext(
         request_id="request-1",
-        platform="discord",
+        platform=platform,
         session_key_sha256=session_hash,
-        capability_epoch_sha256=CAPABILITY_EPOCH_HASH,
+        capability_epoch_sha256=epoch_hash,
         user_id="owner-1",
         chat_id=thread_id,
         thread_id=thread_id,
@@ -42,7 +67,116 @@ def _runtime(*, session_hash=SESSION_HASH, thread_id="requester-thread"):
 
 def _handlers(store=None):
     backend = InMemoryCanonicalWriterBackend(store, clock=lambda: NOW)
-    return CanonicalWriterHandlers(backend), backend
+    authority = CanonicalWriterDiscordAuthority(
+        capability_private_key=WRITER_PRIVATE_KEY,
+        edge_receipt_public_key=EDGE_PRIVATE_KEY.public_key(),
+        clock_unix_ms=lambda: int(NOW.timestamp() * 1000),
+    )
+    return CanonicalWriterHandlers(
+        backend,
+        discord_edge_authority=authority,
+    ), backend
+
+
+def _routeback_claim_payload(*, case_id="case:1", key="routeback:1"):
+    edge_key = derive_routeback_edge_idempotency_key(
+        case_id=case_id,
+        canonical_idempotency_key=key,
+    )
+    return {
+        "case_id": case_id,
+        "target_ref": {
+            "target_type": "public_guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+        },
+        "message_summary": "Send exact result",
+        "source_refs": {"thread_id": "requester-thread"},
+        "idempotency_key": key,
+        "execution_binding": {
+            "target_channel_id": DISCORD_CHANNEL_ID,
+            "content_sha256": CONTENT_HASH,
+        },
+        "discord_edge_intent": {
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "public_guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": DISCORD_CHANNEL_ID,
+            },
+            "payload": {"content": ROUTEBACK_CONTENT},
+            "idempotency_key": edge_key,
+        },
+    }
+
+
+def _signed_routeback_receipt(edge_request, outcome):
+    request = parse_request_for_reconciliation(edge_request)
+    capability = verify_request_capability_for_reconciliation(
+        request,
+        WRITER_PRIVATE_KEY.public_key(),
+    )
+    if outcome is DiscordEdgeReceiptOutcome.VERIFIED:
+        values = {
+            "discord_object_id": DISCORD_MESSAGE_ID,
+            "bot_user_id": DISCORD_BOT_ID,
+            "adapter_accepted": True,
+            "readback_verified": True,
+            "readback_content_sha256": CONTENT_HASH,
+            "blocker_code": None,
+        }
+    elif outcome is DiscordEdgeReceiptOutcome.ACCEPTED_UNVERIFIED:
+        values = {
+            "discord_object_id": DISCORD_MESSAGE_ID,
+            "bot_user_id": DISCORD_BOT_ID,
+            "adapter_accepted": True,
+            "readback_verified": False,
+            "readback_content_sha256": None,
+            "blocker_code": "readback_failed",
+        }
+    elif outcome is DiscordEdgeReceiptOutcome.DISPATCH_UNCERTAIN:
+        values = {
+            "discord_object_id": None,
+            "bot_user_id": None,
+            "adapter_accepted": None,
+            "readback_verified": False,
+            "readback_content_sha256": None,
+            "blocker_code": "dispatch_outcome_uncertain",
+        }
+    else:
+        values = {
+            "discord_object_id": None,
+            "bot_user_id": None,
+            "adapter_accepted": False,
+            "readback_verified": False,
+            "readback_content_sha256": None,
+            "blocker_code": "blocked_before_dispatch",
+        }
+    return sign_receipt(
+        EDGE_PRIVATE_KEY,
+        request,
+        capability,
+        outcome=outcome,
+        occurred_at_unix_ms=int(NOW.timestamp() * 1000),
+        **values,
+    ).to_message()
+
+
+def _routeback_terminal_payload(claim, edge_request, edge_receipt):
+    return {
+        key: claim[key]
+        for key in (
+            "case_id",
+            "target_ref",
+            "message_summary",
+            "source_refs",
+            "idempotency_key",
+            "execution_binding",
+        )
+    } | {
+        "discord_edge_request": edge_request,
+        "discord_edge_receipt": edge_receipt,
+    }
 
 
 def _append(handlers, runtime, *, event_type="case.note", case_id="case:1", body=None, key=None):
@@ -171,20 +305,10 @@ def _initiating_mutation_cases():
         ),
         (
             CanonicalWriterOperation.ROUTEBACK_CLAIM,
-            {
-                "case_id": "case:retired",
-                "target_ref": {
-                    "channel_id": "public-channel",
-                    "channel_type": "public",
-                },
-                "message_summary": "stale claim",
-                "source_refs": {"thread_id": "requester-thread"},
-                "execution_binding": {
-                    "target_channel_id": "public-channel",
-                    "content_sha256": CONTENT_HASH,
-                },
-                "idempotency_key": "retired:claim",
-            },
+            _routeback_claim_payload(
+                case_id="case:retired",
+                key="retired:claim",
+            ),
         ),
         (
             CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED,
@@ -307,55 +431,38 @@ def test_session_retirement_wins_shared_lock_before_waiting_stale_mutation():
 
 
 @pytest.mark.parametrize(
-    "finalize_operation,terminal_fields,event_type",
+    "finalize_operation,edge_outcome,event_type",
     [
         (
             CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
-            {
-                "receipt": {
-                    "platform": "discord",
-                    "adapter_receipt": True,
-                    "receipt_readback_verified": True,
-                    "message_id": "discord-message-after-rotation",
-                    "channel_id": "public-channel",
-                    "content_sha256": CONTENT_HASH,
-                }
-            },
+            DiscordEdgeReceiptOutcome.VERIFIED,
             "route_back.sent",
         ),
         (
             CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED,
-            {"blocker_reason": "adapter rejected the exact claimed send"},
+            DiscordEdgeReceiptOutcome.DISPATCH_UNCERTAIN,
             "route_back.blocked",
         ),
     ],
 )
 def test_exact_original_claimant_can_record_terminal_truth_after_epoch_retirement(
     finalize_operation,
-    terminal_fields,
+    edge_outcome,
     event_type,
 ):
     handlers, backend = _handlers()
     runtime = _runtime()
-    claim = {
-        "case_id": "case:terminal-truth",
-        "target_ref": {
-            "channel_id": "public-channel",
-            "channel_type": "public",
-        },
-        "message_summary": "record exact terminal outcome",
-        "source_refs": {"thread_id": "requester-thread"},
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-        "idempotency_key": f"terminal-truth:{event_type}",
-    }
+    claim = _routeback_claim_payload(
+        case_id="case:terminal-truth",
+        key=f"terminal-truth:{event_type}",
+    )
     claimed = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
         runtime=runtime,
     )
+    edge_request = claimed["result"]["discord_edge_request"]
+    edge_receipt = _signed_routeback_receipt(edge_request, edge_outcome)
     revoked = handlers.dispatch(
         CanonicalWriterOperation.CAPABILITY_REVOKE_SESSION.value,
         {"reason": "rotate after external send was claimed"},
@@ -364,7 +471,7 @@ def test_exact_original_claimant_can_record_terminal_truth_after_epoch_retiremen
 
     finalized = handlers.dispatch(
         finalize_operation.value,
-        {**claim, **terminal_fields},
+        _routeback_terminal_payload(claim, edge_request, edge_receipt),
         runtime=runtime,
     )
 
@@ -446,14 +553,15 @@ def test_typed_preclaim_routeback_blocked_path_never_forges_authorization():
 
 def test_preclaim_terminal_blocks_later_claim_across_session_rotation():
     handlers, backend = _handlers()
+    claim = _routeback_claim_payload(key="preclaim:global-lifecycle:1")
     payload = {
         "preclaim": True,
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel"},
+        "case_id": claim["case_id"],
+        "target_ref": claim["target_ref"],
         "message_summary": "blocked before claim",
-        "source_refs": {"thread_id": "requester-thread"},
+        "source_refs": claim["source_refs"],
         "blocker_reason": "public target unavailable",
-        "idempotency_key": "preclaim:global-lifecycle:1",
+        "idempotency_key": claim["idempotency_key"],
     }
     assert handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
@@ -463,15 +571,7 @@ def test_preclaim_terminal_blocks_later_claim_across_session_rotation():
 
     retry = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
-        {
-            **{key: value for key, value in payload.items() if key not in {
-                "preclaim", "blocker_reason"
-            }},
-            "execution_binding": {
-                "target_channel_id": "public-channel",
-                "content_sha256": CONTENT_HASH,
-            },
-        },
+        {**claim, "message_summary": payload["message_summary"]},
         runtime=_runtime(session_hash="f" * 64),
     )
 
@@ -483,19 +583,18 @@ def test_preclaim_terminal_blocks_later_claim_across_session_rotation():
     ]
 
 
-def test_nonterminal_claim_identity_is_stable_across_session_rotation():
+@pytest.mark.parametrize(
+    "runtime_kwargs",
+    [
+        {"session_hash": "f" * 64},
+        {"epoch_hash": "d" * 64},
+        {"thread_id": "another-requester-thread"},
+        {"platform": "telegram"},
+    ],
+)
+def test_nonterminal_claim_dedupe_requires_exact_runtime_scope(runtime_kwargs):
     handlers, backend = _handlers()
-    claim = {
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel"},
-        "message_summary": "one lifecycle",
-        "source_refs": {"thread_id": "requester-thread"},
-        "idempotency_key": "routeback:cross-session:1",
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-    }
+    claim = _routeback_claim_payload(key="routeback:cross-session:1")
     first = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
@@ -504,17 +603,75 @@ def test_nonterminal_claim_identity_is_stable_across_session_rotation():
     retry = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
-        runtime=_runtime(session_hash="f" * 64),
+        runtime=_runtime(**runtime_kwargs),
     )
 
-    assert first["result"]["authorization_id"] == retry["result"][
-        "authorization_id"
-    ]
-    assert retry["result"]["deduped"] is True
+    assert first["ok"] is True
+    assert retry["error"]["code"] == "scope_mismatch"
     assert len(backend.store.routeback_authorizations) == 1
     assert [event["event_type"] for event in backend.store.events] == [
         "route_back.intent.created"
     ]
+
+
+def test_nonterminal_deduped_claim_mints_fresh_short_lived_edge_request():
+    handlers, backend = _handlers()
+    runtime = _runtime()
+    claim = _routeback_claim_payload(key="routeback:fresh-edge-recovery:1")
+
+    first = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        claim,
+        runtime=runtime,
+    )["result"]
+    retry = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        claim,
+        runtime=runtime,
+    )["result"]
+
+    first_request = parse_request_for_reconciliation(first["discord_edge_request"])
+    retry_request = parse_request_for_reconciliation(retry["discord_edge_request"])
+    assert first["inserted"] is True
+    assert retry["inserted"] is False
+    assert retry["deduped"] is True
+    assert first_request.request_id != retry_request.request_id
+    assert first_request.intent == retry_request.intent
+    assert first_request.intent.idempotency_key == derive_routeback_edge_idempotency_key(
+        case_id=claim["case_id"],
+        canonical_idempotency_key=claim["idempotency_key"],
+    )
+    assert len(backend.store.routeback_authorizations) == 1
+
+
+def test_edge_idempotency_is_scoped_by_case_not_raw_caller_key():
+    handlers, _backend = _handlers()
+    canonical_key = "routeback:case-scoped-edge:1"
+    first_claim = _routeback_claim_payload(
+        case_id="case:edge-scope-a",
+        key=canonical_key,
+    )
+    second_claim = _routeback_claim_payload(
+        case_id="case:edge-scope-b",
+        key=canonical_key,
+    )
+
+    first = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        first_claim,
+        runtime=_runtime(),
+    )["result"]
+    second = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        second_claim,
+        runtime=_runtime(),
+    )["result"]
+
+    first_request = parse_request_for_reconciliation(first["discord_edge_request"])
+    second_request = parse_request_for_reconciliation(second["discord_edge_request"])
+    assert first_request.intent.idempotency_key != second_request.intent.idempotency_key
+    assert first_request.intent.idempotency_key.startswith("canonical-routeback:")
+    assert second_request.intent.idempotency_key.startswith("canonical-routeback:")
 
 
 def test_model_append_optional_idempotency_is_deterministic():
@@ -580,35 +737,20 @@ def test_typed_plan_and_verification_ops_validate_inside_service(operation):
 def test_routeback_claim_and_typed_finalize_are_atomic_and_replay_safe():
     handlers, backend = _handlers()
     runtime = _runtime()
-    claim = {
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel", "channel_type": "public"},
-        "message_summary": "Send exact result",
-        "source_refs": {"thread_id": "requester-thread"},
-        "idempotency_key": "routeback:1",
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-    }
+    claim = _routeback_claim_payload()
     claimed = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
         runtime=runtime,
     )
+    edge_request = claimed["result"]["discord_edge_request"]
+    edge_receipt = _signed_routeback_receipt(
+        edge_request,
+        DiscordEdgeReceiptOutcome.VERIFIED,
+    )
     finalized = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value,
-        {
-            **claim,
-            "receipt": {
-                "platform": "discord",
-                "message_id": "discord-message-1",
-                "channel_id": "public-channel",
-                "content_sha256": CONTENT_HASH,
-                "adapter_receipt": True,
-                "receipt_readback_verified": True,
-            },
-        },
+        _routeback_terminal_payload(claim, edge_request, edge_receipt),
         runtime=runtime,
     )
     replay = handlers.dispatch(
@@ -618,11 +760,11 @@ def test_routeback_claim_and_typed_finalize_are_atomic_and_replay_safe():
     )
     context = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CONTEXT.value,
-        {"thread_id": "public-channel"},
+        {"thread_id": DISCORD_CHANNEL_ID},
         runtime=RuntimeContext(
             request_id="read-routeback",
             platform="discord",
-            thread_id="public-channel",
+            thread_id=DISCORD_CHANNEL_ID,
         ),
     )
 
@@ -641,32 +783,26 @@ def test_routeback_claim_and_typed_finalize_are_atomic_and_replay_safe():
 def test_routeback_sent_rejects_unverified_process_receipt():
     handlers, _backend = _handlers()
     runtime = _runtime()
-    claim = {
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel", "channel_type": "public"},
-        "message_summary": "Send exact result",
-        "source_refs": {"thread_id": "requester-thread"},
-        "idempotency_key": "routeback:unverified",
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-    }
-    assert handlers.dispatch(
+    claim = _routeback_claim_payload(key="routeback:unverified")
+    claimed = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
         runtime=runtime,
-    )["ok"] is True
+    )
 
     response = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value,
         {
-            **claim,
+            **_routeback_terminal_payload(
+                claim,
+                claimed["result"]["discord_edge_request"],
+                _signed_routeback_receipt(
+                    claimed["result"]["discord_edge_request"],
+                    DiscordEdgeReceiptOutcome.VERIFIED,
+                ),
+            ),
             "receipt": {
                 "platform": "discord",
-                "message_id": "discord-message-1",
-                "channel_id": "public-channel",
-                "content_sha256": CONTENT_HASH,
                 "adapter_receipt": True,
                 "receipt_readback_verified": False,
             },
@@ -674,165 +810,104 @@ def test_routeback_sent_rejects_unverified_process_receipt():
         runtime=runtime,
     )
 
-    assert response["error"]["code"] == "invalid_receipt"
+    assert response["error"]["code"] == "invalid_request"
 
 
-def test_routeback_blocked_preserves_exact_accepted_unverified_partial_receipt():
+def test_routeback_accepted_unverified_remains_nonterminal():
     handlers, backend = _handlers()
     runtime = _runtime()
-    claim = {
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel", "channel_type": "public"},
-        "message_summary": "Send exact result",
-        "source_refs": {"thread_id": "requester-thread"},
-        "idempotency_key": "routeback:partial-receipt",
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-    }
-    partial_receipt = {
-        "platform": "discord",
-        "message_id": "discord-message-accepted",
-        "channel_id": "public-channel",
-        "content_sha256": CONTENT_HASH,
-        "adapter_receipt": True,
-        "receipt_readback_verified": False,
-    }
-    assert handlers.dispatch(
+    claim = _routeback_claim_payload(key="routeback:partial-receipt")
+    claimed = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
         runtime=runtime,
-    )["ok"] is True
+    )["result"]
+    edge_request = claimed["discord_edge_request"]
+    edge_receipt = _signed_routeback_receipt(
+        edge_request,
+        DiscordEdgeReceiptOutcome.ACCEPTED_UNVERIFIED,
+    )
+    terminal = _routeback_terminal_payload(claim, edge_request, edge_receipt)
 
     first = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
-        {
-            **claim,
-            "blocker_reason": "discord_readback_failed:TimeoutError",
-            "partial_receipt": partial_receipt,
-        },
+        terminal,
         runtime=runtime,
     )
     replay = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
-        {
-            **claim,
-            "blocker_reason": "discord_readback_failed:TimeoutError",
-            "partial_receipt": partial_receipt,
-        },
+        terminal,
         runtime=runtime,
     )
 
-    assert first["ok"] is True
-    assert first["result"]["partial_receipt"] == partial_receipt
-    assert replay["result"]["deduped"] is True
-    assert replay["result"]["partial_receipt"] == partial_receipt
-    assert backend.store.events[-1]["event_type"] == "route_back.blocked"
+    assert first["error"]["code"] == "discord_edge_outcome_pending"
+    assert replay["error"]["code"] == "discord_edge_outcome_pending"
+    authorization = backend.store.routeback_authorizations[
+        claimed["authorization_id"]
+    ]
+    assert authorization["terminal"] is None
+    assert all(event["event_type"] != "route_back.blocked" for event in backend.store.events)
 
 
-def test_routeback_blocked_preserves_verified_receipt_only_for_sent_persistence_failure():
-    handlers, backend = _handlers()
+def test_routeback_blocked_rejects_verified_edge_truth():
+    handlers, _backend = _handlers()
     runtime = _runtime()
-    claim = {
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel", "channel_type": "public"},
-        "message_summary": "Send exact result",
-        "source_refs": {"thread_id": "requester-thread"},
-        "idempotency_key": "routeback:verified-receipt-fallback",
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-    }
-    verified_receipt = {
-        "platform": "discord",
-        "message_id": "discord-message-verified",
-        "channel_id": "public-channel",
-        "content_sha256": CONTENT_HASH,
-        "adapter_receipt": True,
-        "receipt_readback_verified": True,
-    }
-    assert handlers.dispatch(
+    claim = _routeback_claim_payload(key="routeback:verified-blocked")
+    claimed = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
         runtime=runtime,
-    )["ok"] is True
-
-    rejected = handlers.dispatch(
+    )["result"]
+    edge_request = claimed["discord_edge_request"]
+    response = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
-        {
-            **claim,
-            "blocker_reason": "unrelated_blocker",
-            "partial_receipt": verified_receipt,
-        },
-        runtime=runtime,
-    )
-    accepted = handlers.dispatch(
-        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
-        {
-            **claim,
-            "blocker_reason": "route_back_sent_receipt_persistence_failed",
-            "partial_receipt": verified_receipt,
-        },
+        _routeback_terminal_payload(
+            claim,
+            edge_request,
+            _signed_routeback_receipt(
+                edge_request,
+                DiscordEdgeReceiptOutcome.VERIFIED,
+            ),
+        ),
         runtime=runtime,
     )
 
-    assert rejected["error"]["code"] == "invalid_receipt"
-    assert accepted["ok"] is True
-    assert accepted["result"]["partial_receipt"] == verified_receipt
-    assert backend.store.events[-1]["body"]["receipt"] == verified_receipt
+    assert response["error"]["code"] == "invalid_discord_edge_outcome"
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        {"adapter_receipt": False},
-        {"channel_id": "other-public-channel"},
-        {"content_sha256": "f" * 64},
-        {"unexpected": "field"},
+        {"field": "channel_id", "value": "100000000000000099"},
+        {"field": "content_sha256", "value": "f" * 64},
+        {"field": "idempotency_key", "value": "routeback:other"},
     ],
 )
-def test_routeback_blocked_rejects_unbound_partial_receipt(change):
+def test_routeback_blocked_rejects_unbound_signed_receipt(change):
     handlers, _backend = _handlers()
     runtime = _runtime()
-    claim = {
-        "case_id": "case:1",
-        "target_ref": {"channel_id": "public-channel", "channel_type": "public"},
-        "message_summary": "Send exact result",
-        "source_refs": {"thread_id": "requester-thread"},
-        "idempotency_key": "routeback:bad-partial-receipt",
-        "execution_binding": {
-            "target_channel_id": "public-channel",
-            "content_sha256": CONTENT_HASH,
-        },
-    }
-    assert handlers.dispatch(
+    claim = _routeback_claim_payload(key="routeback:bad-signed-receipt")
+    claimed = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
         claim,
         runtime=runtime,
-    )["ok"] is True
-    partial_receipt = {
-        "platform": "discord",
-        "message_id": "discord-message-accepted",
-        "channel_id": "public-channel",
-        "content_sha256": CONTENT_HASH,
-        "adapter_receipt": True,
-        "receipt_readback_verified": False,
-        **change,
-    }
+    )["result"]
+    edge_request = claimed["discord_edge_request"]
+    edge_receipt = _signed_routeback_receipt(
+        edge_request,
+        DiscordEdgeReceiptOutcome.ACCEPTED_UNVERIFIED,
+    )
+    tampered_payload = dict(edge_receipt["payload"])
+    tampered_payload[change["field"]] = change["value"]
+    edge_receipt = {**edge_receipt, "payload": tampered_payload}
 
     response = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
-        {
-            **claim,
-            "blocker_reason": "discord_readback_failed:TimeoutError",
-            "partial_receipt": partial_receipt,
-        },
+        _routeback_terminal_payload(claim, edge_request, edge_receipt),
         runtime=runtime,
     )
 
-    assert response["error"]["code"] == "invalid_receipt"
+    assert response["error"]["code"] == "invalid_discord_edge_evidence"
 
 
 @pytest.mark.parametrize(
@@ -854,19 +929,14 @@ def test_routeback_blocked_rejects_unbound_partial_receipt(change):
 )
 def test_routeback_claim_recursively_blocks_all_dm_reference_shapes(forbidden_target):
     handlers, _ = _handlers()
+    claim = _routeback_claim_payload(key="routeback:dm")
+    claim["target_ref"] = {
+        **forbidden_target,
+        "channel_id": DISCORD_CHANNEL_ID,
+    }
     response = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
-        {
-            "case_id": "case:1",
-            "target_ref": forbidden_target,
-            "message_summary": "must not DM",
-            "source_refs": {"thread_id": "source"},
-            "idempotency_key": "routeback:dm",
-            "execution_binding": {
-                "target_channel_id": "public",
-                "content_sha256": CONTENT_HASH,
-            },
-        },
+        claim,
         runtime=_runtime(),
     )
 
@@ -875,19 +945,12 @@ def test_routeback_claim_recursively_blocks_all_dm_reference_shapes(forbidden_ta
 
 def test_idempotency_key_uses_the_same_utf8_byte_bound_as_transport():
     handlers, _ = _handlers()
+    payload = _routeback_claim_payload()
+    payload["idempotency_key"] = "é" * 129
+    payload["discord_edge_intent"]["idempotency_key"] = "é" * 129
     response = handlers.dispatch(
         CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
-        {
-            "case_id": "case:1",
-            "target_ref": {"channel_id": "public", "channel_type": "public"},
-            "message_summary": "bounded key",
-            "source_refs": {"thread_id": "source"},
-            "idempotency_key": "é" * 129,
-            "execution_binding": {
-                "target_channel_id": "public",
-                "content_sha256": CONTENT_HASH,
-            },
-        },
+        payload,
         runtime=_runtime(),
     )
 

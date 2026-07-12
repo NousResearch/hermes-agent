@@ -2,8 +2,9 @@
 """Fail-closed bootstrap for the privileged Canonical Writer service.
 
 The service consumes one explicit, root-owned, secret-free JSON configuration
-file.  Database password material remains in a separate credential file and is
-opened only by :mod:`gateway.canonical_writer_db`.
+file. Database password and Discord capability key material remain in separate
+strictly owned files; no credential is discovered from environment or remote
+secret services.
 """
 
 from __future__ import annotations
@@ -14,18 +15,27 @@ import os
 import re
 import stat
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 from gateway.canonical_writer_db import (
     CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY,
     CanonicalWriterDB,
     CredentialSource,
+    ManagedCloudSQLAdminHBAReceipt,
     RoutineIdentity,
     TablePrivilegeGrant,
     WriterDBConfig,
     WriterPrivilegePolicy,
+    managed_cloudsqladmin_hba_receipt_from_mapping,
 )
 from gateway.canonical_writer_boundary import (
     DEFAULT_GATEWAY_UNIT,
@@ -46,6 +56,8 @@ from gateway.canonical_writer_postgres_backend import (
     PRODUCTION_STATEMENT_CATALOG,
     PostgresCanonicalWriterBackend,
 )
+from gateway.discord_edge_protocol import ed25519_public_key_id
+from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
 from scripts.canonical_writer_service import (
     CanonicalWriterServer,
     SystemctlMainPidProvider,
@@ -54,6 +66,7 @@ from scripts.canonical_writer_service import (
 
 
 _MAX_CONFIG_BYTES = 64 * 1024
+_MAX_KEY_BYTES = 8 * 1024
 _SYSTEMD_UNIT = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 _FORBIDDEN_SECRET_KEYS = frozenset(
     {
@@ -66,7 +79,9 @@ _FORBIDDEN_SECRET_KEYS = frozenset(
         "credential_value",
     }
 )
-_ROOT_KEYS = frozenset({"service", "database", "privileges"})
+_ROOT_KEYS = frozenset(
+    {"service", "database", "privileges", "discord_edge_authority"}
+)
 _SERVICE_KEYS = frozenset(
     {
         "socket_path",
@@ -92,19 +107,47 @@ _DATABASE_KEYS = frozenset(
         "io_timeout_seconds",
     }
 )
-_PRIVILEGE_KEYS = frozenset(
+_PRIVILEGE_KEYS = frozenset({
+    "schema",
+    "table_grants",
+    "routine_identities",
+    "helper_routine_identities",
+    "schema_privileges",
+    "database_privileges",
+    "role_memberships",
+    "private_schema_identity_sha256",
+    "managed_cloudsqladmin_hba_rejection_receipt",
+    "managed_cloudsqladmin_hba_rejection_sha256",
+    "deployment_lock_key",
+})
+_DISCORD_EDGE_AUTHORITY_KEYS = frozenset(
     {
-        "schema",
-        "table_grants",
-        "routine_identities",
-        "helper_routine_identities",
-        "schema_privileges",
-        "database_privileges",
-        "role_memberships",
-        "private_schema_identity_sha256",
-        "deployment_lock_key",
+        "enabled",
+        "capability_private_key_file",
+        "edge_receipt_public_key_file",
+        "edge_receipt_public_key_id",
+        "request_timeout_seconds",
     }
 )
+
+
+@dataclass(frozen=True)
+class DiscordEdgeWriterAuthorityConfig:
+    enabled: bool
+    capability_private_key_file: Path | None
+    edge_receipt_public_key_file: Path | None
+    edge_receipt_public_key_id: str
+    request_timeout_seconds: int
+    capability_private_key: Ed25519PrivateKey | None = field(
+        repr=False,
+        compare=False,
+    )
+    edge_receipt_public_key: Ed25519PublicKey | None = field(
+        repr=False,
+        compare=False,
+    )
+
+
 @dataclass(frozen=True)
 class CanonicalWriterServiceConfig:
     socket_path: Path
@@ -118,6 +161,7 @@ class CanonicalWriterServiceConfig:
     max_connections: int
     database: WriterDBConfig
     privileges: WriterPrivilegePolicy
+    discord_edge_authority: DiscordEdgeWriterAuthorityConfig
 
 
 @dataclass(frozen=True)
@@ -317,6 +361,238 @@ def _read_config_bytes(path: Path, expected: os.stat_result) -> bytes:
     return raw
 
 
+def _validate_trusted_key_path(
+    path: Path,
+    *,
+    label: str,
+    expected_owner_uid: int,
+    expected_gid: int,
+    expected_mode: int,
+    trusted_parent_owner_uid: int,
+    require_trusted_parents: bool,
+) -> os.stat_result:
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"{label} must be an absolute normalized path")
+    try:
+        file_stat = os.lstat(path)
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError(f"{label} must be a regular non-symlink file")
+    if file_stat.st_nlink != 1:
+        raise ValueError(f"{label} must have exactly one filesystem link")
+    if file_stat.st_uid != expected_owner_uid:
+        raise ValueError(f"{label} owner is not trusted")
+    if file_stat.st_gid != expected_gid:
+        raise ValueError(f"{label} group is not the writer group")
+    if stat.S_IMODE(file_stat.st_mode) != expected_mode:
+        raise ValueError(f"{label} mode must be {expected_mode:04o}")
+    if require_trusted_parents:
+        current = path.parent
+        while True:
+            try:
+                parent_stat = os.lstat(current)
+            except OSError as exc:
+                raise ValueError(f"{label} parent path is unavailable") from exc
+            if (
+                stat.S_ISLNK(parent_stat.st_mode)
+                or not stat.S_ISDIR(parent_stat.st_mode)
+                or parent_stat.st_uid != trusted_parent_owner_uid
+                or stat.S_IMODE(parent_stat.st_mode) & 0o022
+            ):
+                raise ValueError(f"{label} parent path is not root-controlled")
+            if current == current.parent:
+                break
+            current = current.parent
+    return file_stat
+
+
+def _read_trusted_key_bytes(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    label: str,
+    expected_owner_uid: int,
+    expected_gid: int,
+    expected_mode: int,
+) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} cannot be opened") from exc
+    try:
+        actual = os.fstat(descriptor)
+        if (
+            (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)
+            or not stat.S_ISREG(actual.st_mode)
+            or actual.st_nlink != 1
+            or actual.st_uid != expected_owner_uid
+            or actual.st_gid != expected_gid
+            or stat.S_IMODE(actual.st_mode) != expected_mode
+        ):
+            raise ValueError(f"{label} identity or policy changed during open")
+        chunks: list[bytes] = []
+        total = 0
+        while total <= _MAX_KEY_BYTES:
+            chunk = os.read(descriptor, min(4096, _MAX_KEY_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        raw = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if not raw or len(raw) > _MAX_KEY_BYTES:
+        raise ValueError(f"{label} size is invalid")
+    return raw
+
+
+def _load_discord_edge_authority_config(
+    value: Any,
+    *,
+    writer_uid: int,
+    writer_gid: int,
+    trusted_config_owner_uid: int,
+    require_trusted_parents: bool,
+) -> DiscordEdgeWriterAuthorityConfig:
+    raw = _strict_mapping(
+        value,
+        label="discord_edge_authority",
+        allowed=_DISCORD_EDGE_AUTHORITY_KEYS,
+    )
+    if type(raw.get("enabled")) is not bool:
+        raise ValueError("discord_edge_authority.enabled must be boolean")
+    enabled = raw["enabled"]
+    if not enabled:
+        if set(raw) != {"enabled"}:
+            raise ValueError(
+                "disabled discord_edge_authority must contain only enabled=false"
+            )
+        return DiscordEdgeWriterAuthorityConfig(
+            enabled=False,
+            capability_private_key_file=None,
+            edge_receipt_public_key_file=None,
+            edge_receipt_public_key_id="",
+            request_timeout_seconds=15,
+            capability_private_key=None,
+            edge_receipt_public_key=None,
+        )
+
+    if set(raw) != _DISCORD_EDGE_AUTHORITY_KEYS:
+        missing = sorted(_DISCORD_EDGE_AUTHORITY_KEYS - set(raw))
+        raise ValueError(
+            "enabled discord_edge_authority requires exact key configuration:"
+            + ",".join(missing)
+        )
+    private_path = _absolute_path(
+        raw["capability_private_key_file"],
+        "discord_edge_authority.capability_private_key_file",
+    )
+    public_path = _absolute_path(
+        raw["edge_receipt_public_key_file"],
+        "discord_edge_authority.edge_receipt_public_key_file",
+    )
+    if private_path == public_path:
+        raise ValueError("Discord edge writer and receipt keys require distinct files")
+    pinned_edge_key_id = _required_text(
+        raw["edge_receipt_public_key_id"],
+        "discord_edge_authority.edge_receipt_public_key_id",
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", pinned_edge_key_id):
+        raise ValueError(
+            "discord_edge_authority.edge_receipt_public_key_id must be lowercase SHA-256"
+        )
+    timeout = _integer(
+        raw["request_timeout_seconds"],
+        "discord_edge_authority.request_timeout_seconds",
+        minimum=1,
+        maximum=30,
+    )
+    private_stat = _validate_trusted_key_path(
+        private_path,
+        label="Discord writer capability private key",
+        expected_owner_uid=writer_uid,
+        expected_gid=writer_gid,
+        expected_mode=0o400,
+        trusted_parent_owner_uid=trusted_config_owner_uid,
+        require_trusted_parents=require_trusted_parents,
+    )
+    public_stat = _validate_trusted_key_path(
+        public_path,
+        label="Discord edge receipt public key",
+        expected_owner_uid=trusted_config_owner_uid,
+        expected_gid=writer_gid,
+        expected_mode=0o440,
+        trusted_parent_owner_uid=trusted_config_owner_uid,
+        require_trusted_parents=require_trusted_parents,
+    )
+    private_bytes = _read_trusted_key_bytes(
+        private_path,
+        private_stat,
+        label="Discord writer capability private key",
+        expected_owner_uid=writer_uid,
+        expected_gid=writer_gid,
+        expected_mode=0o400,
+    )
+    public_bytes = _read_trusted_key_bytes(
+        public_path,
+        public_stat,
+        label="Discord edge receipt public key",
+        expected_owner_uid=trusted_config_owner_uid,
+        expected_gid=writer_gid,
+        expected_mode=0o440,
+    )
+    try:
+        private_key = serialization.load_pem_private_key(
+            private_bytes,
+            password=None,
+        )
+    except (TypeError, ValueError, UnsupportedAlgorithm) as exc:
+        raise ValueError(
+            "Discord writer capability private key is not unencrypted PEM"
+        ) from exc
+    try:
+        public_key = serialization.load_pem_public_key(public_bytes)
+    except (TypeError, ValueError, UnsupportedAlgorithm) as exc:
+        raise ValueError("Discord edge receipt public key is not PEM") from exc
+    if not isinstance(private_key, Ed25519PrivateKey):
+        raise ValueError("Discord writer capability private key must be Ed25519")
+    if not isinstance(public_key, Ed25519PublicKey):
+        raise ValueError("Discord edge receipt public key must be Ed25519")
+    if private_bytes != private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ):
+        raise ValueError(
+            "Discord writer capability private key must use exact PKCS#8 PEM encoding"
+        )
+    if public_bytes != public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ):
+        raise ValueError(
+            "Discord edge receipt public key must use exact SubjectPublicKeyInfo PEM encoding"
+        )
+    observed_edge_key_id = ed25519_public_key_id(public_key)
+    if observed_edge_key_id != pinned_edge_key_id:
+        raise ValueError("Discord edge receipt public key does not match pinned key ID")
+    if ed25519_public_key_id(private_key.public_key()) == observed_edge_key_id:
+        raise ValueError("Discord writer and edge receipt keys must be distinct")
+    return DiscordEdgeWriterAuthorityConfig(
+        enabled=True,
+        capability_private_key_file=private_path,
+        edge_receipt_public_key_file=public_path,
+        edge_receipt_public_key_id=pinned_edge_key_id,
+        request_timeout_seconds=timeout,
+        capability_private_key=private_key,
+        edge_receipt_public_key=public_key,
+    )
+
+
 def load_service_config(
     path: str | os.PathLike[str],
     *,
@@ -342,7 +618,10 @@ def load_service_config(
         raise ValueError("writer config is not strict UTF-8 JSON") from exc
     root = _strict_mapping(value, label="config", allowed=_ROOT_KEYS)
     if set(root) != _ROOT_KEYS:
-        raise ValueError("writer config requires service, database, and privileges")
+        raise ValueError(
+            "writer config requires service, database, privileges, and "
+            "discord_edge_authority"
+        )
     _reject_embedded_secrets(root)
 
     service = _strict_mapping(
@@ -391,8 +670,18 @@ def load_service_config(
         raise ValueError(
             "projector read group must be distinct from the gateway socket group"
         )
-    if stat.S_IMODE(trusted_stat.st_mode) == 0o440 and trusted_stat.st_gid != writer_gid:
+    if (
+        stat.S_IMODE(trusted_stat.st_mode) == 0o440
+        and trusted_stat.st_gid != writer_gid
+    ):
         raise ValueError("group-readable writer config must use writer GID")
+    discord_edge_authority = _load_discord_edge_authority_config(
+        root["discord_edge_authority"],
+        writer_uid=writer_uid,
+        writer_gid=writer_gid,
+        trusted_config_owner_uid=_expected_owner_uid,
+        require_trusted_parents=_require_root_owned_parents,
+    )
 
     gateway_unit = _required_text(service.get("gateway_unit"), "service.gateway_unit")
     if not _SYSTEMD_UNIT.fullmatch(gateway_unit):
@@ -504,6 +793,31 @@ def load_service_config(
         raise ValueError(
             "privileges.private_schema_identity_sha256 must be lowercase SHA-256"
         )
+    managed_hba_receipt_raw = privileges.get(
+        "managed_cloudsqladmin_hba_rejection_receipt"
+    )
+    managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None = None
+    if managed_hba_receipt_raw is not None:
+        if not isinstance(managed_hba_receipt_raw, Mapping):
+            raise ValueError(
+                "privileges.managed_cloudsqladmin_hba_rejection_receipt "
+                "must be an object"
+            )
+        managed_hba_receipt = managed_cloudsqladmin_hba_receipt_from_mapping(
+            managed_hba_receipt_raw
+        )
+    managed_hba_digest = privileges.get(
+        "managed_cloudsqladmin_hba_rejection_sha256", ""
+    )
+    if managed_hba_digest:
+        managed_hba_digest = _required_text(
+            managed_hba_digest,
+            "privileges.managed_cloudsqladmin_hba_rejection_sha256",
+        )
+        if not re.fullmatch(r"[0-9a-f]{64}", managed_hba_digest):
+            raise ValueError(
+                "managed cloudsqladmin HBA receipt must be lowercase SHA-256"
+            )
 
     credential_path = _absolute_path(
         database.get("credential_file"),
@@ -538,6 +852,14 @@ def load_service_config(
             maximum=60,
         ),
     )
+    if managed_hba_receipt is not None and (
+        managed_hba_receipt.host != db_config.host
+        or managed_hba_receipt.port != db_config.port
+        or managed_hba_receipt.user != db_config.user
+    ):
+        raise ValueError(
+            "managed cloudsqladmin HBA receipt does not match database coordinates"
+        )
     deployment_lock_key = _integer(
         privileges.get("deployment_lock_key"),
         "privileges.deployment_lock_key",
@@ -559,6 +881,8 @@ def load_service_config(
         database_privileges=("CONNECT",),
         role_memberships=(CANONICAL_WRITER_ROLE,),
         private_schema_identity_sha256=private_schema_identity_sha256,
+        managed_cloudsqladmin_hba_rejection_receipt=managed_hba_receipt,
+        managed_cloudsqladmin_hba_rejection_sha256=managed_hba_digest,
         deployment_lock_key=deployment_lock_key,
     )
     socket_path = _absolute_path(
@@ -595,6 +919,7 @@ def load_service_config(
         ),
         database=db_config,
         privileges=policy,
+        discord_edge_authority=discord_edge_authority,
     )
 
 
@@ -767,6 +1092,29 @@ def build_service(
         raise RuntimeError("privileged Canonical writer requires POSIX UID/GID")
     if getuid() != config.writer_uid or getgid() != config.writer_gid:
         raise PermissionError("writer service process UID/GID does not match config")
+    authority_config = config.discord_edge_authority
+    discord_edge_authority: CanonicalWriterDiscordAuthority | None = None
+    if authority_config.enabled:
+        if (
+            not isinstance(
+                authority_config.capability_private_key,
+                Ed25519PrivateKey,
+            )
+            or not isinstance(
+                authority_config.edge_receipt_public_key,
+                Ed25519PublicKey,
+            )
+        ):
+            raise RuntimeError(
+                "enabled Discord route-back lacks writer-owned Ed25519 authority"
+            )
+        discord_edge_authority = CanonicalWriterDiscordAuthority(
+            capability_private_key=authority_config.capability_private_key,
+            edge_receipt_public_key=(
+                authority_config.edge_receipt_public_key
+            ),
+            request_timeout_seconds=authority_config.request_timeout_seconds,
+        )
     database = _database_factory(
         config=config.database,
         privilege_policy=config.privileges,
@@ -774,7 +1122,10 @@ def build_service(
     )
     database.startup_attest()
     backend = PostgresCanonicalWriterBackend(database)
-    handlers = CanonicalWriterHandlers(backend)
+    handlers = CanonicalWriterHandlers(
+        backend,
+        discord_edge_authority=discord_edge_authority,
+    )
     dispatcher = CanonicalWriterTypedDispatcher(
         handlers,
         owner_user_ids=config.owner_discord_user_ids,

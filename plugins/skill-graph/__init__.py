@@ -257,9 +257,14 @@ def _find_skill_path(name: str) -> Path | None:
 def _scan_skill_mds(skill_dirs: list[Path]) -> list[tuple[str, Path]]:
     """Scan all skill directories for SKILL.md files.
 
+    Deduplicates by real path (resolving symlinks) so the same skill
+    discovered via different routes (symlink vs original, multiple
+    base_dirs) is only indexed once.
+
     Returns list of (skill_name, skill_md_path).
     """
     results: list[tuple[str, Path]] = []
+    seen_realpaths: set[str] = set()
     seen_names: set[str] = set()
 
     for base_dir in skill_dirs:
@@ -272,7 +277,10 @@ def _scan_skill_mds(skill_dirs: list[Path]) -> list[tuple[str, Path]]:
             skill_md = cat_dir / "SKILL.md"
             if skill_md.exists():
                 name = cat_dir.name
-                if name not in seen_names:
+                real = os.path.realpath(skill_md)
+                dedup_key = f"{name}\x00{real}"
+                if dedup_key not in seen_realpaths:
+                    seen_realpaths.add(dedup_key)
                     seen_names.add(name)
                     results.append((name, skill_md))
                 continue
@@ -283,7 +291,10 @@ def _scan_skill_mds(skill_dirs: list[Path]) -> list[tuple[str, Path]]:
                 skill_md = name_dir / "SKILL.md"
                 if skill_md.exists():
                     name = name_dir.name
-                    if name not in seen_names:
+                    real = os.path.realpath(skill_md)
+                    dedup_key = f"{name}\x00{real}"
+                    if dedup_key not in seen_realpaths:
+                        seen_realpaths.add(dedup_key)
                         seen_names.add(name)
                         results.append((name, skill_md))
     return results
@@ -411,15 +422,30 @@ def _extract_skill_terms(name: str, tags: list[str], description: str) -> list[t
 
 
 def _dedup_skills(skills: list[tuple[str, Path]]) -> dict[str, Path]:
-    """Deduplicate skills by name, preferring ~/.hermes/skills/ paths."""
+    """Deduplicate skills by real path (resolving symlinks).
+
+    When the same SKILL.md is reachable via multiple paths (e.g. a symlink
+    in ~/.hermes/skills/ and the original in a source_dir), only one entry
+    is kept.  Prefers paths under ~/.hermes/skills/ when duplicates exist,
+    so profile-local overrides take precedence.
+    """
     deduped: dict[str, Path] = {}
+    real_to_name: dict[str, str] = {}
     primary_hint = str(Path.home() / ".hermes" / "skills")
     for name, path in skills:
-        if name not in deduped:
+        real = os.path.realpath(path)
+        existing_name = real_to_name.get(real)
+        if existing_name is None:
+            # First time seeing this real path
+            real_to_name[real] = name
             deduped[name] = path
         else:
+            # Same real file — prefer ~/.hermes/skills/ paths
             if str(path).startswith(primary_hint) and \
-               not str(deduped[name]).startswith(primary_hint):
+               not str(deduped[existing_name]).startswith(primary_hint):
+                # Replace: current path is in primary dir, old one wasn't
+                del deduped[existing_name]
+                real_to_name[real] = name
                 deduped[name] = path
     return deduped
 

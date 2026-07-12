@@ -51,3 +51,45 @@ async def test_attach_token_reuses_same_session(monkeypatch):
         assert len(spawned) == 1                # reattached, did not respawn
     finally:
         web_server.PTY_REGISTRY._sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_snapshot_detaches_session(monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    class FakeWS:
+        client = None
+        query_params = {"attach": "TOK"}
+
+        async def accept(self):
+            pass
+
+    class FakeSession:
+        async def attach(self, ws):
+            raise WebSocketDisconnect()
+
+    class FakeRegistry:
+        detached = None
+
+        async def attach_or_spawn(self, key, *, spawn):
+            return FakeSession(), False
+
+        def detach(self, key, ws):
+            self.detached = (key, ws)
+
+    registry = FakeRegistry()
+    ws = FakeWS()
+    monkeypatch.setattr(web_server, "PTY_REGISTRY", registry)
+    monkeypatch.setattr(web_server, "_ws_auth_reason", lambda ws: (None, "test"))
+    monkeypatch.setattr(web_server, "_ws_host_origin_reason", lambda ws: None)
+    monkeypatch.setattr(web_server, "_ws_client_reason", lambda ws: None)
+    monkeypatch.setattr(web_server, "_channel_or_close_code", lambda ws: None)
+
+    async def fake_argv(**kw):
+        return (["x"], "/tmp", {})
+
+    monkeypatch.setattr(web_server, "_resolve_chat_argv_async", fake_argv)
+
+    await web_server.pty_ws(ws)  # type: ignore[arg-type]
+
+    assert registry.detached == ("TOK", ws)

@@ -15556,8 +15556,6 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
-    await session.attach(ws)
-
     # --- writer loop: WebSocket → PTY master ----------------------------
     # No reader task here: the session's drain task (spawned once per PTY,
     # inside the registry) forwards PTY output to whichever socket is
@@ -15565,6 +15563,7 @@ async def pty_ws(ws: WebSocket) -> None:
     # closes the attached socket with 4410, which unparks ``ws.receive()``
     # below — same half-open-socket protection the legacy pump has (#54028).
     try:
+        await session.attach(ws)
         while True:
             try:
                 msg = await ws.receive()

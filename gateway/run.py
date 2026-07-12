@@ -15432,7 +15432,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
         """
-        source = self._build_process_event_source(evt)
+        source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",
@@ -15623,15 +15623,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     })
                     if not synth_text:
                         break
-                    source = self._build_process_event_source({
-                        "session_id": session_id,
-                        "session_key": session_key,
-                        "platform": platform_name,
-                        "chat_id": chat_id,
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "user_name": user_name,
-                    })
+                    source = await asyncio.to_thread(
+                        self._build_process_event_source,
+                        {
+                            "session_id": session_id,
+                            "session_key": session_key,
+                            "platform": platform_name,
+                            "chat_id": chat_id,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                        },
+                    )
                     if not source:
                         logger.warning(
                             "Dropping completion notification with no routing metadata for process %s",

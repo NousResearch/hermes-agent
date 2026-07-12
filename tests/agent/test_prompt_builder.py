@@ -1463,7 +1463,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets={"web"},
         )
         assert "duckduckgo" not in result
@@ -1476,7 +1476,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets=set(),
         )
         assert "duckduckgo" in result
@@ -1489,7 +1489,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets=set(),
         )
         assert "openhue" not in result
@@ -1502,7 +1502,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets={"terminal"},
         )
         assert "openhue" in result
@@ -1515,7 +1515,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: notes\ndescription: Take notes\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets=set(),
         )
         assert "notes" in result
@@ -1541,7 +1541,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets=set(),
         )
         assert "safe-skill" in result
@@ -1555,7 +1555,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: nested-null\ndescription: Null hermes key\nmetadata:\n  hermes:\n---\n"
         )
         result = build_skills_system_prompt(
-            available_tools=set(),
+            available_tools={"skill_view"},
             available_toolsets=set(),
         )
         assert "nested-null" in result

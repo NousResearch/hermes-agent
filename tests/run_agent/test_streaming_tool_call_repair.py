@@ -43,11 +43,11 @@ class TestStreamingAssemblyRepair:
         assert parsed["path"] == "/tmp/foo"
 
     def test_truncated_mid_value(self):
-        """Model cuts off mid-string-value."""
-        raw = '{"command": "git clone ht'
-        result = _repair_tool_call_arguments(raw, "terminal")
-        # Should produce valid JSON (even if command value is lost)
-        json.loads(result)
+            """Model cuts off mid-string-value -- genuinely unrepairable."""
+            raw = '{"command": "git clone ht'
+            result = _repair_tool_call_arguments(raw, "terminal")
+            # Truncated mid-string cannot be repaired; returns None (#35151)
+            assert result is None
 
     # -- Trailing comma cases (Ollama/GLM common) --
 
@@ -93,18 +93,15 @@ class TestStreamingAssemblyRepair:
     # -- Real-world GLM-5.1 truncation pattern --
 
     def test_glm_truncation_pattern(self):
-        """GLM-5.1 via Ollama commonly truncates like this.
+            """GLM-5.1 via Ollama commonly truncates like this.
 
-        This pattern has an unclosed colon at the end ("background":) which
-        makes it unrepairable — the last-resort empty object {} is the
-        safest option.  The important thing is that repairable patterns
-        (trailing comma, unclosed brace WITHOUT hanging colon) DO get fixed.
-        """
-        raw = '{"command": "ls -la /tmp", "timeout": 30, "background":'
-        result = _repair_tool_call_arguments(raw, "terminal")
-        # Unrepairable — returns empty object (hanging colon can't be fixed)
-        parsed = json.loads(result)
-        assert parsed == {}
+            This pattern has an unclosed colon at the end ("background":) which
+            makes it unrepairable -- returns None (issue #35151).
+            """
+            raw = '{"command": "ls -la /tmp", "timeout": 30, "background":'
+            result = _repair_tool_call_arguments(raw, "terminal")
+            # Hanging colon is genuinely unrepairable
+            assert result is None
 
     def test_glm_truncation_repairable(self):
         """GLM-5.1 truncation pattern that IS repairable."""

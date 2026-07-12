@@ -63,6 +63,9 @@ def test_truncated_arguments_replaced_with_empty_object(caplog):
         )
 
     assert repaired == 1
+    # Unrepairable args become {} (valid JSON for the API message)
+    # while the marker/stub on the tool result signals the corruption
+    # to the model (issue #35151).
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
     assert any(
         "session=session-123" in record.message
@@ -123,9 +126,11 @@ def test_multiple_corrupted_tool_calls_in_one_message():
     repaired = AIAgent._sanitize_tool_call_arguments(messages)
 
     assert repaired == 2
+    # call_1 is unrepairable -- becomes {} (valid API JSON)
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
     assert messages[0]["tool_calls"][1]["function"]["arguments"] == '{"path":"/tmp/bar"}'
-    assert messages[0]["tool_calls"][2]["function"]["arguments"] == "{}"
+    # call_3 gets repaired by bracket-closing pass: {"mode":"tail" -> {"mode":"tail"}
+    assert messages[0]["tool_calls"][2]["function"]["arguments"] == '{"mode":"tail"}'
     assert messages[1]["tool_call_id"] == "call_1"
     assert messages[1]["content"] == marker
     assert messages[2]["tool_call_id"] == "call_3"

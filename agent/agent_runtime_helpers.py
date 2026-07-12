@@ -32,6 +32,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
+from agent.message_sanitization import (
+    _repair_tool_call_arguments,
+)
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
@@ -324,7 +327,17 @@ def sanitize_tool_call_arguments(
                     function_name,
                     preview,
                 )
-                function["arguments"] = "{}"
+                # Use the repair pipeline instead of blindly setting {}.
+                # Genuinely empty/None/whitespace args are handled above;
+                # repairable malformations get fixed; truly unrepairable
+                # args fall back to {} so the outgoing API message stays
+                # valid (the marker/stub on the adjacent tool result is
+                # the real corruption signal for the model; #35151).
+                repair_result = _repair_tool_call_arguments(arguments, function_name)
+                if repair_result is not None:
+                    function["arguments"] = repair_result
+                else:
+                    function["arguments"] = "{}"
 
                 existing_tool_msg = None
                 scan_index = message_index + 1

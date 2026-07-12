@@ -182,14 +182,17 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
-def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
+def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str | None:
     """Attempt to repair malformed tool_call argument JSON.
 
     Models like GLM-5.1 via Ollama can produce truncated JSON, trailing
     commas, Python ``None``, etc.  The API proxy rejects these with HTTP 400
     "invalid tool call arguments".  This function applies common repairs;
-    if all fail it returns ``"{}"`` so the request succeeds (better than
-    crashing the session).  All repairs are logged at WARNING level.
+    genuinely empty / None / whitespace args return ``"{}"``, repairable
+    malformations return the fixed string, and truly unrepairable args
+    return ``None`` so callers can use existing marker/truncation handling
+    instead of silently executing with empty arguments (issue #35151).
+    All repairs are logged at WARNING level.
     """
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
 
@@ -269,14 +272,15 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Last resort: replace with empty object so the API request doesn't
-    # crash the entire session.
+    # Last resort: signal unrepairable so callers can use existing
+    # marker/truncation handling instead of silently executing with
+    # empty arguments (issue #35151).
     logger.warning(
-        "Unrepairable tool_call arguments for %s — "
-        "replaced with empty object (was: %s)",
+        "Unrepairable tool_call arguments for %s -- "
+        "returning None (was: %s)",
         tool_name, raw_stripped[:80],
     )
-    return "{}"
+    return None
 
 
 def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:

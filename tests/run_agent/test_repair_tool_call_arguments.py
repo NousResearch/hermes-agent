@@ -54,10 +54,10 @@ class TestRepairToolCallArguments:
 
     def test_unclosed_bracket_and_brace(self):
         result = _repair_tool_call_arguments('{"a": [1, 2', "t")
-        # Bracket counting adds ']' then '}', producing {"a": [1, 2]}
-        # which is valid JSON.  But the naive count can't always recover
-        # complex nesting — verify we at least get valid JSON.
-        json.loads(result)
+        # The naive bracket-counting adds ] then } in the wrong order,
+        # producing invalid JSON.  This is genuinely unrepairable by the
+        # current logic (issue #35151).
+        assert result is None
 
     # -- Stage 5: excess closing delimiters --
 
@@ -68,17 +68,35 @@ class TestRepairToolCallArguments:
 
     def test_extra_closing_bracket(self):
         result = _repair_tool_call_arguments('{"a": [1]]}', "t")
-        # Should produce valid JSON
-        json.loads(result)
+        # Excess closing delimiters with mismatched nesting is
+        # genuinely unrepairable by the current logic (issue #35151).
+        assert result is None
 
     # -- Stage 6: last resort --
 
     def test_unrepairable_garbage_returns_empty_object(self):
-        assert _repair_tool_call_arguments("totally not json", "t") == "{}"
+        assert _repair_tool_call_arguments("totally not json", "t") is None
 
     def test_unrepairable_partial_returns_empty_object(self):
         # Truncated in the middle of a string key — bracket closing won't help
-        assert _repair_tool_call_arguments('{"truncated": "val', "t") == "{}"
+        assert _repair_tool_call_arguments('{"truncated": "val', "t") is None
+
+    # -- Stage 6b: new sentinel — None means "truly unrepairable" (issue #35151) --
+
+    def test_unrepairable_garbage_returns_none(self):
+        assert _repair_tool_call_arguments("totally not json", "t") is None
+
+    def test_unrepairable_partial_returns_none(self):
+        assert _repair_tool_call_arguments('{"truncated": "val', "t") is None
+
+    def test_empty_string_still_returns_empty_object(self):
+        assert _repair_tool_call_arguments("", "t") == "{}"
+
+    def test_none_type_still_returns_empty_object(self):
+        assert _repair_tool_call_arguments(None, "t") == "{}"
+
+    def test_whitespace_only_still_returns_empty_object(self):
+        assert _repair_tool_call_arguments("   \n  ", "t") == "{}"
 
     # -- Valid JSON passthrough (this path is via except, but still works) --
 
@@ -94,16 +112,18 @@ class TestRepairToolCallArguments:
 
     def test_trailing_comma_plus_unclosed_brace(self):
         result = _repair_tool_call_arguments('{"a": 1, "b": 2,', "t")
-        # Trailing comma stripped first, then closing brace added.
-        # May or may not fully recover — verify valid JSON at minimum.
-        json.loads(result)
+        # Trailing comma is stripped, then } is added -- but {a:1, b:2,}
+        # is still invalid JSON (trailing comma before }).  The current
+        # logic cannot repair this case (issue #35151).
+        assert result is None
 
     def test_real_world_glm_truncation(self):
         """Simulates GLM-5.1 truncating mid-argument."""
         raw = '{"command": "ls -la /tmp", "timeout": 30, "background":'
         result = _repair_tool_call_arguments(raw, "terminal")
-        # Should at least be valid JSON, even if background is lost
-        json.loads(result)
+        # Hanging colon before the closing brace is genuinely
+        # unrepairable by the current logic (issue #35151).
+        assert result is None
 
     # -- Stage 0: strict=False (literal control chars in strings) --
     # llama.cpp backends sometimes emit literal tabs/newlines inside JSON

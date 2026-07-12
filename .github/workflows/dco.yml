@@ -1,8 +1,9 @@
 name: DCO Sign-off Check
 
 # Verifies every non-merge, non-bot commit in a pull request carries a
-# `Signed-off-by:` trailer matching its author, per the Developer Certificate
-# of Origin (https://developercertificate.org). Contributors add it with
+# `Signed-off-by:` trailer (parsed with `git interpret-trailers`, not matched
+# in prose) matching its author OR committer, per the Developer Certificate of
+# Origin (https://developercertificate.org). Contributors add it with
 # `git commit -s`. Mirrors the bot-exemption logic in contributor-check.yml.
 
 on:
@@ -22,55 +23,4 @@ jobs:
           fetch-depth: 0  # Full history needed for git log over the PR range
 
       - name: Verify Signed-off-by trailer on each commit
-        run: |
-          # Range of commits this PR adds on top of main.
-          MERGE_BASE=$(git merge-base origin/main HEAD)
-          COMMITS=$(git rev-list --no-merges "${MERGE_BASE}..HEAD")
-
-          if [ -z "$COMMITS" ]; then
-            echo "No commits to check."
-            exit 0
-          fi
-
-          MISSING=""
-          for sha in $COMMITS; do
-            author_name=$(git show -s --format='%an' "$sha")
-            author_email=$(git show -s --format='%ae' "$sha")
-
-            # Exempt bots the same way contributor-check.yml does.
-            case "$author_email" in
-              *noreply@github.com*|*dependabot*|*github-actions*)
-                echo "skip (bot)  ${sha:0:9}  ${author_email}"
-                continue ;;
-            esac
-
-            expected="Signed-off-by: ${author_name} <${author_email}>"
-            if git show -s --format='%B' "$sha" | grep -qiF "$expected"; then
-              echo "ok          ${sha:0:9}  $(git show -s --format='%s' "$sha")"
-            else
-              subject=$(git show -s --format='%s' "$sha")
-              MISSING="${MISSING}\n  ${sha:0:9}  ${subject}\n      missing: ${expected}"
-            fi
-          done
-
-          if [ -n "$MISSING" ]; then
-            echo ""
-            echo "❌ Commit(s) missing a matching Signed-off-by trailer:"
-            echo -e "$MISSING"
-            echo ""
-            echo "Sign off your commits to certify the Developer Certificate of Origin"
-            echo "(https://developercertificate.org):"
-            echo ""
-            echo "  # sign the most recent commit"
-            echo "  git commit --amend --no-edit -s"
-            echo ""
-            echo "  # sign every commit on this branch, then force-push"
-            echo "  git rebase --exec 'git commit --amend --no-edit -s' origin/main"
-            echo "  git push --force-with-lease"
-            echo ""
-            echo "Add -s to future commits (git commit -s) to sign off automatically."
-            exit 1
-          fi
-
-          echo ""
-          echo "✅ All commits are signed off."
+        run: python3 scripts/ci/check_dco.py origin/main HEAD

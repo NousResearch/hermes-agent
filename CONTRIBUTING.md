@@ -999,7 +999,7 @@ That appends a trailer matching your git identity:
 Signed-off-by: Your Name <you@example.com>
 ```
 
-The trailer must match the commit author's name and email. Bot commits (Dependabot, GitHub Actions) are exempt.
+`git commit -s` signs off as the **committer**. The check accepts a trailer matching either the commit's author or its committer, so `git commit --author="Someone Else <them@example.com>" -s` (you commit, they authored) still passes on your sign-off. Bot commits (Dependabot, GitHub Actions) are exempt.
 
 Forgot to sign off? Retrofit before pushing:
 

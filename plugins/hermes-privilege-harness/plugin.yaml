@@ -1,0 +1,9 @@
+name: hermes-vip
+description: "Root privilege escalation gateway — LLM never sees approval responses"
+version: 0.1.0
+author: Hermes Community
+license: MIT
+platforms: [macos, linux]
+hooks:
+  - pre_tool_call
+  - post_tool_call

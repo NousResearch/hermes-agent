@@ -1,0 +1,31 @@
+manifest_version: 1
+
+name: agentweb
+description: Zero-API-key web search, page extraction, and exact evidence for AI agents.
+source: https://github.com/thanhan-a17/agentweb
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/agentweb-mcp"
+  args: []
+
+install:
+  type: git
+  url: https://github.com/thanhan-a17/agentweb.git
+  ref: v2.0.0
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install '.[mcp]'"
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - agentweb_search
+    - agentweb_fetch
+    - agentweb_evidence
+
+post_install: |
+  AgentWeb requires no API key or mandatory account. It exposes search, fetch,
+  and exact evidence tools. Start a new Hermes session after installation.

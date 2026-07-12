@@ -201,6 +201,9 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
 | [`subagent_stop`](/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
 | [`pre_gateway_dispatch`](/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
+| [`transform_tool_result`](/user-guide/features/hooks#transform_tool_result) | After any tool returns a result, before it enters context. Return a string to replace the result. |
+| [`transform_terminal_output`](/user-guide/features/hooks#transform_terminal_output) | After terminal output is captured, before it is added to context. Return a string to replace the snippet. |
+| [`transform_llm_output`](/user-guide/features/hooks#transform_llm_output) | Before the assistant message is appended to the conversation. Return a string to replace the text. |
 
 ## Plugin types
 

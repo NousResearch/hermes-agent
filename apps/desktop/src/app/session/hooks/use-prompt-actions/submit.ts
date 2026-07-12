@@ -15,6 +15,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
+import { sessionRoute } from '../../../routes'
 import type { ClientSessionState } from '../../../types'
 
 import {
@@ -119,12 +120,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // this, a fast session switch during session.resume / file.attach can
       // redirect the user's text into a different chat (#54527).
       const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      let startingStoredSessionId = selectedStoredSessionIdRef.current
+      let pinnedRouteTokens = new Set([getRouteToken()])
 
       const sessionContextDrifted = (): boolean =>
         selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        !pinnedRouteTokens.has(getRouteToken())
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -281,16 +282,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        if (sessionContextDrifted()) {
-          return abortForSessionSwitch(sessionId)
-        }
-
         if (!sessionId) {
           dropOptimistic(null)
           releaseBusy()
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
           return false
+        }
+
+        // A successful first send intentionally changes the selected stored
+        // session and route: createBackendSessionForSend creates the runtime,
+        // seeds the sidebar row, and navigates / -> /<stored-id>. It already
+        // guards its own await against a real user switch, so adopt that newly
+        // created session as the pinned context for the rest of this submit.
+        // Without this rebase, sessionContextDrifted treats the expected create
+        // navigation as a switch, aborts before prompt.submit, and restores the
+        // first message to the composer while leaving a blank titled session.
+        startingStoredSessionId = selectedStoredSessionIdRef.current
+        pinnedRouteTokens = new Set([getRouteToken()])
+
+        if (startingStoredSessionId) {
+          // React Router may commit the navigation after this async continuation
+          // resumes. Accept both the route visible right now (often /) and
+          // the deterministic target createBackendSessionForSend requested.
+          pinnedRouteTokens.add(`${sessionRoute(startingStoredSessionId)}::`)
         }
 
         seedOptimistic(sessionId)

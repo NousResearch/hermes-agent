@@ -120,6 +120,21 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Extending Hermes
+
+Hermes can be extended without patching core code:
+
+```bash
+hermes plugins install owner/repo   # Install a custom plugin from Git
+hermes plugins                      # Enable or disable installed plugins
+```
+
+- Build or install plugins: [Plugins](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins)
+- Author your own plugin: [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins)
+- Add a messaging platform: [Adding Platform Adapters](https://hermes-agent.nousresearch.com/docs/developer-guide/adding-platform-adapters)
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:

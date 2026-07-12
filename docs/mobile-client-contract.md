@@ -27,9 +27,10 @@ from another reconstructed live stream. Clients must never treat either
 outcome as complete replay.
 
 Synchronization state and replay retention begin when an authorized mobile
-transport attaches to a live session. Legacy stdio and Desktop transports keep
-their original response and event shapes and do not pay the per-delta replay
-copying cost.
+transport first attaches to a live session. A session that has never negotiated
+sync does not pay the per-delta replay copying cost. If a legacy transport later
+attaches to a previously negotiated session, retention continues for the next
+mobile reconnect, but the legacy response and event shapes remain unchanged.
 
 ## Snapshot and event barrier
 

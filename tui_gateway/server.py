@@ -1138,7 +1138,10 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _session_event_stream(session: dict) -> SessionEventStream:
+_session_event_stream_init_lock = threading.RLock()
+
+
+def _session_event_stream_locked(session: dict) -> SessionEventStream:
     stream = session.get("mobile_sync")
     if isinstance(stream, SessionEventStream):
         return stream
@@ -1149,26 +1152,46 @@ def _session_event_stream(session: dict) -> SessionEventStream:
     return stream
 
 
-def _session_sync_enabled(session: dict) -> bool:
-    """Return whether this live session negotiated revisioned mobile sync.
+def _session_event_stream(session: dict) -> SessionEventStream:
+    stream = session.get("mobile_sync")
+    if isinstance(stream, SessionEventStream):
+        return stream
+    with _session_event_stream_init_lock:
+        return _session_event_stream_locked(session)
 
-    Legacy stdio and Desktop clients retain the original response/event shape
-    and avoid replay copies.  Once a mobile transport attaches, keep retention
-    enabled for the rest of the live stream so a later reconnect can replay
-    events emitted while the socket was detached.
-    """
-    if session.get("mobile_sync_enabled"):
-        return True
+
+def _session_transport_requests_sync(session: dict) -> bool:
     transport = session.get("transport") or current_transport()
     authorization = getattr(transport, "authorization", None)
     if not isinstance(authorization, dict):
         return False
     from tui_gateway.mobile_contract import MOBILE_AUDIENCE, effective_authorization
 
-    if effective_authorization(authorization)["audience"] != MOBILE_AUDIENCE:
-        return False
-    session["mobile_sync_enabled"] = True
-    return True
+
+    return effective_authorization(authorization)["audience"] == MOBILE_AUDIENCE
+
+
+def _enable_session_sync_retention(session: dict) -> SessionEventStream:
+    """Atomically enable replay retention and return its single stream."""
+    with _session_event_stream_init_lock:
+        stream = _session_event_stream_locked(session)
+        session["mobile_sync_retention"] = True
+        return stream
+
+
+def _session_retains_sync(session: dict) -> bool:
+    """Keep replay after mobile disconnect without changing legacy wire shape.
+
+    Legacy stdio and Desktop clients retain the original response/event shape
+    even after a mobile client previously attached. The sticky bit controls
+    replay retention only; the current transport audience controls envelopes.
+    """
+    if session.get("mobile_sync_retention"):
+        return True
+    if _session_transport_requests_sync(session):
+        _enable_session_sync_retention(session)
+        return True
+    return False
 
 
 def _emit(
@@ -1177,19 +1200,28 @@ def _emit(
     payload: dict | None = None,
 ):
     session = _sessions.get(sid)
-    if session is not None and _session_sync_enabled(session):
-        return _session_event_stream(session).publish(
-            event,
-            sid,
-            payload,
-            write_json,
-        )
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
-    frame = {"jsonrpc": "2.0", "method": "event", "params": params}
-    write_json(frame)
-    return frame
+    legacy_frame = {"jsonrpc": "2.0", "method": "event", "params": params}
+    if session is None or not _session_retains_sync(session):
+        write_json(legacy_frame)
+        return legacy_frame
+
+    mobile_recipient = _session_transport_requests_sync(session)
+    stream = _session_event_stream(session)
+    if mobile_recipient:
+        return stream.publish(event, sid, payload, write_json)
+
+    # Retain a sequenced copy for a future mobile reconnect, but preserve the
+    # original unsequenced event shape on the currently attached legacy wire.
+    stream.publish(
+        event,
+        sid,
+        payload,
+        lambda _sequenced: write_json(legacy_frame),
+    )
+    return legacy_frame
 
 
 def _emit_with_sync_update(event: str, sid: str, payload: dict, update):
@@ -1206,7 +1238,8 @@ def _mark_snapshot_mutation(session: dict) -> None:
     Callers hold ``history_lock`` first, preserving the same history -> stream
     lock order used by snapshot capture and event publication.
     """
-    _session_event_stream(session).mutate(lambda _stream: None)
+    if _session_retains_sync(session):
+        _session_event_stream(session).mutate(lambda _stream: None)
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
@@ -3965,7 +3998,11 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         )
 
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(
+            child_key,
+            {"seq": 0, "open_tool": None, "reply_text": "", "started": False},
+        )
+        st.setdefault("reply_text", "")
         if not st["started"]:
             st["started"] = True
             with history_lock:
@@ -3984,6 +4021,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             # Relayed token-by-token from the child's run_conversation
             # stream_callback, so the watch window streams the reply live.
             if text := str(payload.get("text") or ""):
+                st["reply_text"] = f"{st['reply_text']}{text}"
                 _emit_inflight_delta(csid, child_session, text)
         elif event_type == "subagent.start":
             # One-time header line (the child's goal) so a freshly opened window
@@ -4020,7 +4058,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
                 turn = child_session.get("inflight_turn") or {}
                 turn_id = str(turn.get("turn_id") or "")
                 assistant = str(turn.get("assistant") or "")
-                final_text = assistant or summary
+                final_text = str(st.get("reply_text") or "") or summary or assistant
                 history = child_session.setdefault("history", [])
                 if final_text and not (
                     history
@@ -4036,7 +4074,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
                 _emit(
                     "message.complete",
                     csid,
-                    {"text": summary or final_text, "turn_id": turn_id},
+                    {"text": final_text, "turn_id": turn_id},
                 )
             _child_mirrors.pop(child_key, None)
 
@@ -5402,13 +5440,11 @@ def _inflight_snapshot(
 
 
 def _conversation_root(db, session_id: str) -> str:
+    lineage_reader = getattr(db, "get_compression_lineage", None)
+    if not callable(lineage_reader):
+        return str(session_id)
     try:
-        lineage = db.get_compression_lineage(session_id)
-    except AttributeError:
-        # Compatibility with old/embedded SessionDB stubs that predate
-        # compression lineage. Unexpected database failures must not silently
-        # change a conversation's supposedly stable identity to its current tip.
-        lineage = []
+        lineage = lineage_reader(session_id)
     except Exception:
         logger.warning(
             "failed to resolve stable conversation lineage for %s",
@@ -5465,8 +5501,9 @@ def _attach_synchronization(
     session: dict,
     cursor: object = None,
 ) -> dict:
-    if not _session_sync_enabled(session):
+    if not _session_transport_requests_sync(session):
         return payload
+    _enable_session_sync_retention(session)
     payload["synchronization"] = _session_synchronization(sid, session, cursor)
     return payload
 
@@ -8858,6 +8895,7 @@ def _(rid, params: dict) -> dict:
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
+        _mark_snapshot_mutation(session)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)

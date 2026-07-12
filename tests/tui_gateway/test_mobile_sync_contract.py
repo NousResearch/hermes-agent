@@ -479,6 +479,94 @@ def test_legacy_session_keeps_original_response_and_event_shape():
     assert "mobile_sync" not in server._sessions[sid]
 
 
+def test_mobile_replay_stays_retained_across_a_legacy_handoff(monkeypatch):
+    class LegacyTransport(RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.authorization = {
+                "subject": "dashboard-user",
+                "provider": "password",
+                "audience": "dashboard",
+                "scopes": ("*",),
+            }
+
+    mobile = RecordingTransport()
+    legacy = LegacyTransport()
+    created = create_session(mobile)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    cursor = created["synchronization"]["recovery"]["cursor"]
+    session = server._sessions[sid]
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+
+    legacy_payload = server._live_session_payload(
+        sid,
+        session,
+        transport=legacy,
+        cursor=cursor,
+    )
+    assert "synchronization" not in legacy_payload
+
+    server._emit("status.update", sid, {"kind": "legacy", "text": "Still here"})
+    legacy_event = legacy.frames[-1]
+    assert "sequence" not in legacy_event["params"]
+    assert "stream_id" not in legacy_event["params"]
+
+    reconnected = resume_session(mobile, stored_id, cursor)
+    recovery = reconnected["synchronization"]["recovery"]
+    assert recovery["outcome"] == "complete"
+    assert [event["params"]["type"] for event in recovery["events"]] == [
+        "status.update"
+    ]
+    assert recovery["events"][0]["params"]["sequence"] == 1
+
+
+def test_concurrent_first_mobile_snapshot_and_publish_share_one_stream():
+    transport = RecordingTransport()
+    sid = "first-attach"
+    session = {
+        "agent": None,
+        "conversation_id": "first-conversation",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "inflight_turn": None,
+        "running": False,
+        "session_key": "first-stored",
+        "transport": transport,
+    }
+    server._sessions[sid] = session
+    start = threading.Barrier(3)
+    attached = {}
+
+    def attach():
+        start.wait()
+        attached["payload"] = server._attach_synchronization({}, sid, session)
+
+    def publish():
+        start.wait()
+        server._emit("status.update", sid, {"kind": "race", "text": "Ready"})
+
+    attach_thread = threading.Thread(target=attach)
+    publish_thread = threading.Thread(target=publish)
+    attach_thread.start()
+    publish_thread.start()
+    start.wait()
+    attach_thread.join(timeout=1)
+    publish_thread.join(timeout=1)
+    assert not attach_thread.is_alive()
+    assert not publish_thread.is_alive()
+
+    snapshot = attached["payload"]["synchronization"]["snapshot"]
+    event = next(
+        frame
+        for frame in transport.frames
+        if frame.get("params", {}).get("type") == "status.update"
+    )
+    assert snapshot["stream_id"] == event["params"]["stream_id"]
+    assert session["mobile_sync"].stream_id == snapshot["stream_id"]
+
+
 def test_completion_history_and_event_share_one_snapshot_barrier(monkeypatch):
     transport = RecordingTransport()
     sid = "barrier-live"
@@ -491,7 +579,7 @@ def test_completion_history_and_event_share_one_snapshot_barrier(monkeypatch):
         "history_version": 0,
         "inflight_turn": None,
         "mobile_sync": stream,
-        "mobile_sync_enabled": True,
+        "mobile_sync_retention": True,
         "running": True,
         "session_key": "barrier-stored",
         "transport": transport,
@@ -558,6 +646,53 @@ def test_completion_history_and_event_share_one_snapshot_barrier(monkeypatch):
         event["params"]["type"]
         for event in synchronization["recovery"]["events"]
     ] == ["message.complete"]
+
+
+def test_deferred_prompt_start_advances_revision_before_agent_ready(monkeypatch):
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    cursor = created["synchronization"]["recovery"]["cursor"]
+    initial_revision = created["synchronization"]["snapshot"]["revision"]
+    entered_wait = threading.Event()
+    release_wait = threading.Event()
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+
+    def blocked_wait(_session, rid):
+        entered_wait.set()
+        assert release_wait.wait(timeout=2)
+        return server._err(rid, 5000, "test build stopped")
+
+    monkeypatch.setattr(server, "_wait_agent", blocked_wait)
+    try:
+        submitted = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "deferred-submit",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "question"},
+            },
+            transport,
+        )
+        assert submitted["result"] == {"status": "streaming"}
+        assert entered_wait.wait(timeout=1)
+
+        resumed = resume_session(transport, stored_id, cursor)
+        synchronization = resumed["synchronization"]
+        assert synchronization["snapshot"]["revision"] == initial_revision + 1
+        assert synchronization["snapshot"]["watermark"] == cursor["sequence"]
+        assert synchronization["snapshot"]["inflight_turn"]["user"] == "question"
+        assert synchronization["recovery"]["outcome"] == "complete"
+        assert synchronization["recovery"]["events"] == []
+    finally:
+        release_wait.set()
+        run_thread = server._sessions.get(sid, {}).get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(timeout=1)
 
 
 def test_undo_advances_snapshot_revision_without_a_wire_event(monkeypatch):
@@ -649,5 +784,21 @@ def test_child_mirror_sync_recovers_inflight_text_and_active_tool(monkeypatch):
     assert settled["active_tools"] == []
     assert settled["messages"][-1] == {
         "role": "assistant",
-        "text": "goal\nanswer",
+        "text": "answer",
     }
+    complete = next(
+        frame
+        for frame in reversed(transport.frames)
+        if frame.get("params", {}).get("type") == "message.complete"
+    )
+    assert complete["params"]["payload"]["text"] == "answer"
+
+
+def test_conversation_root_does_not_hide_callable_attribute_errors():
+    class BrokenLineageDB:
+        @staticmethod
+        def get_compression_lineage(_session_id):
+            raise AttributeError("lineage implementation bug")
+
+    with pytest.raises(AttributeError, match="lineage implementation bug"):
+        server._conversation_root(BrokenLineageDB(), "stored")

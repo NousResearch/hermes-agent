@@ -43,6 +43,23 @@ async function renderField(value: unknown, onChange = vi.fn()) {
   return onChange
 }
 
+async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
+  const { FallbackModelsField } = await import('./fallback-models-field')
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(
+    <QueryClientProvider client={client}>
+      <FallbackModelsField onChange={onChange} value={value} />
+    </QueryClientProvider>
+  )
+
+  return (next: unknown) =>
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <FallbackModelsField onChange={onChange} value={next} />
+      </QueryClientProvider>
+    )
+}
+
 const CHAIN = [
   { provider: 'copilot', model: 'gpt-5-mini' },
   { provider: 'openai-codex', model: 'gpt-5.4-mini' }
@@ -83,5 +100,14 @@ describe('FallbackModelsField', () => {
 
     expect(screen.getByText(/No fallback models/)).toBeTruthy()
     expect(screen.queryAllByLabelText('Remove')).toHaveLength(0)
+  })
+
+  it('resyncs rows when persisted config changes', async () => {
+    const rerender = await renderFieldWithRerender(CHAIN)
+    expect(screen.getAllByLabelText('Remove')).toHaveLength(2)
+
+    rerender([{ provider: 'nous', model: 'hermes-4' }])
+
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
   })
 })

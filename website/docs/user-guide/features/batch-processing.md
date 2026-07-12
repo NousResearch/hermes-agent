@@ -60,7 +60,7 @@ Entries can optionally include:
 | `--batch_size` | (required) | Prompts per batch |
 | `--run_name` | (required) | Name for this run (used for output dir and checkpointing) |
 | `--distribution` | `"default"` | Toolset distribution to sample from |
-| `--model` | `claude-sonnet-4.6` | Model to use |
+| `--model` | `anthropic/claude-sonnet-4.6` | Model to use |
 | `--base_url` | `https://openrouter.ai/api/v1` | API base URL |
 | `--api_key` | (env var) | API key for model |
 | `--max_turns` | `10` | Maximum tool-calling iterations per prompt |

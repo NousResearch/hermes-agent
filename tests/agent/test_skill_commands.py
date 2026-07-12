@@ -113,6 +113,25 @@ class TestScanSkillCommands:
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
 
+    def test_slug_collision_warns_and_keeps_first(self, tmp_path, caplog):
+        """Two distinct skill names that normalize to the same slug must not
+        silently shadow each other — one wins, and the collision is logged."""
+        import logging
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "My Skill")   # name "My Skill" -> /my-skill
+            _make_skill(tmp_path, "my_skill")   # distinct name    -> /my-skill
+            with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+                result = scan_skill_commands()
+
+        # Both names collapse to a single slash command (not a silent overwrite
+        # that loses one with no trace).
+        assert "/my-skill" in result
+        assert len(result) == 1
+        assert any(
+            "Duplicate skill slug /my-skill" in r.getMessage() for r in caplog.records
+        )
+
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"

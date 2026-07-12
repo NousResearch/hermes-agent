@@ -374,7 +374,23 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    cmd_key = f"/{cmd_name}"
+                    # Distinct skill names can normalize to the same slash slug
+                    # (e.g. "My Skill" and "my_skill" both -> /my-skill). Keep the
+                    # first one discovered — local skills are scanned before
+                    # external dirs, so local wins — and warn, rather than letting
+                    # a later skill silently shadow it. Mirrors the duplicate-slug
+                    # handling in agent/skill_bundles.py::scan_bundles.
+                    existing = _skill_commands.get(cmd_key)
+                    if existing:
+                        logger.warning(
+                            "Duplicate skill slug %s from %s; keeping %s "
+                            "(skill %r is shadowed and unreachable via %s)",
+                            cmd_key, skill_md, existing["skill_md_path"],
+                            name, cmd_key,
+                        )
+                        continue
+                    _skill_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),

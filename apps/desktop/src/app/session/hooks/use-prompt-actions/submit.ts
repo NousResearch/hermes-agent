@@ -298,6 +298,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
+        // createBackendSessionForSend atomically claims the new runtime/stored
+        // session and may navigate to its route. Treat that as continuation
+        // of this submit, not drift that aborts the first prompt.
+        expectedRuntimeSessionId = sessionId
+        startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingRouteToken = getRouteToken()
+
         if (sessionContextDrifted()) {
           return abortForSessionSwitch(sessionId)
         }
@@ -309,13 +316,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           return false
         }
-
-        // createBackendSessionForSend atomically claims the new runtime/stored
-        // session and may navigate to its route. Treat that as continuation
-        // of this submit, not drift that aborts the first prompt.
-        expectedRuntimeSessionId = sessionId
-        startingStoredSessionId = selectedStoredSessionIdRef.current
-        startingRouteToken = getRouteToken()
 
         seedOptimistic(sessionId)
       }

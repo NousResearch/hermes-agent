@@ -16,9 +16,15 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
-import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { requestModelOptions } from '@/lib/model-options'
+import {
+  currentPickerSelection,
+  displayModelName,
+  modelDisplayParts,
+  reasoningEffortLabel
+} from '@/lib/model-status-label'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -77,13 +83,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const modelOptions = useQuery({
     queryKey: ['model-options', activeSessionId || 'global'],
-    queryFn: (): Promise<ModelOptionsResponse> => {
-      if (gateway && activeSessionId) {
-        return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
-      }
-
-      return getGlobalModelOptions()
-    }
+    // Gateway-first even with no session yet: a connected (possibly remote)
+    // gateway owns the model catalog, including virtual providers like `moa`
+    // that the local REST fallback can't know about (#53817).
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -102,9 +105,22 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const providers = modelOptions.data?.providers
 
+  // The catalog carries MoA presets as a virtual `moa` provider row. Render
+  // them in their dedicated section below and keep the row out of the main
+  // provider groups so presets don't show up twice.
+  const moaPresets = useMemo(
+    () => providers?.find(provider => provider.slug.toLowerCase() === 'moa')?.models ?? [],
+    [providers]
+  )
+
+  const pickerProviders = useMemo(
+    () => providers?.filter(provider => provider.slug.toLowerCase() !== 'moa') ?? [],
+    [providers]
+  )
+
   const effectiveVisibleModels = useMemo(
-    () => effectiveVisibleKeys(visibleModels, providers ?? []),
-    [visibleModels, providers]
+    () => effectiveVisibleKeys(visibleModels, pickerProviders),
+    [visibleModels, pickerProviders]
   )
 
   // The composer picker never persists the profile default. With a session it
@@ -126,13 +142,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     try {
       const queryKey = ['model-options', activeSessionId || 'global']
 
-      const next =
-        gateway && activeSessionId
-          ? await gateway.request<ModelOptionsResponse>('model.options', {
-              session_id: activeSessionId,
-              refresh: true
-            })
-          : await getGlobalModelOptions({ refresh: true })
+      const next = await requestModelOptions({ gateway, refresh: true, sessionId: activeSessionId })
 
       queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
     } catch {
@@ -169,19 +179,31 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     )
   }
 
+  // Selecting a MoA preset switches the session to it PERSISTENTLY, using the
+  // same path real provider selections use (onSelectModel → config.set with
+  // --session for live sessions → the gateway's persistent switch_model).
+  // Previously this dispatched the one-shot `/moa` command, which ran a single
+  // turn through MoA and then silently reverted to the prior model (#54670) —
+  // the dropdown presented presets like persistent selections but they weren't.
+  // No session gate: like regular model rows, a pre-session pick is UI state
+  // shipped on the next session.create.
+  const selectMoaPreset = async (preset: string) => {
+    if ((await switchTo(preset, 'moa')) === false) {
+      return
+    }
+
+    closeMenu()
+  }
+
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
-    [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
+    () =>
+      groupModels(pickerProviders, search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (
     <>
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onValueChange={setSearch}
-        placeholder={copy.search}
-        value={search}
-      />
+      <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
 
       <DropdownMenuSeparator className="mx-0" />
 
@@ -202,7 +224,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {error}
         </DropdownMenuItem>
-      ) : groups.length === 0 ? (
+      ) : groups.length === 0 && moaPresets.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
           {copy.noModels}
         </DropdownMenuItem>
@@ -231,8 +253,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // defaults when unset). Row label AND submenu read from these so
                 // they never disagree.
                 const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
-                const effEffort = isCurrent ? currentReasoningEffort : preset.effort ?? ''
-                const effFast = isCurrent ? currentFastMode : preset.fast ?? false
+                const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
+                const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
 
                 const fastControl = resolveFastControl(
                   activeId ?? family.id,
@@ -302,6 +324,30 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
       <DropdownMenuSeparator className="mx-0" />
 
+      {moaPresets.length > 0 ? (
+        <>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          {moaPresets.map(preset => {
+            const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
+
+            return (
+              <DropdownMenuItem
+                className={dropdownMenuRow}
+                key={`moa:${preset}`}
+                onSelect={event => {
+                  event.preventDefault()
+                  void selectMoaPreset(preset)
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+                {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+              </DropdownMenuItem>
+            )
+          })}
+          <DropdownMenuSeparator className="mx-0" />
+        </>
+      ) : null}
+
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         disabled={refreshing}
@@ -326,8 +372,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 }
 
 // Collapsed we show the user's chosen models (or the curated default); typing
-// spans every available model so anything is reachable past the cut.
-const PER_PROVIDER_SEARCH = 12
+// spans every available model so anything is reachable past the cut. A search
+// is itself a narrowing action, so we do NOT cap per-provider matches — a
+// provider serving 19 models (e.g. opencode-go) must show all 19 when the user
+// searches for it, not a truncated subset. (#47077 follow-up)
 
 function groupModels(
   providers: ModelOptionProvider[],
@@ -335,7 +383,7 @@ function groupModels(
   current: { model: string; provider: string },
   visible: Set<string> | null
 ): ProviderGroup[] {
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
@@ -374,11 +422,7 @@ function groupModels(
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    let families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
-
-    if (q) {
-      families = families.slice(0, PER_PROVIDER_SEARCH)
-    }
+    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 
     if (families.length > 0) {
       groups.push({ families, provider })

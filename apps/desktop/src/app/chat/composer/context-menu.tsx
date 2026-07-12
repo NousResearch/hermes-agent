@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Kbd } from '@/components/ui/kbd'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -42,22 +43,23 @@ export function ContextMenu({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            aria-label={state.tools.label}
-            className={cn(
-              GHOST_ICON_BTN,
-              'data-[state=open]:bg-(--chrome-action-hover) data-[state=open]:text-foreground'
-            )}
-            disabled={!state.tools.enabled}
-            size="icon"
-            title={state.tools.label}
-            type="button"
-            variant="ghost"
-          >
-            <Codicon name="add" size="0.875rem" />
-          </Button>
-        </DropdownMenuTrigger>
+        <Tip label={state.tools.label} side="top">
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label={state.tools.label}
+              className={cn(
+                GHOST_ICON_BTN,
+                'data-[state=open]:bg-(--chrome-action-hover) data-[state=open]:text-foreground'
+              )}
+              disabled={!state.tools.enabled}
+              size="icon"
+              type="button"
+              variant="ghost"
+            >
+              <Codicon name="add" size="0.875rem" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
         <DropdownMenuContent align="start" className={cn('w-60', composerPanelCard)} side="top" sideOffset={6}>
           <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
             {c.attachLabel}
@@ -71,7 +73,11 @@ export function ContextMenu({
           <ContextMenuItem disabled={!onPickImages} icon={ImageIcon} onSelect={onPickImages}>
             {c.images}
           </ContextMenuItem>
-          <ContextMenuItem disabled={!onPasteClipboardImage} icon={Clipboard} onSelect={onPasteClipboardImage}>
+          <ContextMenuItem
+            disabled={!onPasteClipboardImage}
+            icon={Clipboard}
+            onSelect={onPasteClipboardImage ? () => void onPasteClipboardImage() : undefined}
+          >
             {c.pasteImage}
           </ContextMenuItem>
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
@@ -165,7 +171,7 @@ interface ContextMenuItemProps {
 interface ContextMenuProps {
   onInsertText: (text: string) => void
   onOpenUrlDialog: () => void
-  onPasteClipboardImage?: () => void
+  onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles?: () => void
   onPickFolders?: () => void
   onPickImages?: () => void

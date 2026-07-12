@@ -121,6 +121,12 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
+    # After this many failed consolidation attempts (overflow / zero-match) in
+    # ONE turn, stop instructing the model to "retry in this turn" and return a
+    # terminal "save skipped" result so a fragile replace/add can't loop the
+    # turn to budget exhaustion and suppress the user's reply (issue #42405).
+    _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
+
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
@@ -128,6 +134,36 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Per-turn counter of failed at-capacity consolidation attempts; reset
+        # at each turn boundary by reset_consolidation_failures() (#42405).
+        self._consolidation_failures = 0
+
+    def reset_consolidation_failures(self) -> None:
+        """Reset the per-turn consolidation-failure counter (call at turn start)."""
+        self._consolidation_failures = 0
+
+    def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Count an at-capacity consolidation failure and degrade gracefully.
+
+        Under the per-turn cap, return ``response`` unchanged (it already tells
+        the model how to self-correct + retry in this turn). Once the cap is
+        exceeded, drop the retry instruction and return a TERMINAL result so the
+        model stops looping memory calls and proceeds to answer the user — a
+        failed memory side effect must never block the turn's reply (#42405).
+        """
+        self._consolidation_failures += 1
+        if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
+            return response
+        return {
+            "success": False,
+            "done": True,
+            "error": (
+                f"Memory consolidation failed {self._consolidation_failures} times "
+                "this turn. Stop retrying memory calls — leave memory unchanged for "
+                "now and continue with your reply to the user. The fact can be saved "
+                "in a later turn."
+            ),
+        }
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -248,7 +284,7 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str) -> Optional[str]:
+    def _reload_target(self, target: str, *, skip_drift: bool = False) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
@@ -258,9 +294,13 @@ class MemoryStore:
         When drift is detected the caller must abort the mutation —
         flushing would discard the un-roundtrippable content.
         Returns None on clean reload.
+
+        When *skip_drift* is True the round-trip / entry-size check is
+        bypassed.  Used by the ``add`` action which appends without
+        rewriting, so existing content is never clobbered.
         """
         path = self._path_for(target)
-        bak = self._detect_external_drift(target)
+        bak = None if skip_drift else self._detect_external_drift(target)
         fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
@@ -306,12 +346,12 @@ class MemoryStore:
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
-            # If external drift was detected, the file was backed up to .bak.<ts>
-            # — refuse the mutation so we don't clobber the un-roundtrippable
-            # content the patch tool / shell append / sister session wrote.
-            bak = self._reload_target(target)
-            if bak:
-                return _drift_error(self._path_for(target), bak)
+            # For add (append-only), we skip the drift guard — appending never
+            # clobbers existing content, so round-trip mismatches from prior
+            # tool-written entries in the same session are harmless.  The drift
+            # guard remains active for replace/remove where full-file rewrite
+            # would discard un-roundtrippable content (issue #26045).
+            self._reload_target(target, skip_drift=True)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -326,7 +366,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                return self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
@@ -337,7 +377,7 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
-                }
+                })
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -368,13 +408,17 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                return self._consolidation_failure({
+                    "success": False,
+                    "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
+                    "current_entries": entries,
+                })
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = self._previews([e for _, e in matches])
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -392,7 +436,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                return self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
@@ -402,7 +446,7 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
-                }
+                })
 
             entries[idx] = new_content
             self._set_entries(target, entries)
@@ -425,13 +469,17 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                return self._consolidation_failure({
+                    "success": False,
+                    "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
+                    "current_entries": entries,
+                })
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = self._previews([e for _, e in matches])
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -536,7 +584,7 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                return self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"After applying all {len(operations)} operations, memory would be at "
@@ -545,7 +593,7 @@ class MemoryStore:
                     ),
                     "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
-                }
+                })
 
             # Commit.
             self._set_entries(target, working)
@@ -557,12 +605,12 @@ class MemoryStore:
         """Build a batch-abort error that reports live (uncommitted) state."""
         current = self._char_count(target)
         limit = self._char_limit(target)
-        return {
+        return self._consolidation_failure({
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
             "current_entries": self._entries_for(target),
             "usage": f"{current:,}/{limit:,}",
-        }
+        })
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -579,7 +627,16 @@ class MemoryStore:
 
     # -- Internal helpers --
 
+    @staticmethod
+    def _previews(entries: List[str], width: int = 80) -> List[str]:
+        """Truncated one-line previews of entries for error feedback."""
+        return [e[:width] + ("..." if len(e) > width else "") for e in entries]
+
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+        # A successful write means the consolidation loop made progress, so the
+        # per-turn failure budget resets (the cap counts consecutive failures,
+        # not lifetime ones within a turn) (#42405).
+        self._consolidation_failures = 0
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -731,6 +788,38 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def load_on_disk_store() -> "MemoryStore":
+    """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
+
+    Use this from any context that has no live agent (the messaging gateway, the
+    Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
+    apply approved memory writes. Mirrors how the live agent constructs its store
+    in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
+    / ``memory.user_char_limit`` overrides — so an approval applied without a live
+    agent enforces the SAME caps as one applied with one.
+
+    Falls back to the built-in defaults if config can't be loaded, so this can
+    never raise on a missing/unreadable config.
+    """
+    memory_char_limit = 2200
+    user_char_limit = 1375
+    try:
+        from hermes_cli.config import load_config
+
+        mem_cfg = (load_config() or {}).get("memory", {}) or {}
+        memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
+        user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+    except Exception:
+        pass  # config optional — fall back to defaults rather than break /memory
+
+    store = MemoryStore(
+        memory_char_limit=memory_char_limit,
+        user_char_limit=user_char_limit,
+    )
+    store.load_from_disk()
+    return store
+
+
 def _apply_write_gate(action: str, target: str, content: Optional[str],
                       old_text: Optional[str]) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
@@ -835,6 +924,38 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     )
 
 
+def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> str:
+    """Build a recoverable error for a replace/remove call that arrived without
+    ``old_text``.
+
+    ``replace``/``remove`` are inherently targeted -- without ``old_text`` there
+    is no entry to act on, so we cannot fulfil the call. But returning a bare
+    "old_text is required" is a dead-end: some structured-output clients omit the
+    optional ``old_text`` field (it isn't, and can't be, schema-required without
+    a top-level combinator the Codex backend rejects -- see
+    tests/tools/test_memory_tool_schema.py). So instead we return the current
+    entry inventory plus an explicit retry instruction, letting the model reissue
+    the call with ``old_text`` set to a unique substring of the entry it means.
+    Mirrors the batch path's ``_batch_error`` shape. (issues #43412, #49466)
+    """
+    entries = store._entries_for(target)
+    current = store._char_count(target)
+    limit = store._char_limit(target)
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"'{action}' needs old_text -- a short unique substring of the entry "
+                f"to {action}. None was provided. Reissue the {action} with old_text "
+                f"set to part of one of the current_entries below."
+            ),
+            "current_entries": entries,
+            "usage": f"{current:,}/{limit:,}",
+        },
+        ensure_ascii=False,
+    )
+
+
 def memory_tool(
     action: str = None,
     target: str = "memory",
@@ -856,6 +977,12 @@ def memory_tool(
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
+    # Some strict providers fill optional schema fields with JSON null rather
+    # than omitting them.  Treat ``target: null`` as omitted so memory writes
+    # still use the documented default store instead of failing validation.
+    if target is None:
+        target = "memory"
+
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
@@ -876,9 +1003,15 @@ def memory_tool(
         return tool_error("Content is required for 'add' action.", success=False)
     if action == "replace" and (not old_text or not content):
         missing = "old_text" if not old_text else "content"
+        if not old_text:
+            # The client/model omitted old_text. Replace is inherently targeted
+            # -- we can't guess which entry. Return the current inventory plus a
+            # retry instruction so the model can reissue with old_text set,
+            # instead of hitting a dead-end error. (issues #43412, #49466)
+            return _missing_old_text_error(store, target, "replace")
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
-        return tool_error("old_text is required for 'remove' action.", success=False)
+        return _missing_old_text_error(store, target, "remove")
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
@@ -971,7 +1104,7 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove (single-op shape)."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
             },
             "operations": {
                 "type": "array",

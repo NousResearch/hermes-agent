@@ -131,7 +131,7 @@ def test_cli_close_persists_agent_session_messages_before_end_session():
 
     cli._persist_active_session_before_close()
 
-    agent._persist_session.assert_called_once_with(transcript, conversation_history)
+    agent._persist_session.assert_called_once_with(transcript)
     assert cli.session_id == "live-session"
 
 
@@ -149,7 +149,7 @@ def test_cli_close_persist_falls_back_to_conversation_history():
 
     cli._persist_active_session_before_close()
 
-    agent._persist_session.assert_called_once_with(conversation_history, conversation_history)
+    agent._persist_session.assert_called_once_with(conversation_history)
 
 
 def test_cli_close_persist_skips_empty_transcripts():
@@ -167,3 +167,57 @@ def test_cli_close_persist_skips_empty_transcripts():
     cli._persist_active_session_before_close()
 
     agent._persist_session.assert_not_called()
+
+
+def test_cli_close_persist_real_db_survives_history_alias(tmp_path, monkeypatch):
+    """CLI close safety-net must persist even when history aliases messages.
+
+    In the real CLI, ``conversation_history`` and ``agent._session_messages`` can
+    point at the same live list during interrupted shutdown.  Passing that list
+    as ``conversation_history`` makes ``_flush_messages_to_session_db`` treat
+    every message as already durable and write zero rows.  The close safety-net
+    should use marker-based dedup instead.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    import cli as cli_mod
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "cli-close-alias"
+    db.create_session(session_id=session_id, source="cli")
+
+    transcript = [
+        {"role": "user", "content": "long task"},
+        {"role": "assistant", "content": "partial answer"},
+    ]
+
+    agent = object.__new__(AIAgent)
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = session_id
+    agent.platform = "cli"
+    agent.model = "test-model"
+    agent._session_messages = transcript
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._persist_disabled = False
+    agent._cached_system_prompt = None
+    agent._session_init_model_config = None
+    agent._parent_session_id = None
+    agent._session_json_enabled = False
+
+    cli = object.__new__(cli_mod.HermesCLI)
+    cli.conversation_history = transcript
+    cli.session_id = "old-session"
+    cli.agent = agent
+
+    assert db.get_messages_as_conversation(session_id) == []
+
+    cli._persist_active_session_before_close()
+
+    stored = db.get_messages_as_conversation(session_id)
+    assert [m["content"] for m in stored] == ["long task", "partial answer"]
+    assert cli.session_id == session_id

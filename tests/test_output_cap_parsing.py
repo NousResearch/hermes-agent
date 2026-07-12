@@ -121,6 +121,32 @@ class TestIsOutputCapError:
     def test_unrelated_error_is_not_output_cap(self):
         assert is_output_cap_error("some unrelated 400 error") is False
 
+    def test_vllm_qwen_format_is_output_cap_without_max_tokens(self):
+        # vLLM / Qwen format does not mention "max_tokens" but clearly
+        # describes an output-cap error: input fits, output exceeds window.
+        msg = ("This model's maximum context length is 262144 tokens. However, you "
+               "requested 65536 output tokens and your prompt contains at least 196609 "
+               "input tokens, for a total of at least 262145 tokens.")
+        assert is_output_cap_error(msg) is True
+
+    def test_vllm_qwen_format_with_http_prefix(self):
+        # Same format but with the HTTP 400: prefix and parameter suffix
+        # that appears when logged via _summarize_api_error.
+        msg = ("HTTP 400: This model's maximum context length is 262144 tokens. "
+               "However, you requested 65536 output tokens and your prompt contains "
+               "at least 196609 input tokens, for a total of at least 262145 tokens. "
+               "Please reduce the length of the input prompt or the number of "
+               "requested output tokens. (parameter=input_token")
+        assert is_output_cap_error(msg) is True
+
+    def test_vllm_input_overflow_is_not_output_cap(self):
+        # When the INPUT alone exceeds the window, it's NOT an output-cap
+        # error even if the format otherwise looks similar to vLLM/Qwen.
+        msg = ("This model's maximum context length is 131072 tokens. However, you "
+               "requested 1024 output tokens and your prompt contains at least "
+               "140000 input tokens, for a total of at least 141024 tokens.")
+        assert is_output_cap_error(msg) is False
+
 
 class TestParseVllmTokenBasedOutputCap:
     """vLLM reports both the window and the prompt in TOKENS.

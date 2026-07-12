@@ -1368,6 +1368,41 @@ def is_output_cap_error(error_msg: str) -> bool:
     """
     error_lower = error_msg.lower()
 
+    # vLLM / Qwen / OpenAI-compatible server style:
+    #   "This model's maximum context length is 262144 tokens. However, you
+    #    requested 65536 output tokens and your prompt contains at least 196609
+    #    input tokens, for a total of at least 262145 tokens."
+    # The input alone fits; input + max_tokens exceeds the window.  This is an
+    # output-cap error even though "max_tokens" is never mentioned.  Return
+    # True immediately so we skip the ``mentions_output_param`` gate below
+    # (which requires "max_tokens" / "max_output_tokens" /
+    # ``max_completion_tokens``) AND the ``input_overflow_signal`` guard that
+    # would otherwise reject the error because "prompt contains" / "reduce the
+    # length" appear in the vLLM message without indicating an actual input
+    # overflow.  (#63161)
+    if (
+        "maximum context length" in error_lower
+        and "requested" in error_lower
+        and "output tokens" in error_lower
+        and "prompt contains" in error_lower
+        and "input tokens" in error_lower
+    ):
+        # Guard: only classify as output-cap when the INPUT fits inside the
+        # window.  If the reported input alone >= context length, lowering
+        # max_tokens cannot help (the caller must compress or fail).
+        import re
+        _m_ctx = re.search(r'maximum context length is (\d+)', error_lower)
+        _m_inp = re.search(r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower)
+        if _m_ctx and _m_inp:
+            _ctx = int(_m_ctx.group(1))
+            _input_tok = int(_m_inp.group(1))
+            if _input_tok < _ctx:
+                return True
+        else:
+            # Can't parse numbers; err on the side of treating as output cap
+            # (stale but safer than routing to compression death-loop).
+            return True
+
     mentions_output_param = (
         "max_tokens" in error_lower
         or "max_output_tokens" in error_lower

@@ -2978,6 +2978,35 @@ def run_conversation(
                 
                 error_type = type(api_error).__name__
                 error_msg = str(api_error).lower()
+                # Enrich error_msg with body error message and OpenRouter
+                # metadata.raw so downstream parsers (output-cap parsing,
+                # context-limit extraction) can see the actual provider error
+                # even when the upstream is wrapped.  The classifier already
+                # does this internally (error_classifier.py lines ~585-595),
+                # but the conversation loop's local parsers also need the
+                # full text.  (#63161)
+                _err_body = getattr(api_error, "body", None) or {}
+                if isinstance(_err_body, dict):
+                    _err_obj = _err_body.get("error", {})
+                    if isinstance(_err_obj, dict):
+                        _body_msg = str(_err_obj.get("message") or "").lower()
+                        if _body_msg and _body_msg not in error_msg:
+                            error_msg += " " + _body_msg
+                        _metadata = _err_obj.get("metadata", {})
+                        if isinstance(_metadata, dict):
+                            _raw_json = _metadata.get("raw") or ""
+                            if isinstance(_raw_json, str) and _raw_json.strip():
+                                try:
+                                    import json
+                                    _inner = json.loads(_raw_json)
+                                    if isinstance(_inner, dict):
+                                        _inner_err = _inner.get("error", {})
+                                        if isinstance(_inner_err, dict):
+                                            _meta_msg = str(_inner_err.get("message") or "").lower()
+                                            if _meta_msg and _meta_msg not in error_msg:
+                                                error_msg += " " + _meta_msg
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
                 _error_summary = agent._summarize_api_error(api_error)
                 logger.warning(
                     "API call failed (attempt %s/%s) error_type=%s %s summary=%s",

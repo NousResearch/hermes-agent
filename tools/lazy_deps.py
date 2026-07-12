@@ -140,7 +140,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
+    "memory.hindsight": ("hindsight-client==0.8.4",),
     # supermemory + mem0 are opt-in cloud memory providers with their own
     # SDKs. On the published Docker image the agent venv is sealed
     # (HERMES_DISABLE_LAZY_INSTALLS=1) and lazy installs are redirected to the
@@ -239,7 +239,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
-    "tool.trace_upload": ("huggingface-hub==1.2.3",),
+    "tool.trace_upload": ("huggingface-hub==1.23.0",),
 }
 
 

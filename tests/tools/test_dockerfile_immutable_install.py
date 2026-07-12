@@ -15,15 +15,18 @@ def _dockerfile_text() -> str:
 def test_dockerfile_makes_opt_hermes_readonly_for_hermes_user() -> None:
     text = _dockerfile_text()
 
-    # COPY + RUN chmod ensures read-only perms for the hermes user while
-    # remaining compatible with all build engines (Docker, Podman/Buildah).
-    # The --link --chmod flags were BuildKit-only and broke Podman (#62849).
+    # COPY without --link/--chmod for compatibility with all build engines
+    # (Docker BuildKit, Podman/Buildah). The --link --chmod flags were
+    # BuildKit-only and broke Podman (#62849). We rely on Docker's default
+    # umask of 022 during COPY, which yields 644/755 permissions — inherently
+    # read-only for the non-root hermes user without a slow chmod pass.
     assert "COPY . ." in text
-    assert "chmod -R a+rX,go-w ." in text
     # BuildKit-only COPY flags (--link, symbolic --chmod) must not be on
     # the source copy line. Octal --chmod=0755 on binary copies (uv, node)
     # is universally supported and remains allowed.
     assert "COPY --link" not in text
+    # The slow tree-walking chmod pass must not be present.
+    assert "chmod -R a+rX,go-w ." not in text
     # The old tree-walking passes must not be present.
     assert "chown -R root:root /opt/hermes" not in text
     assert "chmod -R a+rX /opt/hermes" not in text
@@ -69,7 +72,7 @@ def test_dockerfile_bakes_code_scoped_install_method_stamp() -> None:
     published image self-identifying as 'docker' WITHOUT writing into the
     shared $HERMES_HOME data volume (which a host install may also use).
     The stamp is created by root in the shim-wiring RUN block; the hermes
-    user can't modify it (go-w from the RUN chmod on the source COPY).
+    user can't modify it (standard umask from the COPY above).
     """
     text = _dockerfile_text()
     assert "printf 'docker\\n' > /opt/hermes/.install_method" in text

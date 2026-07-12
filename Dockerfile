@@ -195,12 +195,13 @@ RUN cd web && npm run build && \
 # .dockerignore excludes node_modules, so the installs above survive.
 # COPY without --link/--chmod for compatibility with all build engines
 # (Docker BuildKit, Podman/Buildah). The --link and --chmod=a+rX,go-w flags
-# are BuildKit-only and break Podman/Buildah builds (#62849). The subsequent
-# `chmod -R` pass restores the same read-only permissions for the non-root
-# hermes user: a+rX gives read + traverse, go-w removes group/other write
-# while root retains write so build steps below don't need chmod u+w dances.
+# are BuildKit-only and break Podman/Buildah builds (#62849). We rely on
+# Docker's default umask of 022 during COPY, which yields 644 for files and
+# 755 for directories. This inherently provides read-only access for the
+# non-root hermes user (go-w, a+rX) without a slow `chmod -R` pass that
+# walks ~30k files (21s amd64 / 222s arm64). Source files have no group-write
+# bits, so the umask is sufficient for the security model.
 COPY . .
-RUN chmod -R a+rX,go-w .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
@@ -210,7 +211,7 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and
-# read-only for the hermes user (go-w from the --chmod above).
+# read-only for the hermes user (standard umask from the COPY above).
 
 USER root
 RUN mkdir -p /opt/hermes/bin && \

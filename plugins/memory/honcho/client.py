@@ -775,6 +775,25 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
         logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
 
+def _honcho_http_client_closed(client: "Honcho") -> bool:
+    """True if the SDK underlying httpx client has been closed.
+
+    A long-running gateway shares ONE cached Honcho client across sessions.
+    When one session HonchoMemoryProvider.shutdown() closes it
+    (_close_honcho_http_client), the wrapper survives but its httpx client
+    reports is_closed, so later ops raise 'Cannot send a request, as the
+    client has been closed.' Detect that so get_honcho_client can rebuild.
+    """
+    for attr in ("_http", "_async_http"):
+        wrapper = getattr(client, attr, None)
+        if wrapper is None:
+            continue
+        for sub in (wrapper, getattr(wrapper, "_client", None), getattr(wrapper, "client", None)):
+            if sub is not None and getattr(sub, "is_closed", False):
+                return True
+    return False
+
+
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """Get or create the Honcho client singleton.
 
@@ -787,8 +806,13 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """
     cached = _honcho_client_slot.peek()
     if cached is not None:
-        _refresh_cached_oauth(cached, config)
-        return cached
+        if not _honcho_http_client_closed(cached):
+            _refresh_cached_oauth(cached, config)
+            return cached
+        # Cached singleton was closed by a per-session teardown in the gateway;
+        # drop it and rebuild below instead of returning a dead client.
+        logger.warning("Honcho client was closed (session teardown); rebuilding.")
+        _honcho_client_slot.reset()
 
     if config is None:
         config = HonchoClientConfig.from_global_config()

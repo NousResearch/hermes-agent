@@ -3312,15 +3312,25 @@ def _load_two_ok_pool(tmp_path, monkeypatch):
     return load_pool("anthropic")
 
 
+def _fresh_entry(pool):
+    """A copy of the pool's first entry under a new id, for add_entry()."""
+    from dataclasses import replace as dc_replace
+
+    return dc_replace(pool.entries()[0], id="cred-new")
+
+
 class TestCredentialPoolQueryLocking:
-    """Read/status methods must run under ``self._lock``.
+    """Public pool-state methods must run under ``self._lock``.
 
     ``has_available``/``peek``/``current``/``entries`` all touch
     ``self._entries`` (and ``_available_entries`` even prunes + persists),
-    so they must hold the same lock every mutating entry point uses.  A
-    naive fix would deadlock because the lock is non-reentrant and ``peek``
-    calls ``current`` + ``_available_entries``; these tests guard both the
-    no-deadlock and the actually-locked properties.
+    and the management surface (``has_credentials``/``reset_statuses``/
+    ``remove_index``/``resolve_target``/``add_entry``) reads or rebinds
+    ``self._entries`` and persists auth.json, so they must all hold the
+    same lock every mutating entry point uses.  A naive fix would deadlock
+    because the lock is non-reentrant and ``peek`` calls ``current`` +
+    ``_available_entries``; these tests guard both the no-deadlock and the
+    actually-locked properties.
     """
 
     def test_query_methods_do_not_deadlock(self, tmp_path, monkeypatch):
@@ -3332,33 +3342,81 @@ class TestCredentialPoolQueryLocking:
         assert pool.current() is not None
         assert pool.peek() is not None
         assert pool.has_available() is True
+        assert pool.has_credentials() is True
+        assert pool.resolve_target("cred-1")[1] is not None
         # (env may seed extra singleton entries; just assert ours are present)
         assert {"cred-1", "cred-2"} <= {e.id for e in pool.entries()}
 
-    @pytest.mark.parametrize("method", ["has_available", "peek", "current", "entries"])
-    def test_query_method_acquires_lock(self, tmp_path, monkeypatch, method):
+    @pytest.mark.parametrize(
+        "method,get_args",
+        [
+            ("has_available", lambda pool: ()),
+            ("peek", lambda pool: ()),
+            ("current", lambda pool: ()),
+            ("entries", lambda pool: ()),
+            ("has_credentials", lambda pool: ()),
+            ("reset_statuses", lambda pool: ()),
+            ("resolve_target", lambda pool: ("cred-1",)),
+            ("remove_index", lambda pool: (1,)),
+            ("add_entry", lambda pool: (_fresh_entry(pool),)),
+        ],
+    )
+    def test_query_method_acquires_lock(self, tmp_path, monkeypatch, method, get_args):
         import threading
 
         pool = _load_two_ok_pool(tmp_path, monkeypatch)
         pool.select()
+        args = get_args(pool)
+
+        inner = pool._lock
+
+        class _InstrumentedLock:
+            """Probe that records acquire attempts, so the test can prove the
+            worker actually reached ``self._lock`` before asserting that it
+            blocks (a plain timed wait passes spuriously if the worker is
+            simply never scheduled)."""
+
+            def __init__(self):
+                self.attempted = threading.Event()
+
+            def acquire(self, *args, **kwargs):
+                self.attempted.set()
+                return inner.acquire(*args, **kwargs)
+
+            def release(self):
+                inner.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self.release()
+
+        probe = _InstrumentedLock()
+        pool._lock = probe
 
         done = threading.Event()
 
         def _call():
-            getattr(pool, method)()
+            getattr(pool, method)(*args)
             done.set()
 
-        # Hold the pool lock, then fire the query on another thread. If the
-        # method acquires self._lock (as it must), it blocks until we release.
-        pool._lock.acquire()
+        # Hold the real lock (without tripping the probe), then fire the query
+        # on another thread. If the method acquires self._lock (as it must),
+        # it blocks until we release.
+        inner.acquire()
         try:
             worker = threading.Thread(target=_call, daemon=True)
             worker.start()
+            assert probe.attempted.wait(timeout=2.0), (
+                f"{method}() never attempted to acquire self._lock"
+            )
             assert not done.wait(timeout=0.5), (
                 f"{method}() returned while the pool lock was held — it is not "
-                f"acquiring self._lock"
+                f"blocking on self._lock"
             )
         finally:
-            pool._lock.release()
+            inner.release()
 
         assert done.wait(timeout=2.0), f"{method}() did not complete after lock release"

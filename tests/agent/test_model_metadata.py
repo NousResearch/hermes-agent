@@ -1053,6 +1053,73 @@ class TestGetModelContextLength:
                 f"Expected {DEFAULT_FALLBACK_CONTEXT}, got {ctx3}"
             )
 
+    # ── Local vs non-local Ollama context resolution (#63122) ──────────
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+    @patch("agent.model_metadata._query_local_context_length", return_value=32768)
+    @patch("agent.model_metadata.is_local_endpoint", return_value=True)
+    @patch("agent.model_metadata.save_context_length")
+    @patch("agent.model_metadata._maybe_cache_local_context_length")
+    def test_local_ollama_prefers_num_ctx_over_gguf(
+        self,
+        mock_maybe_cache, mock_save,
+        mock_is_local, mock_local_ctx,
+        mock_ollama_show, mock_resolve_ep,
+        mock_fetch, mock_cache,
+    ):
+        """Local Ollama: _query_local_context_length (num_ctx-first) must
+        win over _query_ollama_api_show (GGUF-first).  The configured
+        Modelfile num_ctx is the context value the local probe prefers;
+        the GGUF training max can be larger and would create a false-safe
+        window for compression (#63122)."""
+        result = get_model_context_length(
+            "my-model",
+            base_url="http://localhost:11434",
+        )
+        assert result == 32768, (
+            f"Expected configured Modelfile num_ctx (32768), got {result}. "
+            "Local Ollama must prefer num_ctx over GGUF training max."
+        )
+        # The non-local-oriented probe must NOT fire when local probe succeeds
+        mock_ollama_show.assert_not_called()
+        # The local probe MUST be called exactly once
+        mock_local_ctx.assert_called_once()
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+    @patch("agent.model_metadata._query_local_context_length", return_value=None)
+    @patch("agent.model_metadata.is_local_endpoint", return_value=False)
+    @patch("agent.model_metadata.save_context_length")
+    @patch("agent.model_metadata._maybe_cache_local_context_length")
+    def test_non_local_custom_ollama_preserves_gguf_first(
+        self,
+        mock_maybe_cache, mock_save,
+        mock_is_local, mock_local_ctx,
+        mock_ollama_show, mock_resolve_ep,
+        mock_fetch, mock_cache,
+    ):
+        """Non-local custom Ollama: GGUF-first ordering must be preserved.
+        A non-local endpoint should use _query_ollama_api_show (which
+        prefers model_info.context_length) — this preserves the existing
+        GGUF-first behavior for non-local Ollama endpoints."""
+        result = get_model_context_length(
+            "my-model",
+            base_url="http://ollama.example.com:11434",
+        )
+        assert result == 131072, (
+            f"Expected GGUF training max (131072), got {result}. "
+            "Non-local Ollama must preserve GGUF-first ordering."
+        )
+        # The local probe must NOT be called for non-local endpoints
+        mock_local_ctx.assert_not_called()
+        # The non-local probe MUST be called
+        mock_ollama_show.assert_called_once()
+
 
 # =========================================================================
 # Bedrock context resolution — must run BEFORE custom-endpoint probe

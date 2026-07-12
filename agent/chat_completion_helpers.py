@@ -1391,18 +1391,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback(reason)
 
-    # Skip entries that resolve to the current (provider, model) — falling
-    # back to the same backend that just failed loops the failure. Compare
-    # base_url too so two distinct custom_providers entries pointing at the
-    # same shim/proxy URL also dedup. See issue #22548.
+    # Skip entries that resolve to the *same backend* that just failed —
+    # falling back to it only loops the same failure. A backend is identified
+    # by (provider, model, base_url), so provider+model matching is NOT enough
+    # on its own: the base_url must also match (or be absent from the fallback
+    # entry, in which case it inherits the provider default). Distinct base_urls
+    # that share a provider+model — e.g. a pool of LM Studio servers all serving
+    # the same model — are genuinely different endpoints and must stay live
+    # fallback targets. The second check additionally dedups two entries that
+    # point at the same shim/proxy URL under different provider labels.
+    # See issues #22548 (same-URL dedup) and the multi-server skip regression.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     current_model = (getattr(agent, "model", "") or "").strip()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-    if fb_provider == current_provider and fb_model == current_model:
+    same_backend = (
+        fb_provider == current_provider
+        and fb_model == current_model
+        and (not fb_base_url_for_dedup or fb_base_url_for_dedup == current_base_url)
+    )
+    if same_backend:
         logger.warning(
-            "Fallback skip: chain entry %s/%s matches current provider/model",
-            fb_provider, fb_model,
+            "Fallback skip: chain entry %s/%s matches current backend (base_url %s)",
+            fb_provider, fb_model, fb_base_url_for_dedup or "<provider-default>",
         )
         return agent._try_activate_fallback(reason)
     if (

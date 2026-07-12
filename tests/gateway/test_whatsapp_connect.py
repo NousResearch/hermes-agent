@@ -868,3 +868,35 @@ class TestBridgeAuth:
         assert "Unauthorized" in (result.error or ""), (
             f"Expected 401 body in error, got {result.error!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_uses_auth_header(self, tmp_path):
+        """_standalone_send() must read .bridge_api_key and pass it as Bearer token."""
+        from plugins.platforms.whatsapp.adapter import _standalone_send
+
+        (tmp_path / ".bridge_api_key").write_text("cron-secret")
+
+        pconfig = MagicMock()
+        pconfig.extra = {"bridge_port": 9999, "session_path": str(tmp_path)}
+
+        captured_headers = {}
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"messageId": "msg-1"})
+
+        mock_session = MagicMock()
+        mock_session.post = MagicMock(return_value=_AsyncCM(mock_resp))
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        def _capture_session(headers=None, **kwargs):
+            captured_headers.update(headers or {})
+            return mock_session
+
+        with patch("aiohttp.ClientSession", side_effect=_capture_session):
+            await _standalone_send(pconfig, "1234567890", "hello")
+
+        assert captured_headers.get("Authorization") == "Bearer cron-secret", (
+            f"Expected 'Bearer cron-secret', got {captured_headers.get('Authorization')!r}"
+        )

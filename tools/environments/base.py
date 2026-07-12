@@ -396,7 +396,7 @@ class BaseEnvironment(ABC):
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
-            f"export -p > {_snap_tmp}\n"
+            f"export -p | grep -vE '^(declare -x (BWS_ACCESS_TOKEN|BW_SESSION|HERMES_MAIL|AMP_OUTLOOK|HERMES_EMAIL|BINANCE|COINBASE|COINPAYMENTS|DEVIANTART|GUMROAD|KOFI|PAYHIP|INSTAGRAM|REDDIT|TUTA|GODADDY|SISAL|XAMIG|DEGIRO|BUTTONDOWN|HUNTER|CAPSOLVER|CAMOFOX|DEEPSEEK|OPENCODE|OPENAI|GITHUB|HUGGINGFACE))' > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -513,7 +513,7 @@ class BaseEnvironment(ABC):
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ export -p | grep -vE '^(declare -x (BWS_ACCESS_TOKEN|BW_SESSION|HERMES_MAIL|AMP_OUTLOOK|HERMES_EMAIL|BINANCE|COINBASE|COINPAYMENTS|DEVIANTART|GUMROAD|KOFI|PAYHIP|INSTAGRAM|REDDIT|TUTA|GODADDY|SISAL|XAMIG|DEGIRO|BUTTONDOWN|HUNTER|CAPSOLVER|CAMOFOX|DEEPSEEK|OPENCODE|OPENAI|GITHUB|HUGGINGFACE))' > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

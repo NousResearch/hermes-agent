@@ -305,6 +305,13 @@ export const zhHant = defineLocale({
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      statusbarTitle: '桌面狀態列',
+      statusbarDesc: '一律顯示、隱藏，或僅在移到視窗底部邊緣時顯示。',
+      statusbarOn: '顯示',
+      statusbarOff: '隱藏',
+      statusbarAutoHide: '自動隱藏',
+      statusbarReveal: '顯示桌面狀態列',
+      statusbarSaveFailed: '無法儲存桌面狀態列設定。',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       backdropTitle: '聊天背景',

@@ -339,6 +339,13 @@ export interface Translations {
       toolViewDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      statusbarTitle: string
+      statusbarDesc: string
+      statusbarOn: string
+      statusbarOff: string
+      statusbarAutoHide: string
+      statusbarReveal: string
+      statusbarSaveFailed: string
       translucencyTitle: string
       translucencyDesc: string
       backdropTitle: string

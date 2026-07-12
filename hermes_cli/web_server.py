@@ -849,6 +849,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "How resumed sessions display history",
         "options": ["minimal", "full", "off"],
     },
+    "display.desktop_statusbar": {
+        "type": "select",
+        "description": "Desktop bottom status bar visibility",
+        "options": ["on", "off", "auto-hide"],
+    },
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",

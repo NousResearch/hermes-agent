@@ -313,6 +313,13 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      statusbarTitle: 'デスクトップステータスバー',
+      statusbarDesc: '常に表示、非表示、またはウィンドウ下端に移動したときだけ表示します。',
+      statusbarOn: 'オン',
+      statusbarOff: 'オフ',
+      statusbarAutoHide: '自動的に隠す',
+      statusbarReveal: 'デスクトップステータスバーを表示',
+      statusbarSaveFailed: 'デスクトップステータスバー設定を保存できませんでした。',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
       backdropTitle: 'チャット背景',

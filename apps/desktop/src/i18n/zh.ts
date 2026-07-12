@@ -417,6 +417,13 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      statusbarTitle: '桌面状态栏',
+      statusbarDesc: '始终显示、隐藏，或仅在移到窗口底部边缘时显示。',
+      statusbarOn: '显示',
+      statusbarOff: '隐藏',
+      statusbarAutoHide: '自动隐藏',
+      statusbarReveal: '显示桌面状态栏',
+      statusbarSaveFailed: '无法保存桌面状态栏设置。',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',

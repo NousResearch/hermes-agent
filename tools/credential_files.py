@@ -30,6 +30,14 @@ from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
+
+def _skip_docker_profile_mounts() -> bool:
+    """Return whether Docker sandboxes must not receive profile mounts."""
+    return os.environ.get(
+        "HERMES_DOCKER_BACKEND_SKIP_PROFILE_MOUNTS", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Session-scoped list of credential files to mount.
 # Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
@@ -180,6 +188,9 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
     Each item has ``host_path`` and ``container_path`` keys.
     Combines skill-registered files and user config.
     """
+    if _skip_docker_profile_mounts():
+        return []
+
     mounts: Dict[str, str] = {}
 
     # Skill-registered files
@@ -219,6 +230,9 @@ def get_skills_directory_mount(
     The local skills dir mounts at ``<container_base>/skills``, external dirs
     at ``<container_base>/external_skills/<index>``.
     """
+    if _skip_docker_profile_mounts():
+        return []
+
     mounts = []
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
@@ -363,6 +377,9 @@ def get_cache_directory_mounts(
     ``container_path`` keys.  The host path is resolved via
     ``get_hermes_dir()`` for backward compatibility with old directory layouts.
     """
+    if _skip_docker_profile_mounts():
+        return []
+
     from hermes_constants import get_hermes_dir
 
     mounts: List[Dict[str, str]] = []
@@ -477,5 +494,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

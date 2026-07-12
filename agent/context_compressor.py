@@ -1186,13 +1186,23 @@ class ContextCompressor(ContextEngine):
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            fallback_compaction = (
+                self._verify_compaction_cleared_threshold
+                and self._last_summary_fallback_used
+            )
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
                 # Any real provider reading below the trigger proves the prompt
-                # fits again. Clear the episode latch even when this response was
-                # not the one immediately following compaction.
-                self._ineffective_compression_count = 0
+                # fits again, UNLESS the just-finished compaction had to fall
+                # back to the deterministic placeholder summary. That path
+                # does shrink the prompt, but it is still a degraded compaction
+                # attempt and must count toward the anti-thrashing strike limit.
+                # Otherwise repeated empty-summary failures can rotate through
+                # fallback markers forever while each smaller prompt reading
+                # resets the counter back to zero (#63008 / R1).
+                if not fallback_compaction:
+                    self._ineffective_compression_count = 0
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
 
@@ -1213,7 +1223,17 @@ class ContextCompressor(ContextEngine):
             # Keying on real usage compares like with like and fires exactly once
             # per compaction.
             if self._verify_compaction_cleared_threshold:
-                if self.last_prompt_tokens >= self.threshold_tokens:
+                if fallback_compaction:
+                    self._ineffective_compression_count += 1
+                    if not self.quiet_mode:
+                        logger.warning(
+                            "Compaction completed with a deterministic fallback "
+                            "summary. Counting this as a degraded attempt to "
+                            "avoid repeated fallback-only compaction loops. "
+                            "ineffective_compression_count=%d",
+                            self._ineffective_compression_count,
+                        )
+                elif self.last_prompt_tokens >= self.threshold_tokens:
                     self._ineffective_compression_count += 1
                     if not self.quiet_mode:
                         logger.warning(

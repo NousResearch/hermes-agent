@@ -1370,6 +1370,21 @@ def handle_function_call(
             }
             if classification.known_fix:
                 recovery_annotation["known_fix"] = classification.known_fix
+
+            # ── Skill auto-patch hint ─────────────────────────────────
+            # When the error class is env_issue or wrong_approach, the
+            # recovery knowledge should be persisted to the relevant skill
+            # so this failure doesn't recur in future sessions.  The LLM
+            # sees this hint and may call skill_manage(action='patch')
+            # after successful recovery.
+            if classification.reason.value in ("env_issue", "wrong_approach", "permission", "timeout"):
+                recovery_annotation["skill_patch_hint"] = (
+                    "After you recover from this failure, consider patching "
+                    "the relevant skill with the learned fix using "
+                    "skill_manage(action='patch'). Add the pitfall to the "
+                    "skill's ## Pitfalls section so future sessions avoid "
+                    "this issue."
+                )
             try:
                 result_data = json.loads(result)
                 if isinstance(result_data, dict):
@@ -1489,3 +1504,82 @@ def check_toolset_requirements() -> Dict[str, bool]:
 def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)
+
+
+# ── Skill auto-patch suggestion generator ─────────────────────────────
+# Called by the agent after successful recovery to generate a concrete
+# skill_manage patch payload.  Takes failure + recovery data and returns
+# the old_string / new_string / section to patch.
+
+def build_skill_patch_suggestion(
+    *,
+    skill_name: str,
+    tool_name: str,
+    error_message: str,
+    error_class: str,
+    recovery_command: str = "",
+    recovery_summary: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Build a skill_manage(action='patch') payload from a recovered failure.
+
+    Returns a dict with patch payload keys (old_string, new_string, section),
+    or None if the error class is not patch-worthy.
+    """
+    import json as _json
+
+    PATCHABLE_CLASSES = frozenset({"env_issue", "wrong_approach", "permission", "timeout"})
+    if error_class not in PATCHABLE_CLASSES:
+        return None
+
+    # Select the target section and build patch content
+    if error_class == "env_issue":
+        section = "## Prerequisites"
+        new_entry = (
+            f"\n### {tool_name}\n"
+            f"- **Required**: If you get `{error_message[:80]}`, run:\n"
+            f"  ```bash\n"
+            f"  {recovery_command or 'see recovery hint above'}\n"
+            f"  ```\n"
+        )
+        # old_string is the section heading — we append after it
+        old_string = section
+
+    elif error_class == "wrong_approach":
+        section = "## Pitfalls"
+        scenario = error_message[:60].split("\n")[0].strip()
+        new_entry = (
+            f"\n### {scenario}\n"
+            f"- **Symptom**: `{error_message[:100]}`\n"
+            f"- **Fix**: {recovery_summary or 'Change approach as shown above'}\n"
+        )
+        old_string = section
+
+    elif error_class == "permission":
+        section = "## Pitfalls"
+        new_entry = (
+            f"\n### Permission required\n"
+            f"- **Symptom**: `{error_message[:100]}`\n"
+            f"- **Fix**: {recovery_summary or 'Request permission or use alternate path'}\n"
+        )
+        old_string = section
+
+    elif error_class == "timeout":
+        section = "## Pitfalls"
+        new_entry = (
+            f"\n### {tool_name} timeout\n"
+            f"- **Symptom**: `{error_message[:100]}`\n"
+            f"- **Fix**: Increase timeout or split work into smaller chunks.\n"
+        )
+        old_string = section
+
+    else:
+        return None
+
+    return {
+        "action": "patch",
+        "name": skill_name,
+        "old_string": old_string,
+        "new_string": old_string + "\n" + new_entry.strip(),
+        "section": section,
+        "entry": new_entry.strip(),
+    }

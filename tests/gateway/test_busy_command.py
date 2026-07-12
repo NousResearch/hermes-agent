@@ -64,3 +64,71 @@ class TestBusyCommand:
         reply_text = str(result)
         assert "queue" in reply_text.lower()
         assert "busy" in reply_text.lower()
+
+
+class TestBusyCommandPersistence:
+    """Test /busy persistence with mocked save_config_value."""
+
+    @pytest.mark.asyncio
+    async def test_set_queue_persists(self, monkeypatch):
+        """/busy queue saves config and updates mode."""
+        runner = _make_runner(busy_mode="interrupt")
+        monkeypatch.setattr(
+            "cli.save_config_value", lambda k, v: True
+        )
+        event = _make_event("/busy queue")
+        result = await runner._handle_busy_command(event)
+        assert "queue" in str(result).lower()
+        assert runner._busy_input_mode == "queue"
+
+    @pytest.mark.asyncio
+    async def test_set_steer_persists(self, monkeypatch):
+        """/busy steer saves config and updates mode."""
+        runner = _make_runner(busy_mode="queue")
+        monkeypatch.setattr(
+            "cli.save_config_value", lambda k, v: True
+        )
+        event = _make_event("/busy steer")
+        result = await runner._handle_busy_command(event)
+        assert "steer" in str(result).lower()
+        assert runner._busy_input_mode == "steer"
+
+    @pytest.mark.asyncio
+    async def test_set_interrupt_persists(self, monkeypatch):
+        """/busy interrupt saves config and updates mode."""
+        runner = _make_runner(busy_mode="queue")
+        monkeypatch.setattr(
+            "cli.save_config_value", lambda k, v: True
+        )
+        event = _make_event("/busy interrupt")
+        result = await runner._handle_busy_command(event)
+        assert "interrupt" in str(result).lower()
+        assert runner._busy_input_mode == "interrupt"
+
+    @pytest.mark.asyncio
+    async def test_save_failure_preserves_mode(self, monkeypatch):
+        """When save_config_value returns False, mode is unchanged."""
+        runner = _make_runner(busy_mode="steer")
+        monkeypatch.setattr(
+            "cli.save_config_value", lambda k, v: False
+        )
+        event = _make_event("/busy queue")
+        result = await runner._handle_busy_command(event)
+        assert "unchanged" in str(result).lower()
+        assert runner._busy_input_mode == "steer"
+
+    @pytest.mark.asyncio
+    async def test_save_exception_preserves_mode(self, monkeypatch):
+        """When save_config_value raises, mode is unchanged."""
+        runner = _make_runner(busy_mode="interrupt")
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(
+            "cli.save_config_value", _raise
+        )
+        event = _make_event("/busy steer")
+        result = await runner._handle_busy_command(event)
+        assert "Could not save" in str(result)
+        assert runner._busy_input_mode == "interrupt"

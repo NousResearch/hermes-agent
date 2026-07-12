@@ -289,7 +289,55 @@ class TestAgentAdd:
         ))
         assert rv == 1
         out = capsys.readouterr().out
-        assert "not found" in out
+        assert "does not exist" in out
+
+    def test_clone_is_root_anchored_from_named_profile(self, fresh_home, monkeypatch, capsys):
+        """``--from-profile`` resolves against the profile ROOT even when the
+        command runs inside a named profile (``hermes -p coder agent add``,
+        i.e. HERMES_HOME=<root>/profiles/coder). The pre-fix behavior nested
+        the clone at <root>/profiles/coder/profiles/<id>, where profile
+        enumeration never looks."""
+        src = fresh_home / "profiles" / "main"
+        src.mkdir(parents=True)
+        (src / "SOUL.md").write_text("# Main SOUL")
+
+        # Simulate running from a named profile: HERMES_HOME is the profile dir.
+        active = fresh_home / "profiles" / "coder"
+        active.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(active))
+        try:
+            import hermes_constants
+            hermes_constants._cached_hermes_home = None  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        saved = {"agents": {}, "routes": [], "default_agent": "main"}
+
+        def fake_load():
+            return saved.copy()
+
+        def fake_save(cfg):
+            nonlocal saved
+            saved = cfg
+
+        import hermes_cli.config
+        monkeypatch.setattr(hermes_cli.config, "load_config", fake_load)
+        monkeypatch.setattr(agent_mod, "save_config", fake_save)
+
+        rv = agent_mod.cmd_agent_add(_args(
+            agent_id="cloned",
+            model=None,
+            provider=None,
+            home_dir=None,
+            enabled_toolsets=None,
+            from_profile="main",
+        ))
+        assert rv == 0
+        root_dst = fresh_home / "profiles" / "cloned"
+        assert (root_dst / "SOUL.md").exists()
+        assert saved["agents"]["cloned"]["home_dir"] == str(root_dst)
+        # The old bug: profiles/ nested below the active profile's home.
+        assert not (active / "profiles").exists()
 
 
 # ---------------------------------------------------------------------------

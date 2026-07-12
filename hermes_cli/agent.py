@@ -7,7 +7,6 @@ hermes agent — Manage multi-agent profiles and routing.
   hermes agent remove <id>   Remove an agent (warns about orphaned routes)
 """
 
-import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -176,26 +175,26 @@ def cmd_agent_add(args) -> int:
     if args.enabled_toolsets:
         spec["enabled_toolsets"] = args.enabled_toolsets.split(",")
 
-    # If cloning from an existing profile, copy directory
+    # If cloning from an existing profile, delegate to the root-anchored
+    # profile APIs. get_hermes_home() may itself point at a named profile
+    # (when invoked via `hermes -p <name> agent add`), so anchoring
+    # ``profiles/`` below it would nest the clone where profile
+    # enumeration (hermes_cli.profiles) never looks.
     if args.from_profile:
-        src = get_hermes_home() / "profiles" / args.from_profile
-        dst = get_hermes_home() / "profiles" / agent_id
-
-        if not src.exists():
-            print(_red(f"Source profile '{args.from_profile}' not found at {src}"))
-            return 1
-
-        if dst.exists():
-            print(_red(f"Destination already exists: {dst}"))
-            return 1
+        from hermes_cli.profiles import create_profile
 
         try:
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.pyc", "__pycache__"))
-            spec["home_dir"] = str(dst)
-            print(_green(f"Cloned profile from '{args.from_profile}' to {dst}"))
-        except Exception as e:
+            dst = create_profile(
+                agent_id,
+                clone_from=args.from_profile,
+                clone_all=True,
+                no_alias=True,
+            )
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
             print(_red(f"Failed to clone profile: {e}"))
             return 1
+        spec["home_dir"] = str(dst)
+        print(_green(f"Cloned profile from '{args.from_profile}' to {dst}"))
 
     cfg["agents"][agent_id] = spec
     save_config(cfg)

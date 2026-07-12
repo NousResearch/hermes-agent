@@ -484,7 +484,8 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
     reasoning_pieces: List[str] = []
     tool_calls: List[SimpleNamespace] = []
 
-    for index, part in enumerate(parts or []):
+    tool_call_index = 0
+    for part in parts or []:
         if not isinstance(part, dict):
             continue
         if part.get("thought") is True and isinstance(part.get("text"), str):
@@ -502,13 +503,14 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
             tool_call = SimpleNamespace(
                 id=f"call_{uuid.uuid4().hex[:12]}",
                 type="function",
-                index=index,
+                index=tool_call_index,
                 function=SimpleNamespace(name=str(fc["name"]), arguments=args_str),
             )
             extra_content = _tool_call_extra_from_part(part)
             if extra_content:
                 tool_call.extra_content = extra_content
             tool_calls.append(tool_call)
+            tool_call_index += 1
 
     finish_reason = "tool_calls" if tool_calls else _map_gemini_finish_reason(str(cand.get("finishReason") or ""))
     usage_meta = resp.get("usageMetadata") or {}
@@ -657,11 +659,8 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 tool_call_indices[call_key] = slot
             emitted_arguments = args_str
             last_arguments = str(slot.get("last_arguments") or "")
-            if last_arguments:
-                if args_str == last_arguments:
-                    emitted_arguments = ""
-                elif args_str.startswith(last_arguments):
-                    emitted_arguments = args_str[len(last_arguments):]
+            if last_arguments and args_str == last_arguments:
+                emitted_arguments = ""
             slot["last_arguments"] = args_str
             chunks.append(
                 _make_stream_chunk(

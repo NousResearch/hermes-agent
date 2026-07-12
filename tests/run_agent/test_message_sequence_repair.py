@@ -105,6 +105,43 @@ def test_repair_preserves_user_content_when_one_side_empty():
     assert messages == [{"role": "user", "content": "real message"}]
 
 
+def test_repair_preserves_persisted_mobile_receipt_proof_on_user_merge():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "interrupted", "_db_persisted": True},
+        {
+            "role": "user",
+            "content": "mobile retry",
+            "_db_persisted": True,
+            "_mobile_mutation_receipt_tags": ["proof-1"],
+        },
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 1
+    assert messages[0]["_mobile_mutation_persisted_receipt_tags"] == [
+        "proof-1"
+    ]
+
+
+def test_repair_does_not_promote_unpersisted_mobile_receipt_proof():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "interrupted", "_db_persisted": True},
+        {
+            "role": "user",
+            "content": "failed write",
+            "_mobile_mutation_receipt_tags": ["proof-1"],
+        },
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert len(messages) == 1
+    assert "_mobile_mutation_persisted_receipt_tags" not in messages[0]
+
+
 def test_repair_does_not_rewind_ongoing_dialog_tool_pair():
     """assistant(tool_calls) + tool + user is a VALID pattern (user redirect
     before the model gets its continuation turn). Repair must not touch it —

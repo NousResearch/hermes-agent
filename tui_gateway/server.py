@@ -1430,11 +1430,12 @@ def _mutation_response(
     *,
     client_request_id: str,
     deduplicated: bool,
+    state: str = "completed",
 ) -> dict:
     receipt = {
         "client_request_id": client_request_id,
         "deduplicated": deduplicated,
-        "state": "completed",
+        "state": state,
     }
     if "result" in outcome:
         result = copy.deepcopy(outcome["result"])
@@ -1515,6 +1516,374 @@ def _recover_mobile_mutation_outcome_unknown(
         context,
     )
     return False
+
+
+def _capture_mobile_prompt_receipt_context(
+    params: dict,
+    *,
+    proof_tag: str,
+) -> tuple | None:
+    """Capture the exact receipt identity expected on the user row."""
+    sid = str(params.get("session_id") or "")
+    session = _sessions.get(sid)
+    if session is None or not proof_tag:
+        return None
+    return sid, session, proof_tag
+
+
+def _mobile_prompt_turn_is_durable(context: tuple) -> bool:
+    _, session, proof_tag = context
+    agent = session.get("agent")
+    if proof_tag in (
+        getattr(agent, "_durable_mobile_mutation_receipt_tags", set()) or set()
+    ):
+        return True
+    with session.setdefault("history_lock", threading.RLock()):
+        history = list(session.get("history") or ())
+    agent_messages = list(getattr(agent, "_session_messages", ()) or ())
+    # ``_db_persisted`` is stamped only after SessionDB.append_message succeeds.
+    # The turn-context tag binds that proof to this exact receipt, so an older,
+    # substring-matching, or later queued user turn cannot satisfy it. Sequence
+    # repair may merge away that exact dict; in that case it carries only the
+    # receipt's already-persisted proof, never a blanket DB marker for the
+    # merged content.
+    return any(
+        isinstance(message, dict)
+        and message.get("role") == "user"
+        and (
+            (
+                message.get("_db_persisted")
+                and proof_tag
+                in (message.get("_mobile_mutation_receipt_tags") or ())
+            )
+            or proof_tag
+            in (
+                message.get("_mobile_mutation_persisted_receipt_tags")
+                or ()
+            )
+        )
+        for message in [*history, *agent_messages]
+    )
+
+
+def _mobile_prompt_turn_is_pending(context: tuple) -> bool:
+    _, session, proof_tag = context
+    with session.setdefault("history_lock", threading.RLock()):
+        live_tags = session.get("_live_mobile_mutation_receipt_tags")
+        starting_tags = set(
+            session.get("_starting_mobile_mutation_receipt_tags") or ()
+        )
+        run_thread = session.get("_run_thread")
+        if isinstance(live_tags, set):
+            tag_owned = proof_tag in live_tags
+        else:
+            # Compatibility for legacy/synthetic session dictionaries. New
+            # gateway paths maintain the O(1) live-tag set below.
+            queued_tags = (
+                (session.get("queued_prompt") or {}).get(
+                    "mobile_mutation_receipt_tags"
+                )
+                or ()
+            )
+            pending_tags = (
+                session.get("_pending_mobile_mutation_receipt_tags") or ()
+            )
+            active_tags = (
+                session.get("_active_mobile_mutation_receipt_tags") or ()
+            )
+            agent_pending_tags = (
+                getattr(
+                    session.get("agent"),
+                    "_pending_mobile_mutation_receipt_tags",
+                    (),
+                )
+                or ()
+            )
+            tag_owned = any(
+                proof_tag in tags
+                for tags in (
+                    queued_tags,
+                    pending_tags,
+                    active_tags,
+                    starting_tags,
+                    agent_pending_tags,
+                )
+            )
+    is_alive = getattr(run_thread, "is_alive", None)
+    thread_alive = bool(callable(is_alive) and is_alive())
+    # ``Thread.is_alive()`` is briefly false between assigning a replacement
+    # worker handle and starting it. An explicit starting tag covers only that
+    # handoff; generic ``running`` cannot let orphan tags survive a dead worker.
+    execution_live = thread_alive or proof_tag in starting_tags
+    return tag_owned and execution_live
+
+
+def _mobile_prompt_receipt_condition(session: dict) -> threading.Condition:
+    with session.setdefault("history_lock", threading.RLock()):
+        condition = session.get("_mobile_prompt_receipt_condition")
+        if condition is None:
+            condition = threading.Condition()
+            session["_mobile_prompt_receipt_condition"] = condition
+        agent = session.get("agent")
+        if agent is not None:
+            try:
+                agent._mobile_mutation_receipt_condition = condition
+            except (AttributeError, TypeError):
+                pass
+    return condition
+
+
+def _notify_mobile_prompt_receipt_change(session: dict) -> None:
+    condition = session.get("_mobile_prompt_receipt_condition")
+    if condition is None:
+        return
+    with condition:
+        condition.notify_all()
+
+
+def _track_mobile_prompt_receipt_tags_locked(
+    session: dict,
+    proof_tags: list[str] | tuple[str, ...],
+) -> None:
+    live_tags = set(session.get("_live_mobile_mutation_receipt_tags") or ())
+    live_tags.update(tag for tag in proof_tags if tag)
+    if live_tags:
+        session["_live_mobile_mutation_receipt_tags"] = live_tags
+
+
+def _discard_mobile_prompt_receipt_tags_locked(
+    session: dict,
+    proof_tags: list[str] | tuple[str, ...],
+    *,
+    agent: Any = None,
+) -> None:
+    """Remove only the named receipt identities from live handoff state."""
+    remove = {tag for tag in proof_tags if tag}
+    if not remove:
+        return
+    for key in (
+        "_pending_mobile_mutation_receipt_tags",
+        "_active_mobile_mutation_receipt_tags",
+        "_starting_mobile_mutation_receipt_tags",
+        "_live_mobile_mutation_receipt_tags",
+    ):
+        current = session.get(key) or ()
+        remaining = type(current)(
+            tag for tag in current if tag not in remove
+        )
+        if remaining:
+            session[key] = remaining
+        else:
+            session.pop(key, None)
+    if agent is not None:
+        remaining = [
+            tag
+            for tag in (
+                getattr(agent, "_pending_mobile_mutation_receipt_tags", ())
+                or ()
+            )
+            if tag not in remove
+        ]
+        if remaining or hasattr(
+            agent,
+            "_pending_mobile_mutation_receipt_tags",
+        ):
+            agent._pending_mobile_mutation_receipt_tags = remaining
+    _notify_mobile_prompt_receipt_change(session)
+
+
+def _complete_mobile_prompt_receipt(
+    *,
+    store: MobileMutationStore,
+    claim: MutationClaim,
+    outcome: dict[str, Any],
+) -> None:
+    try:
+        completed = store.complete(claim, outcome)
+    except (OSError, sqlite3.Error):
+        logger.warning(
+            "mobile prompt receipt completion failed",
+            exc_info=True,
+        )
+        completed = False
+    except Exception:
+        logger.exception("unexpected mobile prompt receipt completion failure")
+        completed = False
+    if not completed:
+        _recover_mobile_mutation_outcome_unknown(
+            store,
+            claim,
+            context="prompt receipt completion failure",
+        )
+
+
+def _forget_mobile_prompt_durable_tag(context: tuple) -> None:
+    _, session, proof_tag = context
+    agent = session.get("agent")
+    condition = session.get("_mobile_prompt_receipt_condition")
+
+    def discard() -> None:
+        durable = getattr(
+            agent,
+            "_durable_mobile_mutation_receipt_tags",
+            None,
+        )
+        if isinstance(durable, set):
+            durable.discard(proof_tag)
+
+    if condition is None:
+        discard()
+    else:
+        with condition:
+            discard()
+
+
+def _run_mobile_prompt_receipt_monitor(
+    session: dict,
+    condition: threading.Condition,
+) -> None:
+    """Resolve all deferred prompt receipts for one live session."""
+    try:
+        while True:
+            with condition:
+                entries = dict(
+                    session.get("_mobile_prompt_receipt_entries") or {}
+                )
+                if not entries:
+                    current = session.get(
+                        "_mobile_prompt_receipt_monitor_thread"
+                    )
+                    if current is threading.current_thread():
+                        session.pop(
+                            "_mobile_prompt_receipt_monitor_thread",
+                            None,
+                        )
+                    condition.notify_all()
+                    return
+
+            terminal: list[tuple[str, dict[str, Any]]] = []
+            for proof_tag, entry in entries.items():
+                context = entry["context"]
+                _, entry_session, _ = context
+                agent = entry_session.get("agent")
+                durable_tags = (
+                    getattr(
+                        agent,
+                        "_durable_mobile_mutation_receipt_tags",
+                        set(),
+                    )
+                    or set()
+                )
+                durable = proof_tag in durable_tags
+                try:
+                    if not durable and _mobile_prompt_turn_is_pending(context):
+                        continue
+                    # One transcript scan at the terminal edge supports legacy
+                    # and test paths that predate the O(1) durable-tag signal,
+                    # while the queued hot path remains constant-time.
+                    if not durable:
+                        durable = _mobile_prompt_turn_is_durable(context)
+                    if durable:
+                        _complete_mobile_prompt_receipt(
+                            store=entry["store"],
+                            claim=entry["claim"],
+                            outcome=entry["outcome"],
+                        )
+                    else:
+                        _recover_mobile_mutation_outcome_unknown(
+                            entry["store"],
+                            entry["claim"],
+                            context="prompt turn lacked durable history",
+                        )
+                except Exception:
+                    logger.exception("mobile prompt receipt monitor failed")
+                    _recover_mobile_mutation_outcome_unknown(
+                        entry["store"],
+                        entry["claim"],
+                        context="unexpected prompt receipt monitor failure",
+                    )
+                terminal.append((proof_tag, entry))
+
+            if terminal:
+                with condition:
+                    live_entries = session.get(
+                        "_mobile_prompt_receipt_entries"
+                    ) or {}
+                    for proof_tag, entry in terminal:
+                        if live_entries.get(proof_tag) is entry:
+                            live_entries.pop(proof_tag, None)
+                    condition.notify_all()
+                for _, entry in terminal:
+                    _forget_mobile_prompt_durable_tag(entry["context"])
+                continue
+
+            with condition:
+                condition.wait(timeout=0.25)
+    finally:
+        stranded: list[dict[str, Any]] = []
+        with condition:
+            current = session.get("_mobile_prompt_receipt_monitor_thread")
+            if current is threading.current_thread():
+                session.pop("_mobile_prompt_receipt_monitor_thread", None)
+                live_entries = session.get(
+                    "_mobile_prompt_receipt_entries"
+                ) or {}
+                stranded = list(live_entries.values())
+                live_entries.clear()
+            condition.notify_all()
+        for entry in stranded:
+            _recover_mobile_mutation_outcome_unknown(
+                entry["store"],
+                entry["claim"],
+                context="prompt receipt coordinator stopped unexpectedly",
+            )
+            _forget_mobile_prompt_durable_tag(entry["context"])
+
+
+def _defer_mobile_prompt_receipt(
+    *,
+    store: MobileMutationStore,
+    claim: MutationClaim,
+    outcome: dict[str, Any],
+    context: tuple | None,
+) -> bool:
+    """Register a prompt receipt with the session's bounded monitor."""
+    if context is None:
+        return False
+    _, session, proof_tag = context
+    condition = _mobile_prompt_receipt_condition(session)
+    entry = {
+        "claim": claim,
+        "context": context,
+        "outcome": outcome,
+        "store": store,
+    }
+    monitor = None
+    try:
+        with condition:
+            entries = session.setdefault("_mobile_prompt_receipt_entries", {})
+            entries[proof_tag] = entry
+            monitor = session.get("_mobile_prompt_receipt_monitor_thread")
+            is_alive = getattr(monitor, "is_alive", None)
+            if not (callable(is_alive) and is_alive()):
+                monitor = threading.Thread(
+                    target=_run_mobile_prompt_receipt_monitor,
+                    args=(session, condition),
+                    daemon=True,
+                )
+                session["_mobile_prompt_receipt_monitor_thread"] = monitor
+                monitor.start()
+            condition.notify_all()
+    except Exception:
+        logger.exception("mobile prompt receipt monitor failed to start")
+        with condition:
+            entries = session.get("_mobile_prompt_receipt_entries") or {}
+            if entries.get(proof_tag) is entry:
+                entries.pop(proof_tag, None)
+            if session.get("_mobile_prompt_receipt_monitor_thread") is monitor:
+                session.pop("_mobile_prompt_receipt_monitor_thread", None)
+        return False
+    return True
 
 
 def _dispatch_mobile_mutation(
@@ -1653,6 +2022,16 @@ def _dispatch_mobile_mutation(
             },
         )
 
+    prompt_receipt_context = None
+    if method == "prompt.submit" and response is None:
+        proof_tag = claim.proof_tag
+        if proof_tag:
+            params["_mobile_mutation_receipt_tag"] = proof_tag
+            prompt_receipt_context = _capture_mobile_prompt_receipt_context(
+                params,
+                proof_tag=proof_tag,
+            )
+
     try:
         if response is None:
             response = handle_request(req)
@@ -1671,6 +2050,8 @@ def _dispatch_mobile_mutation(
             "mutation handler failed before a durable outcome was available",
             data={"reason": "mutation_outcome_unknown"},
         )
+    finally:
+        params.pop("_mobile_mutation_receipt_tag", None)
     if response is None:
         recovered = _recover_mobile_mutation_outcome_unknown(
             store,
@@ -1686,6 +2067,42 @@ def _dispatch_mobile_mutation(
             data={"reason": "mutation_outcome_unknown"},
         )
     outcome = _mutation_outcome(response)
+    prompt_status = (
+        str((outcome.get("result") or {}).get("status") or "")
+        if isinstance(outcome.get("result"), dict)
+        else ""
+    )
+    if method == "prompt.submit" and prompt_status in {
+        "queued",
+        "steered",
+        "streaming",
+    }:
+        if not _defer_mobile_prompt_receipt(
+            store=store,
+            claim=claim,
+            outcome=outcome,
+            context=prompt_receipt_context,
+        ):
+            recovered = _recover_mobile_mutation_outcome_unknown(
+                store,
+                claim,
+                context="prompt receipt monitor startup failure",
+            )
+            if not recovered:
+                return _mobile_mutation_store_unavailable(rid)
+            return _err(
+                rid,
+                5037,
+                "prompt mutation outcome could not be monitored durably",
+                data={"reason": "mutation_outcome_unknown"},
+            )
+        return _mutation_response(
+            rid,
+            outcome,
+            client_request_id=client_request_id,
+            deduplicated=False,
+            state="in_progress",
+        )
     try:
         completed = store.complete(claim, outcome)
     except (OSError, sqlite3.Error):
@@ -5566,7 +5983,13 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    *,
+    mobile_mutation_receipt_tag: str = "",
+) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
     Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
@@ -5576,6 +5999,15 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     the client that sent it even if the session transport is rebound meanwhile.
     """
     existing = session.get("queued_prompt")
+    receipt_tags = list(
+        (existing or {}).get("mobile_mutation_receipt_tags") or ()
+    )
+    if (
+        mobile_mutation_receipt_tag
+        and mobile_mutation_receipt_tag not in receipt_tags
+    ):
+        receipt_tags.append(mobile_mutation_receipt_tag)
+    _track_mobile_prompt_receipt_tags_locked(session, receipt_tags)
     if (
         existing
         and isinstance(existing.get("text"), str)
@@ -5583,7 +6015,11 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     ):
         prev = existing["text"]
         text = f"{prev}\n\n{text}" if prev and text else (prev or text)
-    session["queued_prompt"] = {"text": text, "transport": transport}
+    session["queued_prompt"] = {
+        "text": text,
+        "transport": transport,
+        "mobile_mutation_receipt_tags": receipt_tags,
+    }
 
 
 def _handle_busy_submit(
@@ -5594,6 +6030,7 @@ def _handle_busy_submit(
     transport: Any,
     *,
     allow_control: bool = True,
+    mobile_mutation_receipt_tag: str = "",
 ) -> dict:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -5613,7 +6050,12 @@ def _handle_busy_submit(
     # dashboard's interrupt/steer preference unless its connection also holds
     # conversation.control.
     if not allow_control:
-        _enqueue_prompt(session, text, transport)
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            mobile_mutation_receipt_tag=mobile_mutation_receipt_tag,
+        )
         session["last_active"] = time.time()
         return _ok(rid, {"status": "queued"})
 
@@ -5631,7 +6073,12 @@ def _handle_busy_submit(
             agent.interrupt()
         except Exception:
             pass
-    _enqueue_prompt(session, text, transport)
+    _enqueue_prompt(
+        session,
+        text,
+        transport,
+        mobile_mutation_receipt_tag=mobile_mutation_receipt_tag,
+    )
     session["last_active"] = time.time()
     return _ok(rid, {"status": "queued"})
 
@@ -5649,6 +6096,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             return False
         session["queued_prompt"] = None
         session["running"] = True
+        receipt_tags = list(
+            queued.get("mobile_mutation_receipt_tags") or ()
+        )
+        if receipt_tags:
+            session["_pending_mobile_mutation_receipt_tags"] = receipt_tags
+            _track_mobile_prompt_receipt_tags_locked(session, receipt_tags)
+        else:
+            session.pop("_pending_mobile_mutation_receipt_tags", None)
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
     try:
@@ -5660,7 +6115,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             file=sys.stderr,
         )
         with session["history_lock"]:
+            _discard_mobile_prompt_receipt_tags_locked(
+                session,
+                receipt_tags,
+                agent=session.get("agent"),
+            )
             session["running"] = False
+            _clear_inflight_turn(session)
     return True
 
 
@@ -8696,7 +9157,18 @@ def _(rid, params: dict) -> dict:
         session["agent"].interrupt()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        queued_receipt_tags = list(
+            (session.get("queued_prompt") or {}).get(
+                "mobile_mutation_receipt_tags"
+            )
+            or ()
+        )
         session["queued_prompt"] = None
+        _discard_mobile_prompt_receipt_tags_locked(
+            session,
+            queued_receipt_tags,
+            agent=session.get("agent"),
+        )
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
@@ -8994,6 +9466,23 @@ def _(rid, params: dict) -> dict:
     # without conversation.control queues its next turn on this transport but
     # must not seize the in-flight turn from the currently attached client.
     t = current_transport()
+    active_authorization = getattr(t, "authorization", None)
+    from tui_gateway.mobile_contract import (
+        CONVERSATION_CONTROL_SCOPE,
+        MOBILE_AUDIENCE,
+        authorization_allows_scope,
+        effective_authorization,
+    )
+
+    mobile_mutation_receipt_tag = str(
+        params.get("_mobile_mutation_receipt_tag") or ""
+    ).strip()
+    durable_mobile_prompt = bool(mobile_mutation_receipt_tag) and (
+        effective_authorization(active_authorization)["audience"]
+        == MOBILE_AUDIENCE
+    )
+    if not durable_mobile_prompt:
+        mobile_mutation_receipt_tag = ""
     with session["history_lock"]:
         if session.get("running"):
             # Don't reject a mid-turn prompt — queue it (and, by default,
@@ -9001,13 +9490,13 @@ def _(rid, params: dict) -> dict:
             # _handle_busy_submit for why the old "session busy" rejection
             # dropped messages when teardown outlived the client's retry window.
             active_transport = t or session.get("transport")
-            from tui_gateway.mobile_contract import (
-                CONVERSATION_CONTROL_SCOPE,
-                authorization_allows_scope,
-            )
-
-            allow_control = authorization_allows_scope(
-                getattr(active_transport, "authorization", None),
+            authorization = getattr(active_transport, "authorization", None)
+            # A durable mobile send always becomes its own next user turn.
+            # Interrupt/steer are separate idempotent control operations; using
+            # either implicit busy-input policy here would make persistence of
+            # this prompt identity impossible to prove after an uncertain ACK.
+            allow_control = not durable_mobile_prompt and authorization_allows_scope(
+                authorization,
                 CONVERSATION_CONTROL_SCOPE,
             )
             if t is not None and allow_control:
@@ -9019,6 +9508,7 @@ def _(rid, params: dict) -> dict:
                 text,
                 active_transport,
                 allow_control=allow_control,
+                mobile_mutation_receipt_tag=mobile_mutation_receipt_tag,
             )
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
@@ -9051,6 +9541,16 @@ def _(rid, params: dict) -> dict:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+        if mobile_mutation_receipt_tag:
+            session["_pending_mobile_mutation_receipt_tags"] = [
+                mobile_mutation_receipt_tag
+            ]
+            _track_mobile_prompt_receipt_tags_locked(
+                session,
+                [mobile_mutation_receipt_tag],
+            )
+        else:
+            session.pop("_pending_mobile_mutation_receipt_tags", None)
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -9076,15 +9576,37 @@ def _(rid, params: dict) -> dict:
                 },
             )
             with session["history_lock"]:
+                _discard_mobile_prompt_receipt_tags_locked(
+                    session,
+                    [mobile_mutation_receipt_tag],
+                    agent=session.get("agent"),
+                )
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
+                _discard_mobile_prompt_receipt_tags_locked(
+                    session,
+                    [mobile_mutation_receipt_tag],
+                    agent=session.get("agent"),
+                )
                 session["running"] = False
                 _clear_inflight_turn(session)
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        try:
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            logger.exception("mobile prompt worker setup failed")
+            with session["history_lock"]:
+                _discard_mobile_prompt_receipt_tags_locked(
+                    session,
+                    [mobile_mutation_receipt_tag],
+                    agent=session.get("agent"),
+                )
+                session["running"] = False
+                _clear_inflight_turn(session)
+            _emit("error", sid, {"message": str(exc)})
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -9480,13 +10002,59 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
-    agent = session["agent"]
+        mobile_mutation_receipt_tags = list(
+            session.get("_pending_mobile_mutation_receipt_tags") or ()
+        )
+        _track_mobile_prompt_receipt_tags_locked(
+            session,
+            mobile_mutation_receipt_tags,
+        )
+        agent = session.get("agent")
+        if agent is None:
+            _discard_mobile_prompt_receipt_tags_locked(
+                session,
+                mobile_mutation_receipt_tags,
+            )
+            session["running"] = False
+            _clear_inflight_turn(session)
+            raise RuntimeError("prompt agent is unavailable")
+        receipt_condition = session.get("_mobile_prompt_receipt_condition")
+        if receipt_condition is not None:
+            try:
+                agent._mobile_mutation_receipt_condition = receipt_condition
+            except (AttributeError, TypeError):
+                pass
+        active_receipt_tags = list(
+            session.get("_active_mobile_mutation_receipt_tags") or ()
+        )
+        for tag in mobile_mutation_receipt_tags:
+            if tag not in active_receipt_tags:
+                active_receipt_tags.append(tag)
+        if active_receipt_tags:
+            session["_active_mobile_mutation_receipt_tags"] = (
+                active_receipt_tags
+            )
+
+    def discard_mobile_receipt_tags_locked() -> None:
+        _discard_mobile_prompt_receipt_tags_locked(
+            session,
+            mobile_mutation_receipt_tags,
+            agent=agent,
+        )
+
     if hasattr(agent, "clear_interrupt"):
         try:
             agent.clear_interrupt()
         except Exception:
             pass
-    _emit("message.start", sid)
+    try:
+        _emit("message.start", sid)
+    except Exception:
+        with session["history_lock"]:
+            discard_mobile_receipt_tags_locked()
+            session["running"] = False
+            _clear_inflight_turn(session)
+        raise
 
     def run():
         approval_token = None
@@ -9626,6 +10194,39 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            if mobile_mutation_receipt_tags:
+                with session["history_lock"]:
+                    pending = [
+                        tag
+                        for tag in (
+                            session.get(
+                                "_pending_mobile_mutation_receipt_tags"
+                            )
+                            or ()
+                        )
+                        if tag not in set(mobile_mutation_receipt_tags)
+                    ]
+                    if pending:
+                        session["_pending_mobile_mutation_receipt_tags"] = (
+                            pending
+                        )
+                    else:
+                        session.pop(
+                            "_pending_mobile_mutation_receipt_tags",
+                            None,
+                        )
+                    agent_pending = list(
+                        getattr(
+                            agent,
+                            "_pending_mobile_mutation_receipt_tags",
+                            (),
+                        )
+                        or ()
+                    )
+                    for tag in mobile_mutation_receipt_tags:
+                        if tag not in agent_pending:
+                            agent_pending.append(tag)
+                    agent._pending_mobile_mutation_receipt_tags = agent_pending
             result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
@@ -9894,6 +10495,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
             with session["history_lock"]:
+                discard_mobile_receipt_tags_locked()
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
@@ -9968,9 +10570,41 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 file=sys.stderr,
             )
 
-    run_thread = threading.Thread(target=run, daemon=True)
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        run_thread = threading.Thread(target=run, daemon=True)
+        with session["history_lock"]:
+            starting_tags = list(
+                session.get("_starting_mobile_mutation_receipt_tags") or ()
+            )
+            for tag in mobile_mutation_receipt_tags:
+                if tag not in starting_tags:
+                    starting_tags.append(tag)
+            if starting_tags:
+                session["_starting_mobile_mutation_receipt_tags"] = (
+                    starting_tags
+                )
+            session["_run_thread"] = run_thread
+        run_thread.start()
+        with session["history_lock"]:
+            remove = set(mobile_mutation_receipt_tags)
+            remaining = [
+                tag
+                for tag in (
+                    session.get("_starting_mobile_mutation_receipt_tags")
+                    or ()
+                )
+                if tag not in remove
+            ]
+            if remaining:
+                session["_starting_mobile_mutation_receipt_tags"] = remaining
+            else:
+                session.pop("_starting_mobile_mutation_receipt_tags", None)
+    except Exception:
+        with session["history_lock"]:
+            discard_mobile_receipt_tags_locked()
+            session["running"] = False
+            _clear_inflight_turn(session)
+        raise
 
 
 @method("clipboard.paste")

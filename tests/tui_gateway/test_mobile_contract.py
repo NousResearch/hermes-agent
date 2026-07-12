@@ -322,19 +322,52 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
 
     agent = Agent()
     original_transport = RecordingTransport()
+    release_turn = threading.Event()
+    receipt_completed = threading.Event()
     session = {
         "agent": agent,
+        "history": [],
         "history_lock": threading.Lock(),
         "queued_prompt": None,
         "running": True,
         "session_key": "stored-busy",
         "transport": original_transport,
     }
+
+    def finish_turn():
+        assert release_turn.wait(timeout=2)
+        with session["history_lock"]:
+            queued = session["queued_prompt"]
+            assert queued is not None
+            session["history"].append(
+                {
+                    "role": "user",
+                    "content": queued["text"],
+                    "_db_persisted": True,
+                    "_mobile_mutation_receipt_tags": list(
+                        queued["mobile_mutation_receipt_tags"]
+                    ),
+                }
+            )
+            session["queued_prompt"] = None
+            session["running"] = False
+
+    run_thread = threading.Thread(target=finish_turn)
+    session["_run_thread"] = run_thread
+    run_thread.start()
     server._sessions.clear()
     server._sessions["busy"] = session
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     store = MobileMutationStore(tmp_path / "mobile-mutations.sqlite3")
     monkeypatch.setattr(server, "_mobile_mutation_store", lambda: store)
+    original_complete = store.complete
+
+    def complete_receipt(claim, outcome):
+        completed = original_complete(claim, outcome)
+        receipt_completed.set()
+        return completed
+
+    monkeypatch.setattr(store, "complete", complete_receipt)
     transport = RecordingTransport(
         _mobile_authorization("conversation.read", "conversation.write")
     )
@@ -358,7 +391,7 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
         "mutation": {
             "client_request_id": "busy-write-1",
             "deduplicated": False,
-            "state": "completed",
+            "state": "in_progress",
         },
         "status": "queued",
     }
@@ -366,6 +399,11 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
     assert session["transport"] is original_transport
     assert session["queued_prompt"]["text"] == "next"
     assert session["queued_prompt"]["transport"] is transport
+    release_turn.set()
+    run_thread.join(timeout=1)
+    assert not run_thread.is_alive()
+    assert receipt_completed.wait(timeout=1)
+    store.close()
 
 
 def test_mobile_scope_grants_require_read_access():

@@ -49,6 +49,19 @@ class MutationClaim:
     _fingerprint: str = ""
     _owner_instance_id: str = ""
 
+    @property
+    def proof_tag(self) -> str:
+        """Opaque identity for binding an in-memory effect to this receipt."""
+        if not (
+            self._principal_digest
+            and self._request_digest
+            and self._fingerprint
+        ):
+            return ""
+        return _digest(
+            [self._principal_digest, self._request_digest, self._fingerprint]
+        )
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(

@@ -3004,7 +3004,20 @@ def browser_snapshot(
             if _supervisor is not None:
                 _sv_snap = _supervisor.snapshot()
                 if _sv_snap.active:
-                    response.update(_redact_browser_output(_sv_snap.to_dict()))
+                    _sv_payload = _sv_snap.to_dict()
+                    if _eval_ssrf_guard_active(effective_task_id):
+                        _blocked_url = _supervisor_snapshot_private_url(_sv_payload)
+                        if _blocked_url:
+                            return json.dumps({
+                                "success": False,
+                                "error": (
+                                    "Blocked: browser supervisor state references a "
+                                    "private or internal frame URL "
+                                    f"({_blocked_url}). Refusing to expose frame "
+                                    "tree or dialog state from that page."
+                                ),
+                            }, ensure_ascii=False)
+                    response.update(_redact_browser_output(_sv_payload))
         except Exception as _sv_exc:
             logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
 
@@ -3015,6 +3028,39 @@ def browser_snapshot(
             "error": result.get("error", "Failed to get snapshot")
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def _supervisor_snapshot_private_url(value: Any) -> Optional[str]:
+    """Return the first private/internal URL embedded in supervisor state."""
+
+    def _blocked_url(text: str) -> Optional[str]:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(text)
+            if parsed.scheme.lower() not in {"http", "https"}:
+                return None
+            if _is_always_blocked_url(text) or not _is_safe_url(text):
+                return text
+        except Exception:
+            return text
+        return None
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"url", "origin"} and isinstance(item, str):
+                blocked = _blocked_url(item)
+                if blocked:
+                    return blocked
+            nested = _supervisor_snapshot_private_url(item)
+            if nested:
+                return nested
+    elif isinstance(value, list):
+        for item in value:
+            nested = _supervisor_snapshot_private_url(item)
+            if nested:
+                return nested
+    return None
 
 
 def browser_click(ref: str, task_id: Optional[str] = None) -> str:

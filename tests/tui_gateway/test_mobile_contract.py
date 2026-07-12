@@ -150,6 +150,8 @@ def test_mobile_dispatch_allows_a_mapped_method_with_its_scope():
         ("session.resume", "conversation.control"),
         ("prompt.submit", "conversation.write"),
         ("session.interrupt", "conversation.control"),
+        ("session.delete", "conversation.delete"),
+        ("mutation.status", "conversation.read"),
     ],
 )
 def test_mobile_dispatch_declares_the_minimum_conversation_scope_map(
@@ -308,7 +310,10 @@ def test_mobile_dispatch_rejects_each_privileged_create_parameter(
 
 def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
     monkeypatch,
+    tmp_path,
 ):
+    from tui_gateway.mobile_mutations import MobileMutationStore
+
     class Agent:
         interrupted = False
 
@@ -322,11 +327,14 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
         "history_lock": threading.Lock(),
         "queued_prompt": None,
         "running": True,
+        "session_key": "stored-busy",
         "transport": original_transport,
     }
     server._sessions.clear()
     server._sessions["busy"] = session
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    store = MobileMutationStore(tmp_path / "mobile-mutations.sqlite3")
+    monkeypatch.setattr(server, "_mobile_mutation_store", lambda: store)
     transport = RecordingTransport(
         _mobile_authorization("conversation.read", "conversation.write")
     )
@@ -336,12 +344,24 @@ def test_mobile_write_without_control_queues_a_busy_prompt_without_interrupting(
             "jsonrpc": "2.0",
             "id": "busy-write",
             "method": "prompt.submit",
-            "params": {"session_id": "busy", "text": "next"},
+            "params": {
+                "client_request_id": "busy-write-1",
+                "expected_stored_session_id": "stored-busy",
+                "session_id": "busy",
+                "text": "next",
+            },
         },
         transport,
     )
 
-    assert response["result"] == {"status": "queued"}
+    assert response["result"] == {
+        "mutation": {
+            "client_request_id": "busy-write-1",
+            "deduplicated": False,
+            "state": "completed",
+        },
+        "status": "queued",
+    }
     assert agent.interrupted is False
     assert session["transport"] is original_transport
     assert session["queued_prompt"]["text"] == "next"

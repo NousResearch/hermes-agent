@@ -55,12 +55,24 @@ def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
                 },
                 "protocol": {"name": "hermes.tui.jsonrpc", "major": 1},
                 "contract": {"name": "hermes.mobile", "major": 1},
-                "schemas": {
-                    "gateway.ready": 1,
-                    "authorization.grant": 1,
-                    "authorization.error": 1,
-                },
-                "capabilities": {"auth.ws_scopes": {"version": 1}},
+                    "schemas": {
+                        "gateway.ready": 1,
+                        "authorization.grant": 1,
+                        "authorization.error": 1,
+                        "mutation.receipt": 1,
+                    },
+                    "capabilities": {
+                        "auth.ws_scopes": {"version": 1},
+                        "mutation.idempotency": {
+                            "version": 1,
+                            "methods": [
+                                "prompt.submit",
+                                "session.interrupt",
+                                "session.delete",
+                            ],
+                            "status_method": "mutation.status",
+                        },
+                    },
                 "authorization": {
                     "subject": "user-1",
                     "provider": "stub",

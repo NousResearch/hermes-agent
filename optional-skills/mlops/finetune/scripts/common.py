@@ -85,10 +85,11 @@ def append_jsonl(path: Path, records: list):
 
 
 def read_jsonl(path: Path) -> list:
-    """Read all records from a JSONL file."""
+    """Read all records from a JSONL file. Malformed lines are skipped with a warning."""
     if not path.exists():
         return []
     records = []
+    skipped = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -96,8 +97,60 @@ def read_jsonl(path: Path) -> list:
                 try:
                     records.append(json.loads(line))
                 except json.JSONDecodeError:
-                    continue
+                    skipped += 1
+    if skipped:
+        logger.warning("Skipped %d malformed line(s) while reading %s", skipped, path)
     return records
+
+
+def load_records_dedup(directory: Path, pattern: str, key: str = "session_id") -> list:
+    """Load records from every JSONL file in `directory` matching `pattern`,
+    deduplicated by `key`.
+
+    Files are read in sorted (i.e. timestamp) order and later records win, so
+    repeated snapshot runs (scored_*.jsonl, extract_*.jsonl) yield exactly one
+    record per session — the one from the newest snapshot. Records missing the
+    key are kept as-is.
+    """
+    by_key: dict = {}
+    extras: list = []
+    for path in sorted(directory.glob(pattern)):
+        for record in read_jsonl(path):
+            k = record.get(key) if isinstance(record, dict) else None
+            if k:
+                by_key[k] = record
+            else:
+                extras.append(record)
+    return list(by_key.values()) + extras
+
+
+def content_to_text(content) -> str:
+    """Normalize a message `content` field to plain text.
+
+    Hermes messages may carry multipart list content (e.g.
+    [{"type": "text", "text": ...}, {"type": "image_url", ...}]) or plain
+    strings. Non-text parts (images, etc.) are dropped rather than serialized.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return " ".join(p for p in parts if p)
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        return json.dumps(content, ensure_ascii=False, default=str)
+    return str(content)
 
 
 def load_config() -> dict:
@@ -126,7 +179,9 @@ def load_config() -> dict:
             "confidence_threshold": 0.6,
         },
         "training": {
-            "base_model": "~/programs/carnice/Carnice-9b-Q8_0.gguf",
+            # HF repo id (matches templates/base_qlora.yaml). Must be a
+            # transformers-loadable model — a GGUF path cannot be trained on.
+            "base_model": "kai-os/Carnice-9b",
             "chat_template": "chatml",
             "quantization": "Q5_K_M",
             "terminal_backend": "local",
@@ -156,11 +211,13 @@ def load_config() -> dict:
         # converter path, etc.). See SKILL.md for the full setup.
         "serving": {
             "auto_redeploy": False,
-            "converter": "~/programs/llama.cpp/convert_lora_to_gguf.py",
+            "converter": "",                 # empty = resolved at use-site
             "base_model_snapshot": "auto",  # "auto" = detect from HF cache
             "server_command": "",            # empty = no auto-restart
-            "server_pid_file": "/tmp/hermes-llama-server.pid",
-            "server_log_path": "/tmp/hermes-llama-server.log",
+            # Empty = resolved at use-site to FINETUNE_DIR/llama-server.pid
+            # and FINETUNE_DIR/llama-server.log (see manage.py).
+            "server_pid_file": "",
+            "server_log_path": "",
             "health_check_url": "http://localhost:8008/v1/models",
             "health_check_timeout": 30,
         },
@@ -177,6 +234,12 @@ def load_config() -> dict:
                 _deep_merge(defaults, ft_config)
         except Exception as e:
             logger.warning("Failed to load finetune config: %s", e)
+
+    # Env override (declared in SKILL.md frontmatter): takes precedence over
+    # both defaults and config.yaml.
+    env_base_model = os.environ.get("FINETUNE_BASE_MODEL", "").strip()
+    if env_base_model:
+        defaults.setdefault("training", {})["base_model"] = env_base_model
 
     return defaults
 

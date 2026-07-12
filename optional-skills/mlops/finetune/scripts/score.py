@@ -10,18 +10,17 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import logging
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import common
 from common import (
     EXTRACTED_DIR, SCORED_DIR, FEEDBACK_PATH,
-    ensure_dirs, load_config, read_jsonl, append_jsonl, logger,
+    ensure_dirs, load_config, read_jsonl, append_jsonl,
+    content_to_text, load_records_dedup, logger,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -150,16 +149,21 @@ _SOFT_FAILURE_PATTERNS = [
     re.compile(r'\bnothing to (read|search|find)\b', re.I),
 ]
 
-# Patterns that indicate a tool result is a hard failure
+# Patterns that indicate a tool result is a hard failure.
+# Deliberately shaped around real failure output — bare phrases like
+# "not found" or "syntax error" appear in plenty of successful outputs
+# (docs, diffs, search results) and must not zero them out.
 _HARD_FAILURE_PATTERNS = [
     re.compile(r'"error":\s*"[^"]+"'),
     re.compile(r'\bexit_code["\s:]+[1-9]\d*'),
     re.compile(r'\bpermission denied\b', re.I),
-    re.compile(r'\bnot found\b', re.I),
     re.compile(r'\btraceback\s*\(most recent call last\)', re.I),
     re.compile(r'\bsegmentation fault\b', re.I),
     re.compile(r'\bcommand not found\b', re.I),
-    re.compile(r'\bsyntax error\b', re.I),
+    re.compile(r'\bno such file or directory\b', re.I),
+    re.compile(r'^\s*(?:error|fatal):', re.I | re.M),   # stderr-style lines
+    re.compile(r'\bSyntaxError\b'),                      # Python exception name
+    re.compile(r'\bsyntax error (?:near|at|before) \S', re.I),  # shell/SQL
 ]
 
 
@@ -210,12 +214,7 @@ def _extract_artifacts(turn: Dict) -> Dict[str, Set[str]]:
     Returns a dict with keys: 'paths', 'identifiers', 'commands'.
     Each value is a set of strings (deduplicated).
     """
-    content = turn.get("content") or ""
-    if isinstance(content, list):
-        content = " ".join(
-            str(c.get("text", "") if isinstance(c, dict) else c)
-            for c in content
-        )
+    content = content_to_text(turn.get("content"))
 
     # Also pull text from tool_calls (the args usually contain paths)
     for tc in (turn.get("tool_calls") or []):
@@ -248,14 +247,22 @@ def _extract_artifacts(turn: Dict) -> Dict[str, Set[str]]:
     }
 
 
+def _token_in_text(token: str, text: str) -> bool:
+    """Word-boundary containment check for artifact/output tokens.
+
+    Tokens may contain '.', '/', '-' so plain \\b doesn't work; require the
+    match to not be embedded inside a longer word-ish run (e.g. 'name' must
+    not match inside 'rename').
+    """
+    if not token or not text:
+        return False
+    pattern = r"(?<![\w./\-])" + re.escape(token) + r"(?![\w./\-])"
+    return re.search(pattern, text) is not None
+
+
 def _artifact_referenced(turn: Dict, artifact: str) -> bool:
     """Whether `artifact` (a string) appears in this turn's content or tool_calls."""
-    content = turn.get("content") or ""
-    if isinstance(content, list):
-        content = " ".join(
-            str(c.get("text", "") if isinstance(c, dict) else c)
-            for c in content
-        )
+    content = content_to_text(turn.get("content"))
 
     if artifact in content:
         return True
@@ -312,7 +319,7 @@ def positive_tool_success_chain(
         # End of session after success — still credit the chain
         return 0.7
 
-    user_content = (next_user.get("content") or "")
+    user_content = content_to_text(next_user.get("content"))
 
     # Link 2: user did not correct/retry
     if any(p.search(user_content) for p in CORRECTION_PATTERNS):
@@ -323,16 +330,17 @@ def positive_tool_success_chain(
     if len(user_content.split()) > 8:
         score = 0.9
 
-    # Link 4: user referenced tool output
+    # Link 4: user referenced tool output (word-boundary match — 'name'
+    # must not count as referenced just because the user typed 'rename')
     artifacts = _extract_artifacts(turn)
     all_artifacts = artifacts["paths"] | artifacts["identifiers"] | artifacts["commands"]
     for r_name, r_content in results:
         if r_content:
             r_text = r_content if isinstance(r_content, str) else json.dumps(r_content)
             for token in re.findall(r'[\w./\-]{4,}', r_text)[:50]:
-                if token in user_content:
+                if _token_in_text(token, user_content):
                     return 1.0
-    if any(a in user_content for a in all_artifacts):
+    if any(_token_in_text(a, user_content) for a in all_artifacts):
         return 1.0
 
     return score
@@ -432,7 +440,7 @@ def positive_self_correction(
     if user_between is None:
         return None
 
-    user_content = user_between.get("content") or ""
+    user_content = content_to_text(user_between.get("content"))
     text_marker_correction = any(p.search(user_content) for p in CORRECTION_PATTERNS)
 
     if not prev_failed and not text_marker_correction:
@@ -463,7 +471,7 @@ def positive_self_correction(
     if next_user is None:
         return 0.6  # corrected, can't confirm acceptance
 
-    next_content = next_user.get("content") or ""
+    next_content = content_to_text(next_user.get("content"))
     if any(p.search(next_content) for p in CORRECTION_PATTERNS):
         return 0.0  # user re-corrected
 
@@ -516,7 +524,7 @@ def detect_resolution(turns: List[Dict]) -> Optional[int]:
         # Allow text-marker resolution as a fallback
         for t in reversed(turns):
             if t.get("role") == "user":
-                content = t.get("content") or ""
+                content = content_to_text(t.get("content"))
                 if any(p.search(content) for p in CONCLUSION_PATTERNS):
                     return last_asst_idx
                 break
@@ -532,7 +540,7 @@ def detect_resolution(turns: List[Dict]) -> Optional[int]:
     # No correction in the last 3 user turns
     user_turns = [t for t in turns if t.get("role") == "user"]
     for u in user_turns[-3:]:
-        content = u.get("content") or ""
+        content = content_to_text(u.get("content"))
         if any(p.search(content) for p in CORRECTION_PATTERNS):
             return None
 
@@ -565,7 +573,7 @@ def positive_resolution_velocity(
         next_user_corrected = False
         for j in range(i + 1, len(turns)):
             if turns[j].get("role") == "user":
-                content = turns[j].get("content") or ""
+                content = content_to_text(turns[j].get("content"))
                 if any(p.search(content) for p in CORRECTION_PATTERNS):
                     next_user_corrected = True
                 break
@@ -594,10 +602,8 @@ def positive_efficiency_modifier(
     if baseline_score < 0.5 or category_median_tokens <= 0:
         return 0.0
 
-    content = turn.get("content") or ""
-    if isinstance(content, list):
-        content = " ".join(str(c) for c in content)
-    turn_tokens = max(1, len(str(content).split()))
+    content = content_to_text(turn.get("content"))
+    turn_tokens = max(1, len(content.split()))
 
     ratio = turn_tokens / category_median_tokens
     if ratio <= 0.7:
@@ -637,10 +643,8 @@ def positive_no_tool_response(
     if turn.get("tool_calls"):
         return None
 
-    content = turn.get("content") or ""
-    if isinstance(content, list):
-        content = " ".join(str(c) for c in content)
-    if len(str(content).strip()) < 20:
+    content = content_to_text(turn.get("content"))
+    if len(content.strip()) < 20:
         # Empty/trivial replies aren't a meaningful "chose not to call a tool"
         return None
 
@@ -654,9 +658,7 @@ def positive_no_tool_response(
     if next_user is None:
         return 0.6  # last turn — can't confirm, but don't penalize
 
-    next_content = next_user.get("content") or ""
-    if isinstance(next_content, list):
-        next_content = " ".join(str(c) for c in next_content)
+    next_content = content_to_text(next_user.get("content"))
 
     # Hard reject: user demanded a tool or corrected
     if any(p.search(next_content) for p in TOOL_DEMAND_PATTERNS):
@@ -678,6 +680,16 @@ def positive_no_tool_response(
 
     # Implicit accept: short follow-up that moves on
     return 0.8
+
+
+def _is_bad_label(record: Dict) -> bool:
+    """Whether a feedback record is an explicit bad label."""
+    if record.get("signal") == "bad":
+        return True
+    try:
+        return record.get("signal") is None and float(record.get("score", 0.5)) <= 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 class QualityScorer:
@@ -718,6 +730,20 @@ class QualityScorer:
             self.w_positive = 0.0
             self.w_manual = 0.0
 
+        if self.scoring_mode == "positive_signals":
+            # Renormalize the active weights to sum to 1.0 (preserving their
+            # relative proportions). w_manual is NOT part of the composite —
+            # manual overrides take the early-return path in score_session —
+            # so without this the defaults sum to 0.80 and hard-cap the
+            # composite at ~0.785, starving the "good" bucket.
+            total = self.w_conv + self.w_negative + self.w_positive + self.w_sent
+            if total > 0 and abs(total - 1.0) > 1e-9:
+                self.w_conv /= total
+                self.w_negative /= total
+                self.w_positive /= total
+                self.w_sent /= total
+                self.w_turn = self.w_negative
+
         self.good_threshold = self.thresholds.get("good", 0.7)
         self.neutral_threshold = self.thresholds.get("neutral", 0.4)
 
@@ -733,6 +759,7 @@ class QualityScorer:
         Skip records (signal=skip) are excluded so they don't override scores.
         """
         overrides = {}
+        self.session_bad_label: Set[str] = set()
         for record in read_jsonl(common.FEEDBACK_PATH):
             sid = record.get("session_id")
             if not sid or "score" not in record:
@@ -742,6 +769,10 @@ class QualityScorer:
             if record.get("signal") == "skip":
                 continue
             overrides[sid] = record["score"]
+            if _is_bad_label(record):
+                self.session_bad_label.add(sid)
+            else:
+                self.session_bad_label.discard(sid)
         return overrides
 
     def _load_turn_feedback(self) -> Dict[str, Dict[int, float]]:
@@ -749,14 +780,22 @@ class QualityScorer:
 
         Returns nested dict: session_id -> turn_index (1-based) -> score.
         Used by _score_turns to apply retro labels at turn granularity.
+        Also populates self.turn_bad_label (session_id -> set of 1-based
+        turn indices explicitly labeled bad) for hard exclusion downstream.
         """
         turn_overrides: Dict[str, Dict[int, float]] = {}
+        self.turn_bad_label: Dict[str, Set[int]] = {}
         for record in read_jsonl(common.FEEDBACK_PATH):
             sid = record.get("session_id")
             turn_idx = record.get("turn_index")
             if not sid or turn_idx is None or "score" not in record:
                 continue
-            turn_overrides.setdefault(sid, {})[int(turn_idx)] = record["score"]
+            turn_idx = int(turn_idx)
+            turn_overrides.setdefault(sid, {})[turn_idx] = record["score"]
+            if _is_bad_label(record):
+                self.turn_bad_label.setdefault(sid, set()).add(turn_idx)
+            else:
+                self.turn_bad_label.get(sid, set()).discard(turn_idx)
         return turn_overrides
 
     # ── Conversation-level signals ──
@@ -766,8 +805,8 @@ class QualityScorer:
         if not turns:
             return 0.5
 
-        user_turns = [t for t in turns if t["role"] == "user"]
-        assistant_turns = [t for t in turns if t["role"] == "assistant"]
+        user_turns = [t for t in turns if t.get("role") == "user"]
+        assistant_turns = [t for t in turns if t.get("role") == "assistant"]
 
         if not assistant_turns:
             return 0.3
@@ -776,14 +815,13 @@ class QualityScorer:
 
         # Abrupt termination: session ends shortly after assistant with no resolution
         if len(turns) >= 2:
-            last_role = turns[-1]["role"]
-            second_last_role = turns[-2]["role"] if len(turns) >= 2 else None
+            last_role = turns[-1].get("role")
             if last_role == "assistant" and len(user_turns) <= 1:
                 # Only one user turn and model responded — might be abandoned
                 signals.append(0.3)
             elif last_role == "user":
                 # Check if the last user message is a resolution
-                last_content = turns[-1].get("content", "") or ""
+                last_content = content_to_text(turns[-1].get("content"))
                 if any(p.search(last_content) for p in CONCLUSION_PATTERNS):
                     signals.append(0.9)
                 elif any(p.search(last_content) for p in CORRECTION_PATTERNS):
@@ -791,14 +829,16 @@ class QualityScorer:
 
         # Retry/rephrase detection
         for i in range(1, len(user_turns)):
-            prev = user_turns[i - 1].get("content", "") or ""
-            curr = user_turns[i].get("content", "") or ""
+            prev = content_to_text(user_turns[i - 1].get("content"))
+            curr = content_to_text(user_turns[i].get("content"))
             sim = _cosine_similarity_quick(prev, curr)
             if sim > 0.7:
                 signals.append(0.2)  # Likely rephrase
 
         # Session length vs complexity heuristic
-        total_tokens = sum(len((t.get("content") or "").split()) for t in turns)
+        total_tokens = sum(
+            len(content_to_text(t.get("content")).split()) for t in turns
+        )
         tool_calls = sum(1 for t in turns if t.get("tool_calls"))
         complexity = total_tokens / 100 + tool_calls * 2
         turn_ratio = len(turns) / max(complexity, 1)
@@ -809,7 +849,7 @@ class QualityScorer:
 
         # Productive conclusion
         if user_turns:
-            last_user = user_turns[-1].get("content", "") or ""
+            last_user = content_to_text(user_turns[-1].get("content"))
             if any(p.search(last_user) for p in CONCLUSION_PATTERNS):
                 signals.append(0.9)
 
@@ -822,13 +862,13 @@ class QualityScorer:
         turn_scores = []
 
         for i, turn in enumerate(turns):
-            if turn["role"] != "assistant":
+            if turn.get("role") != "assistant":
                 continue
 
             # Find the next user turn
             next_user = None
             for j in range(i + 1, len(turns)):
-                if turns[j]["role"] == "user":
+                if turns[j].get("role") == "user":
                     next_user = turns[j]
                     break
 
@@ -837,7 +877,7 @@ class QualityScorer:
                 turn_scores.append((i, 0.5))
                 continue
 
-            user_content = next_user.get("content", "") or ""
+            user_content = content_to_text(next_user.get("content"))
             score = 0.5
 
             # Direct affirmation
@@ -854,7 +894,7 @@ class QualityScorer:
                 score = max(score, 0.7)
 
             # Artifact adoption: user references code or text from assistant
-            assistant_content = turn.get("content", "") or ""
+            assistant_content = content_to_text(turn.get("content"))
             if assistant_content and user_content:
                 # Check if user references specific identifiers from assistant output
                 # Look for code tokens the assistant used that the user then references
@@ -876,13 +916,13 @@ class QualityScorer:
         modifiers = []
 
         for i, turn in enumerate(turns):
-            if turn["role"] != "user" or i == 0:
+            if turn.get("role") != "user" or i == 0:
                 continue
             # Check if previous turn was assistant
-            if turns[i - 1]["role"] != "assistant":
+            if turns[i - 1].get("role") != "assistant":
                 continue
 
-            content = (turn.get("content", "") or "").lower()
+            content = content_to_text(turn.get("content")).lower()
             words = set(content.split())
 
             pos = len(words & POSITIVE_WORDS)
@@ -900,6 +940,52 @@ class QualityScorer:
 
     # ── Composite ──
 
+    def _apply_turn_overrides(
+        self,
+        turn_scores: List[Tuple[int, float]],
+        assistant_msg_indices: List[int],
+        per_turn_overrides: Dict[int, float],
+    ) -> List[Tuple[int, float]]:
+        """Apply 1-based per-turn retro overrides onto (msg_idx, score) pairs."""
+        if not per_turn_overrides:
+            return turn_scores
+        updated = []
+        for msg_idx, score in turn_scores:
+            try:
+                assistant_pos = assistant_msg_indices.index(msg_idx) + 1
+            except ValueError:
+                assistant_pos = None
+            if assistant_pos is not None and assistant_pos in per_turn_overrides:
+                updated.append((msg_idx, per_turn_overrides[assistant_pos]))
+            else:
+                updated.append((msg_idx, score))
+        return updated
+
+    def _bad_turn_msg_indices(
+        self,
+        session_id: str,
+        assistant_msg_indices: List[int],
+        session_is_bad: bool = False,
+    ) -> List[int]:
+        """Message indices of assistant turns with an effective bad label.
+
+        A turn-specific label always wins over a session-level one: a
+        session-level bad label marks every assistant turn bad EXCEPT turns
+        with a non-bad turn-level override, and a turn-level bad label marks
+        its turn bad regardless of any session-level label.
+        """
+        turn_overrides = self.turn_feedback.get(session_id, {})
+        bad_positions = set(self.turn_bad_label.get(session_id, set()))
+        if session_is_bad:
+            for pos in range(1, len(assistant_msg_indices) + 1):
+                if pos not in turn_overrides:
+                    bad_positions.add(pos)
+        return sorted(
+            assistant_msg_indices[pos - 1]
+            for pos in bad_positions
+            if 1 <= pos <= len(assistant_msg_indices)
+        )
+
     def score_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
         """
         Score a single session, returning the session with scoring metadata.
@@ -908,12 +994,22 @@ class QualityScorer:
         """
         session_id = session.get("session_id", "")
         turns = session.get("turns", [])
+        assistant_msg_indices = [
+            i for i, t in enumerate(turns) if t.get("role") == "assistant"
+        ]
+        per_turn_overrides = self.turn_feedback.get(session_id, {})
 
-        # Check for manual override
+        # Check for manual session-level override. Turn-specific labels still
+        # win at turn granularity (documented precedence), regardless of the
+        # order the records were written in.
         if session_id in self.feedback:
             override = self.feedback[session_id]
             bucket = "good" if override >= self.good_threshold else (
                 "neutral" if override >= self.neutral_threshold else "bad"
+            )
+            turn_scores = self._apply_turn_overrides(
+                [(i, override) for i in assistant_msg_indices],
+                assistant_msg_indices, per_turn_overrides,
             )
             session["scoring"] = {
                 "composite_score": override,
@@ -923,31 +1019,21 @@ class QualityScorer:
                 "turn_signal": override,
                 "sentiment_modifier": 0.0,
                 "judge_score": 0.0,
+                "turn_scores": [(idx, round(s, 4)) for idx, s in turn_scores],
+                "bad_turn_indices": self._bad_turn_msg_indices(
+                    session_id, assistant_msg_indices,
+                    session_is_bad=session_id in self.session_bad_label,
+                ),
             }
             return session
 
         conv_score = self._score_conversation(turns)
-        # Negative turn scores (existing) — these handle exclusion
-        negative_turn_scores = self._score_turns(turns)
-
-        # Apply per-turn retro labels over the automated negative scores.
+        # Negative turn scores (existing) — these handle exclusion.
+        # Per-turn retro labels override the automated scores;
         # 1-based user-facing turn numbers map to 0-based message indices.
-        per_turn_overrides = self.turn_feedback.get(session_id, {})
-        if per_turn_overrides:
-            assistant_msg_indices = [
-                i for i, t in enumerate(turns) if t.get("role") == "assistant"
-            ]
-            updated = []
-            for msg_idx, score in negative_turn_scores:
-                try:
-                    assistant_pos = assistant_msg_indices.index(msg_idx) + 1
-                except ValueError:
-                    assistant_pos = None
-                if assistant_pos is not None and assistant_pos in per_turn_overrides:
-                    updated.append((msg_idx, per_turn_overrides[assistant_pos]))
-                else:
-                    updated.append((msg_idx, score))
-            negative_turn_scores = updated
+        negative_turn_scores = self._apply_turn_overrides(
+            self._score_turns(turns), assistant_msg_indices, per_turn_overrides,
+        )
 
         avg_negative = (
             sum(s for _, s in negative_turn_scores) / len(negative_turn_scores)
@@ -965,6 +1051,17 @@ class QualityScorer:
             resolution_idx = detect_resolution(turns)
             if resolution_idx is not None:
                 velocity_scores = positive_resolution_velocity(turns, resolution_idx)
+
+            # Session-median assistant token count for the efficiency
+            # tiebreaker — computed once, not per turn.
+            asst_token_counts = [
+                max(1, len(content_to_text(turns[j].get("content")).split()))
+                for j in assistant_msg_indices
+            ]
+            median_tokens = (
+                sorted(asst_token_counts)[len(asst_token_counts) // 2]
+                if asst_token_counts else 0
+            )
 
             for i, t in enumerate(turns):
                 if t.get("role") != "assistant":
@@ -992,17 +1089,8 @@ class QualityScorer:
 
                 if signals:
                     base = max(signals)
-                    # Token efficiency tiebreaker (use a simple median across
-                    # this session's assistant turns rather than a global one)
-                    asst_token_counts = [
-                        max(1, len(str(turns[j].get("content") or "").split()))
-                        for j in range(len(turns))
-                        if turns[j].get("role") == "assistant"
-                    ]
-                    median_tokens = (
-                        sorted(asst_token_counts)[len(asst_token_counts) // 2]
-                        if asst_token_counts else 0
-                    )
+                    # Token efficiency tiebreaker (session median, hoisted
+                    # above the loop)
                     base += positive_efficiency_modifier(t, base, median_tokens)
                     base = max(0.0, min(1.0, base))
                     positive_turn_scores.append((i, base))
@@ -1011,21 +1099,9 @@ class QualityScorer:
                     positive_turn_scores.append((i, 0.5))
 
             # Apply per-turn retro overrides to positive scores too
-            if per_turn_overrides:
-                assistant_msg_indices = [
-                    i for i, t in enumerate(turns) if t.get("role") == "assistant"
-                ]
-                updated_pos = []
-                for msg_idx, score in positive_turn_scores:
-                    try:
-                        assistant_pos = assistant_msg_indices.index(msg_idx) + 1
-                    except ValueError:
-                        assistant_pos = None
-                    if assistant_pos is not None and assistant_pos in per_turn_overrides:
-                        updated_pos.append((msg_idx, per_turn_overrides[assistant_pos]))
-                    else:
-                        updated_pos.append((msg_idx, score))
-                positive_turn_scores = updated_pos
+            positive_turn_scores = self._apply_turn_overrides(
+                positive_turn_scores, assistant_msg_indices, per_turn_overrides,
+            )
 
             avg_positive = (
                 sum(s for _, s in positive_turn_scores) / len(positive_turn_scores)
@@ -1034,15 +1110,14 @@ class QualityScorer:
 
         # Composite score
         if self.scoring_mode == "positive_signals":
+            # Weights are renormalized in __init__ to sum to 1.0 (w_manual is
+            # not part of this sum — manual overrides take the early-return
+            # path above), so a perfect session can actually reach 1.0.
             composite = (
                 self.w_conv * conv_score
                 + self.w_negative * avg_negative
                 + self.w_positive * avg_positive
                 + self.w_sent * (0.5 + sentiment)
-                # w_manual is reserved — manual overrides take the early-return
-                # path above; it stays 0 here so the math sums to 1.0 with the
-                # other weights normalized to 0.80 (the remaining 0.20 is
-                # reserved for manual_override when it fires).
             )
         else:
             judge_score = 0.5  # placeholder for legacy mode
@@ -1078,6 +1153,11 @@ class QualityScorer:
             "sentiment_modifier": round(sentiment, 4),
             "resolved": resolution_idx is not None,
             "turn_scores": [(idx, round(s, 4)) for idx, s in exposed_turn_scores],
+            # Assistant message indices explicitly labeled bad via retro —
+            # format.py excludes these from training regardless of threshold.
+            "bad_turn_indices": self._bad_turn_msg_indices(
+                session_id, assistant_msg_indices,
+            ),
         }
         # Legacy compatibility fields so old format.py / tests still read scores
         session["scoring"]["turn_signal"] = session["scoring"]["positive_turn_signal"] \
@@ -1086,9 +1166,22 @@ class QualityScorer:
         return session
 
     def score_all(self, sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Score all sessions and write results."""
+        """Score all sessions and write results.
+
+        A session that raises during scoring is logged and skipped so a
+        single malformed session can't abort the whole run.
+        """
         ensure_dirs()
-        scored = [self.score_session(s) for s in sessions]
+        scored = []
+        for s in sessions:
+            try:
+                scored.append(self.score_session(s))
+            except Exception as e:
+                logger.warning(
+                    "Failed to score session %s: %s — skipping it.",
+                    s.get("session_id", "<unknown>") if isinstance(s, dict) else "<unknown>",
+                    e,
+                )
 
         # Bucket counts
         buckets = {"good": 0, "neutral": 0, "bad": 0}
@@ -1111,11 +1204,9 @@ class QualityScorer:
         return scored
 
     def get_all_scored(self) -> List[Dict[str, Any]]:
-        """Load all previously scored sessions."""
-        all_scored = []
-        for path in sorted(SCORED_DIR.glob("scored_*.jsonl")):
-            all_scored.extend(read_jsonl(path))
-        return all_scored
+        """Load all previously scored sessions, deduped by session_id
+        (keeping the record from the newest snapshot)."""
+        return load_records_dedup(SCORED_DIR, "scored_*.jsonl")
 
 
 def main():
@@ -1129,10 +1220,9 @@ def main():
     if args.input:
         sessions = read_jsonl(Path(args.input))
     else:
-        # Score all extracted sessions
-        sessions = []
-        for path in sorted(EXTRACTED_DIR.glob("extract_*.jsonl")):
-            sessions.extend(read_jsonl(path))
+        # Score all extracted sessions (deduped: re-extracted sessions keep
+        # the newest copy)
+        sessions = load_records_dedup(EXTRACTED_DIR, "extract_*.jsonl")
 
     if not sessions:
         print("No sessions to score. Run extract.py first.")

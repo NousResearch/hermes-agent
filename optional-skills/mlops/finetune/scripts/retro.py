@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import common
 from common import (
     FEEDBACK_PATH, SCORED_DIR,
-    load_config, read_jsonl, append_jsonl, logger,
+    load_config, read_jsonl, append_jsonl, content_to_text, logger,
 )
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
@@ -66,13 +66,21 @@ def _turn_count_score(assistant_turns: int) -> float:
 
 
 def _recency_decay(started_at_iso: str) -> float:
-    """Exponential decay with 14-day half-life."""
+    """Exponential decay with 14-day half-life.
+
+    New extractions serialize timezone-aware UTC timestamps; legacy records
+    are naive *local* time (old extract.py used datetime.fromtimestamp).
+    Interpret naive values as local so legacy data isn't skewed by the UTC
+    offset.
+    """
+    if not started_at_iso or not isinstance(started_at_iso, str):
+        return 0.0
     try:
         ts = datetime.fromisoformat(started_at_iso.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return 0.0
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.astimezone()  # naive == legacy local time
     now = datetime.now(timezone.utc)
     days_old = (now - ts).total_seconds() / 86400.0
     return math.exp(-0.693 * days_old / RECENCY_HALFLIFE_DAYS)
@@ -218,17 +226,6 @@ def _min_unique_prefix_length(prefix: str, ids: List[str]) -> int:
     return len(target)
 
 
-def assistant_turn_indices(session: Dict) -> List[int]:
-    """Return the message-index positions of assistant turns (1-indexed for users)."""
-    indices = []
-    counter = 0
-    for i, turn in enumerate(session.get("turns", [])):
-        if turn.get("role") == "assistant":
-            counter += 1
-            indices.append(counter)
-    return indices
-
-
 def parse_turn_spec(spec: str, max_turn: int) -> List[int]:
     """Parse a turn specifier like '1,3-5,7' into a sorted list of turn numbers."""
     if not spec:
@@ -272,7 +269,13 @@ def cmd_list(args):
 
     feedback = load_feedback()
     labeled = labeled_session_ids(feedback) | skipped_session_ids(feedback)
-    unlabeled = [s for s in sessions if s.get("session_id") not in labeled]
+    # Sessions with turn-level labels leave the queue too — labeling turns
+    # 2 and 4 of a session is a completed review, not a pending one.
+    unlabeled = [
+        s for s in sessions
+        if s.get("session_id") not in labeled
+        and not has_turn_label(feedback, s.get("session_id"))
+    ]
 
     if not unlabeled:
         print(f"All {len(sessions)} sessions have been labeled. /finetune retro stats")
@@ -301,7 +304,7 @@ def cmd_list(args):
         preview = ""
         for t in s.get("turns", []):
             if t.get("role") == "user":
-                preview = (t.get("content") or "").strip().replace("\n", " ")[:60]
+                preview = content_to_text(t.get("content")).strip().replace("\n", " ")[:60]
                 break
 
         print(f"  {i:>2}. {sid[:20]:<20}  pri={priority:.2f}  "
@@ -349,7 +352,7 @@ def cmd_show(args):
     assistant_counter = 0
     for i, turn in enumerate(session.get("turns", [])):
         role = turn.get("role", "?")
-        content = (turn.get("content") or "").strip()
+        content = content_to_text(turn.get("content")).strip()
 
         if role == "system":
             print(f"  [system] {content[:200]}{'…' if len(content) > 200 else ''}")
@@ -396,12 +399,14 @@ def _apply_label(session_id: str, signal: str, turn_spec: Optional[str]) -> None
     n_assistant = sum(1 for t in session.get("turns", []) if t.get("role") == "assistant")
 
     if not turn_spec:
-        # Session-level label — write one record per assistant turn AND
-        # one session-level marker so the queue knows it's been labeled.
-        write_label(sid, signal, score)  # session-level marker
-        for turn_num in range(1, n_assistant + 1):
-            write_label(sid, signal, score, turn_index=turn_num)
-        print(f"Labeled session {sid[:12]} as {signal} ({n_assistant} turns)")
+        # Session-level label — write ONE session-scope record (no
+        # turn_index). Expanding it into per-turn records would clobber
+        # earlier turn-level labels; keeping it session-scoped lets
+        # turn-specific records always win regardless of write order
+        # (score.py applies session-level first, then per-turn overrides).
+        write_label(sid, signal, score)
+        print(f"Labeled session {sid[:12]} as {signal} ({n_assistant} turns; "
+              f"existing per-turn labels still take precedence)")
     else:
         turns = parse_turn_spec(turn_spec, n_assistant)
         if not turns:
@@ -448,7 +453,11 @@ def cmd_stats(args):
     bad_turns = sum(1 for r in turn_level if r.get("signal") == "bad")
 
     labeled_sids = labeled_session_ids(feedback) | skipped_session_ids(feedback)
-    unlabeled_count = sum(1 for s in sessions if s.get("session_id") not in labeled_sids)
+    unlabeled_count = sum(
+        1 for s in sessions
+        if s.get("session_id") not in labeled_sids
+        and not has_turn_label(feedback, s.get("session_id"))
+    )
 
     print("[Retro statistics]")
     print(f"  Total scored sessions:      {len(sessions)}")

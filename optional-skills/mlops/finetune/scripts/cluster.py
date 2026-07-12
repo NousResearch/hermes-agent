@@ -21,7 +21,8 @@ import numpy as np
 
 from common import (
     SCORED_DIR, CLUSTERS_DIR, CLUSTER_STATE_PATH,
-    ensure_dirs, load_config, load_json, save_json, read_jsonl, logger,
+    ensure_dirs, load_config, load_json, save_json,
+    content_to_text, load_records_dedup, logger,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -33,8 +34,42 @@ def _centroid_hash(centroid: np.ndarray) -> str:
     return f"c-{h}"
 
 
+def _count_trainable_turns(sessions: List[Dict], min_turn_score: float) -> int:
+    """Count assistant turns that would survive per-turn training filtering.
+
+    A turn counts when its effective per-turn score (scoring.turn_scores,
+    which already includes retro overrides) meets `min_turn_score` and it is
+    not explicitly labeled bad (scoring.bad_turn_indices). Sessions without
+    per-turn scores fall back to the composite score for every assistant
+    turn — mirroring format.py::extract_training_turns.
+    """
+    total = 0
+    for s in sessions:
+        scoring = s.get("scoring", {})
+        bad_indices = set(scoring.get("bad_turn_indices") or [])
+        turn_scores = scoring.get("turn_scores") or []
+        if turn_scores:
+            for entry in turn_scores:
+                if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
+                    continue
+                try:
+                    idx, score = int(entry[0]), float(entry[1])
+                except (TypeError, ValueError):
+                    continue
+                if idx not in bad_indices and score >= min_turn_score:
+                    total += 1
+        else:
+            composite = scoring.get("composite_score", 0.5)
+            if composite >= min_turn_score:
+                total += sum(
+                    1 for idx, t in enumerate(s.get("turns", []))
+                    if t.get("role") == "assistant" and idx not in bad_indices
+                )
+    return total
+
+
 def _cluster_maturity(good_turn_count: int) -> str:
-    """Determine cluster maturity stage from good-bucket turn count."""
+    """Determine cluster maturity stage from trainable-turn count."""
     if good_turn_count < 50:
         return "embryonic"
     elif good_turn_count < 150:
@@ -87,11 +122,11 @@ class DomainClusterer:
         """Extract concatenated user turns for embedding."""
         turns = session.get("turns", [])
         user_texts = [
-            t.get("content", "") or ""
+            content_to_text(t.get("content"))
             for t in turns
             if t.get("role") == "user"
         ]
-        return " ".join(user_texts).strip()
+        return " ".join(t for t in user_texts if t).strip()
 
     def _embed_sessions(self, sessions: List[Dict]) -> Tuple[np.ndarray, List[str]]:
         """Embed all sessions, returning (embeddings_matrix, session_ids)."""
@@ -155,27 +190,45 @@ class DomainClusterer:
         self, centroids: Dict[int, np.ndarray],
         prev_state: Dict,
     ) -> Dict[int, str]:
-        """Match new clusters to previous ones by centroid similarity."""
+        """Match new clusters to previous ones by centroid similarity.
+
+        Assignment is greedy by descending similarity and strictly one-to-one:
+        a previous cluster ID is consumed by at most one new cluster, so two
+        new clusters can never share an ID (which would silently drop one of
+        them via key collision downstream).
+        """
         prev_centroids = prev_state.get("centroids", {})
-        mapping = {}
 
+        # All candidate (similarity, label, prev_id) pairs above threshold
+        candidates = []
         for label, centroid in centroids.items():
-            best_sim = -1
-            best_id = None
-
             for prev_id, prev_vec in prev_centroids.items():
                 prev_arr = np.array(prev_vec)
                 sim = float(np.dot(centroid, prev_arr) / (
                     np.linalg.norm(centroid) * np.linalg.norm(prev_arr) + 1e-8
                 ))
-                if sim > best_sim:
-                    best_sim = sim
-                    best_id = prev_id
+                if sim > 0.9:
+                    candidates.append((sim, label, prev_id))
 
-            if best_sim > 0.9 and best_id:
-                mapping[label] = best_id
-            else:
-                mapping[label] = _centroid_hash(centroid)
+        candidates.sort(key=lambda c: c[0], reverse=True)
+
+        mapping: Dict[int, str] = {}
+        used_ids = set()
+        for sim, label, prev_id in candidates:
+            if label in mapping or prev_id in used_ids:
+                continue
+            mapping[label] = prev_id
+            used_ids.add(prev_id)
+
+        # Unmatched clusters get fresh content-addressed IDs (collision-guarded)
+        for label, centroid in centroids.items():
+            if label in mapping:
+                continue
+            cid = _centroid_hash(centroid)
+            if cid in used_ids:
+                cid = f"{cid}-{label}"
+            mapping[label] = cid
+            used_ids.add(cid)
 
         return mapping
 
@@ -248,9 +301,9 @@ class DomainClusterer:
         ensure_dirs()
 
         if sessions is None:
-            sessions = []
-            for path in sorted(SCORED_DIR.glob("scored_*.jsonl")):
-                sessions.extend(read_jsonl(path))
+            # Dedupe by session_id — repeated score runs write full
+            # snapshots; keep each session's record from the newest one.
+            sessions = load_records_dedup(SCORED_DIR, "scored_*.jsonl")
 
         if not sessions:
             logger.warning("No sessions to cluster.")
@@ -308,18 +361,21 @@ class DomainClusterer:
         # Generate labels
         text_labels = self._generate_labels(sessions, assignments)
 
-        # Compute maturity per cluster
+        # Trainability threshold — the same per-turn cutoff format.py uses
+        min_turn_score = float(
+            load_config().get("training", {}).get("min_turn_score", 0.7)
+        )
+
+        # Compute maturity per cluster from *trainable* turns (per-turn
+        # filtered, including retro overrides) — not raw assistant-turn
+        # counts of good-bucket sessions.
         cluster_info: Dict[str, Dict] = {}
         for cid in set(assignments.values()):
             cluster_sessions = [
                 session_map[sid] for sid, c in assignments.items()
                 if c == cid and sid in session_map
             ]
-            good_turns = sum(
-                len([t for t in s.get("turns", []) if t.get("role") == "assistant"])
-                for s in cluster_sessions
-                if s.get("scoring", {}).get("bucket") == "good"
-            )
+            good_turns = _count_trainable_turns(cluster_sessions, min_turn_score)
             cluster_info[cid] = {
                 "session_count": len(cluster_sessions),
                 "good_turns": good_turns,
@@ -336,9 +392,10 @@ class DomainClusterer:
             "total_sessions": len(sessions),
             "clusters_active": len([c for c in cluster_info if c != "_general"]),
             "noise_sessions": sum(1 for a in assignments.values() if a == "_general"),
+            # id_mapping is total and one-to-one (see _match_previous_clusters)
+            # so this can never collide keys and drop a centroid.
             "centroids": {
-                id_mapping.get(k, _centroid_hash(v)): v.tolist()
-                for k, v in centroids.items()
+                id_mapping[k]: v.tolist() for k, v in centroids.items()
             },
             "clusters": cluster_info,
             "assignments": assignments,
@@ -346,10 +403,11 @@ class DomainClusterer:
         save_json(CLUSTER_STATE_PATH, state)
         logger.info("Cluster state saved to %s", CLUSTER_STATE_PATH)
 
-        # Write per-cluster data splits
+        # Write per-cluster data splits, filtered at the config training
+        # threshold (training.min_turn_score), NOT the neutral scoring
+        # threshold — otherwise mediocre turns leak into training data.
         from format import TrainingFormatter
         formatter = TrainingFormatter()
-        good_threshold = load_config().get("scoring", {}).get("thresholds", {}).get("neutral", 0.4)
 
         for cid in set(assignments.values()):
             cluster_sessions = [
@@ -357,7 +415,7 @@ class DomainClusterer:
                 if c == cid and sid in session_map
             ]
             formatter.format_for_cluster(
-                cluster_sessions, cid, min_score=good_threshold,
+                cluster_sessions, cid, min_score=min_turn_score,
             )
 
         return state
@@ -373,11 +431,10 @@ class DomainClusterer:
         from format import TrainingFormatter
 
         assignments = {s.get("session_id"): "_general" for s in sessions}
-        good_turns = sum(
-            len([t for t in s.get("turns", []) if t.get("role") == "assistant"])
-            for s in sessions
-            if s.get("scoring", {}).get("bucket") == "good"
+        min_turn_score = float(
+            load_config().get("training", {}).get("min_turn_score", 0.7)
         )
+        good_turns = _count_trainable_turns(sessions, min_turn_score)
 
         state = {
             "algorithm": "fallback-no-clustering",
@@ -400,10 +457,9 @@ class DomainClusterer:
         }
         save_json(CLUSTER_STATE_PATH, state)
 
-        # Format _general training data
-        good_threshold = load_config().get("scoring", {}).get("thresholds", {}).get("neutral", 0.4)
+        # Format _general training data at the config training threshold
         TrainingFormatter().format_for_cluster(
-            sessions, "_general", min_score=good_threshold,
+            sessions, "_general", min_score=min_turn_score,
         )
 
         logger.info(

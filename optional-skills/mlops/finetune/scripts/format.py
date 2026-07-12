@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import logging
 import re
 from pathlib import Path
@@ -25,7 +26,8 @@ from typing import Any, Dict, List, Optional
 
 from common import (
     SCORED_DIR, CLUSTERS_DIR,
-    ensure_dirs, load_config, read_jsonl, append_jsonl, logger,
+    ensure_dirs, load_config, read_jsonl, append_jsonl,
+    content_to_text, load_records_dedup, logger,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -45,6 +47,56 @@ EPHEMERAL_PATTERNS = [
     re.compile(r"Current date and time:.*?\n", re.I),
     re.compile(r"Available tools:.*?\n", re.I),
 ]
+
+
+# ── Secret redaction ─────────────────────────────────────────────────────
+#
+# Conservative pass over all message content before it is written into
+# training records. Only obviously-secret shapes are replaced — the goal is
+# to never leak a live credential into train.jsonl, without mangling
+# ordinary code.
+
+_REDACTED = "[REDACTED]"
+
+_SECRET_PATTERNS: List = [
+    # PEM private key blocks
+    (re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+    ), _REDACTED),
+    # AWS access key IDs
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), _REDACTED),
+    # OpenAI-style API keys (sk-..., also sk-proj-...)
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), _REDACTED),
+    # GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), _REDACTED),
+    # Slack tokens
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), _REDACTED),
+    # JWTs (three base64url segments starting with eyJ)
+    (re.compile(
+        r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b"
+    ), _REDACTED),
+    # Authorization: Bearer <long-token>
+    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/-]{20,}=*"),
+     r"\1 " + _REDACTED),
+    # password= / token= / api_key= style assignments. Quoted values of 6+
+    # chars, or unquoted secret-looking runs of 8+ chars. The trailing
+    # (?![\w(]) keeps call expressions like `token = get_token()` intact.
+    (re.compile(
+        r"(?i)\b(password|passwd|api[_-]?key|apikey|secret[_-]?key|"
+        r"access[_-]?token|auth[_-]?token|token|secret)\b"
+        r"(\s*[:=]\s*)"
+        r"(\"[^\"]{6,}\"|'[^']{6,}'|[A-Za-z0-9_\-/+]{8,}(?![\w(]))"
+    ), r"\1\2" + _REDACTED),
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Replace obvious secrets (keys, tokens, passwords) with [REDACTED]."""
+    if not text:
+        return text
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def _session_hash_bucket(session_id: str, eval_ratio: float = 0.1) -> str:
@@ -81,21 +133,24 @@ def _normalize_reasoning(content: str) -> str:
 
 
 def _turn_to_sharegpt(turn: Dict[str, Any]) -> Optional[Dict[str, str]]:
-    """Convert a single session turn to a ShareGPT-format conversation entry."""
+    """Convert a single session turn to a ShareGPT-format conversation entry.
+
+    Multipart list content is flattened to text, and all values pass through
+    the conservative secret-redaction filter before being emitted.
+    """
     role = turn.get("role")
-    content = turn.get("content", "") or ""
+    content = content_to_text(turn.get("content"))
 
+    entry: Optional[Dict[str, str]] = None
     if role == "system":
-        content = _canonicalize_system_prompt(content)
-        return {"from": "system", "value": content}
+        entry = {"from": "system", "value": _canonicalize_system_prompt(content)}
 
-    if role == "user":
-        return {"from": "human", "value": content}
+    elif role == "user":
+        entry = {"from": "human", "value": content}
 
-    if role == "assistant":
+    elif role == "assistant":
         content = _normalize_reasoning(content)
         if turn.get("tool_calls"):
-            import json
             tool_parts = []
             for tc in turn["tool_calls"]:
                 func = tc.get("function", tc)
@@ -105,14 +160,16 @@ def _turn_to_sharegpt(turn: Dict[str, Any]) -> Optional[Dict[str, str]]:
                     args = json.dumps(args)
                 tool_parts.append(f"<tool_call>\n{name}\n{args}\n</tool_call>")
             content = (content + "\n" + "\n".join(tool_parts)) if content else "\n".join(tool_parts)
-        return {"from": "gpt", "value": content}
+        entry = {"from": "gpt", "value": content}
 
-    if role == "tool":
+    elif role == "tool":
         tool_name = turn.get("tool_name", "")
         prefix = f"<tool_response>\n{tool_name}\n" if tool_name else "<tool_response>\n"
-        return {"from": "tool", "value": f"{prefix}{content}\n</tool_response>"}
+        entry = {"from": "tool", "value": f"{prefix}{content}\n</tool_response>"}
 
-    return None
+    if entry is not None:
+        entry["value"] = redact_secrets(entry["value"])
+    return entry
 
 
 def extract_training_turns(
@@ -164,6 +221,10 @@ def extract_training_turns(
     # for every assistant turn (worse signal but still functional).
     composite_fallback = scoring.get("composite_score", 0.5)
 
+    # Turns explicitly labeled bad (retro) are excluded unconditionally,
+    # regardless of the min_turn_score threshold.
+    bad_turn_indices = set(scoring.get("bad_turn_indices") or [])
+
     # Find the system turn (if any) — always pinned at the start of context
     system_entry: Optional[Dict[str, str]] = None
     if turns and turns[0].get("role") == "system":
@@ -173,6 +234,10 @@ def extract_training_turns(
 
     for i, turn in enumerate(turns):
         if turn.get("role") != "assistant":
+            continue
+
+        # Explicit bad label — never train on it, whatever the threshold
+        if i in bad_turn_indices:
             continue
 
         # Effective score for this assistant turn
@@ -304,21 +369,15 @@ class TrainingFormatter:
         train_path = out / "train.jsonl"
         eval_path = out / "eval.jsonl"
 
-        # Overwrite (not append) — each format run produces a fresh split
-        if train_records:
-            train_path.write_text(
-                "\n".join(
-                    __import__("json").dumps(r, ensure_ascii=False)
-                    for r in train_records
-                ) + "\n",
-                encoding="utf-8",
-            )
-        if eval_records:
-            eval_path.write_text(
-                "\n".join(
-                    __import__("json").dumps(r, ensure_ascii=False)
-                    for r in eval_records
-                ) + "\n",
+        # Overwrite (not append) — each format run produces a fresh split.
+        # Always write, even when there are zero records: a run that filters
+        # everything out must truncate stale train/eval files from previous
+        # runs so they can't be silently trained on.
+        for path, records in ((train_path, train_records), (eval_path, eval_records)):
+            path.write_text(
+                "".join(
+                    json.dumps(r, ensure_ascii=False) + "\n" for r in records
+                ),
                 encoding="utf-8",
             )
 
@@ -342,9 +401,8 @@ class TrainingFormatter:
         not assigned to any cluster.
         """
         if scored_sessions is None:
-            scored_sessions = []
-            for path in sorted(SCORED_DIR.glob("scored_*.jsonl")):
-                scored_sessions.extend(read_jsonl(path))
+            # Dedupe by session_id, keeping the newest snapshot's record
+            scored_sessions = load_records_dedup(SCORED_DIR, "scored_*.jsonl")
 
         return self.format_for_cluster(scored_sessions, "_general")
 
@@ -357,8 +415,9 @@ def main():
                         help="Output directory (default: clusters/_general/)")
     parser.add_argument("--eval-ratio", type=float, default=0.1,
                         help="Fraction held out for eval (default: 0.1)")
-    parser.add_argument("--min-score", type=float, default=0.0,
-                        help="Minimum quality score to include")
+    parser.add_argument("--min-score", type=float, default=None,
+                        help="Minimum per-turn quality score to include "
+                             "(default: training.min_turn_score from config)")
     args = parser.parse_args()
 
     formatter = TrainingFormatter(eval_ratio=args.eval_ratio)
@@ -366,9 +425,8 @@ def main():
     if args.input:
         sessions = read_jsonl(Path(args.input))
     else:
-        sessions = []
-        for path in sorted(SCORED_DIR.glob("scored_*.jsonl")):
-            sessions.extend(read_jsonl(path))
+        # Dedupe by session_id, keeping the newest snapshot's record
+        sessions = load_records_dedup(SCORED_DIR, "scored_*.jsonl")
 
     if not sessions:
         print("No scored sessions found. Run score.py first.")

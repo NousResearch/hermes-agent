@@ -31,6 +31,7 @@ from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
 from tui_gateway.mobile_sync import SessionEventStream
 from tui_gateway.mobile_mutations import (
+    InvalidMutationRequestIdentity,
     MobileMutationStore,
     MutationClaim,
     MutationConflict,
@@ -1502,6 +1503,34 @@ def _mobile_mutation_resource(
         parameter: params.get(parameter)
         for parameter in descriptor.semantic_parameters
     }
+    lineage_parameter = descriptor.lineage_parameter
+    if lineage_parameter is not None:
+        lineage_id = str(params.get(lineage_parameter) or "").strip()
+        if not lineage_id:
+            return _err(
+                rid,
+                -32602,
+                f"{lineage_parameter} is required for mobile mutation",
+                data={
+                    "method": method,
+                    "reason": "durable_lineage_id_required",
+                },
+            )
+        if lineage_parameter in semantics:
+            semantics[lineage_parameter] = lineage_id
+    if method == "approval.respond":
+        normalized_choice = str(params.get("choice") or "").strip().lower()
+        if not normalized_choice:
+            return _err(
+                rid,
+                -32602,
+                "choice is required for mobile approval response",
+                data={
+                    "method": method,
+                    "reason": "approval_choice_required",
+                },
+            )
+        semantics["choice"] = normalized_choice
     if descriptor.resource_parameter == "expected_stored_session_id":
         # Cuttle keeps this server-issued Conversation identity stable while the
         # process-local live session id and compression tip can rotate. Binding
@@ -1514,7 +1543,16 @@ def _mobile_mutation_resource(
         # A stored session id is itself the durable resource being deleted. Do not
         # normalize it through a compression lineage: after successful deletion
         # that lineage is intentionally gone, while a retry must still fingerprint
-        # to the same tombstoned target and replay the original outcome.
+        # to the same tombstoned target and replay the original outcome. Execute
+        # with this normalized value too, so the handler semantics cannot differ
+        # from the durable fingerprint on a whitespace-only variation.
+        params[descriptor.resource_parameter] = resource_id
+        return resource_id, semantics
+
+    if descriptor.resource_parameter == "approval_id":
+        # Approval identity is Hermes-owned and stable across reconnects. The
+        # separate expected-stored-session semantic prevents one receipt from
+        # being replayed against the same ID under a different Conversation.
         return resource_id, semantics
 
     return _err(
@@ -1530,14 +1568,14 @@ def _mobile_mutation_preflight(method: str, params: dict, rid: Any) -> dict | No
     from tui_gateway.mobile_contract import MOBILE_MUTATION_POLICIES
 
     descriptor = MOBILE_MUTATION_POLICIES.get(method)
-    if descriptor is None or not descriptor.requires_live_lineage_validation:
+    if descriptor is None or descriptor.lineage_parameter is None:
         return None
     session, err = _sess_nowait(params, rid)
     if err:
         return err
     assert session is not None
 
-    expected = str(params.get(descriptor.resource_parameter) or "").strip()
+    expected = str(params.get(descriptor.lineage_parameter) or "").strip()
     runtime_id = str(params.get("session_id") or "").strip()
     current_ids = {
         str(session.get("session_key") or "").strip(),
@@ -2083,46 +2121,51 @@ def _dispatch_mobile_mutation(
     if isinstance(resource, dict):
         return resource
     resource_id, semantic_parameters = resource
-    try:
-        store = _mobile_mutation_store()
-        claim = store.reserve(
-            provider=grant["provider"],
-            subject=grant["subject"],
-            client_request_id=client_request_id,
-            method=method,
-            resource_id=resource_id,
-            semantic_parameters=semantic_parameters,
-        )
-    except MutationConflict:
-        return _err(
-            rid,
-            4090,
-            "client_request_id was already used for different semantics",
-            data={"reason": "mutation_conflict"},
-        )
-    except ValueError as exc:
-        return _err(
-            rid,
-            -32602,
-            str(exc),
-            data={"reason": "invalid_client_request_id"},
-        )
-    except (OSError, sqlite3.Error):
-        logger.warning("mobile mutation receipt reservation failed", exc_info=True)
-        return _mobile_mutation_store_unavailable(rid)
-    except Exception:
-        logger.exception("unexpected mobile mutation receipt reservation failure")
-        return _mobile_mutation_store_unavailable(rid)
-
-    if claim.disposition is MutationDisposition.IN_PROGRESS:
+    while True:
         try:
-            claim = store.wait_for_outcome(claim, timeout=30.0)
-        except (OSError, sqlite3.Error):
-            logger.warning("mobile mutation receipt wait failed", exc_info=True)
+            store = _mobile_mutation_store()
+            claim = store.reserve(
+                provider=grant["provider"],
+                subject=grant["subject"],
+                client_request_id=client_request_id,
+                method=method,
+                resource_id=resource_id,
+                semantic_parameters=semantic_parameters,
+            )
+        except MutationConflict:
+            return _err(
+                rid,
+                4090,
+                "client_request_id was already used for different semantics",
+                data={"reason": "mutation_conflict"},
+            )
+        except InvalidMutationRequestIdentity as exc:
+            return _err(
+                rid,
+                -32602,
+                str(exc),
+                data={"reason": "invalid_client_request_id"},
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            logger.warning(
+                "mobile mutation receipt reservation failed",
+                exc_info=True,
+            )
             return _mobile_mutation_store_unavailable(rid)
         except Exception:
-            logger.exception("unexpected mobile mutation receipt wait failure")
+            logger.exception("unexpected mobile mutation receipt reservation failure")
             return _mobile_mutation_store_unavailable(rid)
+        if claim.disposition is MutationDisposition.IN_PROGRESS:
+            try:
+                claim = store.wait_for_outcome(claim, timeout=30.0)
+            except (OSError, sqlite3.Error):
+                logger.warning("mobile mutation receipt wait failed", exc_info=True)
+                return _mobile_mutation_store_unavailable(rid)
+            except Exception:
+                logger.exception("unexpected mobile mutation receipt wait failure")
+                return _mobile_mutation_store_unavailable(rid)
+        if claim.disposition is not MutationDisposition.RETRY:
+            break
     if claim.disposition is MutationDisposition.REPLAY:
         return _mutation_response(
             rid,
@@ -2199,11 +2242,13 @@ def _dispatch_mobile_mutation(
             response = handle_request(req)
     except Exception:
         logger.exception("mobile mutation handler failed")
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="handler failure",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         return _err(
             rid,
             5037,
@@ -2213,11 +2258,13 @@ def _dispatch_mobile_mutation(
     finally:
         params.pop("_mobile_mutation_receipt_tag", None)
     if response is None:
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="empty handler response",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         return _err(
             rid,
             5037,
@@ -2265,19 +2312,23 @@ def _dispatch_mobile_mutation(
         completed = store.complete(claim, outcome)
     except (OSError, sqlite3.Error):
         logger.warning("mobile mutation receipt completion failed", exc_info=True)
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="receipt completion failure",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         completed = False
     except Exception:
         logger.exception("unexpected mobile mutation receipt completion failure")
-        _mark_mobile_mutation_outcome_unknown(
+        recovered = _recover_mobile_mutation_outcome_unknown(
             store,
             claim,
             context="unexpected receipt completion failure",
         )
+        if not recovered:
+            return _mobile_mutation_store_unavailable(rid)
         completed = False
     if not completed:
         return _err(

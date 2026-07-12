@@ -99,6 +99,14 @@ def test_advertised_mutations_share_one_policy_and_resource_authority():
         assert descriptor is not None
         assert descriptor.resource_parameter in policy.allowed_parameters
         assert set(descriptor.semantic_parameters) <= policy.allowed_parameters
+        if descriptor.lineage_parameter is not None:
+            assert descriptor.lineage_parameter in policy.allowed_parameters
+    assert payload["schemas"]["approval.lifecycle"] == 1
+    assert payload["capabilities"]["interaction.lifecycle"] == {
+        "version": 1,
+        "kinds": ["approval"],
+        "response_methods": ["approval.respond"],
+    }
 
 
 def test_transient_lineage_failure_releases_receipt_for_identical_retry(
@@ -319,6 +327,367 @@ def test_mobile_interrupt_requires_a_client_request_identity(monkeypatch):
             "reason": "client_request_id_required",
         },
     }
+
+
+def test_mobile_approval_response_replays_exact_outcome_after_live_rotation(
+    monkeypatch,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    class Db:
+        @staticmethod
+        def get_compression_lineage(_session_id):
+            return ["conversation-root"]
+
+    monkeypatch.setattr(
+        server,
+        "_session_db",
+        lambda _session: contextlib.nullcontext(Db()),
+    )
+    calls = []
+
+    def resolve_exact(session_key, approval_id, choice, **kwargs):
+        calls.append((session_key, approval_id, choice, kwargs))
+        return {
+            "outcome": "resolved",
+            "approval": {
+                "approval_id": approval_id,
+                "state": "resolved",
+                "resolution": {"choice": "once"},
+            },
+        }
+
+    monkeypatch.setattr(approval, "resolve_gateway_approval_by_id", resolve_exact)
+    server._sessions["live-1"] = {
+        "agent": object(),
+        "agent_ready": None,
+        "history_lock": threading.Lock(),
+        "session_key": "conversation-root",
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+    params = {
+        "approval_id": "a" * 32,
+        "choice": " Once ",
+        "client_request_id": "approval-response-1",
+        "expected_stored_session_id": "conversation-root",
+        "reason": "approved from phone",
+        "session_id": "live-1",
+    }
+    first = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "approval-first",
+            "method": "approval.respond",
+            "params": params,
+        },
+        transport,
+    )
+
+    assert first["result"]["outcome"] == "resolved"
+    assert first["result"]["mutation"] == {
+        "client_request_id": "approval-response-1",
+        "deduplicated": False,
+        "state": "completed",
+    }
+    params["session_id"] = "rotated-live-id"
+    params["choice"] = "once"
+    replay = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "approval-replay",
+            "method": "approval.respond",
+            "params": params,
+        },
+        transport,
+    )
+
+    assert replay["result"]["outcome"] == "resolved"
+    assert replay["result"]["mutation"]["deduplicated"] is True
+    assert calls == [
+        (
+            "conversation-root",
+            "a" * 32,
+            " Once ",
+            {
+                "reason": "approved from phone",
+                "resolution_metadata": {
+                    "source": "tui_gateway",
+                    "live_session_id": "live-1",
+                },
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("parameter", "different"),
+    [
+        ("approval_id", "b" * 32),
+        ("choice", "deny"),
+        ("reason", "different reason"),
+        ("expected_stored_session_id", "different-conversation"),
+    ],
+)
+def test_mobile_approval_response_conflicts_on_changed_semantics(
+    monkeypatch,
+    parameter,
+    different,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    class Db:
+        @staticmethod
+        def get_compression_lineage(_session_id):
+            return ["conversation-root"]
+
+    monkeypatch.setattr(
+        server,
+        "_session_db",
+        lambda _session: contextlib.nullcontext(Db()),
+    )
+    calls = 0
+
+    def resolve_exact(_session_key, approval_id, choice, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "outcome": "resolved",
+            "approval": {
+                "approval_id": approval_id,
+                "state": "resolved",
+                "resolution": {"choice": choice},
+            },
+        }
+
+    monkeypatch.setattr(approval, "resolve_gateway_approval_by_id", resolve_exact)
+    server._sessions["live-1"] = {
+        "agent": object(),
+        "agent_ready": None,
+        "history_lock": threading.Lock(),
+        "session_key": "conversation-root",
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+    params = {
+        "approval_id": "a" * 32,
+        "choice": "once",
+        "client_request_id": "approval-conflict-1",
+        "expected_stored_session_id": "conversation-root",
+        "reason": "original reason",
+        "session_id": "live-1",
+    }
+    first = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "approval-conflict-first",
+            "method": "approval.respond",
+            "params": params,
+        },
+        transport,
+    )
+    assert first["result"]["outcome"] == "resolved"
+
+    params[parameter] = different
+    conflict = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "approval-conflict-second",
+            "method": "approval.respond",
+            "params": params,
+        },
+        transport,
+    )
+
+    assert conflict["error"]["code"] == 4090
+    assert conflict["error"]["data"]["reason"] == "mutation_conflict"
+    assert calls == 1
+
+
+def test_simultaneous_mobile_approval_responses_resolve_exactly_once(
+    monkeypatch,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    class Db:
+        @staticmethod
+        def get_compression_lineage(_session_id):
+            return ["conversation-root"]
+
+    monkeypatch.setattr(
+        server,
+        "_session_db",
+        lambda _session: contextlib.nullcontext(Db()),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def resolve_exact(_session_key, approval_id, choice, **_kwargs):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        assert release.wait(timeout=2)
+        return {
+            "outcome": "resolved",
+            "approval": {
+                "approval_id": approval_id,
+                "state": "resolved",
+                "resolution": {"choice": choice},
+            },
+        }
+
+    monkeypatch.setattr(approval, "resolve_gateway_approval_by_id", resolve_exact)
+    server._sessions["live-1"] = {
+        "agent": object(),
+        "agent_ready": None,
+        "history_lock": threading.Lock(),
+        "session_key": "conversation-root",
+    }
+    transport = _MobileTransport("conversation.read", "conversation.control")
+    params = {
+        "approval_id": "a" * 32,
+        "choice": "once",
+        "client_request_id": "approval-simultaneous-1",
+        "expected_stored_session_id": "conversation-root",
+        "session_id": "live-1",
+    }
+    responses = {}
+
+    def dispatch(name, correlation):
+        responses[name] = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": correlation,
+                "method": "approval.respond",
+                "params": params,
+            },
+            transport,
+        )
+
+    first = threading.Thread(target=dispatch, args=("first", "approval-first"))
+    duplicate = threading.Thread(
+        target=dispatch,
+        args=("duplicate", "approval-duplicate"),
+    )
+    first.start()
+    assert entered.wait(timeout=1)
+    duplicate.start()
+    release.set()
+    first.join(timeout=2)
+    duplicate.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not duplicate.is_alive()
+    assert calls == 1
+    assert responses["first"]["result"]["mutation"]["deduplicated"] is False
+    assert responses["duplicate"]["result"]["mutation"]["deduplicated"] is True
+    assert responses["first"]["result"]["outcome"] == "resolved"
+    assert responses["duplicate"]["result"]["outcome"] == "resolved"
+
+
+@pytest.mark.parametrize(
+    ("missing", "expected_message"),
+    [
+        ("client_request_id", "client_request_id is required"),
+        ("approval_id", "approval_id is required"),
+        ("choice", "choice is required"),
+        (
+            "expected_stored_session_id",
+            "expected_stored_session_id is required",
+        ),
+    ],
+)
+def test_mobile_approval_response_requires_durable_identities(
+    missing,
+    expected_message,
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    resolver_calls = []
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval_by_id",
+        lambda *args, **kwargs: resolver_calls.append((args, kwargs)),
+    )
+    params = {
+        "approval_id": "a" * 32,
+        "choice": "once",
+        "client_request_id": "approval-required-ids",
+        "expected_stored_session_id": "conversation-root",
+        "session_id": "live-1",
+    }
+    params.pop(missing)
+
+    response = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": f"missing-{missing}",
+            "method": "approval.respond",
+            "params": params,
+        },
+        _MobileTransport("conversation.read", "conversation.control"),
+    )
+
+    assert response["error"]["code"] == -32602
+    assert expected_message in response["error"]["message"]
+    assert resolver_calls == []
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="approval-required-ids",
+    ) is None
+
+
+@pytest.mark.parametrize("choice", ["", "   "])
+def test_mobile_approval_response_rejects_blank_choice_before_reserving_receipt(
+    choice,
+    _isolated_gateway_mutation_store,
+    monkeypatch,
+):
+    from tools import approval
+    from tui_gateway import server
+
+    resolver_calls = []
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval_by_id",
+        lambda *args, **kwargs: resolver_calls.append((args, kwargs)),
+    )
+    response = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "blank-approval-choice",
+            "method": "approval.respond",
+            "params": {
+                "approval_id": "a" * 32,
+                "choice": choice,
+                "client_request_id": "approval-blank-choice",
+                "expected_stored_session_id": "conversation-root",
+                "session_id": "live-1",
+            },
+        },
+        _MobileTransport("conversation.read", "conversation.control"),
+    )
+
+    assert response["error"] == {
+        "code": -32602,
+        "message": "choice is required for mobile approval response",
+        "data": {
+            "method": "approval.respond",
+            "reason": "approval_choice_required",
+        },
+    }
+    assert resolver_calls == []
+    assert _isolated_gateway_mutation_store.status(
+        provider="password",
+        subject="mobile-user",
+        client_request_id="approval-blank-choice",
+    ) is None
 
 
 def test_mobile_mutation_rejects_an_oversized_request_identity():
@@ -1712,9 +2081,9 @@ def test_mobile_delete_retry_replays_after_conversation_row_is_gone(
 
     monkeypatch.setattr(db, "delete_session", counted_delete)
     transport = _MobileTransport("conversation.read", "conversation.delete")
-    params = {
+    first_params = {
         "client_request_id": "delete-1",
-        "session_id": "conversation-delete",
+        "session_id": "  conversation-delete  ",
     }
 
     first = server.dispatch(
@@ -1722,7 +2091,7 @@ def test_mobile_delete_retry_replays_after_conversation_row_is_gone(
             "jsonrpc": "2.0",
             "id": "delete-correlation-1",
             "method": "session.delete",
-            "params": params,
+            "params": first_params,
         },
         transport,
     )
@@ -1731,7 +2100,10 @@ def test_mobile_delete_retry_replays_after_conversation_row_is_gone(
             "jsonrpc": "2.0",
             "id": "delete-correlation-2",
             "method": "session.delete",
-            "params": params,
+            "params": {
+                "client_request_id": "delete-1",
+                "session_id": "conversation-delete",
+            },
         },
         transport,
     )

@@ -32,8 +32,6 @@ SERVER_RELEASE_DATE = __release_date__
 SERVER_INSTANCE_ID = str(uuid.uuid4())
 
 # Advertise only schemas implemented by the stacked contract slices.
-# Recoverable approvals still land later and must not be inferred from Mobile
-# Client Contract v1 alone.
 CLIENT_SCHEMA_MAJORS = {
     "gateway.ready": 1,
     "authorization.grant": 1,
@@ -41,6 +39,7 @@ CLIENT_SCHEMA_MAJORS = {
     "session.synchronization": 1,
     "session.event": 1,
     "mutation.receipt": 1,
+    "approval.lifecycle": 1,
 }
 
 CONVERSATION_READ_SCOPE = "conversation.read"
@@ -71,7 +70,7 @@ class MobileMutationDescriptor:
 
     resource_parameter: str
     semantic_parameters: tuple[str, ...] = ()
-    requires_live_lineage_validation: bool = False
+    lineage_parameter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +125,7 @@ MOBILE_METHOD_POLICIES = {
         mutation=MobileMutationDescriptor(
             resource_parameter="expected_stored_session_id",
             semantic_parameters=("text",),
-            requires_live_lineage_validation=True,
+            lineage_parameter="expected_stored_session_id",
         ),
     ),
     "session.interrupt": MobileMethodPolicy(
@@ -140,7 +139,29 @@ MOBILE_METHOD_POLICIES = {
         ),
         mutation=MobileMutationDescriptor(
             resource_parameter="expected_stored_session_id",
-            requires_live_lineage_validation=True,
+            lineage_parameter="expected_stored_session_id",
+        ),
+    ),
+    "approval.respond": MobileMethodPolicy(
+        (CONVERSATION_CONTROL_SCOPE,),
+        frozenset(
+            {
+                "approval_id",
+                "choice",
+                "client_request_id",
+                "expected_stored_session_id",
+                "reason",
+                "session_id",
+            }
+        ),
+        mutation=MobileMutationDescriptor(
+            resource_parameter="approval_id",
+            semantic_parameters=(
+                "choice",
+                "reason",
+                "expected_stored_session_id",
+            ),
+            lineage_parameter="expected_stored_session_id",
         ),
     ),
     "session.delete": MobileMethodPolicy(
@@ -223,6 +244,11 @@ def gateway_ready_payload(*, skin: str, authorization: dict | None = None) -> di
                 "version": 1,
                 "methods": list(MOBILE_MUTATION_POLICIES),
                 "status_method": "mutation.status",
+            },
+            "interaction.lifecycle": {
+                "version": 1,
+                "kinds": ["approval"],
+                "response_methods": ["approval.respond"],
             },
         },
         "authorization": effective_authorization(authorization),

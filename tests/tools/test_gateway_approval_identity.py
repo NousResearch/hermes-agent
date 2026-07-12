@@ -2,15 +2,186 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 import json
 import math
+import weakref
 
 
 def _queue_entry(approval, session_key: str, **kwargs):
     entry = approval._ApprovalEntry({"command": "dangerous"}, **kwargs)
     approval._gateway_queues.setdefault(session_key, []).append(entry)
     return entry
+
+
+class _ManualTimer:
+    """Deterministic stand-in for the single tombstone cleanup timer."""
+
+    created: list["_ManualTimer"] = []
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval = interval
+        self.function = function
+        self.args = tuple(args or ())
+        self.kwargs = dict(kwargs or {})
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+        self.created.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        assert self.started
+        assert not self.cancelled
+        self.function(*self.args, **self.kwargs)
+
+
+def _detach_tombstone_scheduler(approval):
+    """Isolate the process-global scheduler and return state for restoration."""
+    with approval._lock:
+        timer = approval._gateway_tombstone_cleanup_timer
+        if timer is not None:
+            timer.cancel()
+        state = (
+            approval._gateway_tombstones,
+            approval._gateway_tombstone_cleanup_generation,
+        )
+        approval._gateway_tombstones = {}
+        approval._gateway_tombstone_cleanup_timer = None
+        approval._gateway_tombstone_cleanup_deadline = None
+        approval._gateway_tombstone_cleanup_generation += 1
+    return state
+
+
+def _restore_tombstone_scheduler(approval, state):
+    with approval._lock:
+        timer = approval._gateway_tombstone_cleanup_timer
+        if timer is not None:
+            timer.cancel()
+        approval._gateway_tombstones = state[0]
+        approval._gateway_tombstone_cleanup_timer = None
+        approval._gateway_tombstone_cleanup_deadline = None
+        approval._gateway_tombstone_cleanup_generation = state[1] + 1
+        approval._schedule_gateway_tombstone_cleanup_locked()
+
+
+def test_terminal_entry_is_released_by_scheduled_ttl_cleanup(monkeypatch):
+    from tools import approval
+
+    state = _detach_tombstone_scheduler(approval)
+    now = [100.0]
+    _ManualTimer.created = []
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(approval.threading, "Timer", _ManualTimer)
+            patch.setattr(approval.time, "monotonic", lambda: now[0])
+            patch.setattr(
+                approval,
+                "_GATEWAY_APPROVAL_TOMBSTONE_TTL_SECONDS",
+                5,
+            )
+            entry = _queue_entry(
+                approval,
+                "scheduled-tombstone-cleanup",
+                approval_id="a" * 32,
+                timeout_seconds=30,
+                now_monotonic=now[0],
+            )
+            entry_ref = weakref.ref(entry)
+
+            outcome = approval.resolve_gateway_approval_by_id(
+                "scheduled-tombstone-cleanup",
+                entry.approval_id,
+                "deny",
+            )
+            assert outcome["outcome"] == "resolved"
+            assert len(_ManualTimer.created) == 1
+            timer = _ManualTimer.created[0]
+            assert timer.interval == 5
+            assert timer.daemon is True
+
+            del entry
+            gc.collect()
+            assert entry_ref() is not None
+
+            now[0] = 105.0
+            timer.fire()
+            gc.collect()
+
+            assert "scheduled-tombstone-cleanup" not in (
+                approval._gateway_tombstones
+            )
+            assert entry_ref() is None
+    finally:
+        _restore_tombstone_scheduler(approval, state)
+
+
+def test_unregister_and_clear_tombstones_share_scheduled_cleanup(monkeypatch):
+    from tools import approval
+
+    state = _detach_tombstone_scheduler(approval)
+    now = [200.0]
+    _ManualTimer.created = []
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(approval.threading, "Timer", _ManualTimer)
+            patch.setattr(approval.time, "monotonic", lambda: now[0])
+            patch.setattr(
+                approval,
+                "_GATEWAY_APPROVAL_TOMBSTONE_TTL_SECONDS",
+                5,
+            )
+
+            stale_session = "scheduled-unregister-cleanup"
+            approval.register_gateway_notify(stale_session, lambda _: None)
+            stale = _queue_entry(
+                approval,
+                stale_session,
+                approval_id="b" * 32,
+                timeout_seconds=30,
+                now_monotonic=now[0],
+            )
+            stale_ref = weakref.ref(stale)
+            approval.unregister_gateway_notify(stale_session)
+
+            cleared_session = "scheduled-clear-cleanup"
+            cleared = _queue_entry(
+                approval,
+                cleared_session,
+                approval_id="c" * 32,
+                timeout_seconds=30,
+                now_monotonic=now[0],
+            )
+            cleared_ref = weakref.ref(cleared)
+            approval.clear_session(cleared_session)
+
+            assert set(approval._gateway_tombstones) == {
+                stale_session,
+                cleared_session,
+            }
+            assert len(_ManualTimer.created) == 1
+            timer = _ManualTimer.created[0]
+
+            del stale, cleared
+            gc.collect()
+            assert stale_ref() is not None
+            assert cleared_ref() is not None
+
+            now[0] = 205.0
+            timer.fire()
+            gc.collect()
+
+            assert approval._gateway_tombstones == {}
+            assert stale_ref() is None
+            assert cleared_ref() is None
+    finally:
+        _restore_tombstone_scheduler(approval, state)
 
 
 def test_pending_approval_exposes_stable_sanitized_public_descriptor(monkeypatch):

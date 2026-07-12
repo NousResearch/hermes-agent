@@ -92,7 +92,7 @@ def test_mobile_dispatch_rejects_an_unmapped_method_fail_closed():
     }
 
 
-def test_mobile_dispatch_does_not_expose_legacy_fifo_approval_resolution():
+def test_mobile_approval_response_requires_conversation_control():
     transport = RecordingTransport(
         _mobile_authorization("conversation.read", "conversation.write")
     )
@@ -102,20 +102,50 @@ def test_mobile_dispatch_does_not_expose_legacy_fifo_approval_resolution():
             "jsonrpc": "2.0",
             "id": "approval-request",
             "method": "approval.respond",
-            "params": {"choice": "once"},
+            "params": {},
         },
         transport,
     )
 
     assert response["error"]["data"] == {
-        "reason": "method_not_available_to_mobile",
+        "reason": "missing_scope",
         "method": "approval.respond",
-        "required_scope": "mobile.unavailable",
-        "required_scopes": ["mobile.unavailable"],
-        "missing_scopes": ["mobile.unavailable"],
+        "required_scope": "conversation.control",
+        "required_scopes": ["conversation.control"],
+        "missing_scopes": ["conversation.control"],
         "granted_scopes": ["conversation.read", "conversation.write"],
-        "grantable": False,
+        "grantable": True,
     }
+
+
+def test_mobile_approval_response_cannot_reach_legacy_fifo_all():
+    response = server.dispatch(
+        {
+            "jsonrpc": "2.0",
+            "id": "approval-fifo-all",
+            "method": "approval.respond",
+            "params": {
+                "all": True,
+                "approval_id": "a" * 32,
+                "choice": "once",
+                "client_request_id": "approval-1",
+                "expected_stored_session_id": "conversation-root",
+                "session_id": "live-1",
+            },
+        },
+        RecordingTransport(
+            _mobile_authorization(
+                "conversation.read",
+                "conversation.control",
+            )
+        ),
+    )
+
+    denial = response["error"]["data"]
+    assert denial["reason"] == "parameter_not_available_to_mobile"
+    assert denial["parameter"] == "all"
+    assert denial["required_scope"] == "mobile.unavailable"
+    assert denial["grantable"] is False
 
 
 def test_mobile_dispatch_allows_a_mapped_method_with_its_scope():
@@ -150,6 +180,7 @@ def test_mobile_dispatch_allows_a_mapped_method_with_its_scope():
         ("session.resume", "conversation.control"),
         ("prompt.submit", "conversation.write"),
         ("session.interrupt", "conversation.control"),
+        ("approval.respond", "conversation.control"),
         ("session.delete", "conversation.delete"),
         ("mutation.status", "conversation.read"),
     ],

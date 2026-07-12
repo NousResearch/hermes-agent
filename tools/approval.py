@@ -1446,6 +1446,7 @@ class _ApprovalEntry:
         "resolution",
         "_deadline",
         "_tombstone_deadline",
+        "__weakref__",
     )
 
     def __init__(
@@ -1548,9 +1549,80 @@ _gateway_resolution_notify_cbs: dict[str, object] = {}  # terminal descriptor cb
 _gateway_tombstones: dict[str, dict[str, _ApprovalEntry]] = {}
 _GATEWAY_APPROVAL_TOMBSTONE_TTL_SECONDS = 300.0
 _GatewayTerminalTransition = tuple[_ApprovalEntry, Optional[object], dict]
+_gateway_tombstone_cleanup_timer: Optional[threading.Timer] = None
+_gateway_tombstone_cleanup_deadline: Optional[float] = None
+_gateway_tombstone_cleanup_generation = 0
 
 
-def _prune_gateway_tombstones_locked(now_monotonic: Optional[float] = None) -> None:
+def _schedule_gateway_tombstone_cleanup_locked() -> None:
+    """Keep one daemon timer aimed at the earliest tombstone deadline."""
+    global _gateway_tombstone_cleanup_deadline
+    global _gateway_tombstone_cleanup_generation
+    global _gateway_tombstone_cleanup_timer
+
+    deadline = min(
+        (
+            entry._tombstone_deadline
+            for tombstones in _gateway_tombstones.values()
+            for entry in tombstones.values()
+            if entry._tombstone_deadline is not None
+        ),
+        default=None,
+    )
+    if deadline is None:
+        if _gateway_tombstone_cleanup_timer is not None:
+            _gateway_tombstone_cleanup_timer.cancel()
+            _gateway_tombstone_cleanup_generation += 1
+        _gateway_tombstone_cleanup_timer = None
+        _gateway_tombstone_cleanup_deadline = None
+        return
+
+    if (
+        _gateway_tombstone_cleanup_timer is not None
+        and _gateway_tombstone_cleanup_deadline is not None
+        and _gateway_tombstone_cleanup_deadline <= deadline
+    ):
+        return
+
+    if _gateway_tombstone_cleanup_timer is not None:
+        _gateway_tombstone_cleanup_timer.cancel()
+    _gateway_tombstone_cleanup_generation += 1
+    generation = _gateway_tombstone_cleanup_generation
+    timer = threading.Timer(
+        max(0.0, deadline - time.monotonic()),
+        _run_gateway_tombstone_cleanup,
+        args=(generation,),
+    )
+    timer.daemon = True
+    _gateway_tombstone_cleanup_timer = timer
+    _gateway_tombstone_cleanup_deadline = deadline
+    timer.start()
+
+
+def _run_gateway_tombstone_cleanup(generation: int) -> None:
+    """Prune expired tombstones and schedule the next bounded cleanup."""
+    global _gateway_tombstone_cleanup_deadline
+    global _gateway_tombstone_cleanup_generation
+    global _gateway_tombstone_cleanup_timer
+
+    with _lock:
+        if generation != _gateway_tombstone_cleanup_generation:
+            return
+        _gateway_tombstone_cleanup_timer = None
+        _gateway_tombstone_cleanup_deadline = None
+        _gateway_tombstone_cleanup_generation += 1
+        _prune_gateway_tombstones_locked(
+            time.monotonic(),
+            reschedule=False,
+        )
+        _schedule_gateway_tombstone_cleanup_locked()
+
+
+def _prune_gateway_tombstones_locked(
+    now_monotonic: Optional[float] = None,
+    *,
+    reschedule: bool = True,
+) -> None:
     """Discard completed approval records after their short explanation TTL."""
     if now_monotonic is None:
         now_monotonic = time.monotonic()
@@ -1568,6 +1640,8 @@ def _prune_gateway_tombstones_locked(now_monotonic: Optional[float] = None) -> N
             empty_sessions.append(session_key)
     for session_key in empty_sessions:
         _gateway_tombstones.pop(session_key, None)
+    if reschedule:
+        _schedule_gateway_tombstone_cleanup_locked()
 
 
 def _remove_gateway_entry_locked(session_key: str, entry: _ApprovalEntry) -> None:
@@ -1616,6 +1690,7 @@ def _finish_gateway_entry_locked(
         float(now_monotonic) + _GATEWAY_APPROVAL_TOMBSTONE_TTL_SECONDS
     )
     _gateway_tombstones.setdefault(session_key, {})[entry.approval_id] = entry
+    _schedule_gateway_tombstone_cleanup_locked()
     callback = _gateway_resolution_notify_cbs.get(session_key)
     return entry, callback, entry.public_descriptor()
 

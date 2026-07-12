@@ -63,6 +63,7 @@ def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
                     "session.synchronization": 1,
                     "session.event": 1,
                     "mutation.receipt": 1,
+                    "approval.lifecycle": 1,
                 },
                 "capabilities": {
                     "auth.ws_scopes": {"version": 1},
@@ -79,9 +80,15 @@ def test_gateway_ready_advertises_versioned_mobile_contract_and_authorization(
                         "methods": [
                             "prompt.submit",
                             "session.interrupt",
+                            "approval.respond",
                             "session.delete",
                         ],
                         "status_method": "mutation.status",
+                    },
+                    "interaction.lifecycle": {
+                        "version": 1,
+                        "kinds": ["approval"],
+                        "response_methods": ["approval.respond"],
                     },
                 },
                 "authorization": {

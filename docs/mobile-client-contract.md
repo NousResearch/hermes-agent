@@ -56,6 +56,49 @@ absolute `offset`. The `conversation.sync.delta_offsets.unit` capability names
 the unit as `utf8_bytes`. Clients can therefore ignore an overlapping prefix
 instead of duplicating text after replay or transport coalescing.
 
-This slice does not claim durable mutation idempotency or addressable,
-recoverable approvals. Those features require separately advertised
-capabilities.
+## Durable consequential mutations
+
+When `mutation.idempotency` version 1 is advertised, its `methods` list is the
+complete set of mobile methods covered by durable receipts. Each covered
+request requires a non-empty `client_request_id`. Prompt submission,
+interruption, and approval response additionally require the stable
+`expected_stored_session_id`; approval response also requires the
+Hermes-issued `approval_id`.
+
+Receipts are scoped to the authenticated provider and subject. Repeating the
+same request identity with equivalent normalized semantics returns the stored
+result with `mutation.deduplicated` set to `true`. Reusing it with different
+semantics returns `mutation_conflict`. A request abandoned after execution may
+have begun is reported as `mutation_outcome_unknown` and is never executed
+again automatically. Clients can inspect a known receipt with the advertised
+`mutation.status` method.
+
+This guarantee applies only to the methods named by the capability on a
+mobile-scoped connection. Existing legacy transports retain their prior
+request shapes and behavior.
+
+## Recoverable approval lifecycle
+
+When `interaction.lifecycle` version 1 names `approval` in `kinds` and
+`approval.respond` in `response_methods`, approval requests use the
+`approval.lifecycle` version 1 schema. Each request carries a stable
+Hermes-owned `approval_id`, server-redacted presentation fields, creation and
+expiry times, current state, and resolution metadata. Pending descriptors are
+part of the authoritative synchronization snapshot and remain addressable
+after reconnect.
+
+Hermes emits `approval.request` for creation and one of `approval.resolved`,
+`approval.expired`, or `approval.stale` for a terminal transition. Every event
+and snapshot descriptor carries the same `approval_id`. A mobile response must
+name that identity, the stable conversation lineage, a choice, and a durable
+client request identity. Identical retries replay the stored mutation result;
+changed semantics conflict. Short-lived terminal tombstones distinguish
+`already_resolved`, `expired`, `stale`, and `not_found` outcomes without
+consuming another pending approval.
+
+Approval payload and resolution metadata redaction is server-owned. Mobile
+clients must not infer authorization from presentation fields: the response is
+available only when the lifecycle capability, mutation coverage,
+`conversation.control` grant, live reconciled state, and valid Hermes resource
+identities all agree. ID-less legacy desktop and stdin responses retain their
+existing FIFO behavior.

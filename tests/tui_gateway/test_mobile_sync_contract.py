@@ -8,6 +8,7 @@ import pytest
 
 from tui_gateway import mobile_contract
 from tui_gateway import server
+from tui_gateway.mobile_mutations import MobileMutationStore
 from tui_gateway.mobile_sync import SessionEventStream
 
 
@@ -57,8 +58,10 @@ class SessionDBStub:
 
 
 @pytest.fixture(autouse=True)
-def isolated_gateway(monkeypatch):
+def isolated_gateway(monkeypatch, tmp_path):
     server._sessions.clear()
+    mutation_store = MobileMutationStore(tmp_path / "mobile-mutations.sqlite3")
+    monkeypatch.setattr(server, "_mobile_mutation_store", lambda: mutation_store)
     monkeypatch.setattr(
         server, "_claim_active_session_slot", lambda *_a, **_k: (None, None)
     )
@@ -74,6 +77,7 @@ def isolated_gateway(monkeypatch):
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     yield
     server._sessions.clear()
+    mutation_store.close()
 
 
 def create_session(transport):
@@ -624,25 +628,37 @@ def test_disconnect_resume_recovers_and_resolves_same_approval_once(monkeypatch)
         recovered = resume_session(reconnected, stored_id)
         pending = recovered["synchronization"]["snapshot"]["pending_interactions"]
         assert [item["approval_id"] for item in pending] == [approval_id]
+        active_sid = recovered["session_id"]
+        response_params = {
+            "approval_id": approval_id,
+            "choice": "once",
+            "client_request_id": "resume-approval-response-1",
+            "expected_stored_session_id": stored_id,
+            "session_id": active_sid,
+        }
 
-        first = server._methods["approval.respond"](
-            "resolve-first",
+        first = server.dispatch(
             {
-                "session_id": sid,
-                "approval_id": approval_id,
-                "choice": "once",
+                "jsonrpc": "2.0",
+                "id": "resolve-first",
+                "method": "approval.respond",
+                "params": response_params,
             },
+            reconnected,
         )
-        duplicate = server._methods["approval.respond"](
-            "resolve-duplicate",
+        duplicate = server.dispatch(
             {
-                "session_id": sid,
-                "approval_id": approval_id,
-                "choice": "once",
+                "jsonrpc": "2.0",
+                "id": "resolve-duplicate",
+                "method": "approval.respond",
+                "params": response_params,
             },
+            reconnected,
         )
         assert first["result"]["outcome"] == "resolved"
-        assert duplicate["result"]["outcome"] == "already_resolved"
+        assert first["result"]["mutation"]["deduplicated"] is False
+        assert duplicate["result"]["outcome"] == "resolved"
+        assert duplicate["result"]["mutation"]["deduplicated"] is True
 
         thread.join(timeout=1)
         assert not thread.is_alive()
@@ -662,6 +678,101 @@ def test_disconnect_resume_recovers_and_resolves_same_approval_once(monkeypatch)
         approval.unregister_gateway_notify(session["session_key"])
         approval._gateway_tombstones.pop(session["session_key"], None)
         thread.join(timeout=1)
+
+
+def test_mobile_resolves_second_approval_before_legacy_fifo_first(monkeypatch):
+    from tools import approval
+
+    transport = RecordingTransport()
+    created = create_session(transport)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    session = server._sessions[sid]
+    session["agent_ready"] = None
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+    monkeypatch.setattr(
+        approval,
+        "_get_approval_config",
+        lambda: {"gateway_timeout": 2},
+    )
+    server._register_gateway_approval_callbacks(session["session_key"], sid)
+    decisions = {}
+
+    def wait_for_decision(name):
+        decisions[name] = approval._await_gateway_decision(
+            session["session_key"],
+            approval._gateway_notify_cbs[session["session_key"]],
+            {
+                "command": f"dangerous {name}",
+                "description": name,
+                "pattern_key": name,
+                "pattern_keys": [name],
+            },
+        )
+
+    def wait_for_request(description):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            for frame in transport.frames:
+                params = frame.get("params", {})
+                payload = params.get("payload", {})
+                if (
+                    params.get("type") == "approval.request"
+                    and payload.get("description") == description
+                ):
+                    return payload["approval_id"]
+            time.sleep(0.01)
+        raise AssertionError(f"approval request {description!r} not emitted")
+
+    first_thread = threading.Thread(target=wait_for_decision, args=("first",))
+    second_thread = threading.Thread(target=wait_for_decision, args=("second",))
+    first_thread.start()
+    first_id = wait_for_request("first")
+    second_thread.start()
+    second_id = wait_for_request("second")
+    try:
+        second = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "resolve-second",
+                "method": "approval.respond",
+                "params": {
+                    "approval_id": second_id,
+                    "choice": "once",
+                    "client_request_id": "resolve-second-1",
+                    "expected_stored_session_id": stored_id,
+                    "session_id": sid,
+                },
+            },
+            transport,
+        )
+        assert second["result"]["outcome"] == "resolved"
+        assert second["result"]["approval"]["approval_id"] == second_id
+        second_thread.join(timeout=1)
+        assert not second_thread.is_alive()
+        assert first_thread.is_alive()
+
+        pending = resume_session(transport, stored_id)["synchronization"][
+            "snapshot"
+        ]["pending_interactions"]
+        assert [item["approval_id"] for item in pending] == [first_id]
+
+        legacy = server._methods["approval.respond"](
+            "legacy-first",
+            {"session_id": sid, "choice": "deny"},
+        )
+        assert legacy["result"] == {"resolved": 1}
+        first_thread.join(timeout=1)
+        assert not first_thread.is_alive()
+        assert decisions == {
+            "first": {"resolved": True, "choice": "deny", "reason": None},
+            "second": {"resolved": True, "choice": "once", "reason": None},
+        }
+    finally:
+        approval.unregister_gateway_notify(session["session_key"])
+        approval._gateway_tombstones.pop(session["session_key"], None)
+        first_thread.join(timeout=1)
+        second_thread.join(timeout=1)
 
 
 def test_legacy_session_keeps_original_response_and_event_shape():
@@ -1003,11 +1114,23 @@ def test_deferred_prompt_start_advances_revision_before_agent_ready(monkeypatch)
                 "jsonrpc": "2.0",
                 "id": "deferred-submit",
                 "method": "prompt.submit",
-                "params": {"session_id": sid, "text": "question"},
+                "params": {
+                    "client_request_id": "deferred-submit-1",
+                    "expected_stored_session_id": stored_id,
+                    "session_id": sid,
+                    "text": "question",
+                },
             },
             transport,
         )
-        assert submitted["result"] == {"status": "streaming"}
+        assert submitted["result"] == {
+            "mutation": {
+                "client_request_id": "deferred-submit-1",
+                "deduplicated": False,
+                "state": "in_progress",
+            },
+            "status": "streaming",
+        }
         assert entered_wait.wait(timeout=1)
 
         resumed = resume_session(transport, stored_id, cursor)

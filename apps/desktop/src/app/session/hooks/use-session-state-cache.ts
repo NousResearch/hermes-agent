@@ -7,6 +7,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
+  $connection,
   $messages,
   noteSessionActivity,
   onSessionWatchdogClear,
@@ -23,6 +24,7 @@ import {
 } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
+import { pushTranscriptToRenderCache } from '../../render-cache-hydration'
 
 // Shallow per-message identity check. When a flush carries no transcript
 // changes, `preserveLocalAssistantErrors` returns the same message objects in
@@ -159,6 +161,14 @@ export function useSessionStateCache({
 
     if (!sameMessageList(nextMessages, currentMessages)) {
       setMessages(nextMessages)
+      // Render-cache write-through (Phase 2, startup-latency): persist the
+      // active session's transcript tail so the next cold launch can paint it.
+      // Fire-and-forget + debounced in the main process; row cap applied there.
+      pushTranscriptToRenderCache(
+        $connection.get()?.baseUrl ?? null,
+        selectedStoredSessionIdRef.current,
+        nextMessages
+      )
     }
 
     viewSessionIdRef.current = pending.sessionId

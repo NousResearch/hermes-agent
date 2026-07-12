@@ -11,7 +11,10 @@ import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
+
+import { cullRenderCacheSession, normalizeCachedTranscriptRows, readCachedTranscript } from '../../../render-cache-hydration'
 import {
+  $connection,
   $currentCwd,
   $currentFastMode,
   $currentModel,
@@ -380,6 +383,24 @@ export function useSessionActions({
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         setMessages([])
+
+        // Switch-paint from the render cache (Ace 2026-07-11): for a cold
+        // target, paint the cached transcript instantly while the live
+        // prefetch below runs. Read is async (~ms IPC + disk); guarded so it
+        // only applies while THIS resume is current and nothing live (or a
+        // newer click) has painted yet — the live prefetch/resume wholesale-
+        // replaces these rows when it lands (same SWR contract as boot).
+        void readCachedTranscript(storedSessionId)
+          .then(cachedRows => {
+            if (!cachedRows || !isCurrentResume() || $messages.get().length > 0) {
+              return
+            }
+            const painted = normalizeCachedTranscriptRows(cachedRows)
+            if (painted.length > 0) {
+              setMessages(painted)
+            }
+          })
+          .catch(() => undefined)
       }
 
       // Swap the single live gateway to this session's profile before any
@@ -499,6 +520,31 @@ export function useSessionActions({
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
         const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
+
+        // Switch-paint from the render cache (Ace 2026-07-11: first click on a
+        // session shouldn't wait on the network). If this session's transcript
+        // is cached (transcript preloader / write-through), paint it NOW while
+        // the prefetch + resume run. Interim paint only: it never feeds
+        // localSnapshot, so the live prefetch/resume below wholesale-replaces
+        // it (same I5 discipline as the boot paint).
+        if (!watchWindow && $messages.get().length === 0) {
+          readCachedTranscript(storedSessionId)
+            .then(rows => {
+              if (!rows || !isCurrentResume()) {
+                return
+              }
+              // A live payload may already have landed while the cache read
+              // resolved; never clobber it with the cached copy.
+              if ($messages.get().length > 0) {
+                return
+              }
+              const painted = normalizeCachedTranscriptRows(rows)
+              if (painted.length > 0) {
+                setMessages(painted)
+              }
+            })
+            .catch(() => undefined)
+        }
 
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
@@ -865,6 +911,9 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+        // I4b delete wire: forward the delete to the render-cache culler so the
+        // deleted session's cached transcript doesn't outlive it on disk.
+        cullRenderCacheSession($connection.get()?.baseUrl ?? null, storedSessionId)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)

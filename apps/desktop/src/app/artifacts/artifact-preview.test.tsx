@@ -10,6 +10,8 @@ function makeArtifact(value: string, kind: ArtifactRecord['kind'] = 'file'): Art
     id: value,
     kind,
     label: value.split('/').pop() || value,
+    previewable: false,
+    profile: 'default',
     sessionId: 'session-1',
     sessionTitle: 'Artifacts',
     timestamp: 1,

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { downloadGatewayMediaFile, isRemoteGateway } from '@/lib/media'
+import { ensureGatewayProfile } from '@/store/profile'
 
 import { ArtifactsView } from './index'
 
@@ -18,11 +19,16 @@ vi.mock('@/lib/media', () => ({
   isRemoteGateway: vi.fn(() => false)
 }))
 
+vi.mock('@/store/profile', () => ({
+  ensureGatewayProfile: vi.fn(async () => undefined)
+}))
+
 const getMessagesMock = vi.mocked(getSessionMessages)
 const listSessionsMock = vi.mocked(listAllProfileSessions)
 const openExternal = vi.fn(async (_href: string) => undefined)
 const downloadGatewayMediaFileMock = vi.mocked(downloadGatewayMediaFile)
 const isRemoteGatewayMock = vi.mocked(isRemoteGateway)
+const ensureGatewayProfileMock = vi.mocked(ensureGatewayProfile)
 
 const session = {
   ended_at: null,
@@ -54,6 +60,7 @@ describe('ArtifactsView open affordances', () => {
     openExternal.mockClear()
     downloadGatewayMediaFileMock.mockClear()
     isRemoteGatewayMock.mockReturnValue(false)
+    ensureGatewayProfileMock.mockClear()
     listSessionsMock.mockResolvedValue({ sessions: [session] } as never)
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -67,6 +74,7 @@ describe('ArtifactsView open affordances', () => {
     cleanup()
     vi.clearAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
+    Reflect.deleteProperty(window, 'matchMedia')
   })
 
   it('labels a file row as an explicit open action and shows its typed thumbnail', async () => {
@@ -121,7 +129,7 @@ describe('ArtifactsView open affordances', () => {
   })
 
   it.each([
-    ['![Embedded](data:image/png;base64,c21hbGw=)', 'Embedded image'],
+    ['![](data:image/png;base64,c21hbGw=)', 'Embedded image'],
     ['Generated /images/output/chart.png', 'chart.png']
   ])('does not offer Open for an untrusted or non-openable image source', async (content, label) => {
     getMessagesMock.mockResolvedValue({
@@ -137,5 +145,100 @@ describe('ArtifactsView open affordances', () => {
       expect(document.body.textContent).not.toContain('c21hbGw=')
       expect(document.body.textContent).toContain('data:image/png;…')
     }
+  })
+
+  it('shows a recoverable fatal state instead of claiming there are no artifacts', async () => {
+    listSessionsMock.mockRejectedValueOnce(new Error('offline'))
+
+    renderArtifacts()
+
+    expect(await screen.findByText("Couldn't load artifacts")).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+    expect(screen.queryByText('No artifacts found')).toBeNull()
+  })
+
+  it('discloses partial results when a recent chat transcript cannot be read', async () => {
+    listSessionsMock.mockResolvedValue({
+      sessions: [session, { ...session, id: 'session-2', profile: 'work', title: 'Unavailable chat' }]
+    } as never)
+    getMessagesMock.mockImplementation(async id => {
+      if (id === 'session-2') {
+        throw new Error('transcript unavailable')
+      }
+
+      return {
+        messages: [{ content: 'Generated /tmp/available.pdf', role: 'assistant', timestamp: 2000 }]
+      } as never
+    })
+
+    renderArtifacts()
+
+    expect(await screen.findByText('Some artifacts may be missing')).toBeTruthy()
+    expect(screen.getByText("1 of 2 recent chats couldn't be read.")).toBeTruthy()
+    expect(screen.getByText('available.pdf')).toBeTruthy()
+  })
+
+  it('does not search inside an embedded image base64 payload', async () => {
+    getMessagesMock.mockResolvedValue({
+      messages: [{ content: '![Campaign board](data:image/png;base64,c21hbGw=)', role: 'assistant', timestamp: 2000 }]
+    } as never)
+
+    renderArtifacts()
+    expect(await screen.findByText('Campaign board')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search artifacts...' }), {
+      target: { value: 'c21hbGw' }
+    })
+
+    expect(await screen.findByText('No artifacts found')).toBeTruthy()
+    expect(screen.queryByText('Campaign board')).toBeNull()
+  })
+
+  it('activates the owning profile before opening the source chat', async () => {
+    listSessionsMock.mockResolvedValue({ sessions: [{ ...session, profile: 'work' }] } as never)
+    getMessagesMock.mockResolvedValue({
+      messages: [{ content: 'Generated /tmp/work-report.pdf', role: 'assistant', timestamp: 2000 }]
+    } as never)
+
+    renderArtifacts()
+    fireEvent.click(await screen.findByRole('button', { name: 'Open source chat for work-report.pdf' }))
+
+    await waitFor(() => expect(ensureGatewayProfileMock).toHaveBeenCalledWith('work'))
+  })
+
+  it('discloses the recent-chat indexing scope and can load more history', async () => {
+    listSessionsMock.mockResolvedValue({ sessions: [session], total: 75 } as never)
+    getMessagesMock.mockResolvedValue({
+      messages: [{ content: 'Generated /tmp/scoped-report.pdf', role: 'assistant', timestamp: 2000 }]
+    } as never)
+
+    renderArtifacts()
+
+    expect(await screen.findByText('Showing artifacts from 1 of 75 recent chats.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Load 30 more chats' }))
+
+    await waitFor(() => expect(listSessionsMock).toHaveBeenCalledWith(60, 1))
+  })
+
+  it('uses action-complete cards instead of a horizontally clipped table on narrow screens', async () => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        addEventListener: vi.fn(),
+        matches: true,
+        removeEventListener: vi.fn()
+      }))
+    })
+    getMessagesMock.mockResolvedValue({
+      messages: [{ content: 'Generated /tmp/mobile-report.pdf', role: 'assistant', timestamp: 2000 }]
+    } as never)
+
+    renderArtifacts()
+
+    expect(await screen.findByTestId('artifact-mobile-list')).toBeTruthy()
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Open mobile-report.pdf' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open source chat for mobile-report.pdf' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Copy path' })).toBeTruthy()
   })
 })

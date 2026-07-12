@@ -1,3 +1,5 @@
+import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -10,6 +12,9 @@ export interface ArtifactRecord {
   value: string
   href: string
   label: string
+  /** True only when a trusted tool result proves the image path is a generated output. */
+  previewable: boolean
+  profile: string
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -26,6 +31,8 @@ const FILE_EXT_RE =
 
 const AMBIGUOUS_WEB_ROOT_RE = /^\/(?:assets|images|media|static|uploads)\//i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
+const TRUSTED_IMAGE_RESULT_TOOLS = new Set(['image_generate'])
+const TRUSTED_IMAGE_RESULT_KEY_RE = /(?:^|\.)(?:agent_visible_image|host_image|image)$/i
 
 function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
@@ -122,10 +129,15 @@ function artifactHref(value: string): string {
   return value
 }
 
-export async function artifactImageSrc(value: string, href = artifactHref(value)): Promise<string> {
-  // Historical text has no output provenance. Only already-renderable web/data
-  // sources may load automatically; filesystem paths stay typed fallbacks.
-  if (AMBIGUOUS_WEB_ROOT_RE.test(value)) {
+export async function artifactImageSrc(
+  value: string,
+  href = artifactHref(value),
+  previewable = false,
+  profile?: string
+): Promise<string> {
+  // Historical prose has no output provenance. Web/data sources are already
+  // renderable; filesystem paths load only when a trusted tool result opts in.
+  if (AMBIGUOUS_WEB_ROOT_RE.test(value) && !previewable) {
     return ''
   }
 
@@ -133,11 +145,29 @@ export async function artifactImageSrc(value: string, href = artifactHref(value)
     return value
   }
 
-  return /^https?:/i.test(value) ? href : ''
+  if (/^https?:/i.test(value)) {
+    return href
+  }
+
+  if (!previewable) {
+    return ''
+  }
+
+  if (typeof window !== 'undefined' && window.hermesDesktop && isRemoteGateway()) {
+    return readDesktopFileDataUrl(filePathFromMediaPath(value), profile)
+  }
+
+  return href || mediaExternalUrl(value)
 }
 
-function artifactLabel(value: string): string {
+function artifactLabel(value: string, labelHint?: string): string {
   if (/^data:image\//i.test(value)) {
+    const normalizedHint = labelHint?.trim().replace(/\s+/g, ' ').slice(0, 120)
+
+    if (normalizedHint) {
+      return normalizedHint
+    }
+
     return 'data:image'
   }
 
@@ -195,9 +225,12 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
+function collectArtifactsFromText(
+  text: string,
+  pushValue: (value: string, labelHint?: string, previewable?: boolean) => void
+): void {
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
-    pushValue(match[2] || '')
+    pushValue(match[2] || '', match[1] || '')
   }
 
   for (const match of text.matchAll(MARKDOWN_LINK_RE)) {
@@ -227,7 +260,10 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
   }
 }
 
-function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
+function collectArtifactsFromMessage(
+  message: SessionMessage,
+  pushValue: (value: string, labelHint?: string, previewable?: boolean) => void
+): void {
   const text = messageText(message)
 
   if (text) {
@@ -257,6 +293,14 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
   const parsed = parseMaybeJson(text)
 
   if (parsed !== null) {
+    const parsedRecord = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+    const toolName = (message.tool_name || message.name || '').trim().toLowerCase()
+
+    const trustedToolResult =
+      message.role === 'tool' &&
+      TRUSTED_IMAGE_RESULT_TOOLS.has(toolName) &&
+      (parsedRecord as Record<string, unknown> | null)?.success !== false
+
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
       const normalized = normalizeValue(value)
 
@@ -265,7 +309,7 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
       }
 
       if ((KEY_HINT_RE.test(keyPath) || looksLikePathOrUrl(normalized)) && looksLikeArtifact(normalized)) {
-        pushValue(normalized)
+        pushValue(normalized, undefined, trustedToolResult && TRUSTED_IMAGE_RESULT_KEY_RE.test(keyPath))
       }
     })
   }
@@ -288,6 +332,7 @@ function boundedArtifactIdentity(value: string): string {
 
 export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
+  const profile = session.profile?.trim() || 'default'
   const title = artifactSessionTitle(session)
 
   for (const message of messages) {
@@ -295,16 +340,37 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
-    collectArtifactsFromMessage(message, candidate => {
+    collectArtifactsFromMessage(message, (candidate, labelHint, previewable = false) => {
       const value = normalizeValue(candidate)
 
       if (!value || !looksLikeArtifact(value)) {
         return
       }
 
-      const key = `${session.id}:${boundedArtifactIdentity(value)}`
+      const identity = boundedArtifactIdentity(value)
+      const key = JSON.stringify([profile, session.id, identity])
+      const timestamp = message.timestamp || session.last_active || session.started_at || Date.now()
+      const label = artifactLabel(value, labelHint)
+      const existing = found.get(key)
 
-      if (found.has(key)) {
+      if (existing) {
+        const nextTimestamp = Math.max(existing.timestamp, timestamp)
+        const nextLabel = existing.label === 'data:image' && label !== 'data:image' ? label : existing.label
+        const nextPreviewable = existing.previewable || previewable
+
+        if (
+          nextTimestamp !== existing.timestamp ||
+          nextLabel !== existing.label ||
+          nextPreviewable !== existing.previewable
+        ) {
+          found.set(key, {
+            ...existing,
+            label: nextLabel,
+            previewable: nextPreviewable,
+            timestamp: nextTimestamp
+          })
+        }
+
         return
       }
 
@@ -313,10 +379,12 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         kind: artifactKind(value),
         value,
         href: artifactHref(value),
-        label: artifactLabel(value),
+        label,
+        previewable,
+        profile,
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp
       })
     })
   }

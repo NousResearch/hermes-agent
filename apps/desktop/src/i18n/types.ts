@@ -1221,7 +1221,15 @@ export interface Translations {
     noArtifactsTitle: string
     noArtifactsDesc: string
     failedLoad: string
+    failedLoadTitle: string
+    failedLoadDesc: string
+    partialLoadTitle: string
+    partialLoadDesc: (failed: number, total: number) => string
+    scopeSummary: (loaded: number, total: number) => string
+    loadMoreChats: (count: number) => string
+    tryAgain: string
     openFailed: string
+    openChatFailed: string
     itemsImage: string
     itemsLink: string
     itemsFile: string
@@ -1242,8 +1250,10 @@ export interface Translations {
     open: string
     openArtifact: (label: string) => string
     previewArtifact: (label: string) => string
+    previewUnavailable: string
     embeddedImage: string
     chat: string
+    openSourceChat: (label: string) => string
     copyUrl: string
     copyPath: string
   }

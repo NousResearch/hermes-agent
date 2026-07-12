@@ -2910,6 +2910,31 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+    # 4. A user redirect can follow an interrupted tool-result tail in the
+    # canonical transcript. Keep that durable transcript free of synthetic
+    # assistant prose, but close the sequence in this per-request copy so
+    # strict providers receive ``tool → assistant → user`` rather than
+    # ``tool → user`` (#48879).
+    closed_tool_tails: List[Dict[str, Any]] = []
+    inserted_closures = 0
+    for msg in messages:
+        if (
+            msg.get("role") == "user"
+            and closed_tool_tails
+            and closed_tool_tails[-1].get("role") == "tool"
+        ):
+            closed_tool_tails.append({
+                "role": "assistant",
+                "content": "Operation interrupted.",
+            })
+            inserted_closures += 1
+        closed_tool_tails.append(msg)
+    if inserted_closures:
+        messages = closed_tool_tails
+        _ra().logger.debug(
+            "Pre-call sanitizer: closed %d interrupted tool-result tail(s)",
+            inserted_closures,
+        )
     return messages
 
 

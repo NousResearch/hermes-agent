@@ -5252,13 +5252,14 @@ def refresh_agent_mcp_tools(
     swap).
 
     Crucially it is **additive-preserving**: ``get_tool_definitions`` returns
-    only the registry-derived tools, but ``agent_init`` appends two further
+    only the registry-derived tools, but ``agent_init`` appends further
     families directly onto ``agent.tools`` *after* that — external
-    memory-provider tools (mem0/honcho/…) and context-engine tools
-    (``lcm_*``).  A naive ``agent.tools = get_tool_definitions(...)`` would
-    silently DELETE those.  So after rebuilding the registry set we re-run the
-    same post-build injectors ``agent_init`` used, reconstructing the full
-    surface.  The new ``(tools, valid_tool_names)`` pair is published together
+    memory-provider tools (mem0/honcho/…), context-engine tools
+    (``lcm_*``), and the private mode router. A naive
+    ``agent.tools = get_tool_definitions(...)`` would
+    silently DELETE those. So after rebuilding the registry set we re-run the
+    shared post-build injector, reconstructing and canonicalizing the full
+    surface. The new ``(tools, valid_tool_names)`` pair is published together
     under ``_agent_tools_lock`` so a concurrent reader never sees a
     cross-attribute half-swap.
 
@@ -5317,12 +5318,8 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
-    # Preserve private operational schemas when rebuilding the registry-derived
-    # snapshot. A colliding plugin schema is replaced by the canonical local one.
-    from agent.research_mode_tool import inject_research_mode_tool
-    new_defs = inject_research_mode_tool(
-        new_defs, enabled=bool(getattr(agent, "_mode_router_enabled", False)),
-    )
+    # The shared post-build helper also canonicalizes private operational
+    # schemas after every provider family has been appended.
     new_names = {t["function"]["name"] for t in new_defs}
 
     # Single atomic read-diff-publish so the returned ``added`` is consistent
@@ -5359,13 +5356,15 @@ def refresh_agent_mcp_tools(
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
-    """Append memory-provider and context-engine tools onto staged locals.
+    """Rebuild every non-registry tool family onto staged locals.
 
     Mirrors the post-``get_tool_definitions`` injection in ``agent_init`` so a
     snapshot rebuild reconstructs the FULL tool surface, not just the
     registry-derived subset. Operates ONLY on the caller's staged ``tools_list``
     / ``name_set`` (never the live agent attributes) so the rebuild stays atomic.
-    Idempotent (skips names already present) and fail-soft.
+    Memory/context injection is idempotent (skips names already present) and
+    fail-soft. The canonical mode router is then injected last when enabled;
+    disabled mode remains an identity-preserving no-op.
 
     Returns the set of context-engine routing names actually appended by THIS
     rebuild — matching ``agent_init``'s dedup behavior (a name already provided
@@ -5419,6 +5418,20 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
                     staged_engine_names.add(name)
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
+
+    # Private operational tools always come last. Slice assignment keeps the
+    # caller's staged list identity while replacing hostile collisions.
+    from agent.research_mode_tool import TOOL_NAME, inject_research_mode_tool
+    router_enabled = getattr(agent, "_mode_router_enabled", False) is True
+    routed_tools = inject_research_mode_tool(tools_list, enabled=router_enabled)
+    if routed_tools is not tools_list:
+        tools_list[:] = routed_tools
+    if router_enabled:
+        # A colliding context schema was replaced and must not retain dispatch
+        # ownership of the canonical local router.
+        staged_engine_names.discard(TOOL_NAME)
+    name_set.clear()
+    name_set.update(t["function"]["name"] for t in tools_list)
 
     return staged_engine_names
 

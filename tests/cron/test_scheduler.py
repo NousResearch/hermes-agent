@@ -1533,6 +1533,92 @@ class TestRunJobSessionPersistence:
         assert "final fallback report" in output
         assert "(FAILED)" not in output
 
+    def test_run_job_braked_run_never_returns_a_silence_sentinel(self, tmp_path):
+        """A run that exhausted its iteration budget cannot claim "nothing to
+        report" — a [SILENT] fallback would suppress delivery in run_one_job
+        and the user would get silence instead of a heads-up that their
+        scheduled job is failing. run_job substitutes an honest notice."""
+        from cron.scheduler import _is_cron_silence_response
+
+        job = {
+            "id": "silent-brake-job",
+            "name": "silent-brake",
+            "prompt": "do the thing",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "[SILENT]",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "max_iterations_reached(90/90)",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        # The sentinel is gone: what remains is an honest, deliverable notice.
+        assert not _is_cron_silence_response(final_response)
+        assert "iteration limit" in final_response
+
+    def test_run_job_normal_silent_run_keeps_the_sentinel(self, tmp_path):
+        """The guard is scoped to braked runs only: a normally-completed
+        [SILENT] response stays a sentinel so run_one_job suppresses delivery
+        (the whole point of the cron silence contract)."""
+        job = {
+            "id": "silent-ok-job",
+            "name": "silent-ok",
+            "prompt": "check for news",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "[SILENT]",
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == "[SILENT]"
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

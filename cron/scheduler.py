@@ -3249,6 +3249,23 @@ def run_job(
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+        # A run that exhausted its iteration budget cannot credibly claim
+        # "nothing to report": letting a silence sentinel through here would
+        # suppress delivery in run_one_job and the user would get SILENCE
+        # instead of a heads-up that their scheduled job is failing. Substitute
+        # a plain honest notice so a braked run is always delivered.
+        if max_iteration_summary and _is_cron_silence_response(final_response):
+            logger.warning(
+                "Job '%s': iteration-limit fallback response was a silence "
+                "sentinel — substituting an honest failure notice instead of "
+                "suppressing delivery",
+                job_name,
+            )
+            final_response = (
+                "This scheduled job hit its iteration limit before finishing and "
+                "did not produce a usable report — something in it is likely "
+                "failing repeatedly and needs a look."
+            )
         # Cron silence on abnormal empty turns.  The turn-completion explainer
         # (#34452) replaces a blank/empty model turn with a "⚠️ No reply: …"
         # string so interactive surfaces (CLI/gateway) explain why the box is

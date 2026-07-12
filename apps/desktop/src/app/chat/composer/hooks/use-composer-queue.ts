@@ -220,8 +220,10 @@ export function useComposerQueue({
             attachments: entry.attachments,
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             fromQueue: true,
+            messageId: entry.id,
             sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
+            storedSessionId: drainQueueSessionKey,
+            submittedAt: entry.queuedAt
           })
         )
 

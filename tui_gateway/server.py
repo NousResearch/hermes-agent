@@ -1764,6 +1764,9 @@ def _compute_host_turn_frame(
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     display_kind: str | None = None,
+    *,
+    submitted_at: float | None = None,
+    message_id: str | None = None,
 ) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1791,6 +1794,8 @@ def _compute_host_turn_frame(
         "source": _session_source(session),
         "attached_images": attached_images,
         "queued_prompt_generation": queued_prompt_generation,
+        "submitted_at": submitted_at,
+        "message_id": message_id,
     }
 
 
@@ -1869,6 +1874,9 @@ def _submit_prompt_to_compute_host(
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     display_kind: str | None = None,
+    *,
+    submitted_at: float | None = None,
+    message_id: str | None = None,
 ) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(
@@ -1879,6 +1887,8 @@ def _submit_prompt_to_compute_host(
         image_paths=image_paths,
         queued_prompt_generation=queued_prompt_generation,
         display_kind=display_kind,
+        submitted_at=submitted_at,
+        message_id=message_id,
     )
 
     def _complete(done: dict) -> None:
@@ -7719,6 +7729,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # reactions — needs this instead.
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
+        if m.get("timestamp") is not None:
+            msg["timestamp"] = m["timestamp"]
+        source_message_id = m.get("message_id") or m.get("_source_message_id")
+        if source_message_id is not None:
+            msg["message_id"] = source_message_id
         if role == "user":
             invocation = _skill_scaffold_projection(content_text)
             if invocation:
@@ -7802,7 +7817,12 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(
+    session: dict,
+    text: Any,
+    *,
+    message_id: str | None = None,
+) -> None:
     now = time.time()
     session["inflight_turn"] = {
         "assistant": "",
@@ -7811,6 +7831,8 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
         "updated_at": now,
         "user": _inflight_text(text),
     }
+    if message_id is not None:
+        session["inflight_turn"]["message_id"] = message_id
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:
@@ -8048,6 +8070,9 @@ def _enqueue_prompt(
     text: Any,
     transport: Any,
     image_paths: list[str] | None = None,
+    *,
+    submitted_at: float | None = None,
+    message_id: str | None = None,
 ) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
@@ -8076,6 +8101,10 @@ def _enqueue_prompt(
     queued = {"text": text, "transport": transport}
     if image_paths:
         queued["image_paths"] = image_paths
+    if submitted_at is not None:
+        queued["submitted_at"] = submitted_at
+    if message_id is not None:
+        queued["message_id"] = message_id
     existing = session.get("queued_prompt")
     if (
         existing
@@ -8170,6 +8199,49 @@ def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
         session.pop("queued_prompts", None)
 
 
+def _has_prompt_message_id(session: dict, message_id: str) -> bool:
+    """Return whether a stable client message ID is already owned by a turn.
+
+    Callers hold ``history_lock``. The in-memory checks close the window before
+    early persistence, while the SessionDB check covers timeout/resume retries
+    after the original turn has completed.
+    """
+    inflight = session.get("inflight_turn")
+    if isinstance(inflight, dict) and inflight.get("message_id") == message_id:
+        return True
+
+    queued_items = [session.get("queued_prompt")]
+    pending = session.get("queued_prompts")
+    if isinstance(pending, list):
+        queued_items.extend(pending)
+    if any(
+        isinstance(item, dict) and item.get("message_id") == message_id
+        for item in queued_items
+    ):
+        return True
+
+    for item in session.get("history") or []:
+        if not isinstance(item, dict):
+            continue
+        source_id = (
+            item.get("platform_message_id")
+            or item.get("message_id")
+            or item.get("_source_message_id")
+        )
+        if source_id is not None and str(source_id) == message_id:
+            return True
+
+    agent = session.get("agent")
+    db = getattr(agent, "_session_db", None)
+    session_key = str(session.get("session_key") or "")
+    if db is not None and session_key and hasattr(db, "has_platform_message_id"):
+        try:
+            return bool(db.has_platform_message_id(session_key, message_id))
+        except Exception:
+            pass
+    return False
+
+
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     """Interrupt a busy turn without blocking the RPC reader or session lock.
 
@@ -8205,8 +8277,44 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
 
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    *,
+    submitted_at: float | None = None,
+    message_id: str | None = None,
+) -> None:
+    """Append one canonical source message to the busy-time FIFO.
+
+    ``queued_prompt`` remains the inspectable head slot for compatibility.
+    Later arrivals live in ``queued_prompts`` rather than being concatenated,
+    because text concatenation irreversibly destroys source boundaries. Each
+    item pins its own transport and optional source metadata until its turn is
+    drained.
+    """
+    queued = {"text": text, "transport": transport}
+    if submitted_at is not None:
+        queued["submitted_at"] = submitted_at
+    if message_id is not None:
+        queued["message_id"] = message_id
+
+    if session.get("queued_prompt"):
+        session.setdefault("queued_prompts", []).append(queued)
+    else:
+        session["queued_prompt"] = queued
+
+
 def _handle_busy_submit(
-    rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    queued: bool = False,
+    *,
+    submitted_at: float | None = None,
+    message_id: str | None = None,
 ) -> dict | None:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
@@ -8284,7 +8392,14 @@ def _handle_busy_submit(
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport, image_paths=image_paths)
+        _enqueue_prompt(
+            session,
+            text,
+            transport,
+            image_paths=image_paths,
+            submitted_at=submitted_at,
+            message_id=message_id,
+        )
         session["last_active"] = time.time()
 
     # Attachments need a separate model invocation. Queue them without
@@ -8303,12 +8418,15 @@ def _handle_busy_submit(
     return _ok(rid, {"status": "queued"})
 
 
-def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
-    """Fire a queued next-turn prompt if one is waiting and the session is idle.
 
-    Returns True if a queued prompt was dispatched (the caller should then skip
-    lower-priority follow-ups this cycle — the user's message wins). Mirrors the
-    claim-under-lock pattern used by the goal-continuation re-fire.
+
+def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
+    """Dispatch the FIFO head once when the session becomes idle.
+
+    Returns True after claiming an item, so the caller skips lower-priority
+    follow-ups for this cycle. The head is advanced under ``history_lock``;
+    synchronous dispatch failure restores the claimed item ahead of arrivals
+    that raced the failed attempt.
     """
     with session["history_lock"]:
         if session.get("_closing"):
@@ -8324,6 +8442,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         session["running"] = True
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
+    run_kwargs = {
+        key: queued[key]
+        for key in ("submitted_at", "message_id")
+        if queued.get(key) is not None
+    }
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
@@ -8355,10 +8478,13 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     queued["text"],
                     image_paths=queued["image_paths"],
                     queued_prompt_generation=queue_generation,
+                    **run_kwargs,
                 )
             else:
                 resp = _submit_prompt_to_compute_host(
-                    rid, sid, session, queued["text"], queued_prompt_generation=queue_generation
+                    rid, sid, session, queued["text"],
+                    queued_prompt_generation=queue_generation,
+                    **run_kwargs,
                 )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
@@ -8376,6 +8502,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     queued["text"],
                     image_paths=queued["image_paths"],
                     queued_prompt_generation=queue_generation,
+                    **run_kwargs,
                 )
             else:
                 _run_prompt_submit(
@@ -8384,6 +8511,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                     session,
                     queued["text"],
                     queued_prompt_generation=queue_generation,
+                    **run_kwargs,
                 )
     except Exception as exc:
         print(
@@ -8392,6 +8520,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             file=sys.stderr,
         )
         with session["history_lock"]:
+            next_queued = session.get("queued_prompt")
+            if next_queued:
+                session.setdefault("queued_prompts", []).insert(0, next_queued)
+            session["queued_prompt"] = queued
             session["running"] = False
         dispatch_failed = True
     if dispatch_failed:
@@ -8402,6 +8534,8 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         if drain_next:
             _drain_queued_prompt(rid, sid, session)
     return True
+
+
 
 
 def _inflight_snapshot(session: dict) -> dict | None:
@@ -9563,6 +9697,751 @@ def _serialize_subscription_preview(p) -> dict:
     }
 
 
+@method("subscription.preview")
+def _(rid, params: dict) -> dict:
+    """POST /api/billing/subscription/preview → serialized quote or typed error.
+
+    params: {subscription_type_id: str}. Chargeless effect quote. Requires
+    billing:manage (live Stripe calls + amounts), so a 403 → insufficient_scope
+    drives the device step-up exactly like the mutations.
+    """
+    from agent.subscription_view import subscription_change_preview_from_payload
+    from hermes_cli.nous_billing import BillingError, post_subscription_preview
+
+    tier_id = params.get("subscription_type_id")
+    if not tier_id:
+        return _ok(rid, {"ok": False, "error": "invalid_request", "message": "subscription_type_id is required"})
+    try:
+        preview = subscription_change_preview_from_payload(
+            post_subscription_preview(subscription_type_id=tier_id)
+        )
+        return _ok(rid, _serialize_subscription_preview(preview))
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("subscription.change")
+def _(rid, params: dict) -> dict:
+    """PUT /api/billing/subscription/pending-change → {ok, message} or typed error.
+
+    params: {subscription_type_id?: str, cancel?: bool}. Schedules a downgrade /
+    same-price change OR a cancellation at period end (chargeless). Requires
+    billing:manage.
+    """
+    from hermes_cli.nous_billing import BillingError, put_subscription_pending_change
+
+    cancel = bool(params.get("cancel"))
+    tier_id = params.get("subscription_type_id")
+    if not cancel and not tier_id:
+        return _ok(rid, {"ok": False, "error": "invalid_request", "message": "subscription_type_id or cancel is required"})
+    try:
+        result = put_subscription_pending_change(subscription_type_id=tier_id, cancel=cancel)
+        return _ok(rid, {"ok": True, "message": result.get("message"), "payload": result})
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("subscription.resume")
+def _(rid, params: dict) -> dict:
+    """DELETE /api/billing/subscription/pending-change → {ok, message} or typed error.
+
+    Clears a scheduled downgrade or cancellation (resume / undo). Chargeless, but it
+    re-enables recurring spend → requires billing:manage and honors the kill-switch.
+    """
+    from hermes_cli.nous_billing import BillingError, delete_subscription_pending_change
+
+    try:
+        result = delete_subscription_pending_change()
+        return _ok(rid, {"ok": True, "message": result.get("message"), "payload": result})
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("subscription.upgrade")
+def _(rid, params: dict) -> dict:
+    """POST /api/billing/subscription/upgrade → {ok, status, ...} or typed error.
+
+    params: {subscription_type_id: str, idempotency_key?: str}. The single money
+    route: prorate + charge the card on the subscription + flip the plan. SCA /
+    decline come back as status requires_action / payment_failed with a recovery_url
+    to finish in the portal. The idempotency key is minted if absent and echoed so
+    the TUI reuses it on retry of the SAME upgrade. Requires billing:manage.
+    """
+    from agent.billing_view import new_idempotency_key
+    from hermes_cli.nous_billing import BillingError, post_subscription_upgrade
+
+    tier_id = params.get("subscription_type_id")
+    if not tier_id:
+        return _ok(rid, {"ok": False, "error": "invalid_request", "message": "subscription_type_id is required"})
+    key = params.get("idempotency_key") or new_idempotency_key()
+    try:
+        result = post_subscription_upgrade(subscription_type_id=tier_id, idempotency_key=key)
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "status": result.get("status"),
+                "target_tier_name": result.get("targetTierName"),
+                "recovery_url": result.get("recoveryUrl"),
+                "reason": result.get("reason"),
+                "idempotency_key": key,
+            },
+        )
+    except BillingError as exc:
+        env = _serialize_billing_error(exc)
+        env["idempotency_key"] = key  # so the TUI can reuse on retry
+        return _ok(rid, env)
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), "idempotency_key": key})
+
+
+
+@method("billing.charge")
+def _(rid, params: dict) -> dict:
+    """POST /api/billing/charge → {ok, chargeId} or a typed error envelope.
+
+    params: {amount_usd: str|number, idempotency_key?: str}. If no key is
+    supplied, the server-side core mints a fresh one and returns it so the TUI can
+    reuse it on retry of the SAME purchase.
+    """
+    from hermes_cli.nous_billing import BillingError, post_charge
+    from agent.billing_view import new_idempotency_key
+
+    amount = params.get("amount_usd")
+    if amount is None:
+        return _ok(rid, {"ok": False, "error": "invalid_request", "message": "amount_usd is required"})
+    key = params.get("idempotency_key") or new_idempotency_key()
+    try:
+        result = post_charge(amount_usd=amount, idempotency_key=key)
+        return _ok(rid, {"ok": True, "charge_id": result.get("chargeId"), "idempotency_key": key})
+    except BillingError as exc:
+        env = _serialize_billing_error(exc)
+        env["idempotency_key"] = key  # so the TUI can reuse on retry
+        return _ok(rid, env)
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), "idempotency_key": key})
+
+
+@method("billing.charge_status")
+def _(rid, params: dict) -> dict:
+    """GET /api/billing/charge/{id} → {ok, status, ...} or typed error.
+
+    The poll. Caller drives the 2s/5-min cadence; this is a single status read.
+    """
+    from hermes_cli.nous_billing import BillingError, get_charge_status
+
+    charge_id = params.get("charge_id")
+    if not charge_id:
+        return _ok(rid, {"ok": False, "error": "invalid_charge_id", "message": "charge_id is required"})
+    try:
+        result = get_charge_status(charge_id)
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "status": result.get("status"),
+                "amount_usd": result.get("amountUsd"),
+                "settled_at": result.get("settledAt"),
+                "reason": result.get("reason"),
+            },
+        )
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("billing.auto_reload")
+def _(rid, params: dict) -> dict:
+    """PATCH /api/billing/auto-top-up → {ok:true} or typed error (Screen 2).
+
+    params: {enabled: bool, threshold: number, top_up_amount: number}.
+    """
+    from hermes_cli.nous_billing import BillingError, patch_auto_top_up
+
+    try:
+        enabled = bool(params.get("enabled"))
+        threshold = params.get("threshold")
+        top_up_amount = params.get("top_up_amount")
+        if threshold is None or top_up_amount is None:
+            return _ok(rid, {"ok": False, "error": "invalid_request", "message": "threshold and top_up_amount are required"})
+        patch_auto_top_up(enabled=enabled, threshold=threshold, top_up_amount=top_up_amount)
+        return _ok(rid, {"ok": True})
+    except BillingError as exc:
+        return _ok(rid, _serialize_billing_error(exc))
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc)})
+
+
+@method("billing.step_up")
+def _(rid, params: dict) -> dict:
+    """Run the lazy billing:manage step-up device flow → {ok, granted}.
+
+    Triggered by the TUI after a billing call returns error=insufficient_scope.
+    Returns granted:false when the server silently downscopes (non-admin / unticked).
+
+    Runs on the thread pool (in _LONG_HANDLERS): the device flow blocks for the
+    whole device-code lifetime (minutes), so it must not stall the main stdin loop.
+    The verification URL/code reach the TUI via an out-of-band ``billing.step_up.
+    verification`` event (a plain print would be dropped by the JSON-RPC stdout
+    pipe), and the browser is opened TUI-side via openExternalUrl — never with the
+    gateway's headless webbrowser.open (hence open_browser=False).
+    """
+    sid = params.get("session_id") or ""
+    try:
+        from hermes_cli.auth import step_up_nous_billing_scope
+        from hermes_cli.nous_billing import BillingError
+
+        def _on_verification(url: str, code: str) -> None:
+            _emit(
+                "billing.step_up.verification",
+                sid,
+                {"verification_url": url, "user_code": code},
+            )
+
+        granted = step_up_nous_billing_scope(
+            open_browser=False, on_verification=_on_verification
+        )
+        return _ok(rid, {"ok": True, "granted": bool(granted)})
+    except BillingError as exc:
+        # Route typed billing errors (e.g. session_revoked when the token expires
+        # mid-device-flow) through the shared spine like the other write handlers,
+        # so the TUI maps them to the right copy instead of a generic failure.
+        env = _serialize_billing_error(exc)
+        env["granted"] = False
+        return _ok(rid, env)
+    except Exception as exc:
+        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), "granted": False})
+
+
+@method("session.status")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    from hermes_constants import display_hermes_home
+
+    key = session.get("session_key") or params.get("session_id") or ""
+    agent = session.get("agent")
+    meta = {}
+    db = _get_db()
+    if db and key:
+        try:
+            meta = db.get_session(key) or {}
+        except Exception:
+            meta = {}
+
+    def _dt(value, fallback: datetime | None = None) -> datetime:
+        if value:
+            try:
+                return datetime.fromtimestamp(float(value))
+            except Exception:
+                pass
+        return fallback or datetime.now()
+
+    created = _dt(meta.get("started_at"))
+    updated = created
+    for field in ("updated_at", "last_updated_at", "last_activity_at"):
+        if meta.get(field):
+            updated = _dt(meta.get(field), created)
+            break
+
+    mirror = _metadata_mirror(session)
+    usage = _session_usage_snapshot(session)
+    provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
+    model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    project = _project_info_for_cwd(_display_session_cwd(session))
+    lines = [
+        "Hermes TUI Status",
+        "",
+        f"Session ID: {key}",
+        f"Path: {display_hermes_home()}",
+    ]
+    if project:
+        lines.append(f"Project: {project['name']}")
+    title = (meta.get("title") or "").strip()
+    if title:
+        lines.append(f"Title: {title}")
+    lines.extend(
+        [
+            f"Model: {model} ({provider})",
+            f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
+            f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
+            f"Tokens: {int(usage.get('total') or 0):,}",
+            f"Agent Running: {'Yes' if session.get('running') else 'No'}",
+        ]
+    )
+    return _ok(rid, {"output": "\n".join(lines)})
+
+
+@method("session.history")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    history = list(session.get("history", []))
+    db = _get_db()
+    if db is not None and session.get("session_key"):
+        try:
+            history = db.get_messages_as_conversation(
+                session["session_key"], include_ancestors=True
+            )
+        except Exception:
+            pass
+    return _ok(
+        rid,
+        {
+            "count": len(history),
+            "messages": _history_to_messages(history),
+        },
+    )
+
+
+@method("session.undo")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    # Reject during an in-flight turn.  If we mutated history while
+    # the agent thread is running, prompt.submit's post-run history
+    # write would either clobber the undo (version matches) or
+    # silently drop the agent's output (version mismatch, see below).
+    # Neither is what the user wants — make them /interrupt first.
+    if session.get("running"):
+        return _err(
+            rid, 4009, "session busy — /interrupt the current turn before /undo"
+        )
+    removed = 0
+    with session["history_lock"]:
+        history = session.get("history", [])
+        while history and history[-1].get("role") in {"assistant", "tool"}:
+            history.pop()
+            removed += 1
+        if history and history[-1].get("role") == "user":
+            history.pop()
+            removed += 1
+        if removed:
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+    return _ok(rid, {"removed": removed})
+
+
+@method("session.compress")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+    if _session_uses_compute_host(session):
+        sid = str(params.get("session_id") or "")
+        focus_topic = str(params.get("focus_topic", "") or "").strip()
+        command = "/compress" + (f" {focus_topic}" if focus_topic else "")
+        try:
+            ack = _send_compute_host_control(
+                sid,
+                route_name="session.compress",
+                command=command,
+                wait=True,
+                timeout=120.0,
+            )
+        except Exception as exc:
+            return _err(rid, 5019, f"compute-host compress failed: {exc}")
+        if ack.get("type") in {"control.error", "error"}:
+            return _err(rid, 4009, str(ack.get("message") or "compute-host compress failed"))
+        _apply_compute_host_metadata_mirror(session, ack)
+        host_result = ack.get("result")
+        if isinstance(host_result, dict):
+            # The host owns the isolated session's agent/history, so preserve
+            # its structured compression result verbatim. In particular this
+            # carries `status: aborted` and `summary.aborted`; flattening the
+            # old text-only acknowledgement made Desktop show aborted work as a
+            # success toast.
+            return _ok(rid, {**host_result, "turn_isolation": True})
+        host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
+        host_messages = _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else []
+        # `messages` is returned at top level for the desktop transcript
+        # replacement. Keep the host acknowledgement metadata, but do not send
+        # the same (potentially large) transcript a second time inside it.
+        host_ack = {key: value for key, value in ack.items() if key != "messages"}
+        return _ok(
+            rid,
+            {
+                "status": "compressed",
+                "turn_isolation": True,
+                "host_ack": host_ack,
+                "info": host_info,
+                "messages": host_messages,
+                "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {},
+            },
+        )
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if session.get("running"):
+        return _err(
+            rid, 4009, "session busy — /interrupt the current turn before /compress"
+        )
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
+
+    sid = params.get("session_id", "")
+    focus_topic = str(params.get("focus_topic", "") or "").strip()
+    try:
+        from agent.manual_compression_feedback import summarize_manual_compression
+        from agent.model_metadata import estimate_request_tokens_rough
+
+        with session["history_lock"]:
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+        before_count = len(before_messages)
+        _agent = session["agent"]
+        _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
+        _tools = getattr(_agent, "tools", None) or None
+        before_tokens = (
+            estimate_request_tokens_rough(
+                before_messages, system_prompt=_sys_prompt, tools=_tools
+            )
+            if before_count
+            else 0
+        )
+
+        if before_count >= 4:
+            focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+            _status_update(
+                sid,
+                "compressing",
+                f"⠋ compressing {before_count} messages "
+                f"(~{before_tokens:,} tok){focus_suffix}…",
+            )
+
+        try:
+            removed, usage = _compress_session_history(
+                session,
+                focus_topic,
+                approx_tokens=before_tokens,
+                before_messages=before_messages,
+                history_version=history_version,
+            )
+            with session["history_lock"]:
+                messages = list(session.get("history", []))
+            after_count = len(messages)
+            # Re-read system prompt + tools after compression — _compress_context
+            # may have rebuilt the system prompt (_cached_system_prompt=None).
+            _sys_prompt_after = (
+                getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            )
+            _tools_after = getattr(_agent, "tools", None) or _tools
+            after_tokens = (
+                estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=_sys_prompt_after,
+                    tools=_tools_after,
+                )
+                if after_count
+                else 0
+            )
+            agent = session["agent"]
+            _sync_session_key_after_compress(sid, session)
+            summary = summarize_manual_compression(
+                before_messages,
+                messages,
+                before_tokens,
+                after_tokens,
+                compression_state=getattr(agent, "context_compressor", None),
+            )
+            info = _session_info(agent, session)
+            _emit("session.info", sid, info)
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=True,
+            )
+            return _ok(
+                rid,
+                {
+                    "status": "aborted" if summary["aborted"] else "compressed",
+                    "removed": removed,
+                    "before_messages": before_count,
+                    "after_messages": after_count,
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "summary": summary,
+                    "usage": usage,
+                    "info": info,
+                    # Keep this identical to session.resume / session.history:
+                    # raw tool results can contain large or sensitive payloads
+                    # that belong in persisted history, not the transcript
+                    # replacement response.
+                    "messages": _history_to_messages(messages),
+                },
+            )
+        finally:
+            # Always clear the pinned compressing status so the bar
+            # reverts to neutral whether compaction succeeded, was a
+            # no-op, or raised.
+            _status_update(sid, "ready")
+    except CompressionLockHeld as e:
+        _status_update(sid, "ready")
+        from agent.manual_compression_feedback import (
+            describe_compression_lock_skip,
+        )
+        return _ok(rid, {
+            "compressed": False,
+            "lock_held": True,
+            "message": describe_compression_lock_skip(e.holder),
+        })
+    except Exception as e:
+        finalize_context_engine_compression_notification(
+            session["agent"],
+            committed=False,
+        )
+        return _err(rid, 5005, str(e))
+
+
+@method("session.save")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    if _session_uses_compute_host(session):
+        sid = str(params.get("session_id") or "")
+        try:
+            ack = _send_compute_host_control(
+                sid,
+                route_name="session.save",
+                wait=True,
+            )
+        except Exception as exc:
+            return _err(rid, 5011, f"compute-host session save failed: {exc}")
+        if ack.get("type") in {"control.error", "error"}:
+            return _err(rid, 5011, str(ack.get("message") or "compute-host session save failed"))
+        result = ack.get("result")
+        if not isinstance(result, dict):
+            return _err(rid, 5011, "compute-host session save returned an invalid response")
+        return _ok(rid, result)
+
+    agent = session["agent"]
+    # Mirror the classic CLI /save: snapshot under the Hermes profile home
+    # (~/.hermes/sessions/saved/) rather than the project/workspace CWD, and
+    # include the system prompt so the export matches the dashboard save.
+    saved_dir = get_hermes_home() / "sessions" / "saved"
+    try:
+        saved_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = saved_dir / f"hermes_conversation_{timestamp}.json"
+
+    with session["history_lock"]:
+        messages = list(session.get("history", []))
+
+    session_id = getattr(agent, "session_id", None) or session.get("session_key") or ""
+    # Prefer the agent's session_start datetime (matches the classic CLI export);
+    # fall back to the gateway session's created_at timestamp.
+    agent_start = getattr(agent, "session_start", None)
+    if isinstance(agent_start, datetime):
+        session_start = agent_start.isoformat()
+    else:
+        created_at = session.get("created_at")
+        session_start = (
+            datetime.fromtimestamp(created_at).isoformat()
+            if isinstance(created_at, (int, float))
+            else ""
+        )
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "model": getattr(agent, "model", ""),
+                    "session_id": session_id,
+                    "session_start": session_start,
+                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                    "messages": messages,
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+        return _ok(rid, {"file": str(path)})
+    except Exception as e:
+        return _err(rid, 5011, str(e))
+
+
+@method("session.close")
+def _(rid, params: dict) -> dict:
+    sid = params.get("session_id", "")
+    # Serialize only the ownership claim against session.resume / the orphan
+    # reaper. Finalization may run arbitrary plugin/agent cleanup and must not
+    # keep every unrelated session.resume waiting behind it.
+    with _session_resume_lock:
+        session = _pop_session_by_id(sid)
+    closed = _teardown_popped_session(session, end_reason="tui_close")
+    return _ok(rid, {"closed": closed})
+
+
+@method("session.branch")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    old_key = session["session_key"]
+    with session["history_lock"]:
+        history = [dict(msg) for msg in session.get("history", [])]
+    if not history:
+        return _err(rid, 4008, "nothing to branch — send a message first")
+    new_key = _new_session_key()
+    new_sid = uuid.uuid4().hex[:8]
+    source = _session_source(session)
+    lease, limit_message = _claim_active_session_slot(
+        new_key, live_session_id=new_sid, surface=source
+    )
+    if limit_message is not None:
+        return _err(rid, 4090, limit_message)
+    branch_name = params.get("name", "")
+    try:
+        if branch_name:
+            title = branch_name
+        else:
+            current = db.get_session_title(old_key) or "branch"
+            title = (
+                db.get_next_title_in_lineage(current)
+                if hasattr(db, "get_next_title_in_lineage")
+                else f"{current} (branch)"
+            )
+        db.create_session(
+            new_key,
+            source=source,
+            model=_resolve_model(),
+            # Stable _branched_from marker so list_sessions_rich() keeps the
+            # branch visible in /resume and /sessions. The TUI branch leaves
+            # the parent live (no end_reason='branched'), so the legacy
+            # end_reason heuristic never matches it — the marker is the only
+            # thing that surfaces TUI branches. See issue #20856.
+            model_config={"_branched_from": old_key},
+            parent_session_id=old_key,
+            cwd=_session_cwd(session),
+        )
+        for msg in history:
+            db.append_message(
+                session_id=new_key,
+                role=msg.get("role", "user"),
+                content=msg.get("content"),
+                timestamp=msg.get("timestamp"),
+            )
+        db.set_session_title(new_key, title)
+    except Exception as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 5008, f"branch failed: {e}")
+    try:
+        tokens = _set_session_context(new_key)
+        try:
+            agent = _make_agent(
+                new_sid,
+                new_key,
+                session_id=new_key,
+                platform_override=source,
+            )
+        finally:
+            _clear_session_context(tokens)
+        _init_session(
+            new_sid,
+            new_key,
+            agent,
+            list(history),
+            cols=session.get("cols", 80),
+            source=source,
+        )
+        if new_sid in _sessions:
+            _sessions[new_sid]["active_session_lease"] = lease
+    except Exception as e:
+        if lease is not None:
+            lease.release()
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
+
+
+@method("session.interrupt")
+def _(rid, params: dict) -> dict:
+    # Keypress barge-in: stopping the turn also silences its streaming TTS
+    # (voice is process-global, so no per-session scoping is needed).
+    _tts_stream_stop()
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    if _session_uses_compute_host(session):
+        sid = str(params.get("session_id") or "")
+        if session.get("running"):
+            try:
+                _get_compute_host_supervisor().interrupt(sid, request_id=f"interrupt-{rid}")
+            except Exception as exc:
+                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+        with session["history_lock"]:
+            session["_turn_cancel_requested"] = True
+            session["queued_prompt"] = None
+        _clear_pending(sid)
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        except Exception:
+            pass
+        return _ok(rid, {"status": "interrupted", "turn_isolation": True})
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    # Safety net: if the turn's run thread is already gone but `running` stayed
+    # stuck (a crash/desync that skipped the run loop's `finally`), force-clear it
+    # so the session can't be permanently bricked at 4009 "session busy" — every
+    # send/restore/resume would otherwise reject until a full backend restart.
+    # Always tell the agent to interrupt when the session claims a run is active:
+    # stale flags are cleared below, and fresh turns clear the interrupt flag at
+    # entry. This keeps a stale/missing thread handle from making Stop a no-op.
+    run_thread = session.get("_run_thread")
+    run_thread_alive = run_thread is not None and run_thread.is_alive()
+    should_interrupt = bool(session.get("running"))
+    if should_interrupt and hasattr(session["agent"], "interrupt"):
+        session["agent"].interrupt()
+    with session["history_lock"]:
+        session["_turn_cancel_requested"] = True
+        session["queued_prompt"] = None
+        session["queued_prompts"] = []
+    if not run_thread_alive:
+        with session["history_lock"]:
+            if session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+
+    # Stop = stop the TURN (cooperative interrupt above also kills the in-flight
+    # foreground subprocess). Background processes the agent started (dev servers,
+    # watchers) are intentionally left running — kill those individually with the
+    # "x" on the task row (process.kill). Don't reap them here.
+    # Scope the pending-prompt release to THIS session.  A global
+    # _clear_pending() would collaterally cancel clarify/sudo/secret
+    # prompts on unrelated sessions sharing the same tui_gateway
+    # process, silently resolving them to empty strings.
+    _clear_pending(params.get("session_id", ""))
+    try:
+        from tools.approval import resolve_gateway_approval
+
+        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+    except Exception:
+        pass
+    return _ok(rid, {"status": "interrupted"})
+
+
 # ── Delegation: subagent tree observability + controls ───────────────
 # Powers the TUI's /agents overlay (see ui-tui/src/components/agentsOverlay).
 # The registry lives in tools/delegate_tool — these handlers are thin
@@ -10639,6 +11518,8 @@ def _run_prompt_submit(
     session: dict,
     text: Any,
     *,
+    submitted_at: float | None = None,
+    message_id: str | None = None,
     display_kind: str | None = None,
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
@@ -10659,11 +11540,15 @@ def _run_prompt_submit(
             session["attached_images"] = []
         else:
             images = list(image_paths)
+        if submitted_at is not None:
+            session["_pending_submitted_at"] = submitted_at
+        if message_id is not None:
+            session["_pending_message_id"] = message_id
         inflight = session.get("inflight_turn")
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
-            _start_inflight_turn(session, text)
+            _start_inflight_turn(session, text, message_id=message_id)
         agent = session["agent"]
         if hasattr(agent, "clear_interrupt"):
             try:
@@ -10968,6 +11853,16 @@ def _run_prompt_submit(
             # the same value is a no-op.
             try:
                 _run_params = inspect.signature(agent.run_conversation).parameters
+                _accepts_kwargs = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in _run_params.values()
+                )
+                if _accepts_kwargs or "persist_user_timestamp" in _run_params:
+                    if submitted_at is not None:
+                        run_kwargs["persist_user_timestamp"] = submitted_at
+                if _accepts_kwargs or "persist_user_message_id" in _run_params:
+                    if message_id is not None:
+                        run_kwargs["persist_user_message_id"] = message_id
             except (TypeError, ValueError):
                 _run_params = {}
             if "task_id" in _run_params:

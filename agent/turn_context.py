@@ -437,6 +437,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    persist_user_message_id: Optional[str] = None,
     *,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
@@ -656,6 +657,8 @@ def build_turn_context(
     # CLI input is stamped when staged. Gateway input may carry the platform
     # event time. Preserve either value and cover any legacy unstamped handoff.
     stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
+    if persist_user_message_id is not None:
+        user_msg["_source_message_id"] = persist_user_message_id
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
@@ -718,6 +721,7 @@ def build_turn_context(
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             should_review_memory = True
             agent._turns_since_memory = 0
+
 
     # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
     # and notify the host so it can play hearts. Token-free, never touches the

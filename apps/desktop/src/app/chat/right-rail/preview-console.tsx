@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { PanelBottom, Send, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify } from '@/store/notifications'
@@ -74,6 +75,9 @@ interface ConsoleRowProps {
 }
 
 function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: ConsoleRowProps) {
+  const { t } = useI18n()
+  const copy = t.preview.console
+
   return (
     <div
       className={cn(
@@ -81,7 +85,7 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
         selected && 'border-border/60 bg-accent/40'
       )}
     >
-      <Tip label={selected ? 'Deselect entry' : 'Select entry'}>
+      <Tip label={selected ? copy.deselect : copy.select}>
         <button
           className={cn(
             'mt-0.5 text-left uppercase opacity-70 transition-colors hover:opacity-100',
@@ -108,13 +112,13 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
         <CopyButton
           appearance="inline"
           className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          errorMessage="Could not copy console output"
+          errorMessage={copy.copyFailed}
           iconClassName="size-3"
-          label="Copy this entry"
+          label={copy.copyEntry}
           showLabel={false}
           text={copyText}
         />
-        <Tip label="Send this entry to chat">
+        <Tip label={copy.sendEntry}>
           <button
             className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             onClick={onSend}
@@ -129,12 +133,13 @@ function ConsoleRow({ copyText, log, onSend, onToggleSelect, selected }: Console
 }
 
 export function PreviewConsoleTitlebarIcon({ consoleState }: { consoleState: PreviewConsoleState }) {
+  const { t } = useI18n()
   const logCount = useStore(consoleState.$logCount)
 
   return (
     <>
       <PanelBottom />
-      {logCount > 0 && <span className="sr-only">{logCount} console messages</span>}
+      {logCount > 0 && <span className="sr-only">{t.preview.console.messages(logCount)}</span>}
     </>
   )
 }
@@ -152,6 +157,8 @@ export function PreviewConsolePanel({
   consoleState,
   startConsoleResize
 }: PreviewConsolePanelProps) {
+  const { t } = useI18n()
+  const copy = t.preview.console
   const consoleHeight = useStore(consoleState.$height)
   const logs = useStore(consoleState.$logs)
   const selectedLogIds = useStore(consoleState.$selectedLogIds)
@@ -188,14 +195,14 @@ export function PreviewConsolePanel({
       return
     }
 
-    const block = ['Preview console:', '```', ...entries.map(formatLogLine), '```'].join('\n')
+    const block = [copy.promptHeader, '```', ...entries.map(formatLogLine), '```'].join('\n')
 
     requestComposerInsert(block, { mode: 'block', target: 'main' })
     consoleState.clearSelection()
     notify({
       kind: 'success',
-      title: 'Sent to chat',
-      message: `${entries.length} log entr${entries.length === 1 ? 'y' : 'ies'} added to composer`
+      title: copy.sentTitle,
+      message: copy.sentMessage(entries.length)
     })
   }
 
@@ -205,7 +212,7 @@ export function PreviewConsolePanel({
       style={{ '--preview-console-height': `${consoleHeight}px` } as CSSProperties}
     >
       <div
-        aria-label="Resize preview console"
+        aria-label={copy.resize}
         className="group absolute inset-x-0 -top-1 z-1 h-2 cursor-row-resize"
         onDoubleClick={() => consoleState.setHeight(CONSOLE_HEADER_HEIGHT)}
         onPointerDown={startConsoleResize}
@@ -216,10 +223,10 @@ export function PreviewConsolePanel({
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-border/50 px-2">
         <div className="flex items-center gap-2 text-[0.6875rem] font-medium text-muted-foreground">
           <PanelBottom className="size-3.5" />
-          Preview Console
+          {copy.title}
           {selectedLogIds.size > 0 && (
             <span className="rounded-full bg-muted px-1.5 py-px text-[0.5625rem] text-muted-foreground">
-              {selectedLogIds.size} selected
+              {copy.selected(selectedLogIds.size)}
             </span>
           )}
         </div>
@@ -231,18 +238,18 @@ export function PreviewConsolePanel({
             type="button"
           >
             <Send className="size-3" />
-            Send to chat
+            {copy.sendToChat}
           </button>
           <CopyButton
             appearance="inline"
             className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
             disabled={sendableLogs.length === 0}
-            errorMessage="Could not copy console output"
+            errorMessage={copy.copyFailed}
             iconClassName="size-3"
-            label={visibleSelection.length > 0 ? 'Copy selected to clipboard' : 'Copy all to clipboard'}
+            label={visibleSelection.length > 0 ? copy.copySelected : copy.copyAll}
             text={() => formatConsoleEntries(sendableLogs)}
           >
-            Copy
+            {copy.copy}
           </CopyButton>
           <button
             className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
@@ -251,7 +258,7 @@ export function PreviewConsolePanel({
             type="button"
           >
             <Trash2 className="size-3" />
-            Clear
+            {copy.clear}
           </button>
         </div>
       </div>
@@ -275,7 +282,7 @@ export function PreviewConsolePanel({
             )
           })
         ) : (
-          <div className="py-2 text-muted-foreground/70">No console messages yet.</div>
+          <div className="py-2 text-muted-foreground/70">{copy.empty}</div>
         )}
       </div>
     </div>

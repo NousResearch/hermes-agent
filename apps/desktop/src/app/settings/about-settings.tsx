@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
-import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Sparkles } from '@/lib/icons'
+import { CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   $desktopVersion,
@@ -12,10 +14,12 @@ import {
   $updateStatus,
   checkUpdates,
   openUpdatesWindow,
-  refreshDesktopVersion
+  refreshDesktopVersion,
+  startActiveUpdate
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 
@@ -92,9 +96,7 @@ export function AboutSettings() {
   return (
     <SettingsContent>
       <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
-        <span className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Sparkles className="size-8" />
-        </span>
+        <BrandMark className="size-16" />
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -116,7 +118,7 @@ export function AboutSettings() {
         >
           <div className="flex items-start gap-2">
             {statusTone === 'available' ? (
-              <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
+              <Codicon className="mt-0.5 size-4 shrink-0 text-primary" name="cloud-download" size="1rem" />
             ) : statusTone === 'error' ? null : (
               <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
             )}
@@ -141,9 +143,14 @@ export function AboutSettings() {
             </Button>
 
             {behind > 0 && supported && !applying && (
-              <Button onClick={() => openUpdatesWindow()} size="sm">
-                {a.seeWhatsNew}
-              </Button>
+              <>
+                <Button onClick={() => startActiveUpdate()} size="sm">
+                  {a.updateNow}
+                </Button>
+                <Button onClick={() => openUpdatesWindow()} size="sm" variant="textStrong">
+                  {a.seeWhatsNew}
+                </Button>
+              </>
             )}
 
             <Button asChild className="ml-auto" size="sm" variant="text">
@@ -168,6 +175,8 @@ export function AboutSettings() {
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
           title={a.automaticUpdates}
         />
+
+        <UninstallSection />
       </div>
     </SettingsContent>
   )

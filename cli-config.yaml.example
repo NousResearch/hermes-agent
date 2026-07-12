@@ -13,7 +13,7 @@ model:
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
-  #   "nous"         - Nous Portal OAuth (requires: hermes login)
+  #   "nous"         - Nous Portal OAuth (requires: hermes auth add nous)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
@@ -72,6 +72,39 @@ model:
   #
 # max_tokens: 8192
 
+  # ── Custom request headers (optional) ─────────────────────────────────────
+  #
+  # default_headers: extra HTTP headers sent on every request to an
+  #   OpenAI-compatible endpoint. User values take precedence over the
+  #   provider/SDK defaults, so this is the supported way to override the
+  #   OpenAI Python SDK's identifying headers (User-Agent: OpenAI/Python ...,
+  #   X-Stainless-*) when a custom provider sits behind a gateway/WAF that
+  #   rejects them — e.g. an upstream that returns "502 Upstream access
+  #   forbidden" for the SDK default User-Agent but accepts a plain one.
+  #   Applies on the OpenAI wire only (not native Anthropic / Bedrock).
+  #
+  # default_headers:
+  #   User-Agent: "curl/8.7.1"
+  #
+  # extra_headers: accepted as an alias of default_headers (merged, with
+  #   extra_headers winning when both are set) — matches the per-provider
+  #   extra_headers key below.
+  #
+  # Per-provider variant: named providers / custom_providers entries accept an
+  # extra_headers dict scoped to that endpoint only — for reverse proxies,
+  # gateways, or custom auth (e.g. Cloudflare Access service tokens).
+  # Merged onto SDK/provider defaults with the entry's values winning.
+  # Header values are treated as secrets and are never logged.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "https://llm.internal.example.com/v1"
+  #     key_env: "MY_PROXY_API_KEY"
+  #     extra_headers:
+  #       CF-Access-Client-Id: "xxxx.access"
+  #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
+  #       X-Client-Name: "hermes-agent"
+
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
 # and per-model exceptions.
@@ -84,7 +117,9 @@ model:
 # ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
 # wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
-# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
+# HERMES_API_CALL_STALE_TIMEOUT=90s, native Anthropic 900s). The
+# implicit non-stream stale detector is auto-disabled for local endpoints
+# and can scale upward for very large contexts.
 #
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
@@ -150,6 +185,16 @@ model:
 #
 # worktree: true    # Always create a worktree when in a git repo
 # worktree: false   # Default — only create when -w flag is passed
+#
+# By default a new worktree branches from the freshly-fetched remote tip
+# (the current branch's upstream, else the remote's default branch) so it
+# starts current with the project instead of from the local clone's
+# (possibly stale) HEAD. Set worktree_sync: false to branch from local HEAD
+# instead — useful when offline or when you deliberately want the clone's
+# exact current state as the base.
+#
+# worktree_sync: true   # Default — branch from the fetched remote tip
+# worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -168,6 +213,11 @@ terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
   timeout: 180
+  # HOME policy for tool subprocesses:
+  #   auto    - default: host uses your real HOME; containers use HERMES_HOME/home
+  #   real    - force your real OS-user HOME
+  #   profile - force HERMES_HOME/home for strict per-profile CLI config isolation
+  home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
@@ -359,8 +409,14 @@ compression:
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
+  # Models with context windows below 512K are floored at 0.75 (raise-only) so
+  # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
-  
+
+  # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
+  # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
+  codex_gpt55_autoraise: true
+
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
   # Summary output is separately capped at 12K tokens (Gemini output limit).
@@ -371,6 +427,14 @@ compression:
   # Higher values keep more recent conversation intact at the cost of more aggressive
   # compression of older turns.
   protect_last_n: 20
+
+  # Codex app-server (codex CLI runtime) thread-compaction mode. The codex
+  # agent owns the real thread context on this runtime, so Hermes' summarizer
+  # cannot shrink it — compaction goes through the app server instead.
+  #   native = let Codex decide when to compact its own thread (default)
+  #   hermes = let Hermes threshold trigger Codex thread/compact/start
+  #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
+  codex_app_server_auto: native
 
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
@@ -401,7 +465,8 @@ prompt_caching:
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
-# browser screenshot analysis, web page summarization, and context compression.
+# browser screenshot analysis, web page summarization, TTS audio-tag insertion,
+# and context compression.
 #
 # By default these use Gemini Flash via OpenRouter or Nous Portal and are
 # auto-detected from your credentials.  You do NOT need to change anything
@@ -419,7 +484,7 @@ prompt_caching:
 # Provider options:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
-#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "nous"       - Force Nous Portal (requires: hermes auth add nous)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
@@ -446,6 +511,12 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #
+#   # Gemini 3.1 TTS hidden audio-tag insertion
+#   tts_audio_tags:
+#     provider: "auto"       # empty model = your main chat model
+#     model: ""
+#     timeout: 30
+#
 #   # Session search — summarizes matching past sessions
 #   session_search:
 #     provider: "auto"
@@ -457,6 +528,10 @@ prompt_caching:
 #                           # reasoning controls:
 #                           # extra_body:
 #                           #   enable_thinking: false
+#                           # Some vLLM/Qwen deployments expect this nested:
+#                           # extra_body:
+#                           #   chat_template_kwargs:
+#                           #     enable_thinking: false
 
 # =============================================================================
 # Persistent Memory
@@ -514,11 +589,55 @@ session_reset:
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
   at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
 
+# Maximum number of simultaneously active chat sessions across CLI, TUI,
+# dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
+# unlimited concurrent sessions. When the limit is reached, new sessions get a
+# clean error while existing active sessions keep their normal behavior. This
+# top-level key takes precedence over gateway.max_concurrent_sessions. The cap
+# is a best-effort single-host/profile runtime guard; Hermes fails open if the
+# local runtime lease registry cannot be read or locked.
+max_concurrent_sessions: null
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API Server — per-client model routing
+# ─────────────────────────────────────────────────────────────────────────────
+# Route different API clients to different models/providers on a single
+# Hermes deployment.  Clients choose a backend by sending a specific string
+# as the OpenAI ``model`` field.  Unmapped model values fall back to the
+# global model configured in the ``model:`` section above, and an explicit
+# session /model override always wins over a route.
+#
+# Configure via the ``platforms.api_server.extra.model_routes`` gateway
+# config block:
+#
+#   platforms:
+#     api_server:
+#       enabled: true
+#       extra:
+#         key: "your-api-server-secret"
+#         model_routes:
+#           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
+#           minimax-m2:
+#             model: "minimax/minimax-m1"
+#             provider: "openrouter"          # optional — overrides global provider
+#             # api_key: "sk-..."             # optional — per-route UPSTREAM provider
+#             #                                 key (NOT caller auth; never logged)
+#             # base_url: "https://..."       # optional — per-route base URL
+#           # GPT clients keep their own alias
+#           gpt-5:
+#             model: "openai/gpt-5"
+#             provider: "openrouter"
+#
+# Configured aliases are automatically listed by GET /v1/models so clients
+# can discover them without manual coordination.  Caller authentication is
+# unchanged: every request still authenticates with the global API server
+# key (``extra.key`` / API_SERVER_KEY).
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
@@ -575,10 +694,10 @@ agent:
   # gateway_timeout_warning: 900
 
   # Graceful drain timeout for gateway stop/restart (seconds).
-  # The gateway stops accepting new work, waits for in-flight agents to
-  # finish, then interrupts anything still running after this timeout.
-  # 0 = no drain, interrupt immediately.
-  # restart_drain_timeout: 60
+  # Default 0 = no drain: a restart interrupts in-flight agents immediately,
+  # cleans up, and exits. Set a positive value only if you want a grace
+  # window on /restart, and keep it well under systemd's TimeoutStopSec.
+  # restart_drain_timeout: 0
 
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
@@ -586,7 +705,34 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # After the agent edits code without fresh passing verification, nudge it to
+  # verify before finishing. The default "auto" enables it on interactive
+  # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
+  # it on conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # verification summary would reach a human as chat noise. Set true or false to
+  # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
+  # verify_on_stop: auto
+
+  # Standing operator instructions for the coding posture (when Hermes is in a
+  # code workspace). Appended to the coding brief as an extra system block, so
+  # you can pin project-wide workflow rules without editing the shipped brief.
+  # Accepts a string or a list of strings. Takes effect next session.
+  # coding_instructions:
+  #   - "For UI work, don't run tsc/lint until I approve the look."
+  #   - "Clean the diff before you commit and push."
+
+  # When verify-on-stop finds edited code without fresh verification evidence,
+  # append guidance for creative UI work (avoid broad tsc/lint/test before visual
+  # approval) and clean-diff expectations. Set false to keep that nudge terse.
+  # verify_guidance: true
+
+  # A `pre_verify` hook (plugin or shell, see Event Hooks docs) can keep the
+  # agent going one more turn to verify/clean before finishing. This caps how
+  # many times one turn may be nudged to continue, so a hook can't trap the loop.
+  # Default 3.
+  # max_verify_nudges: 3
+
   # Enable verbose logging
   verbose: false
   
@@ -689,6 +835,24 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
+#       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
+#       command_menu:
+#         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
+#         # all built-in commands plus common skill commands stay visible
+#         # while remaining under Telegram's payload-size limit. Clamped 1..100.
+#         max_commands: 60
+#         # prepend = user priority first, then Hermes defaults
+#         # append  = Hermes defaults first, then user priority
+#         # replace = only the list below defines priority
+#         priority_mode: prepend
+#         priority:
+#           - my_plugin_command
+#   webhook:
+#     extra:
+#       # Route scripts default to a 30 second timeout. Scripts must live under
+#       # the active profile's scripts directory and receive webhook JSON on stdin.
+#       script_timeout_seconds: 30
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -719,7 +883,6 @@ platform_toolsets:
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
-#   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
@@ -734,7 +897,7 @@ platform_toolsets:
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 #   all          - Everything available
 #
 #   web          - Web search and content extraction (web_search, web_extract)
@@ -745,7 +908,6 @@ platform_toolsets:
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
 #   skills       - Load skill documents (skills_list, skill_view)
-#   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
@@ -754,7 +916,7 @@ platform_toolsets:
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 
 # NOTE: The top-level "toolsets" key is deprecated and ignored.
 # Tool configuration is managed per-platform via platform_toolsets above.
@@ -767,7 +929,7 @@ platform_toolsets:
 # =============================================================================
 # Connect to external MCP servers to add tools from the MCP ecosystem.
 # Each server's tools are automatically discovered and registered.
-# See docs/mcp.md for full documentation.
+# See website/docs/user-guide/features/mcp.md for full documentation.
 #
 # Stdio servers (spawn a subprocess):
 #   command: the executable to run
@@ -781,6 +943,10 @@ platform_toolsets:
 # Optional per-server settings:
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
+#   keepalive_interval: liveness ping cadence in seconds (default: 180).
+#     Lower it below the server's session TTL for servers that expire idle
+#     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
+#     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
 #
 # mcp_servers:
 #   time:
@@ -811,6 +977,22 @@ platform_toolsets:
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
+
+# =============================================================================
+# Text-to-Speech
+# =============================================================================
+# TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
+# Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
+# can use a hidden auxiliary rewrite pass to insert expressive square-bracket
+# audio tags into the TTS script without showing tags in chat.
+#
+# tts:
+#   provider: "gemini"
+#   gemini:
+#     model: "gemini-3.1-flash-tts-preview"
+#     voice: "Kore"
+#     audio_tags: false
+#     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)
@@ -871,7 +1053,7 @@ delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.
-  # max_spawn_depth: 1                        # Delegation tree depth (floor 1, no ceiling; default: 1 = flat).
+  # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
                                               # Raise to 2 to allow workers to spawn their own subagents.
                                               # Requires role="orchestrator" on intermediate agents.
   # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
@@ -913,6 +1095,7 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
@@ -1125,6 +1308,27 @@ display:
 
 
 # =============================================================================
+# Update Behavior
+# =============================================================================
+updates:
+  # Create a full HERMES_HOME zip before every `hermes update`.
+  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
+  # Off by default because large homes can add minutes to every update.
+  pre_update_backup: false
+
+  # Number of pre-update backup zips to retain.
+  backup_keep: 5
+
+  # What non-interactive updates do with local source edits in the Hermes repo.
+  # Interactive terminal updates always prompt before restoring the autostash.
+  #
+  #   stash   - auto-stash before pull, then auto-restore after success (default)
+  #   discard - drop the update-created stash after success; use only on managed
+  #             installs where local source edits should not persist
+  non_interactive_local_changes: "stash"
+
+
+# =============================================================================
 # Web Dashboard
 # =============================================================================
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
@@ -1165,3 +1369,80 @@ display:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+#
+# -----------------------------------------------------------------------------
+# Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
+# Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the
+# nous block above when gating the dashboard with your own identity provider.
+# Each setting can be overridden by an environment variable:
+#
+#   dashboard.oauth.self_hosted.issuer         <-  HERMES_DASHBOARD_OIDC_ISSUER
+#   dashboard.oauth.self_hosted.client_id      <-  HERMES_DASHBOARD_OIDC_CLIENT_ID
+#   dashboard.oauth.self_hosted.scopes         <-  HERMES_DASHBOARD_OIDC_SCOPES
+#   dashboard.oauth.self_hosted.client_secret  <-  HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#
+# dashboard:
+#   oauth:
+#     provider: self-hosted
+#     self_hosted:
+#       issuer: "https://auth.example.com/application/o/hermes/"  # required
+#       client_id: "hermes-dashboard"                             # required
+#       scopes: "openid profile email"                            # optional
+#
+#       # OPTIONAL — set ONLY if your IDP registered the client as
+#       # *confidential* (Authentik / Keycloak often default to this). When
+#       # set, Hermes authenticates the client at the token endpoint
+#       # (client_secret_basic or client_secret_post, auto-selected from the
+#       # IDP's discovery doc) IN ADDITION to PKCE. Leave unset for a public
+#       # (PKCE-only) client — the common case.
+#       #
+#       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#       # in ~/.hermes/.env over putting it here in config.yaml.
+#       #   client_secret: ""
+
+# =============================================================================
+# External secret sources
+# =============================================================================
+# Pull provider credentials from external secret managers at process startup
+# instead of storing them in ~/.hermes/.env. Only the manager's bootstrap
+# credential (e.g. BWS_ACCESS_TOKEN / OP_SERVICE_ACCOUNT_TOKEN) lives in .env
+# (or your shell / desktop session); everything else rotates centrally.
+# Failures never block startup — Hermes warns once and continues with
+# whatever .env already had.
+#
+# Multiple sources can be enabled at once:
+#   - "mapped" sources (explicit VAR -> ref bindings, e.g. 1Password's env:
+#     map) beat "bulk" sources (whole-project dumps like Bitwarden BSM)
+#   - within a shape, the first source to claim a var wins; later claims
+#     are skipped with a startup warning (never a silent clobber)
+#   - a source's override_existing lets it beat .env/shell values, but
+#     never another secret source's claim
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/secrets/
+#
+# secrets:
+#   # Optional explicit ordering of enabled sources.
+#   # sources: [onepassword, bitwarden]
+#
+#   # ---- Bitwarden Secrets Manager (bws CLI) --------------------------------
+#   bitwarden:
+#     enabled: false
+#     access_token_env: BWS_ACCESS_TOKEN   # bootstrap token, sourced from .env
+#     project_id: ""                       # UUID of the BSM project to sync
+#     server_url: ""                       # "" = US Cloud; EU/self-hosted URL otherwise
+#     cache_ttl_seconds: 300               # 0 disables caching
+#     override_existing: true              # BSM values win over existing env
+#     auto_install: true                   # lazy-download bws into ~/.hermes/bin
+#
+#   # ---- 1Password (op CLI) -------------------------------------------------
+#   onepassword:
+#     enabled: false
+#     # Map env-var names to op:// secret references. Each is resolved with a
+#     # single `op read` at startup.
+#     env:
+#       OPENAI_API_KEY: "op://Private/OpenAI/api key"
+#       ANTHROPIC_API_KEY: "op://Private/Anthropic/credential"
+#     account: ""                                   # op --account shorthand; "" = default
+#     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN  # headless auth; unset = desktop session
+#     binary_path: ""                               # "" = resolve op via PATH; else absolute path
+#     cache_ttl_seconds: 300                        # 0 disables BOTH cache layers
+#     override_existing: true                       # resolved values win over existing env

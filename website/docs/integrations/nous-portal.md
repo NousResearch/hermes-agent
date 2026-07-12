@@ -120,7 +120,7 @@ Your existing providers stay configured. You can switch between them with `/mode
 
 ### Headless / SSH / remote setup
 
-OAuth needs a browser, but the loopback callback runs on the machine where Hermes is running. For remote hosts, see [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) — the same patterns work for the Portal as for any other OAuth-based provider (`ssh -L` port forwarding, `--manual-paste` for browser-only environments like Cloud Shell / Codespaces).
+OAuth needs a browser, but the loopback callback runs on the machine where Hermes is running. For remote hosts, see [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) — the same patterns work for the Portal as for any other OAuth-based provider (`ssh -L` port forwarding).
 
 ### Profile setup
 
@@ -133,6 +133,7 @@ If you use [Hermes profiles](/user-guide/profiles), the Portal refresh token is 
 ```bash
 hermes portal            # log in to Nous Portal + set it up (one-shot onboarding)
 hermes portal info       # login status, subscription info, model + gateway routing
+hermes portal status     # alias for `portal info`
 hermes portal tools      # detailed Tool Gateway catalog with per-tool routing
 hermes portal open       # open the subscription management page in your browser
 ```

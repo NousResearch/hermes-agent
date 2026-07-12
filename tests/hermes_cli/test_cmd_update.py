@@ -109,6 +109,53 @@ class TestCmdUpdatePip:
         assert "env" not in mock_run.call_args.kwargs
 
 
+class TestCmdUpdateTermuxUvBootstrap:
+    """Regression tests for Termux-specific uv bootstrap behavior."""
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_termux_uv_bootstrap_uses_binary_only_install(
+        self, mock_run, _mock_which, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        mock_run.return_value = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+        monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+
+        uv_bin = hm._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
+
+        assert uv_bin is None
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.args[0] == [
+            "/termux/python",
+            "-m",
+            "pip",
+            "install",
+            "uv",
+            "--only-binary",
+            ":all:",
+        ]
+        assert mock_run.call_args.kwargs["cwd"] == PROJECT_ROOT
+        assert mock_run.call_args.kwargs["check"] is False
+
+    @patch("subprocess.run")
+    def test_termux_reuses_existing_path_uv_without_pip(self, mock_run, monkeypatch):
+        """A uv already on PATH (e.g. ``pkg install uv``) is reused before pip runs."""
+        from hermes_cli import main as hm
+
+        pkg_uv = "/data/data/com.termux/files/usr/bin/uv"
+        monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
+        # Production resolve_uv only checks $HERMES_HOME/bin/uv; model an empty
+        # managed dir so the PATH probe is what surfaces the packaged uv.
+        monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: None)
+        monkeypatch.setattr("shutil.which", lambda name: pkg_uv if name == "uv" else None)
+
+        uv_bin = hm._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
+
+        assert uv_bin == pkg_uv
+        mock_run.assert_not_called()
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 
@@ -272,7 +319,7 @@ class TestCmdUpdateBranchFallback:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT),
+                (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
             ]
 
         # The web UI build itself went through the streaming helper.

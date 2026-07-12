@@ -18,6 +18,8 @@ Configuration in config.yaml (or via env vars):
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import collections
 import dataclasses
 import hashlib
@@ -31,9 +33,10 @@ import time
 import urllib.parse
 import uuid
 from datetime import datetime, timezone, timedelta
+from enum import Enum
 from pathlib import Path
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple
 
 import sys
 
@@ -55,6 +58,7 @@ from gateway.platforms.base import (
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    cache_video_from_bytes,
 )
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.yuanbao_media import (
@@ -77,6 +81,7 @@ from gateway.platforms.yuanbao_proto import (
     HERMES_INSTANCE_ID,
     decode_conn_msg,
     decode_inbound_push,
+    decode_forward_msg_data,
     decode_query_group_info_rsp,
     decode_get_group_member_list_rsp,
     encode_auth_bind,
@@ -120,6 +125,16 @@ AUTH_TIMEOUT_SECONDS = 10.0
 MAX_RECONNECT_ATTEMPTS = 100
 DEFAULT_SEND_TIMEOUT = 30.0  # WS biz request timeout
 
+# Upper bound on the WS close handshake during teardown (#40383). The
+# websockets connection's own close_timeout (5s) blocks until the server
+# echoes the close frame; an idle/unresponsive server never replies, stalling
+# gateway shutdown by the full timeout. Bounding the close await here keeps
+# teardown fast — a responsive server completes the handshake in well under a
+# second, so this only caps the pathological hang. Also bounds the reconnect /
+# connect-failure cleanup paths that reuse _cleanup_ws(), where a graceful
+# close is unnecessary anyway (the socket is being discarded to redial).
+WS_CLOSE_TIMEOUT_S = 1.0
+
 # Close codes that indicate permanent errors — do NOT reconnect.
 NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}
 
@@ -147,8 +162,14 @@ _YB_RES_REF_RE = re.compile(
     r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]"
 )
 
+# Patched local-media anchors once an inbound resource has been downloaded to the local cache. 
+#   [image: /opt/data/image_cache/img_xxx.bmp]
+#   [file: report.pdf → /opt/data/.../report.pdf]
+#   (and any future kind, e.g. [video: /opt/.../clip.mp4])
+_YB_LOCAL_MEDIA_RE = re.compile(r"\[(\w+):[^\]]*?(/[^\]]+?)\s*\]")
+
 # Media kinds that can be resolved and injected into the model context
-_RESOLVABLE_MEDIA_KINDS = frozenset({"image", "file"})
+_RESOLVABLE_MEDIA_KINDS = frozenset({"image", "file", "video"})
 
 # Strip page indicators like (1/3) appended by BasePlatformAdapter
 _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')
@@ -157,6 +178,16 @@ _INDICATOR_RE = re.compile(r'\s*\(\d+/\d+\)$')
 OBSERVED_MEDIA_BACKFILL_LOOKBACK = 50
 # Max number of resource references to resolve per inbound turn
 OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN = 12
+
+# Bounded concurrency for inbound media resolve/download.
+#   - 1   = sequential (legacy behavior, safe rollback knob)
+#   - 6   = default; aligns with the per-origin HTTP/1.1 ceiling browsers use,
+#           balances first-token latency vs. backend pressure
+#   - 12  = upper clamp; matches OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN
+# Configured via config.yaml: platforms.yuanbao.extra.media_resolve_concurrency.
+_DEFAULT_RESOLVE_CONCURRENCY = 6
+_MIN_RESOLVE_CONCURRENCY = 1
+_MAX_RESOLVE_CONCURRENCY = 12
 
 class MarkdownProcessor:
     """Encapsulates all Markdown-related utilities for the Yuanbao platform.
@@ -916,6 +947,10 @@ class InboundContext:
     raw_text: str = ""
     media_refs: list = dc_field(default_factory=list)
 
+    # Populated by ExtractContentMiddleware for elem_type 1009 (WeChat forward).
+    # Contains the parsed ForwardMsgData dict (sub_type / nick_name / msg list).
+    forwarded_records: Optional[dict] = None
+
     # Owner command detection
     owner_command: Optional[str] = None
 
@@ -923,14 +958,18 @@ class InboundContext:
     source: Optional[Any] = None  # SessionSource
 
     # Populated by ClassifyMessageTypeMiddleware
-    msg_type: Optional[Any] = None  # MessageType
+    msg_type: Optional[Any] = None  # MessageType | YuanbaoMessageType
 
     # Populated by QuoteContextMiddleware
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None
     quote_media_refs: list = dc_field(default_factory=list)  # List of (rid, kind, filename)
 
-    # Populated by MediaResolveMiddleware
+    # Populated by MediaResolveMiddleware. Combined list of resolved local
+    # paths from up to three sources (deduped, in this order):
+    #   1) media carried by the current message (always),
+    #   2) media from the quoted message (when reply_to_message_id is set),
+    #   3) recent group-observed media (only when chat_type == "group" and no quote is present).
     media_urls: list = dc_field(default_factory=list)
     media_types: list = dc_field(default_factory=list)
 
@@ -1516,13 +1555,35 @@ class AccessPolicy:
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def is_dm_allowed(self, sender_id: str) -> bool:
-        """Platform-level DM inbound filter (open / allowlist / disabled)."""
+        """Strict DM authorization — pairing does not imply access."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return sender_id.strip() in self._dm_allow_from
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def is_dm_intake_allowed(self, sender_id: str) -> bool:
+        """Whether a DM may reach gateway intake (pairing handshake path)."""
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return principal in self._dm_allow_from
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def is_group_allowed(self, group_code: str) -> bool:
         """Platform-level group chat inbound filter (open / allowlist / disabled)."""
@@ -1530,7 +1591,11 @@ class AccessPolicy:
             return False
         if self._group_policy == "allowlist":
             return group_code.strip() in self._group_allow_from
-        return True
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     @property
     def dm_policy(self) -> str:
@@ -1550,7 +1615,7 @@ class AccessGuardMiddleware(InboundMiddleware):
         adapter = ctx.adapter
         policy: AccessPolicy = adapter._access_policy
         if ctx.chat_type == "dm":
-            if not policy.is_dm_allowed(ctx.from_account):
+            if not policy.is_dm_intake_allowed(ctx.from_account):
                 logger.debug(
                     "[%s] DM from %s blocked by dm_policy=%s",
                     adapter.name, ctx.from_account, policy.dm_policy,
@@ -1572,13 +1637,19 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     Triggers when no home channel is configured, or when an existing group-chat
     home is superseded by the first DM (direct > group upgrade).
     Silent: writes config.yaml and env, no user-facing message.
+
+    Runs after :class:`BuildSourceMiddleware` and :class:`GroupAtGuardMiddleware`
+    so unaddressed group traffic is dropped before home-channel persistence.
+    Only senders that pass strict authorization (allowlist / explicit open
+    opt-in / pairing-store approval) may claim ``YUANBAO_HOME_CHANNEL``.
+    Intake-only pairing forwards must not claim ``YUANBAO_HOME_CHANNEL``.
     """
 
     name = "auto-sethome"
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        if not adapter._auto_sethome_done:
+        if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
             _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
             _should_set = (
                 not _cur_home
@@ -1589,7 +1660,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
             if _should_set:
                 try:
                     from hermes_constants import get_hermes_home
-                    from utils import atomic_yaml_write
+                    from hermes_cli.config import atomic_config_write
                     import yaml
 
                     _home = get_hermes_home()
@@ -1599,7 +1670,7 @@ class AutoSetHomeMiddleware(InboundMiddleware):
                         with open(config_path, encoding="utf-8") as f:
                             user_config = yaml.safe_load(f) or {}
                     user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-                    atomic_yaml_write(config_path, user_config)
+                    atomic_config_write(config_path, user_config)
                     os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
                     logger.info(
                         "[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel",
@@ -1675,10 +1746,10 @@ class ExtractContentMiddleware(InboundMiddleware):
         """Extract plain text content from MsgBody.
 
         - TIMTextElem      -> text field
-        - TIMImageElem     -> "[image]"
-        - TIMFileElem      -> "[file: {filename}]"
-        - TIMSoundElem     -> "[voice]"
-        - TIMVideoFileElem -> "[video]"
+        - TIMImageElem     -> "[image]" / "[image|ybres:RID]"
+        - TIMFileElem      -> "[file: {filename}]" / "[file:{name}|ybres:RID]"
+        - TIMSoundElem     -> "[voice]" / "[voice|ybres:RID]"
+        - TIMVideoFileElem -> "[video]" / "[video|ybres:RID]"
         - TIMFaceElem      -> "[emoji: {name}]" or "[emoji]"
         - TIMCustomElem    -> try to extract data field, otherwise "[custom message]"
         - Multiple elems joined with spaces
@@ -1741,6 +1812,9 @@ class ExtractContentMiddleware(InboundMiddleware):
                                 parts.append(text)
                             else:
                                 parts.append("[unsupported message type]")
+                        elif ctype == 1009:
+                            # WeChat forwarded chat record: use the truncated summary text.
+                            parts.append(custom.get("text", "[chat record]"))
                         else:
                             parts.append("[unsupported message type]")
                     except (json.JSONDecodeError, TypeError):
@@ -1852,10 +1926,70 @@ class ExtractContentMiddleware(InboundMiddleware):
                         pass
         return urls
 
+    @staticmethod
+    def _extract_forwarded_records(msg_body: list, user_id: str = "") -> Optional[dict]:
+        """Extract ForwardMsgData from ext_map for elem_type 1009 (WeChat forward).
+
+        The detailed chat-record payload lives in ``msg_content.ext_map``
+        (protobuf field 999, ``map<string, string>``):
+          - key format: ``wexin_forward_msg_[forward_msg_id]_[userid]``
+          - value: a **base64-encoded protobuf** ``ForwardMsgData`` (NOT JSON).
+            Decode with base64 then ``decode_forward_msg_data`` to recover the
+            ``sub_type`` / ``nick_name`` / ``msg`` structure.
+
+        Matching strategy: take the first ``wexin_forward_msg_`` entry whose
+        decoded payload is a valid ``ForwardMsgData`` (``sub_type == 1``).
+
+        Returns the parsed ``ForwardMsgData`` dict or ``None``.
+        """
+        for elem in msg_body or []:
+            if not isinstance(elem, dict) or elem.get("msg_type") != "TIMCustomElem":
+                continue
+            content = elem.get("msg_content", {}) or {}
+            if not isinstance(content, dict):
+                continue
+            data_str = content.get("data", "")
+            if not data_str:
+                continue
+            try:
+                custom = json.loads(data_str)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not (isinstance(custom, dict) and custom.get("elem_type") == 1009):
+                continue
+
+            ext_map = content.get("ext_map") or {}
+            if not isinstance(ext_map, dict) or not ext_map:
+                return None
+
+            def _parse_value(value):
+                # ext_map values are base64-encoded ForwardMsgData protobuf.
+                if not isinstance(value, str) or not value:
+                    return None
+                try:
+                    pb = base64.b64decode(value)
+                except (binascii.Error, ValueError):
+                    return None
+                data = decode_forward_msg_data(pb)
+                if isinstance(data, dict) and data.get("sub_type") == 1:
+                    return data
+                return None
+
+            # Take the first valid wexin_forward_msg_ entry.
+            for key, value in ext_map.items():
+                if not key.startswith("wexin_forward_msg_"):
+                    continue
+                parsed = _parse_value(value)
+                if parsed is not None:
+                    return parsed
+
+        return None
+
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         ctx.raw_text = self._rewrite_slash_command(self._extract_text(ctx.msg_body))
         ctx.media_refs = self._extract_inbound_media_refs(ctx.msg_body)
         ctx.link_urls = self._extract_link_urls(ctx.msg_body)
+        ctx.forwarded_records = self._extract_forwarded_records(ctx.msg_body, ctx.from_account)
         await next_fn()
 
 class PlaceholderFilterMiddleware(InboundMiddleware):
@@ -2065,10 +2199,14 @@ class GroupAtGuardMiddleware(InboundMiddleware):
             "and answer it directly."
         )
 
-    @staticmethod
+    @classmethod
     def _observe_group_message(
+        cls,
         adapter, source, sender_display: str, text: str,
-        *, msg_id: Optional[str] = None,
+        *,
+        ctx: InboundContext,
+        msg_id: Optional[str] = None,
+        forwarded_records: Optional[dict] = None,
     ) -> None:
         """Write a group message into the session transcript without triggering the agent.
 
@@ -2083,7 +2221,14 @@ class GroupAtGuardMiddleware(InboundMiddleware):
         try:
             session_entry = store.get_or_create_session(source)
             user_id = source.user_id or "unknown"
-            attributed = f"[{sender_display}|{user_id}]\n{text}"
+            body_text = text
+            if forwarded_records:
+                summary = ForwardedRecordsParseMiddleware.build_forward_text(
+                    forwarded_records, ctx=ctx, is_dispatch=False,
+                )
+                if summary:
+                    body_text = f"{text}\n{summary}" if text else summary
+            attributed = f"[{sender_display}|{user_id}]\n{body_text}"
             entry: dict = {
                 "role": "user",
                 "content": attributed,
@@ -2105,6 +2250,8 @@ class GroupAtGuardMiddleware(InboundMiddleware):
             self._observe_group_message(
                 adapter, ctx.source, ctx.sender_nickname or ctx.from_account, ctx.raw_text,
                 msg_id=ctx.msg_id or None,
+                forwarded_records=ctx.forwarded_records,
+                ctx=ctx,
             )
             logger.info(
                 "[%s] Group message observed (no @bot): chat=%s from=%s",
@@ -2145,14 +2292,26 @@ class GroupAttributionMiddleware(InboundMiddleware):
         await next_fn()
 
 
+class YuanbaoMessageType(Enum):
+    """Yuanbao-local message subtypes; coerced back to :class:`MessageType`
+    before leaving the adapter (see :class:`DispatchMiddleware`)."""
+
+    # WeChat forwarded chat records (TIMCustomElem, elem_type 1009).
+    CHAT_RECORD = "chat_record"
+
+
 class ClassifyMessageTypeMiddleware(InboundMiddleware):
     """Determine MessageType from text content and msg_body elements."""
 
     name = "classify-msg-type"
 
     @staticmethod
-    def _classify(text: str, msg_body: list) -> MessageType:
-        """Classify message type based on text and msg_body."""
+    def _classify(text: str, msg_body: list):
+        """Classify message type based on text and msg_body.
+
+        Returns a base :class:`MessageType`, or a yuanbao-local
+        :class:`YuanbaoMessageType` for platform-specific subtypes.
+        """
         if text.startswith("/"):
             return MessageType.COMMAND
         for elem in msg_body:
@@ -2165,6 +2324,14 @@ class ClassifyMessageTypeMiddleware(InboundMiddleware):
                 return MessageType.VIDEO
             if etype == "TIMFileElem":
                 return MessageType.DOCUMENT
+            if etype == "TIMCustomElem":
+                data_str = (elem.get("msg_content") or {}).get("data", "")
+                try:
+                    custom = json.loads(data_str)
+                except (json.JSONDecodeError, TypeError):
+                    custom = None
+                if isinstance(custom, dict) and custom.get("elem_type") == 1009:
+                    return YuanbaoMessageType.CHAT_RECORD
         return MessageType.TEXT
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
@@ -2177,52 +2344,247 @@ class QuoteContextMiddleware(InboundMiddleware):
 
     name = "quote-context"
 
-    @staticmethod
-    def _extract_quote_context(cloud_custom_data: str) -> Tuple[Optional[str], Optional[str], list]:
-        """Extract quote context, mapping to MessageEvent.reply_to_*.
-
-        Returns:
-          (reply_to_message_id, reply_to_text, quote_media_refs)
-          where quote_media_refs is a list of (rid, kind, filename) tuples
+    def _extract_quote_context(self, cloud_custom_data: str) -> Tuple[Optional[str], Optional[str]]:
+        """Extract quote text context, mapping to MessageEvent.reply_to_*.
         """
         if not cloud_custom_data:
-            return None, None, []
+            return None, None
         try:
             parsed = json.loads(cloud_custom_data)
         except (json.JSONDecodeError, TypeError):
-            return None, None, []
+            return None, None
 
         quote = parsed.get("quote") if isinstance(parsed, dict) else None
         if not isinstance(quote, dict):
-            return None, None, []
-
-        # type=2 corresponds to image reference; desc may be empty, provide a placeholder.
-        quote_type = int(quote.get("type") or 0)
-        desc = str(quote.get("desc") or "").strip()
-        if quote_type == 2 and not desc:
-            desc = "[image]"
-        if not desc:
-            return None, None, []
+            return None, None
 
         quote_id = str(quote.get("id") or "").strip() or None
+        desc = str(quote.get("desc") or "").strip()
         sender = str(quote.get("sender_nickname") or quote.get("sender_id") or "").strip()
-        quote_text = f"{sender}: {desc}" if sender else desc
+        quote_text = (f"{sender}: {desc}" if sender else desc) if desc else None
 
-        # Extract media references from desc using _YB_RES_REF_RE regex
-        media_refs: list = []
-        for m in _YB_RES_REF_RE.finditer(desc):
-            head = m.group(1)  # "image" | "file:<name>" | "voice" | "video"
-            rid = m.group(2)
-            kind, _, filename = head.partition(":")
-            kind = kind.strip()
-            media_refs.append((rid, kind, filename.strip()))
+        return quote_id, quote_text
 
-        return quote_id, quote_text, media_refs
+    async def _extract_media_refs_from_transcript(
+        self, ctx: InboundContext
+    ) -> List[Tuple[str, str, str]]:
+        """Look up the quoted message in the transcript history and return any
+        ``[kind|ybres:RID]`` anchors found in its content as
+        ``(rid, kind, filename)`` tuples.
+
+        Returns ``[]`` when ``ctx.reply_to_message_id`` is unset, when the
+        transcript store / source is unavailable, or when the quoted message
+        carries no resolvable media anchors.
+        """
+        if ctx.reply_to_message_id is None:
+            return []
+        adapter = ctx.adapter
+        media_refs: List[Tuple[str, str, str]] = []
+        try:
+            store = getattr(adapter, "_session_store", None)
+            if not store or ctx.source is None:
+                return []
+            session_entry = store.get_or_create_session(ctx.source)
+            history = store.load_transcript(session_entry.session_id)
+            for msg in reversed(history or []):
+                mid = msg.get("message_id", "")
+                if not mid or mid != ctx.reply_to_message_id:
+                    continue
+                _content = msg.get("content", "")
+                if isinstance(_content, str) and "|ybres:" in _content:
+                    for m in _YB_RES_REF_RE.finditer(_content):
+                        head = m.group(1)
+                        rid = m.group(2)
+                        kind, _, filename = head.partition(":")
+                        kind = kind.strip()
+                        if kind in _RESOLVABLE_MEDIA_KINDS:
+                            media_refs.append((rid, kind, filename.strip()))
+                break
+        except Exception as exc:
+            logger.warning(
+                "[%s] quote transcript lookup failed: %s",
+                getattr(adapter, "name", "yuanbao"), exc,
+            )
+        return media_refs
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
-        ctx.reply_to_message_id, ctx.reply_to_text, ctx.quote_media_refs = self._extract_quote_context(ctx.cloud_custom_data)
+        ctx.reply_to_message_id, ctx.reply_to_text = self._extract_quote_context(ctx.cloud_custom_data)
+        ctx.quote_media_refs = await self._extract_media_refs_from_transcript(ctx)
+        await next_fn()
+
+
+class ForwardedRecordsParseMiddleware(InboundMiddleware):
+    """Deep-parse WeChat forwarded chat records (elem_type 1009) for dispatch.
+
+    Activates when a full ``ForwardMsgData`` dict is available on the current
+    turn, carried by the current message (``ctx.forwarded_records``).
+    Resolves media to ``[kind|ybres:RID]``
+    placeholders, appends downloadable refs to ``ctx.media_refs`` (for
+    :class:`MediaResolveMiddleware`), and rewrites ``ctx.raw_text``.
+
+    Group @bot turns *without* a forward on the current message rely on the
+    eagerly-rendered summaries that :class:`GroupAtGuardMiddleware` writes to
+    the transcript at observe time — there is no run-time summary fallback
+    here.
+
+    On any failure the middleware leaves ``ctx.raw_text`` untouched
+    (graceful degradation, design §2.8).
+    """
+
+    name = "forwarded-records-parse"
+
+    async def handle(self, ctx: InboundContext, next_fn) -> None:
+        try:
+            if ctx.forwarded_records:
+                self._send_loading_heartbeat(ctx)
+                ctx.raw_text = self.build_forward_text(ctx.forwarded_records, ctx=ctx, is_dispatch=True)
+        except Exception as exc:
+            # Degrade gracefully: leave ctx.raw_text as-is.
+            logger.warning(
+                "[%s] forwarded-records deep parse failed: %s",
+                getattr(ctx.adapter, "name", "yuanbao"), exc,
+            )
 
         await next_fn()
+
+    # -- Heartbeat ---------------------------------------------------------
+
+    @staticmethod
+    async def _send_loading_heartbeat(ctx: InboundContext) -> None:
+        """Best-effort RUNNING heartbeat so the user sees a loading bubble."""
+        try:
+            await ctx.adapter._outbound.heartbeat.send_heartbeat_once(
+                ctx.chat_id, WS_HEARTBEAT_RUNNING,
+            )
+        except Exception:
+            pass
+
+    # -- Record rendering helpers -----------------------------------------
+
+    @classmethod
+    def _media_marker(
+        cls, media: dict, plain_text: str = "",
+    ) -> Tuple[str, Optional[Dict[str, str]]]:
+        """Render one ``msgContent.multimedia`` entry as a textual marker.
+
+        Returns ``(marker, ref)``. Downloadable media emits a
+        ``[kind|ybres:RID]`` marker and a ``ctx.media_refs`` ref dict when a
+        usable RID/URL is present; otherwise a plain ``[kind] name`` marker
+        and ``ref=None``.
+        """
+        media_type = (media.get("type", "") or media.get("doc_type", "")).strip().lower()
+        url = str(media.get("url") or "").strip()
+        media_id = str(media.get("media_id") or "").strip()
+        file_name = str(media.get("file_name") or "").strip()
+        # media_id is directly usable as a ybres RID (design §2.10.9);
+        # fall back to parsing the resourceId out of the URL.
+        rid = media_id or ExtractContentMiddleware._parse_resource_id(url)
+
+        if media_type == "image":
+            if url and rid:
+                return f"[image|ybres:{rid}] {file_name}".rstrip(), {"kind": "image", "url": url}
+            return f"[image] {file_name or plain_text}".rstrip(), None
+
+        if media_type in ("file", "document", "code"):
+            if url and rid:
+                ref: Dict[str, str] = {"kind": "file", "url": url}
+                if file_name:
+                    ref["name"] = file_name
+                return f"[file|ybres:{rid}] {file_name}".rstrip(), ref
+            return f"[file] {file_name}".rstrip(), None
+
+        if media_type == "url":
+            # Link share (e.g. WeChat article) — keep URL for the agent.
+            link_title = file_name or str(media.get("title") or "")
+            return f"[link] {link_title} {url}".rstrip(), None
+
+        if media_type == "video":
+            if url and rid:
+                return f"[video|ybres:{rid}] {file_name}".rstrip(), {"kind": "video", "url": url}
+            return f"[video] {file_name or url}".rstrip(), None
+
+        return f"[{media_type or 'media'}] {url or file_name}".rstrip(), None
+
+    # Per-record combined-text cap; record count is NOT capped (design §2.10.3).
+    FORWARD_MSG_TEXT_MAX_CHARS = 1000
+
+    @classmethod
+    def _walk_forward_msgs(
+        cls,
+        forward_data: dict,
+    ) -> Iterator[Tuple[str, str, List[Dict[str, str]]]]:
+        """Walk ``ForwardMsgData['msg']`` and yield ``(sender, body, refs)``.
+
+        Per-record dispatch over ``msgContent`` (text / multimedia / nested
+        forward / fallback); ``body`` is capped at
+        :attr:`FORWARD_MSG_TEXT_MAX_CHARS`. Media goes through
+        :meth:`_media_marker`, always building full ``[kind|ybres:RID]``
+        markers; ``refs`` holds that record's downloadable ``ctx.media_refs``
+        entries in textual order — the order PatchAnchorsMiddleware relies on
+        (design §2.10.6). Headers / footers are the caller's job.
+        """
+        for msg in (forward_data.get("msg") if isinstance(forward_data, dict) else None) or []:
+            if not isinstance(msg, dict):
+                continue
+            sender = msg.get("sender", "")
+            plain_text = msg.get("plainText", "")
+            msg_contents = msg.get("msgContent", []) or []
+
+            refs: List[Dict[str, str]] = []
+            if not msg_contents:
+                rendered = plain_text
+            else:
+                parts: List[str] = []
+                for mc in msg_contents:
+                    if not isinstance(mc, dict):
+                        continue
+                    mc_type = mc.get("type", 0)  # EnumMsgContentType
+                    if mc_type == 1:  # TEXT
+                        parts.append(mc.get("text", ""))
+                    elif mc_type == 2:  # MULTIMEDIA
+                        for media in mc.get("multimedia", []) or []:
+                            if isinstance(media, dict):
+                                marker, ref = cls._media_marker(
+                                    media, plain_text,
+                                )
+                                parts.append(marker)
+                                if ref is not None:
+                                    refs.append(ref)
+                    elif mc_type == 3:  # nested FORWARD_MSG (design §2.10.10)
+                        parts.append("[嵌套聊天记录]")
+                    else:
+                        if plain_text:
+                            parts.append(plain_text)
+                rendered = "  ".join(p for p in parts if p) or plain_text
+
+            if len(rendered) > cls.FORWARD_MSG_TEXT_MAX_CHARS:
+                rendered = rendered[: cls.FORWARD_MSG_TEXT_MAX_CHARS] + "…(已截断)"
+            yield sender, rendered, refs
+
+    # -- Prompt builders ---------------------------------------------------
+
+    @classmethod
+    def build_forward_text(
+        cls, forward_data: dict, *, ctx: InboundContext, is_dispatch: bool,
+    ) -> str:
+        """Render ``ForwardMsgData`` into forward text.
+
+        Body lines are ``发送人：正文`` with full ``[kind|ybres:RID]`` media
+        markers preserved. When ``is_dispatch`` is true, refs are appended to
+        ``ctx.media_refs`` for downstream resolution and a ``用户附言：
+        {ctx.raw_text}`` footer is added; observed callers skip both since
+        no later middleware runs.
+        """
+        nickname = ctx.sender_nickname or "用户"
+        lines = [f"当前用户的昵称为{nickname}", "以下为用户的聊天记录"]
+        for sender, body, refs in cls._walk_forward_msgs(forward_data):
+            lines.append(f"{sender}：{body}")
+            if is_dispatch:
+                ctx.media_refs.extend(refs)
+        text = "\n".join(lines)
+        if is_dispatch and ctx.raw_text.strip():
+            text += f"\n\n用户附言：{ctx.raw_text.strip()}"
+        return text
 
 
 class MediaResolveMiddleware(InboundMiddleware):
@@ -2232,9 +2594,6 @@ class MediaResolveMiddleware(InboundMiddleware):
 
     # --- Resource download cache (keyed by resourceId) ---
     # Avoids redundant downloads of the same resource within the TTL window.
-    # The same resourceId can be referenced multiple times in a session (own
-    # attachment, then quoted again, then observed in a group backfill); each
-    # reference otherwise triggers a fresh token exchange + download.
     _resource_cache: ClassVar[Dict[str, Tuple[str, str, float]]] = {}  # rid -> (local_path, mime, ts)
     _RESOURCE_CACHE_TTL_S: ClassVar[int] = 24 * 60 * 60  # 24 hours
     _RESOURCE_CACHE_MAX_SIZE: ClassVar[int] = 256
@@ -2268,6 +2627,27 @@ class MediaResolveMiddleware(InboundMiddleware):
             for k in sorted_keys[: cls._RESOURCE_CACHE_MAX_SIZE // 4]:
                 cls._resource_cache.pop(k, None)
         cls._resource_cache[resource_id] = (local_path, mime, time.time())
+
+    @classmethod
+    def _append_cached_resource(
+        cls,
+        adapter,
+        resource_id: str,
+        media_paths: List[str],
+        mimes: List[str],
+    ) -> bool:
+        """Append a cached resource to output lists when available."""
+        hit = cls._get_cached_resource(resource_id)
+        if hit is None:
+            return False
+        local_path, mime = hit
+        logger.debug(
+            "[%s] resource cache hit: rid=%s path=%s",
+            adapter.name, resource_id, local_path,
+        )
+        media_paths.append(local_path)
+        mimes.append(mime)
+        return True
 
     @staticmethod
     def _guess_image_ext_from_url(url: str) -> str:
@@ -2410,6 +2790,15 @@ class MediaResolveMiddleware(InboundMiddleware):
             cls._put_cached_resource(resource_id, local_path, mime)
             return local_path, mime
 
+        if kind == "video":
+            # Yuanbao video resources carry no reliable extension; default to mp4.
+            local_path = cache_video_from_bytes(file_bytes)
+            mime = guess_mime_type(local_path) or (
+                content_type if content_type.startswith("video/") else "video/mp4"
+            )
+            cls._put_cached_resource(resource_id, local_path, mime)
+            return local_path, mime
+
         # kind == "file"
         if not file_name:
             parsed = urllib.parse.urlparse(fetch_url)
@@ -2427,11 +2816,6 @@ class MediaResolveMiddleware(InboundMiddleware):
         return local_path, mime
 
     @classmethod
-    async def _resolve_by_resource_id(cls, adapter, resource_id: str) -> str:
-        """Exchange a Yuanbao ``resourceId`` for a short-lived direct download URL. Raises on failure."""
-        return await cls._fetch_resource_url(adapter, resource_id)
-
-    @classmethod
     async def _resolve_media_urls(
         cls, adapter, media_refs: List[Dict[str, str]]
     ) -> Tuple[List[str], List[str]]:
@@ -2439,43 +2823,173 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         Yuanbao COS hostnames resolve to private IPs, tripping the SSRF guard
         in vision_tools. We download ourselves and return local cache paths.
+
+        Resolution runs with bounded concurrency
+        (``adapter.media_resolve_concurrency``); see :meth:`_resolve_ybres_refs`
+        for the same order-preserving / exception-isolated contract.
         """
+        # Pre-filter resolvable refs, preserving input order.
         media_urls: List[str] = []
         media_types: List[str] = []
-
+        active: List[Tuple[str, str, str, str]] = []
         for ref in media_refs:
             kind = str(ref.get("kind") or "").strip().lower()
             url = str(ref.get("url") or "").strip()
+            filename = str(ref.get("name") or "").strip()
             if kind not in _RESOLVABLE_MEDIA_KINDS or not url:
                 continue
-
-            # Extract resourceId from the placeholder URL for cache dedup.
             rid = ExtractContentMiddleware._parse_resource_id(url)
+            if rid and cls._append_cached_resource(adapter, rid, media_urls, media_types):
+                continue
+            active.append((kind, url, filename, rid or ""))
 
-            try:
-                fetch_url = await cls._resolve_download_url(adapter, url)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] inbound media resolve failed: kind=%s url=%s err=%s",
-                    adapter.name, kind, url, exc,
+        if not active:
+            return media_urls, media_types
+
+        semaphore = asyncio.Semaphore(adapter.media_resolve_concurrency)
+
+        async def _resolve_one(
+            kind: str, url: str, filename: str, rid: str,
+        ) -> Optional[Tuple[str, str]]:
+            async with semaphore:
+                try:
+                    fetch_url = await cls._resolve_download_url(adapter, url)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] inbound media resolve failed: kind=%s url=%s err=%s",
+                        adapter.name, kind, url, exc,
+                    )
+                    return None
+                return await cls._download_and_cache(
+                    adapter,
+                    fetch_url=fetch_url,
+                    kind=kind,
+                    file_name=filename or None,
+                    log_tag=f"placeholder_url={url[:80]}",
+                    resource_id=rid,
                 )
-                continue
 
-            cached = await cls._download_and_cache(
-                adapter,
-                fetch_url=fetch_url,
-                kind=kind,
-                file_name=str(ref.get("name") or "").strip() or None,
-                log_tag=f"placeholder_url={url[:80]}",
-                resource_id=rid,
-            )
-            if cached is None:
+        _t0 = time.monotonic()
+        results = await asyncio.gather(
+            *(_resolve_one(kind, url, filename, rid)
+              for kind, url, filename, rid in active),
+            return_exceptions=True,
+        )
+        _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+
+        _failed = 0
+        for (kind, url, _filename, _rid), result in zip(active, results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "[%s] inbound media resolve crashed: kind=%s url=%s err=%s",
+                    adapter.name, kind, url[:80], result,
+                )
+                _failed += 1
                 continue
-            local_path, mime = cached
+            if result is None:
+                _failed += 1
+                continue
+            local_path, mime = result
             media_urls.append(local_path)
             media_types.append(mime)
 
+        # Batch summary: keep fields stable for offline aggregation
+        # (concurrency vs elapsed_ms is the core knob-tuning view).
+        logger.info(
+            "[%s] media resolve batch: scope=media concurrency=%d total=%d ok=%d failed=%d elapsed_ms=%d",
+            adapter.name,
+            adapter.media_resolve_concurrency,
+            len(active),
+            len(media_urls),
+            _failed,
+            _elapsed_ms,
+        )
         return media_urls, media_types
+
+    @classmethod
+    async def _resolve_ybres_refs(
+        cls,
+        adapter,
+        refs: List[Tuple[str, str, str]],
+        *,
+        log_prefix: str,
+    ) -> Tuple[List[str], List[str]]:
+        """Resolve ``(rid, kind, filename)`` ybres tuples to local paths.
+
+        Runs with bounded concurrency (``adapter.media_resolve_concurrency``)
+        so cold-start turns with many anchors don't pay ``N × (RPC + download)``
+        sequentially. Output order matches input; per-rid failures are isolated.
+        """
+        # Pre-filter resolvable kinds, preserving input order.
+        # Cache-hit refs are served immediately and excluded from the gather.
+        media_paths: List[str] = []
+        mimes: List[str] = []
+        active: List[Tuple[str, str, str]] = []
+        for rid, kind, filename in refs:
+            if kind not in _RESOLVABLE_MEDIA_KINDS:
+                continue
+            if cls._append_cached_resource(adapter, rid, media_paths, mimes):
+                continue
+            active.append((rid, kind, filename))
+        if not active:
+            return media_paths, mimes
+
+        semaphore = asyncio.Semaphore(adapter.media_resolve_concurrency)
+
+        async def _resolve_one(rid: str, kind: str, filename: str) -> Optional[Tuple[str, str]]:
+            async with semaphore:
+                try:
+                    fresh_url = await cls._fetch_resource_url(adapter, rid)
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] %s resolve failed: rid=%s kind=%s err=%s",
+                        adapter.name, log_prefix, rid, kind, exc,
+                    )
+                    return None
+                return await cls._download_and_cache(
+                    adapter,
+                    fetch_url=fresh_url,
+                    kind=kind,
+                    file_name=filename or None,
+                    log_tag=f"{log_prefix} rid={rid}",
+                    resource_id=rid,
+                )
+
+        # return_exceptions=True isolates per-coroutine failures.
+        _t0 = time.monotonic()
+        results = await asyncio.gather(
+            *(_resolve_one(rid, kind, filename) for rid, kind, filename in active),
+            return_exceptions=True,
+        )
+        _elapsed_ms = int((time.monotonic() - _t0) * 1000)
+
+        _failed = 0
+        for (rid, kind, filename), result in zip(active, results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "[%s] %s resolve crashed: rid=%s kind=%s err=%s",
+                    adapter.name, log_prefix, rid, kind, result,
+                )
+                _failed += 1
+                continue
+            if result is None:
+                _failed += 1
+                continue
+            path, mime = result
+            media_paths.append(path)
+            mimes.append(mime)
+
+        # Batch summary: stable fields for offline aggregation.
+        logger.info(
+            "[%s] media resolve batch: scope=ybres concurrency=%d total=%d ok=%d failed=%d elapsed_ms=%d",
+            adapter.name,
+            adapter.media_resolve_concurrency,
+            len(active),
+            len(media_paths),
+            _failed,
+            _elapsed_ms,
+        )
+        return media_paths, mimes
 
     @classmethod
     async def _collect_observed_media(
@@ -2497,14 +3011,22 @@ class MediaResolveMiddleware(InboundMiddleware):
         if not history:
             return [], []
 
-        start = max(0, len(history) - OBSERVED_MEDIA_BACKFILL_LOOKBACK)
+        # Walk the most recent LOOKBACK messages newest→oldest so that when we
+        # hit the per-turn resolve cap we keep the *latest* media references,
+        # not the oldest ones in the window. Within a single message, also
+        # iterate matches in reverse so the last-added image wins on ties.
+        # Final ``order`` is reversed back to chronological (old→new) before
+        # handing off to ``_resolve_ybres_refs`` so downstream prompt insertion
+        # preserves natural reading order.
+        window = history[-OBSERVED_MEDIA_BACKFILL_LOOKBACK:]
         order: List[Tuple[str, str, str]] = []  # (rid, kind, filename)
         seen: set = set()
-        for msg in history[start:]:
+        for msg in reversed(window):
             content = msg.get("content")
             if not isinstance(content, str) or "|ybres:" not in content:
                 continue
-            for m in _YB_RES_REF_RE.finditer(content):
+            matches = list(_YB_RES_REF_RE.finditer(content))
+            for m in reversed(matches):
                 head = m.group(1)  # "image" | "file:<name>" | "voice" | "video"
                 rid = m.group(2)
                 kind, _, filename = head.partition(":")
@@ -2520,42 +3042,181 @@ class MediaResolveMiddleware(InboundMiddleware):
             if len(order) >= OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN:
                 break
 
+        # Restore chronological order (oldest→newest) for downstream resolution.
+        order.reverse()
+
         if not order:
             return [], []
 
-        media_paths: List[str] = []
+        return await cls._resolve_ybres_refs(
+            adapter, order, log_prefix="observed-media",
+        )
+
+    @classmethod
+    async def _resolve_quote_media(
+        cls, adapter, quote_media_refs: List[Tuple[str, str, str]],
+    ) -> Tuple[List[str], List[str]]:
+        """Resolve media anchors carried by the quoted message.
+
+        ``quote_media_refs`` is a list of ``(rid, kind, filename)`` tuples
+        produced by :class:`QuoteContextMiddleware` from the transcript.
+        """
+        return await cls._resolve_ybres_refs(
+            adapter, quote_media_refs, log_prefix="quote",
+        )
+
+    @staticmethod
+    def _collect_quote_local_media(ctx: InboundContext) -> Tuple[List[str], List[str]]:
+        """Private-chat fallback for recovering already-local quoted media.
+
+        Only already-local media is handled here: by the time a turn is cached,
+        ``PatchAnchorsMiddleware`` has rewritten resolved ``|ybres:`` anchors to
+        ``[image: /path]`` / ``[file: name → /path]``. Unresolved anchors are an
+        original-turn resolution failure and belong to that turn's handling, not
+        this quote fallback — so no re-download happens here.
+
+        Returns ``(local_paths, mimes)`` for media already downloaded to the
+        local cache on its original turn, ready to inject as-is.
+        """
+        paths: List[str] = []
         mimes: List[str] = []
-        for rid, kind, filename in order:
-            try:
-                fresh_url = await cls._resolve_by_resource_id(adapter, rid)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] observed-media resolve failed: rid=%s kind=%s err=%s",
-                    adapter.name, rid, kind, exc,
-                )
+        rid_key = ctx.reply_to_message_id
+        if not rid_key:
+            return paths, mimes
+        cache = getattr(ctx.adapter, "_msg_content_cache", None)
+        if not cache:
+            return paths, mimes
+        text = cache.get(rid_key)
+        if not isinstance(text, str) or not text:
+            return paths, mimes
+
+        # Already-local media paths written by PatchAnchorsMiddleware.
+        seen: set = set()
+        for m in _YB_LOCAL_MEDIA_RE.finditer(text):
+            kind = (m.group(1) or "").strip().lower()
+            path = (m.group(2) or "").strip()
+            if not path or path in seen:
                 continue
-            cached = await cls._download_and_cache(
-                adapter,
-                fetch_url=fresh_url,
-                kind=kind,
-                file_name=filename or None,
-                log_tag=f"rid={rid}",
-                resource_id=rid,
+            if not os.path.exists(path):
+                continue
+            seen.add(path)
+            mime = guess_mime_type(os.path.basename(path)) or (
+                "image/jpeg" if kind == "image" else "application/octet-stream"
             )
-            if cached is None:
-                continue
-            path, mime = cached
-            media_paths.append(path)
+            paths.append(path)
             mimes.append(mime)
-        return media_paths, mimes
+
+        return paths, mimes
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
+        # NOTE: Reaching this middleware in a group chat implies the message has
+        # @-mentioned the bot (or is an owner command). GroupAtGuardMiddleware
+        # short-circuits non-@bot group messages earlier in the pipeline, so we
+        # don't need to re-check @bot status here before downloading media.
         adapter = ctx.adapter
-        ctx.media_urls, ctx.media_types = await self._resolve_media_urls(adapter, ctx.media_refs)
-        # Re-check placeholder after media resolution
-        if PlaceholderFilterMiddleware.is_skippable_placeholder(ctx.raw_text, len(ctx.media_urls)):
+
+        urls: List[str] = []
+        types: List[str] = []
+        seen: set = set()
+
+        def _add_unique_pairs(pair_lists: Tuple[List[str], List[str]]) -> None:
+            u_list, m_list = pair_lists
+            for u, m in zip(u_list, m_list):
+                if not u or u in seen:
+                    continue
+                seen.add(u)
+                urls.append(u)
+                types.append(m)
+
+        # 1) Media carried by the current message itself.
+        own_pairs = await self._resolve_media_urls(adapter, ctx.media_refs)
+        own_count = sum(1 for u in own_pairs[0] if u)
+        _add_unique_pairs(own_pairs)
+
+        # 2) Second source — quoted media takes priority; otherwise fall back
+        #    to observed-media backfill in groups only (DMs already had their
+        #    media resolved on the turn it was sent).
+        if ctx.reply_to_message_id is not None:
+            if ctx.quote_media_refs:
+                _add_unique_pairs(await self._resolve_quote_media(adapter, ctx.quote_media_refs))
+            else:
+                # DM quote fallback: no transcript message_id match (DM user rows
+                # carry no platform message_id), so recover already-local media
+                # from the adapter msg cache. Patched on its original turn — no
+                # re-download needed, inject as-is.
+                _add_unique_pairs(self._collect_quote_local_media(ctx))
+        elif ctx.chat_type == "group":
+            # Group chats: only @-bot turns reach this middleware
+            # (see GroupAtGuardMiddleware note at top of handle()),
+            # so unconditional observed-media hydration is safe here.
+            try:
+                _add_unique_pairs(await self._collect_observed_media(adapter, ctx.source))
+            except Exception as exc:
+                logger.warning(
+                    "[%s] observed-image hydration raised, continuing anyway: %s",
+                    adapter.name, exc,
+                )
+
+        ctx.media_urls = urls
+        ctx.media_types = types
+
+        # Re-check placeholder after media resolution.
+        # Use ``own_count`` (not ``len(urls)``) to preserve the original
+        # semantics: a placeholder text accompanied only by quote/observed
+        # media (i.e. no fresh attachment of its own) is still skippable.
+        if PlaceholderFilterMiddleware.is_skippable_placeholder(ctx.raw_text, own_count):
             logger.debug("[%s] Skip placeholder after media download: %r", adapter.name, ctx.raw_text)
             return  # Stop pipeline
+        await next_fn()
+
+
+class PatchAnchorsMiddleware(InboundMiddleware):
+    """Replace ``[kind|ybres:RID]`` anchors in ``ctx.raw_text`` with local paths.
+
+    Runs after :class:`MediaResolveMiddleware` so that ``ctx.media_urls`` /
+    ``ctx.media_types`` are already populated with downloaded resources
+    (own media + quote media or group-observed media).  The transcript
+    written downstream then records usable local paths for the model
+    instead of opaque ``ybres:`` references.
+
+    Only resolved media (paths starting with ``/``) are substituted; any
+    anchor without a corresponding local resource is left untouched.
+    """
+
+    name = "patch-anchors"
+
+    @staticmethod
+    def _patch(text: str, urls: List[str], types: List[str]) -> str:
+        if not text or not urls:
+            return text
+        patched = text
+        for u, m in zip(urls, types):
+            if not u.startswith("/"):
+                continue
+            anchor_match = _YB_RES_REF_RE.search(patched)
+            if not anchor_match:
+                break
+            head = anchor_match.group(1)
+            kind, _, filename = head.partition(":")
+            kind = kind.strip()
+            if kind == "image" and m.startswith("image/"):
+                replacement = f"[image: {u}]"
+            elif kind == "file":
+                label = filename.strip() or os.path.basename(u)
+                replacement = f"[file: {label} → {u}]"
+            elif kind == "video":
+                replacement = f"[video: {u}]"
+            else:
+                continue
+            patched = (
+                patched[: anchor_match.start()]
+                + replacement
+                + patched[anchor_match.end():]
+            )
+        return patched
+
+    async def handle(self, ctx: InboundContext, next_fn) -> None:
+        ctx.raw_text = self._patch(ctx.raw_text, ctx.media_urls, ctx.media_types)
         await next_fn()
 
 
@@ -2574,124 +3235,22 @@ class DispatchMiddleware(InboundMiddleware):
         )
 
         async def _dispatch_inbound_event() -> None:
-            media_urls = list(ctx.media_urls)
-            media_types = list(ctx.media_types)
-
-            # If user quoted a message (reply_to_message_id is set), resolve only
-            # quote_media_refs to avoid injecting unrelated history media.
-            # Otherwise, backfill observed media from recent transcript history.
-            if ctx.reply_to_message_id is not None:
-                # Fallback: if desc didn't contain ybres refs, look up transcript
-                if not ctx.quote_media_refs:
-                    try:
-                        store = getattr(adapter, "_session_store", None)
-                        if store:
-                            session_entry = store.get_or_create_session(ctx.source)
-                            history = store.load_transcript(session_entry.session_id)
-                            for msg in reversed(history or []):
-                                mid = msg.get("message_id", "")
-                                if mid and mid == ctx.reply_to_message_id:
-                                    _content = msg.get("content", "")
-                                    if isinstance(_content, str) and "|ybres:" in _content:
-                                        for m in _YB_RES_REF_RE.finditer(_content):
-                                            head = m.group(1)
-                                            rid = m.group(2)
-                                            kind, _, filename = head.partition(":")
-                                            kind = kind.strip()
-                                            if kind in _RESOLVABLE_MEDIA_KINDS:
-                                                ctx.quote_media_refs.append((rid, kind, filename.strip()))
-                                    break
-                    except Exception as exc:
-                        logger.warning(
-                            "[%s] quote transcript lookup failed: %s",
-                            adapter.name, exc,
-                        )
-                # User quoted a message — resolve only media from the quote
-                for rid, kind, filename in ctx.quote_media_refs:
-                    if kind not in _RESOLVABLE_MEDIA_KINDS:
-                        continue
-                    try:
-                        fresh_url = await MediaResolveMiddleware._resolve_by_resource_id(adapter, rid)
-                    except Exception as exc:
-                        logger.warning(
-                            "[%s] quote media resolve failed: rid=%s kind=%s err=%s",
-                            adapter.name, rid, kind, exc,
-                        )
-                        continue
-                    cached = await MediaResolveMiddleware._download_and_cache(
-                        adapter,
-                        fetch_url=fresh_url,
-                        kind=kind,
-                        file_name=filename or None,
-                        log_tag=f"quote rid={rid}",
-                        resource_id=rid,
-                    )
-                    if cached is None:
-                        continue
-                    path, mime = cached
-                    # Avoid duplicates
-                    if path not in media_urls:
-                        media_urls.append(path)
-                        media_types.append(mime)
-            else:
-                # No quote — backfill observed media from recent transcript history
-                extra_img_urls: List[str] = []
-                extra_img_mimes: List[str] = []
-                try:
-                    extra_img_urls, extra_img_mimes = await MediaResolveMiddleware._collect_observed_media(
-                        adapter, ctx.source,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[%s] observed-image hydration raised, continuing anyway: %s",
-                        adapter.name, exc,
-                    )
-                if extra_img_urls:
-                    current = set(media_urls)
-                    for u, m in zip(extra_img_urls, extra_img_mimes):
-                        if u in current:
-                            continue
-                        media_urls.append(u)
-                        media_types.append(m)
-                        current.add(u)
-
-            # Replace [kind|ybres:xxx] anchors with local cache paths so
-            # the transcript records usable paths for the model.
-            _patched_event_text = ctx.raw_text
-            for u, m in zip(media_urls, media_types):
-                if not u.startswith("/"):
-                    continue
-                anchor_match = _YB_RES_REF_RE.search(_patched_event_text)
-                if not anchor_match:
-                    continue
-                head = anchor_match.group(1)
-                kind, _, filename = head.partition(":")
-                kind = kind.strip()
-                if kind == "image" and m.startswith("image/"):
-                    replacement = f"[image: {u}]"
-                elif kind == "file":
-                    label = filename.strip() or os.path.basename(u)
-                    replacement = f"[file: {label} → {u}]"
-                else:
-                    continue
-                _patched_event_text = (
-                    _patched_event_text[:anchor_match.start()]
-                    + replacement
-                    + _patched_event_text[anchor_match.end():]
-                )
-
             event = MessageEvent(
-                text=_patched_event_text,
+                text=ctx.raw_text,
                 message_type=(
                     MessageType.DOCUMENT
-                    if any(mt.startswith(("application/", "text/")) for mt in media_types)
-                    else ctx.msg_type
+                    if any(mt.startswith(("application/", "text/")) for mt in ctx.media_types)
+                    # Coerce yuanbao-local subtypes (e.g. CHAT_RECORD) back to a
+                    # base MessageType: chat records are deep-parsed into a text
+                    # prompt, so TEXT is the right kind for downstream routing.
+                    else ctx.msg_type if isinstance(ctx.msg_type, MessageType)
+                    else MessageType.TEXT
                 ),
                 source=ctx.source,
                 message_id=ctx.msg_id or None,
                 raw_message=ctx.push,
-                media_urls=media_urls,
-                media_types=media_types,
+                media_urls=list(ctx.media_urls),
+                media_types=list(ctx.media_types),
                 reply_to_message_id=ctx.reply_to_message_id,
                 reply_to_text=ctx.reply_to_text,
                 channel_prompt=ctx.channel_prompt,
@@ -2775,16 +3334,18 @@ class InboundPipelineBuilder:
         SkipSelfMiddleware,
         ChatRoutingMiddleware,
         AccessGuardMiddleware,
-        AutoSetHomeMiddleware,
         ExtractContentMiddleware,
         PlaceholderFilterMiddleware,
         OwnerCommandMiddleware,
         BuildSourceMiddleware,
         GroupAtGuardMiddleware,
+        AutoSetHomeMiddleware,
         GroupAttributionMiddleware,
         ClassifyMessageTypeMiddleware,
         QuoteContextMiddleware,
+        ForwardedRecordsParseMiddleware,
         MediaResolveMiddleware,
+        PatchAnchorsMiddleware,
         DispatchMiddleware,
     ]
 
@@ -3429,6 +3990,7 @@ class ConnectionManager:
                     "[%s] Reconnected on attempt %d. connectId=%s",
                     adapter.name, attempt + 1, self._connect_id,
                 )
+                YuanbaoAdapter.set_active(adapter)
                 return True
 
             except asyncio.TimeoutError:
@@ -3445,12 +4007,22 @@ class ConnectionManager:
         return False
 
     async def _cleanup_ws(self) -> None:
-        """Close and clear the WebSocket connection."""
+        """Close and clear the WebSocket connection, bounded by
+        ``WS_CLOSE_TIMEOUT_S`` so an unresponsive server can't stall teardown
+        (see the constant's definition for the full rationale)."""
         ws = self._ws
         self._ws = None
         if ws is not None:
             try:
-                await ws.close()
+                await asyncio.wait_for(ws.close(), timeout=WS_CLOSE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                # Server never echoed the close frame within the bound; drop the
+                # connection. websockets force-closes the transport on cancel,
+                # and at shutdown the loop is tearing down anyway.
+                logger.debug(
+                    "[%s] WS close handshake exceeded %.1fs — dropping connection",
+                    self._adapter.name, WS_CLOSE_TIMEOUT_S,
+                )
             except Exception:
                 pass
 
@@ -4573,6 +5145,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     PLATFORM = Platform.YUANBAO
     MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50  # Max media file size in MB for upload validation
     REPLY_REF_MAX_ENTRIES: ClassVar[int] = 500  # Max capacity of reference dedup dict
 
@@ -4601,6 +5174,19 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._ws_url: str = (_extra.get("ws_url") or DEFAULT_WS_GATEWAY_URL).strip()
         self._api_domain: str = (_extra.get("api_domain") or DEFAULT_API_DOMAIN).rstrip("/")
         self._route_env: str = (_extra.get("route_env") or "").strip()
+
+        # Bounded concurrency for inbound media resolve/download.
+        # See _DEFAULT_RESOLVE_CONCURRENCY for rationale; clamped to [min, max]
+        # so a misconfigured value cannot hammer the resource backend nor
+        # accidentally drop below sequential behavior.
+        try:
+            _raw_concurrency = int(_extra.get("media_resolve_concurrency", _DEFAULT_RESOLVE_CONCURRENCY))
+        except (TypeError, ValueError):
+            _raw_concurrency = _DEFAULT_RESOLVE_CONCURRENCY
+        self.media_resolve_concurrency: int = max(
+            _MIN_RESOLVE_CONCURRENCY,
+            min(_MAX_RESOLVE_CONCURRENCY, _raw_concurrency),
+        )
 
         # Core managers (UML composition)
         self._connection: ConnectionManager = ConnectionManager(self)
@@ -4639,7 +5225,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         # ------------------------------------------------------------------
         dm_policy: str = (
             _extra.get("dm_policy")
-            or os.getenv("YUANBAO_DM_POLICY", "open")
+            or os.getenv("YUANBAO_DM_POLICY", "pairing")
         ).strip().lower()
 
         _dm_allow_from_raw: str = (
@@ -4650,7 +5236,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         group_policy: str = (
             _extra.get("group_policy")
-            or os.getenv("YUANBAO_GROUP_POLICY", "open")
+            or os.getenv("YUANBAO_GROUP_POLICY", "pairing")
         ).strip().lower()
 
         _group_allow_from_raw: str = (
@@ -4703,7 +5289,37 @@ class YuanbaoAdapter(BasePlatformAdapter):
         """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
         return True
 
-    async def connect(self) -> bool:
+    def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
+        """True when the sender may persist ``YUANBAO_HOME_CHANNEL``.
+
+        Intake-only pairing forwards are excluded until the sender is on the
+        strict allowlist, has explicit open-world opt-in, or is approved in the
+        pairing store.
+        """
+        policy: AccessPolicy = self._access_policy
+        sender = str(ctx.from_account or "").strip()
+        if not sender:
+            return False
+        if ctx.chat_type == "dm":
+            if policy.is_dm_allowed(sender):
+                return True
+            if policy.dm_policy == "pairing":
+                from gateway.pairing import PairingStore
+
+                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
+            return False
+        if ctx.chat_type == "group":
+            group_code = str(ctx.group_code or "").strip()
+            if not group_code:
+                return False
+            if policy.group_policy == "allowlist":
+                return policy.is_group_allowed(group_code)
+            if policy.group_policy == "open":
+                return policy._open_dm_opted_in()
+            return False
+        return False
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.
 
         Delegates to ConnectionManager.open().

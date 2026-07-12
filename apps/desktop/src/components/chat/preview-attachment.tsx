@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { previewName } from '@/lib/preview-targets'
@@ -14,6 +15,7 @@ import {
 import { $currentCwd } from '@/store/session'
 
 export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
+  const { t } = useI18n()
   const cwd = useStore($currentCwd)
   const activePreview = useStore($previewTarget)
   const [opening, setOpening] = useState(false)
@@ -93,7 +95,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         return
       }
 
-      notifyError(error, 'Preview unavailable')
+      notifyError(error, t.preview.unavailable)
     } finally {
       if (mountedRef.current && requestTokenRef.current === requestToken) {
         setOpening(false)
@@ -102,21 +104,20 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
   }
 
   return (
-    <div className="flex w-full max-w-160 flex-wrap items-center gap-2.5 rounded-lg border border-border/55 bg-card/55 px-2.5 py-1.5 text-sm">
-      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground/85">
+    <div className="flex w-full max-w-160 items-center gap-2 rounded-lg border border-border/55 bg-card/55 px-2.5 py-1.5 text-sm">
+      <span className="grid size-6 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground/85">
         <MonitorPlay className="size-3.5" />
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[0.78rem] font-medium leading-[1.15rem] text-foreground/90">{name}</div>
-        <div className="truncate font-mono text-[0.66rem] leading-4 text-muted-foreground/70">{target}</div>
-      </div>
+      <span className="min-w-0 flex-1 truncate text-[0.78rem] font-medium text-foreground/90" title={target}>
+        {name}
+      </span>
       <button
-        className="ml-auto shrink-0 rounded-md border border-border/55 bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50 max-[28rem]:ml-9 max-[28rem]:w-[calc(100%-2.25rem)]"
+        className="shrink-0 rounded-md border border-border/55 bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
         disabled={opening}
         onClick={() => void togglePreview()}
         type="button"
       >
-        {opening ? 'Opening…' : isActive ? 'Hide' : 'Open preview'}
+        {opening ? t.preview.opening : isActive ? t.preview.hide : t.preview.openPreview}
       </button>
     </div>
   )

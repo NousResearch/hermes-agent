@@ -203,9 +203,9 @@ def spawn_async_diagnostic(
     """Fire-and-forget ``ps``-style snapshot written to ``log_path``.
 
     Runs as a detached subprocess so it can't block the asyncio event loop
-    or compete with platform teardown.  The subprocess uses its own
-    ``timeout`` so a wedged ``ps`` still self-cleans within
-    ``timeout_seconds``.
+    or compete with platform teardown.  The subprocess runs a shell watchdog
+    so a wedged ``ps`` still self-cleans within ``timeout_seconds`` without
+    depending on the GNU ``timeout`` utility.
 
     Returns the subprocess PID on success, ``None`` on failure.  Never
     raises.
@@ -239,6 +239,13 @@ def spawn_async_diagnostic(
         "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
         "echo '=== end ==='"
     )
+    watchdog_script = (
+        f"({script}) & diagnostic_pid=$!; "
+        f"(sleep {timeout_seconds:.3f}; kill \"$diagnostic_pid\" 2>/dev/null) & watchdog_pid=$!; "
+        "wait \"$diagnostic_pid\"; status=$?; "
+        "kill \"$watchdog_pid\" 2>/dev/null || true; "
+        "exit \"$status\""
+    )
 
     try:
         # Open the log file in append mode and let the subprocess inherit.
@@ -255,7 +262,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            ["bash", "-c", watchdog_script],
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

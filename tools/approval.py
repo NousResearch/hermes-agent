@@ -1394,13 +1394,21 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
         return False
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    configured_temp_dir = tempfile.gettempdir()
+    temp_dir = os.path.realpath(configured_temp_dir)
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
-        return False
-
     target = os.path.realpath(operand)
+    if target != os.path.join(temp_dir, basename):
+        return False
     if os.path.dirname(target) != temp_dir:
+        return False
+    # macOS exposes the system temporary directory through both /tmp and
+    # /private/tmp. Allow only the exact public spelling; arbitrary symlinked
+    # temporary roots must still use their canonical target.
+    expected_operand = os.path.join(temp_dir, basename)
+    if operand != expected_operand and not (
+        configured_temp_dir == "/tmp" and operand == os.path.join("/tmp", basename)
+    ):
         return False
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 

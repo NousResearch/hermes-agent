@@ -4307,6 +4307,41 @@ class MatrixAdapter(BasePlatformAdapter):
                 out_lines.append(f"<blockquote>{'<br>'.join(bq_lines)}</blockquote>")
                 continue
 
+            # GitHub-style tables. This mirrors the ``tables`` extension used
+            # when the optional Markdown package is available.
+            def _table_cells(value: str) -> list[str]:
+                value = value.strip()
+                if value.startswith("|"):
+                    value = value[1:]
+                if value.endswith("|"):
+                    value = value[:-1]
+                return [cell.strip() for cell in value.split("|")]
+
+            def _is_table_separator(value: str, count: int) -> bool:
+                cells = _table_cells(value)
+                return len(cells) == count and all(
+                    re.fullmatch(r":?-{3,}:?", cell) is not None for cell in cells
+                )
+
+            if i + 1 < len(lines):
+                headers = _table_cells(line)
+                if len(headers) > 1 and _is_table_separator(lines[i + 1], len(headers)):
+                    i += 2
+                    rows: list[list[str]] = []
+                    while i < len(lines):
+                        row = _table_cells(lines[i])
+                        if len(row) != len(headers) or "|" not in lines[i]:
+                            break
+                        rows.append(row)
+                        i += 1
+                    head = "".join(f"<th>{cell}</th>" for cell in headers)
+                    body = "".join(
+                        "<tr>{}</tr>".format("".join(f"<td>{cell}</td>" for cell in row))
+                        for row in rows
+                    )
+                    out_lines.append(f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>")
+                    continue
+
             # Unordered list
             ul_match = re.match(r"^[\s]*[-*+]\s+(.+)$", line)
             if ul_match:
@@ -4346,9 +4381,9 @@ class MatrixAdapter(BasePlatformAdapter):
         result = re.sub(r"~~(.+?)~~", r"<del>\1</del>", result, flags=re.DOTALL)
         result = re.sub(r"\n", "<br>\n", result)
         result = re.sub(
-            r"<br>\n(</?(?:pre|blockquote|h[1-6]|ul|ol|li|hr))", r"\n\1", result
+            r"<br>\n(</?(?:pre|blockquote|h[1-6]|ul|ol|li|hr|table|thead|tbody|tr|th|td))", r"\n\1", result
         )
-        result = re.sub(r"(</(?:pre|blockquote|h[1-6]|ul|ol|li)>)<br>", r"\1", result)
+        result = re.sub(r"(</(?:pre|blockquote|h[1-6]|ul|ol|li|table|thead|tbody|tr|th|td)>)<br>", r"\1", result)
 
         # Restore protected regions.
         for idx, original in enumerate(placeholders):

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -412,6 +413,7 @@ class TestDispatchersTriggerPluginDiscovery:
                 web_tools, "_load_web_config",
                 lambda: {"extract_backend": "firecrawl"},
             )
+            monkeypatch.setattr(web_tools, "async_is_safe_url", AsyncMock(return_value=True))
             # Sanity: registry IS empty before the tool call.
             assert web_search_registry.get_provider("firecrawl") is None
 
@@ -574,6 +576,7 @@ class TestDisabledPluginDiagnostic:
                 web_tools, "_load_web_config",
                 lambda: {"extract_backend": "firecrawl"},
             )
+            monkeypatch.setattr(web_tools, "async_is_safe_url", AsyncMock(return_value=True))
             import agent.web_search_registry as wsr
             monkeypatch.setattr(
                 wsr, "_read_config_key",
@@ -621,4 +624,3 @@ class TestDisabledPluginDiagnostic:
             assert "No web search provider configured" not in err
         finally:
             restore()
-

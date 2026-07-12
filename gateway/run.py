@@ -4344,9 +4344,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not (profile.provider or profile.base_url or profile.api_key_env):
             return model, runtime_kwargs
 
-        explicit_api_key = (
-            os.getenv(profile.api_key_env) if profile.api_key_env else None
-        )
+        # Resolve the pinned key through the secret scope, not os.environ:
+        # under gateway.multiplex_profiles the process environment may hold
+        # another profile's credential, and an unscoped read must fail closed
+        # (UnscopedSecretError) rather than leak it. Single-profile installs
+        # keep the legacy os.getenv behavior.
+        explicit_api_key = None
+        if profile.api_key_env:
+            from agent.secret_scope import get_secret
+            explicit_api_key = get_secret(profile.api_key_env)
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             new_runtime = resolve_runtime_provider(

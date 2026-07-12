@@ -1949,6 +1949,46 @@ def test_respawn_guard_real_quota_still_blocker_auth_after_crashed_run(kanban_ho
     assert reason == "blocker_auth"
 
 
+def test_respawn_guard_same_second_latest_run_uses_id_tiebreak(kanban_home):
+    """When two runs share ended_at, the higher id wins so a newer provider
+    quota failure is not shadowed by an older same-second spawn_failed."""
+    now = int(time.time())
+    workspace_err = (
+        "workspace: worktree path "
+        "'/home/u/worktrees/repo/issue-12-quota-governance' is not a git root"
+    )
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="tiebreak-latest", assignee="alice")
+        # Older id: deterministic local spawn_failed (would bypass blocker_auth).
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'spawn_failed', ?, ?)",
+            (t, now - 5, now),
+        )
+        # Newer id, same ended_at second: non-local crash with real quota text.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'crashed', ?, ?)",
+            (t, now - 4, now),
+        )
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            ("HTTP 429: quota exceeded for organization", t),
+        )
+        # Sanity: higher id is the crashed row.
+        rows = conn.execute(
+            "SELECT id, outcome FROM task_runs WHERE task_id = ? "
+            "ORDER BY ended_at DESC, id DESC",
+            (t,),
+        ).fetchall()
+        assert rows[0]["outcome"] == "crashed"
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth", (
+        f"newer same-second crashed/quota run must still defer; got {reason!r} "
+        f"(workspace_err would have been: {workspace_err[:40]}…)"
+    )
+
+
 def test_respawn_guard_recent_success(kanban_home):
     """A completed run within the guard window triggers recent_success."""
     with kb.connect() as conn:

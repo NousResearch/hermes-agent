@@ -6827,14 +6827,16 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     #    the regex would otherwise match → defer forever (no failure counter
     #    increment on this path means the breaker can never free it).
     #
-    #    We look at the LATEST run only (ORDER BY ended_at DESC LIMIT 1): if a
+    #    We look at the LATEST run only (ORDER BY ended_at DESC, id DESC): if a
     #    newer crash/completion superseded the rate-limit run, this guard
-    #    no longer applies and the normal paths take over.
+    #    no longer applies and the normal paths take over. ``id DESC`` breaks
+    #    integer-second ties so a same-second newer provider failure is not
+    #    shadowed by an older spawn_failed (and vice versa) — see #63248.
     rl_cooldown = _resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if (

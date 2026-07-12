@@ -1404,7 +1404,7 @@ class GatewaySlashCommandsMixin:
 
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
-          /model <name>                       — switch model (persists by default)
+          /model <name>                       — switch model (session only)
           /model <name> --session             — switch for this session only
           /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model

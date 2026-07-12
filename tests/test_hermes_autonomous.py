@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
+import sys
 import time
 
 
@@ -124,7 +125,7 @@ def test_autonomous_tick_treats_failed_deploy_gate_as_active_work(tmp_path, monk
     monkeypatch.setattr(
         hermes_autonomous,
         "run_capability_audit",
-        lambda: {
+        lambda **kwargs: {
             "passed": 12,
             "failed": 1,
             "total": 13,
@@ -159,7 +160,7 @@ def test_autonomous_tick_recovers_blocked_task_even_when_gates_pass(tmp_path, mo
     monkeypatch.setattr(
         hermes_autonomous,
         "run_capability_audit",
-        lambda: {"passed": 13, "failed": 0, "total": 13, "results": []},
+        lambda **kwargs: {"passed": 13, "failed": 0, "total": 13, "results": []},
     )
     monkeypatch.setattr(
         hermes_autonomous,
@@ -241,3 +242,32 @@ def test_install_watchdog_creates_single_no_agent_cron_job(tmp_path, monkeypatch
     assert status["jobs"][0]["schedule_display"] == "every 3m"
     script = (tmp_path / "home" / "scripts" / "autonomous_watchdog.py").read_text(encoding="utf-8")
     assert "len(spawned_raw) if isinstance(spawned_raw, list)" in script
+
+
+def test_generated_watchdog_imports_runtime_from_repo(tmp_path, monkeypatch):
+    _, hermes_autonomous, _ = _modules(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "hermes_autonomous.py").write_text(
+        "class TickOptions:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "def autonomous_tick(options):\n"
+        "    return {'tick': {'created_tasks': [], 'heartbeat': {'wake_agent': False}, 'dispatch': {}}}\n",
+        encoding="utf-8",
+    )
+    script = tmp_path / "watchdog.py"
+    script.write_text(
+        hermes_autonomous._watchdog_script_content(
+            repo=str(repo),
+            workspace_path=str(repo),
+            board="default",
+            assignee="default",
+            goal_max_turns=10,
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"wakeAgent": False}

@@ -547,8 +547,8 @@ def run_gate(
     }
 
 
-def run_capability_audit() -> dict[str, Any]:
-    results = [run_gate(stage["id"]) for stage in PIPELINE_STAGES]
+def run_capability_audit(*, update_state: bool = True) -> dict[str, Any]:
+    results = [run_gate(stage["id"], update_state=update_state) for stage in PIPELINE_STAGES]
     passed = sum(1 for result in results if result["status"] == "passed")
     return {
         "ok": passed == len(results),

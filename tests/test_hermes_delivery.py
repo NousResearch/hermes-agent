@@ -214,6 +214,17 @@ def test_gate_runner_can_check_without_updating_state(tmp_path, monkeypatch):
     assert after == before
 
 
+def test_capability_audit_can_check_without_updating_state(tmp_path, monkeypatch):
+    hermes_delivery = _module(tmp_path, monkeypatch)
+    before = hermes_delivery.dashboard_snapshot()["stages"]
+
+    result = hermes_delivery.run_capability_audit(update_state=False)
+    after = hermes_delivery.dashboard_snapshot()["stages"]
+
+    assert result["total"] == len(hermes_delivery.PIPELINE_STAGES)
+    assert after == before
+
+
 def test_gate_runner_passes_when_stage_artifact_has_required_signals(tmp_path, monkeypatch):
     hermes_delivery = _module(tmp_path, monkeypatch)
     delivery = tmp_path / "home" / "delivery"

@@ -377,7 +377,7 @@ def autonomous_tick(options: TickOptions | None = None) -> dict[str, Any]:
     state = load_runner_state()
     tick_id = f"hat-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
 
-    audit = run_capability_audit()
+    audit = run_capability_audit(update_state=False)
     anti_shell = run_anti_shell_check(opts.repo)
     next_stage, reason = _next_stage_action(audit)
     all_gates_passed = reason == "all_gates_passed"

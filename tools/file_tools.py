@@ -659,6 +659,24 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
+def _agent_config_writes_allowed() -> bool:
+    """Return True when the operator has opted into agent config.yaml writes.
+
+    Default is False: a prompt-injected agent could otherwise flip
+    ``approvals.mode`` (or similar) by writing config.yaml through the file
+    tools. Operators who run Hermes as a trusted co-pilot can set
+    ``security.allow_agent_config_writes: true`` to lift that hard deny.
+    System paths and ``~/.hermes/.env`` remain protected regardless.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        return bool((cfg.get("security") or {}).get("allow_agent_config_writes", False))
+    except Exception:
+        return False
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -675,16 +693,20 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
-    # Prevent agents from modifying the Hermes config file directly.
-    # approvals.mode and other security settings live here; a malicious or
-    # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
+    # Prevent agents from modifying the Hermes config file directly unless the
+    # operator has opted in. approvals.mode and other security settings live
+    # here; a malicious or prompt-injected agent could silently disable exec
+    # approval by writing to this file when the hard deny is active.
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
+        if _agent_config_writes_allowed():
+            return None
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
+            "Edit ~/.hermes/config.yaml directly, use 'hermes config', "
+            "or set security.allow_agent_config_writes: true to allow "
+            "agent file-tool writes."
         )
     return None
 

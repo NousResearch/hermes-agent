@@ -2631,6 +2631,12 @@ DEFAULT_CONFIG = {
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
         "allow_lazy_installs": True,
+        # When false (default), write_file/patch hard-deny writes to the
+        # active Hermes config.yaml so a prompt-injected agent cannot flip
+        # approvals.mode or related security settings. Set true if you want
+        # the agent to edit config.yaml via file tools (terminal can still
+        # reach it under approvals.mode=smart/off either way).
+        "allow_agent_config_writes": False,
     },
 
     "cron": {

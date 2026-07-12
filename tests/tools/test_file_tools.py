@@ -6,6 +6,8 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -594,40 +596,69 @@ class TestSensitivePathCheck:
     """Verify that _check_sensitive_path blocks writes to protected locations."""
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
-        fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        # Avoid macOS /private/var temp roots — those match _SENSITIVE_PATH_PREFIXES
+        # before the Hermes-config check runs.
+        fake_config = Path.home() / ".hermes" / f"_pytest_cfg_block_{os.getpid()}.yaml"
+        fake_config.write_text("")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", lambda: False)
 
         from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
-        assert "error" in result
-        assert "Hermes config" in result["error"]
+        try:
+            result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
+            assert "error" in result
+            assert "Hermes config" in result["error"]
+        finally:
+            fake_config.unlink(missing_ok=True)
 
     def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
-        fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        fake_config = Path.home() / ".hermes" / f"_pytest_cfg_tilde_{os.getpid()}.yaml"
+        fake_config.write_text("")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", lambda: False)
 
         from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
-        assert "error" in result
-        assert "Hermes config" in result["error"]
+        try:
+            result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
+            assert "error" in result
+            assert "Hermes config" in result["error"]
+        finally:
+            fake_config.unlink(missing_ok=True)
 
     def test_hermes_config_blocked_for_patch(self, tmp_path, monkeypatch):
-        fake_config = tmp_path / "config.yaml"
+        fake_config = Path.home() / ".hermes" / f"_pytest_cfg_patch_{os.getpid()}.yaml"
         fake_config.write_text("approvals:\n  mode: manual\n")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", lambda: False)
 
         from tools.file_tools import patch_tool
-        result = json.loads(patch_tool(
-            mode="replace",
-            path=str(fake_config),
-            old_string="mode: manual",
-            new_string="mode: off",
-        ))
-        assert "error" in result
-        assert "Hermes config" in result["error"]
+        try:
+            result = json.loads(patch_tool(
+                mode="replace",
+                path=str(fake_config),
+                old_string="mode: manual",
+                new_string="mode: off",
+            ))
+            assert "error" in result
+            assert "Hermes config" in result["error"]
+        finally:
+            fake_config.unlink(missing_ok=True)
+
+    def test_hermes_config_allowed_when_opted_in(self, tmp_path, monkeypatch):
+        fake_config = Path.home() / ".hermes" / f"_pytest_cfg_allow_{os.getpid()}.yaml"
+        fake_config.write_text("approvals:\n  mode: manual\n")
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools._agent_config_writes_allowed", lambda: True)
+
+        from tools.file_tools import _check_sensitive_path
+        try:
+            assert _check_sensitive_path(str(fake_config)) is None
+        finally:
+            fake_config.unlink(missing_ok=True)
 
     def test_system_path_still_blocked(self, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/some/other/path")

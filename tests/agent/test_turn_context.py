@@ -406,3 +406,46 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     """
     assert not _title_turn(platform).called
 
+
+# ── P2.1 execution provenance ────────────────────────────────────────────────
+#
+# The prologue seeds a turn-scoped execution_id + execution_kind on the agent
+# and threads them into the ordinary per-turn hooks so a plugin can tell a live
+# turn from a background-review fork turn without prompt-text/turn-id heuristics.
+
+
+def test_execution_kind_defaults_to_live():
+    agent = _FakeAgent()
+    _build(agent)
+    assert agent._execution_kind == "live"
+    assert agent._execution_id  # a non-empty turn-scoped id was seeded
+
+
+def test_execution_kind_not_overwritten_when_caller_tagged():
+    """A caller (e.g. background_review) sets _execution_kind before the turn
+    builds; the prologue must not clobber it back to 'live'."""
+    agent = _FakeAgent()
+    agent._execution_kind = "background_review"
+    agent._execution_id = "fork-id-123"
+    _build(agent)
+    assert agent._execution_kind == "background_review"
+    assert agent._execution_id == "fork-id-123"
+
+
+def test_execution_provenance_reaches_per_turn_hook():
+    """The seeded provenance is threaded into the ordinary per-turn hook
+    surface, not just left on the agent — pre_llm_call is the representative
+    case."""
+    agent = _FakeAgent()
+    captured = {}
+
+    def _capture(hook_name, **kwargs):
+        if hook_name == "pre_llm_call":
+            captured.update(kwargs)
+        return []
+
+    with patch("hermes_cli.lifecycle.invoke_hook", _capture):
+        _build(agent)
+
+    assert captured.get("execution_kind") == "live"
+    assert captured.get("execution_id") == agent._execution_id

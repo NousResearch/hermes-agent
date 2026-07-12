@@ -2829,6 +2829,7 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
+            "Copilot-Integration-Id": "vscode-chat",
             "Openai-Intent": "conversation-edits",
             "x-initiator": "agent" if is_agent_turn else "user",
         }

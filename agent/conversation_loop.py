@@ -1238,7 +1238,11 @@ def run_conversation(
                             f"⏳ {_nous_msg} Trying fallback..."
                         )
                         agent._buffer_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
+                        # Reason is knowable here: this guard fires only when a
+                        # sibling session already recorded a Nous rate limit, so
+                        # the failover announce should say "(rate limit)" — not a
+                        # bare line. (2026-07-12 reason-threading sweep.)
+                        if agent._try_activate_fallback(reason=FailoverReason.rate_limit):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             retry_count = 0
@@ -1584,6 +1588,10 @@ def run_conversation(
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
+                    # Floor site (by design, no reason=): an empty/malformed
+                    # response is not classified here, so let the failover
+                    # resolve to the honest "connection issue" floor rather than
+                    # fabricate a reason. (2026-07-12 reason-threading sweep.)
                     if agent._try_activate_fallback():
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
@@ -1657,6 +1665,9 @@ def run_conversation(
                         # Try fallback before giving up
                         if agent._has_pending_fallback():
                             agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                        # Floor site (by design, no reason=): invalid-response
+                        # exhaustion carries no classification here → "connection
+                        # issue" floor. (2026-07-12 reason-threading sweep.)
                         if agent._try_activate_fallback():
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
@@ -1988,7 +1999,12 @@ def run_conversation(
                             agent._emit_status(
                                 "Content filter terminated stream; switching to fallback..."
                             )
-                            if agent._try_activate_fallback():
+                            # Reason is knowable: a content filter killed the
+                            # stream → announce "(safety refusal)", not a bare
+                            # line. (2026-07-12 reason-threading sweep.)
+                            if agent._try_activate_fallback(
+                                reason=FailoverReason.content_policy_blocked
+                            ):
                                 # Roll the partial content (if any was already
                                 # appended in a prior continuation pass) back to
                                 # the last clean turn so the fallback provider
@@ -3932,7 +3948,13 @@ def run_conversation(
                             agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if _may_fallback and agent._try_activate_fallback():
+                    # Thread the classified reason so a client-error failover
+                    # announces WHY (e.g. "(safety refusal)" / "(TLS error)") to
+                    # match the status prose emitted just above — not a bare
+                    # line. (2026-07-12 reason-threading sweep.)
+                    if _may_fallback and agent._try_activate_fallback(
+                        reason=classified.reason
+                    ):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -4141,7 +4163,16 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    # Thread the classified reason so a retry-exhausted failover
+                    # announces WHY (e.g. "(provider overloaded)" for a 503) —
+                    # this was THE bare-announce bug (2026-07-11 21:14 incident,
+                    # session 20260710_182847_84cb906d). `classified` is bound
+                    # unconditionally at the top of this except handler; getattr
+                    # is cheap error-path insurance that degrades to the honest
+                    # "connection issue" floor rather than crashing.
+                    if agent._try_activate_fallback(
+                        reason=getattr(classified, "reason", None)
+                    ):
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -5243,6 +5274,9 @@ def run_conversation(
                             "⚠️ Model returning empty responses — "
                             "switching to fallback provider..."
                         )
+                        # Floor site (by design, no reason=): repeated empty
+                        # responses aren't classified here → "connection issue"
+                        # floor. (2026-07-12 reason-threading sweep.)
                         if agent._try_activate_fallback():
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)

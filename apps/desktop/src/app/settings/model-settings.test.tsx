@@ -95,12 +95,26 @@ describe('ModelSettings', () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    const fastSwitch = await screen.findByRole('switch')
+    const fastSwitch = await screen.findByRole('switch', { name: /fast/i })
     fireEvent.click(fastSwitch)
 
     await waitFor(() =>
       expect(saveHermesConfig).toHaveBeenCalledWith(
         expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
+      )
+    )
+  })
+
+  it('writes default_reasoning_off_for_local when the local-reasoning switch is toggled', async () => {
+    await renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    const localSwitch = await screen.findByRole('switch', { name: /local/i })
+    fireEvent.click(localSwitch)
+
+    await waitFor(() =>
+      expect(saveHermesConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: expect.objectContaining({ default_reasoning_off_for_local: true }) })
       )
     )
   })

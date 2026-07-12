@@ -93,6 +93,11 @@ const isFastTier = (tier: unknown): boolean =>
       .toLowerCase()
   )
 
+// Truthy coercion mirroring the backend's is_truthy_value, so a real YAML
+// boolean and a hand-edited `"true"`/`yes`/`on`/`1` both read back as on.
+const isTruthyFlag = (v: unknown): boolean =>
+  v === true || ['1', 'on', 'true', 'yes'].includes(String(v ?? '').trim().toLowerCase())
+
 // Reuse the composer's effort labels (`xhigh` shows as "Max", else 1:1).
 const effortLabelKey = (v: string) => (v === 'xhigh' ? 'max' : v) as 'high' | 'low' | 'max' | 'medium' | 'minimal'
 
@@ -390,10 +395,16 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
+  // Opt-in: start NEW local-model chats with Thinking off. Off by default, so
+  // reasoning stays on (upstream default) until the user turns this on. The
+  // backend applies it at session creation for loopback endpoints only
+  // (tui_gateway `_startup_reasoning_config`).
+  const localReasoningOff = isTruthyFlag(getNested(config ?? {}, 'agent.default_reasoning_off_for_local'))
+
   // Persist a single agent.* default by round-tripping the whole config record
   // (PUT /api/config replaces it) — optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
-    async (key: string, value: string) => {
+    async (key: string, value: boolean | string) => {
       if (!config) {
         return
       }
@@ -696,6 +707,18 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   </SelectContent>
                 </Select>
               </div>
+            )}
+            {reasoningSupported && (
+              <label className="flex items-center gap-2 text-xs">
+                {m.localReasoningOff}
+                <Switch
+                  checked={localReasoningOff}
+                  onCheckedChange={checked =>
+                    void writeAgentDefault('agent.default_reasoning_off_for_local', checked)
+                  }
+                  size="xs"
+                />
+              </label>
             )}
             {fastSupported && (
               <label className="flex items-center gap-2 text-xs">

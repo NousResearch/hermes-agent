@@ -24,7 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import is_truthy_value
+from utils import base_url_hostname, is_truthy_value
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import sanitize_replay_history
 from tui_gateway import git_probe
@@ -2539,6 +2539,46 @@ def _load_reasoning_config() -> dict | None:
     )
 
 
+# Loopback hosts that mark a runtime as a locally-run model server — Ollama,
+# llama.cpp, vLLM, LM Studio and other localhost OpenAI-compatible endpoints.
+_LOCAL_MODEL_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _default_reasoning_off_for_local() -> bool:
+    """Opt-in preference (default False): start NEW local-model sessions with
+    Thinking off.
+
+    Off by default, so upstream's reasoning-on default is unchanged — an empty
+    ``agent.reasoning_effort`` still resolves to the provider default (Medium)
+    for every model — unless the user turns this on in Settings → Model.
+    """
+    return is_truthy_value(
+        (_load_cfg().get("agent") or {}).get("default_reasoning_off_for_local", False)
+    )
+
+
+def _runtime_is_local_model(runtime: dict | None) -> bool:
+    """True when the resolved runtime points at a loopback model endpoint."""
+    if not isinstance(runtime, dict):
+        return False
+    return base_url_hostname(str(runtime.get("base_url") or "")) in (
+        _LOCAL_MODEL_LOOPBACK_HOSTS
+    )
+
+
+def _startup_reasoning_config(runtime: dict | None) -> dict | None:
+    """Reasoning config for a brand-new session that carries no explicit
+    per-session pick.
+
+    Honors the opt-in ``default_reasoning_off_for_local`` preference for local
+    models; otherwise returns the global default (upstream behavior — thinking
+    stays on unless the user configured an explicit effort/``none``).
+    """
+    if _default_reasoning_off_for_local() and _runtime_is_local_model(runtime):
+        return {"enabled": False}
+    return _load_reasoning_config()
+
+
 def _load_service_tier() -> str | None:
     raw = (
         str((_load_cfg().get("agent") or {}).get("service_tier", "") or "")
@@ -4606,7 +4646,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override
             if reasoning_config_override is not None
-            else _load_reasoning_config()
+            else _startup_reasoning_config(runtime)
         ),
         service_tier=(
             service_tier_override

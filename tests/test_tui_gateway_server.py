@@ -1757,6 +1757,77 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert captured["platform"] == "tui"
 
 
+def _make_agent_env(monkeypatch, base_url, cfg):
+    """Minimal _make_agent harness capturing the AIAgent kwargs, with the
+    runtime provider pinned to ``base_url`` and config to ``cfg``."""
+    captured = {}
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": "custom",
+            "base_url": base_url,
+            "api_key": "token",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    return captured
+
+
+def test_make_agent_local_reasoning_off_opt_in(monkeypatch):
+    # Preference on + loopback endpoint → a brand-new local session starts with
+    # Thinking off (the opt-in the desktop toggle turns on).
+    captured = _make_agent_env(
+        monkeypatch,
+        "http://127.0.0.1:11434/v1",
+        {
+            "model": {"default": "llama3", "provider": "custom"},
+            "agent": {"default_reasoning_off_for_local": True},
+        },
+    )
+    server._make_agent("sid", "session-key")
+    assert captured["reasoning_config"] == {"enabled": False}
+
+
+def test_make_agent_local_reasoning_off_defaults_to_upstream(monkeypatch):
+    # Preference OFF (the default) → upstream behavior preserved: an empty
+    # reasoning_effort resolves to the provider default (reasoning stays on),
+    # so _make_agent hands AIAgent ``reasoning_config=None``.
+    captured = _make_agent_env(
+        monkeypatch,
+        "http://127.0.0.1:11434/v1",
+        {"model": {"default": "llama3", "provider": "custom"}},
+    )
+    server._make_agent("sid", "session-key")
+    assert captured["reasoning_config"] is None
+
+
+def test_make_agent_local_reasoning_off_skips_remote_models(monkeypatch):
+    # Preference on but a REMOTE endpoint → unchanged; the opt-in is local-only.
+    captured = _make_agent_env(
+        monkeypatch,
+        "https://openrouter.ai/api/v1",
+        {
+            "model": {"default": "gpt-5.5", "provider": "openrouter"},
+            "agent": {"default_reasoning_off_for_local": True},
+        },
+    )
+    server._make_agent("sid", "session-key")
+    assert captured["reasoning_config"] is None
+
+
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     chain = [
         {"provider": "openrouter", "model": "openai/gpt-5.5"},

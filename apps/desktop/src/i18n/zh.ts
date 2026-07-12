@@ -882,6 +882,7 @@ export const zh: Translations = {
       defaultsLabel: '默认值',
       reasoning: '推理',
       reasoningOff: '关闭',
+      localReasoningOff: '本地模型关闭推理',
       defaultsFailed: '保存模型默认值失败',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',

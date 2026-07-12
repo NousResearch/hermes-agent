@@ -108,7 +108,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        ⚠ approval required · {req.description}
+        ! approval required · {req.description}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -257,7 +257,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   return (
     <Box borderColor={accent} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={accent}>
-        {req.danger ? '⚠' : '?'} {req.title}
+        {req.danger ? '!' : '?'} {req.title}
       </Text>
 
       {req.detail ? (

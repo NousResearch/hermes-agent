@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -79,17 +80,113 @@ def _get_session_db():
 
 
 def _load_sessions_index() -> dict:
-    """Load the gateway sessions.json index directly.
+    """Load the gateway session routing index.
 
     Returns a dict of session_key -> entry_dict with platform routing info.
-    This avoids importing the full SessionStore which needs GatewayConfig.
+
+    state.db is the primary source (#9006): gateway sessions persist their
+    routing metadata (session_key, chat/thread ids, display_name, origin) on
+    the durable session row, so a single database read replaces the old
+    dual-file sessions.json dependency.  Falls back to sessions.json for
+    pre-migration databases where no gateway rows carry a session_key yet.
+    """
+    entries = _load_sessions_index_from_db()
+    if entries:
+        return entries
+    return _load_sessions_index_from_json()
+
+
+def _row_to_index_entry(row: dict) -> dict:
+    """Convert a state.db gateway session row to the sessions.json entry shape."""
+    origin = {}
+    origin_json = row.get("origin_json")
+    if origin_json:
+        try:
+            parsed = json.loads(origin_json)
+            if isinstance(parsed, dict):
+                origin = parsed
+        except (TypeError, ValueError):
+            pass
+    if not origin:
+        # Pre-origin_json rows: synthesize the minimal origin from columns.
+        origin = {
+            "platform": row.get("source", ""),
+            "chat_id": row.get("chat_id"),
+            "chat_type": row.get("chat_type"),
+            "thread_id": row.get("thread_id"),
+            "user_id": row.get("user_id"),
+        }
+
+    def _iso(ts) -> str:
+        try:
+            return datetime.fromtimestamp(float(ts)).isoformat() if ts else ""
+        except (TypeError, ValueError, OSError):
+            return ""
+
+    input_tokens = int(row.get("input_tokens") or 0)
+    output_tokens = int(row.get("output_tokens") or 0)
+    return {
+        "session_id": str(row.get("id", "")),
+        "session_key": row.get("session_key", ""),
+        "platform": row.get("source", ""),
+        "chat_type": row.get("chat_type") or origin.get("chat_type", ""),
+        "display_name": row.get("display_name") or origin.get("chat_name") or "",
+        "origin": origin,
+        "created_at": _iso(row.get("started_at")),
+        "updated_at": _iso(row.get("last_active") or row.get("started_at")),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def _load_sessions_index_from_db() -> dict:
+    """Build the routing index from state.db gateway session rows."""
+    db = _get_session_db()
+    if db is None:
+        return {}
+    try:
+        lister = getattr(db, "list_gateway_sessions", None)
+        if not callable(lister):
+            return {}
+        rows = lister(active_only=True)
+        entries = {}
+        for row in rows:
+            key = row.get("session_key")
+            if not key:
+                continue
+            entries[key] = _row_to_index_entry(row)
+        return entries
+    except Exception as e:
+        logger.debug("Failed to load gateway sessions from state.db: %s", e)
+        return {}
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _load_sessions_index_from_json() -> dict:
+    """Legacy fallback: load the gateway sessions.json index directly.
+
+    Used only for pre-migration databases whose gateway rows don't carry a
+    session_key yet.  This avoids importing the full SessionStore which
+    needs GatewayConfig.
     """
     sessions_file = _get_sessions_dir() / "sessions.json"
     if not sessions_file.exists():
         return {}
     try:
         with open(sessions_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Drop documentation/metadata sentinels (keys starting with "_", e.g.
+        # the "_README" note the gateway writes into the index). They are not
+        # session entries and would break consumers that treat every value as
+        # an entry dict.
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if not str(k).startswith("_")}
+        return {}
     except Exception as e:
         logger.debug("Failed to load sessions.json: %s", e)
         return {}
@@ -113,6 +210,25 @@ def _load_channel_directory() -> dict:
     except Exception as e:
         logger.debug("Failed to load channel_directory.json: %s", e)
         return {}
+
+
+def _coerce_int(
+    value,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Coerce value to int with fallback and clamping.
+
+    Used at MCP tool boundaries to handle invalid types from external clients.
+    Returns default if value cannot be converted to int.
+    """
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        coerced = default
+    return max(minimum, min(coerced, maximum))
 
 
 def _extract_message_content(msg: dict) -> str:
@@ -150,7 +266,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 url = part.get("url", part.get("source", {}).get("url", ""))
                 if url:
                     attachments.append({"type": "image", "url": url})
-            elif ptype not in ("text",):
+            elif ptype not in {"text",}:
                 # Unknown non-text content type
                 attachments.append({"type": ptype, "data": part})
 
@@ -200,8 +316,7 @@ class EventBridge:
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when files haven't changed
-        self._sessions_json_mtime: float = 0.0
+        # mtime cache — skip expensive work when state.db hasn't changed
         self._state_db_mtime: float = 0.0
         self._cached_sessions_index: dict = {}
 
@@ -327,21 +442,14 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        Uses mtime checks on sessions.json and state.db to skip work
-        when nothing has changed — makes 200ms polling essentially free.
+        Uses a single mtime check on state.db to skip work when nothing
+        has changed — makes 200ms polling essentially free.  Since #9006
+        the routing index itself lives in state.db (session rows carry
+        session_key/origin metadata), so a new conversation and its first
+        message land in the SAME file and one mtime check covers both —
+        eliminating the old dual-file (sessions.json + state.db) race that
+        could drop brand-new conversations (#8925).
         """
-        # Check if sessions.json has changed (mtime check is ~1μs)
-        sessions_file = _get_sessions_dir() / "sessions.json"
-        try:
-            sj_mtime = sessions_file.stat().st_mtime if sessions_file.exists() else 0.0
-        except OSError:
-            sj_mtime = 0.0
-
-        if sj_mtime != self._sessions_json_mtime:
-            self._sessions_json_mtime = sj_mtime
-            self._cached_sessions_index = _load_sessions_index()
-
-        # Check if state.db has changed
         try:
             from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"
@@ -353,10 +461,14 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        if db_mtime == self._state_db_mtime:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime
+        # Refresh the routing index from state.db on every change tick —
+        # it's a single indexed query and it can never lag the messages
+        # table (both live in the same database file).
+        self._cached_sessions_index = _load_sessions_index()
         entries = self._cached_sessions_index
 
         for session_key, entry in entries.items():
@@ -395,7 +507,7 @@ class EventBridge:
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))
                 role = msg.get("role", "")
-                if role not in ("user", "assistant"):
+                if role not in {"user", "assistant"}:
                     continue
                 if ts > last_seen:
                     new_messages.append(msg)
@@ -433,7 +545,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
             "MCP server requires the 'mcp' package. "
-            "Install with: pip install 'hermes-agent[mcp]'"
+            f"Install with: {sys.executable} -m pip install 'mcp'"
         )
 
     mcp = FastMCP(
@@ -465,6 +577,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             limit: Maximum number of conversations to return (default 50)
             search: Optional text to filter conversations by name
         """
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
         entries = _load_sessions_index()
         conversations = []
 
@@ -552,6 +665,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: The session key from conversations_list
             limit: Maximum number of messages to return (default 50, most recent)
         """
+        limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
         entries = _load_sessions_index()
         entry = entries.get(session_key)
         if not entry:
@@ -573,7 +687,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         filtered = []
         for msg in all_messages:
             role = msg.get("role", "")
-            if role in ("user", "assistant"):
+            if role in {"user", "assistant"}:
                 content = _extract_message_content(msg)
                 if content:
                     filtered.append({
@@ -664,6 +778,8 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: Optional filter to one conversation
             limit: Maximum events to return (default 20)
         """
+        after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
+        limit = _coerce_int(limit, default=20, minimum=1, maximum=200)
         result = bridge.poll_events(
             after_cursor=after_cursor,
             session_key=session_key,
@@ -689,10 +805,17 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: Optional filter to one conversation
             timeout_ms: Maximum wait time in milliseconds (default 30000)
         """
+        after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
+        timeout_ms = _coerce_int(
+            timeout_ms,
+            default=30000,
+            minimum=0,
+            maximum=300000,
+        )  # Cap at 5 minutes
         event = bridge.wait_for_event(
             after_cursor=after_cursor,
             session_key=session_key,
-            timeout_ms=min(timeout_ms, 300000),  # Cap at 5 minutes
+            timeout_ms=timeout_ms,
         )
         if event:
             return json.dumps({"event": event}, indent=2)
@@ -772,7 +895,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"count": len(targets), "channels": targets}, indent=2)
 
         channels = []
-        for plat, entries_list in directory.items():
+        for plat, entries_list in directory.get("platforms", {}).items():
             if platform and plat.lower() != platform.lower():
                 continue
             if isinstance(entries_list, list):
@@ -817,7 +940,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
-        if decision not in ("allow-once", "allow-always", "deny"):
+        if decision not in {"allow-once", "allow-always", "deny"}:
             return json.dumps({
                 "error": f"Invalid decision: {decision}. "
                          f"Must be allow-once, allow-always, or deny"
@@ -838,7 +961,7 @@ def run_mcp_server(verbose: bool = False) -> None:
     if not _MCP_SERVER_AVAILABLE:
         print(
             "Error: MCP server requires the 'mcp' package.\n"
-            "Install with: pip install 'hermes-agent[mcp]'",
+            f"Install with: {sys.executable} -m pip install 'mcp'",
             file=sys.stderr,
         )
         sys.exit(1)

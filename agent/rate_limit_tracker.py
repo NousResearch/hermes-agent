@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 
 @dataclass
@@ -97,8 +97,12 @@ def parse_rate_limit_headers(
 
     Returns None if no rate limit headers are present.
     """
+    # Normalize to lowercase so lookups work regardless of how the server
+    # capitalises headers (HTTP header names are case-insensitive per RFC 7230).
+    lowered = {k.lower(): v for k, v in headers.items()}
+
     # Quick check: at least one rate limit header must exist
-    has_any = any(k.lower().startswith("x-ratelimit-") for k in headers)
+    has_any = any(k.startswith("x-ratelimit-") for k in lowered)
     if not has_any:
         return None
 
@@ -109,9 +113,9 @@ def parse_rate_limit_headers(
         #      resource="tokens", suffix="-1h" -> per-hour
         tag = f"{resource}{suffix}"
         return RateLimitBucket(
-            limit=_safe_int(headers.get(f"x-ratelimit-limit-{tag}")),
-            remaining=_safe_int(headers.get(f"x-ratelimit-remaining-{tag}")),
-            reset_seconds=_safe_float(headers.get(f"x-ratelimit-reset-{tag}")),
+            limit=_safe_int(lowered.get(f"x-ratelimit-limit-{tag}")),
+            remaining=_safe_int(lowered.get(f"x-ratelimit-remaining-{tag}")),
+            reset_seconds=_safe_float(lowered.get(f"x-ratelimit-reset-{tag}")),
             captured_at=now,
         )
 

@@ -9,7 +9,7 @@ pairing code to the chat.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +17,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 
 # ---------------------------------------------------------------------------
@@ -28,11 +29,15 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
+        self._completion_consumed: set = set()
 
     def get(self, session_id):
         if self._sessions:
             return self._sessions.pop(0)
         return None
+
+    def is_completion_consumed(self, session_id):
+        return session_id in self._completion_consumed
 
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
@@ -96,6 +101,46 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_poll_does_not_suppress_notify_on_complete_watcher(monkeypatch, tmp_path):
+    """Regression: polling an exited process must not suppress watcher injection."""
+    import tools.process_registry as pr_module
+
+    registry = ProcessRegistry()
+    session = ProcessSession(
+        id="proc_polled_completion",
+        command="echo done",
+        output_buffer="done\n",
+        exited=True,
+        exit_code=0,
+        notify_on_complete=True,
+    )
+    registry._finished[session.id] = session
+
+    poll_result = registry.poll(session.id)
+    assert poll_result["status"] == "exited"
+    assert not registry.is_completion_consumed(session.id)
+
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    watcher = _watcher_dict_with_notify()
+    watcher["session_id"] = session.id
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert session.id in event.text
+    assert event.internal is True
+
+
+@pytest.mark.asyncio
 async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
     import gateway.run as gateway_run
@@ -128,12 +173,16 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
 
     monkeypatch.setattr(GatewayRunner, "_is_user_authorized", tracking_auth)
 
-    # _handle_message will proceed past auth check and eventually fail on
-    # downstream logic. We just need to verify auth is skipped.
+    # Stop execution before the agent runner so the test doesn't block in
+    # run_in_executor.  Auth check happens before _handle_message_with_agent.
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("sentinel — stop here")
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+
     try:
         await runner._handle_message(event)
-    except Exception:
-        pass  # Expected — downstream code needs more setup
+    except RuntimeError:
+        pass  # Expected sentinel
 
     assert not auth_called, (
         "_is_user_authorized should NOT be called for internal events"
@@ -175,10 +224,16 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
 
     runner.pairing_store.generate_code = tracking_generate
 
+    # Stop execution before the agent runner so the test doesn't block in
+    # run_in_executor.  Pairing check happens before _handle_message_with_agent.
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("sentinel — stop here")
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+
     try:
         await runner._handle_message(event)
-    except Exception:
-        pass  # Expected — downstream code needs more setup
+    except RuntimeError:
+        pass  # Expected sentinel
 
     assert not generate_called, (
         "Pairing code should NOT be generated for internal events"
@@ -186,11 +241,172 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp_path):
-    """Verify the normal (non-internal) path still triggers pairing for unknown users."""
+async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path):
+    """Synthetic completion event should carry user_id and user_name from the watcher."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    watcher = _watcher_dict_with_notify()
+    watcher["user_id"] = "user-42"
+    watcher["user_name"] = "alice"
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_id == "user-42"
+    assert event.source.user_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+    from gateway.session import SessionSource
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="user-42",
+            user_name="alice",
+        )
+    )
+
+    watcher = {
+        "session_id": "proc_test_internal",
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "thread_id": "42",
+        "notify_on_complete": True,
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.source.platform == Platform.TELEGRAM
+    assert event.source.chat_id == "-100"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "42"
+    assert event.source.user_id == "user-42"
+    assert event.source.user_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
+    """A non-internal event with user_id=None should be silently dropped."""
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id=None,
+    )
+    event = MessageEvent(
+        text="service message",
+        source=source,
+        internal=False,
+    )
+
+    result = await runner._handle_message(event)
+
+    # Should return None (dropped) and NOT send any pairing message
+    assert result is None
+    assert adapter.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path):
+    """A message with user_id=None must never call generate_code."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+
+    generate_called = False
+    original_generate = runner.pairing_store.generate_code
+
+    def tracking_generate(*args, **kwargs):
+        nonlocal generate_called
+        generate_called = True
+        return original_generate(*args, **kwargs)
+
+    runner.pairing_store.generate_code = tracking_generate
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="456",
+        chat_type="dm",
+        user_id=None,
+    )
+    event = MessageEvent(text="anonymous", source=source, internal=False)
+
+    await runner._handle_message(event)
+
+    assert not generate_called, (
+        "Pairing code should NOT be generated for messages with user_id=None"
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp_path):
+    """Verify the normal (non-internal) path still triggers pairing for unknown users."""
+    import gateway.run as gateway_run
+    import gateway.pairing as pairing_mod
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    # gateway.pairing.PAIRING_DIR is a module-level constant captured at
+    # import time from whichever HERMES_HOME was set then. Per-test
+    # HERMES_HOME redirection in conftest doesn't retroactively move it.
+    # Override directly so pairing rate-limit state lives in this test's
+    # tmp_path (and so stale state from prior xdist workers can't leak in).
+    pairing_dir = tmp_path / "pairing"
+    pairing_dir.mkdir()
+    monkeypatch.setattr(pairing_mod, "PAIRING_DIR", pairing_dir)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by

@@ -24,6 +24,18 @@ class TestWriteAndRead:
         items[0]["content"] = "MUTATED"
         assert store.read()[0]["content"] == "Task"
 
+    def test_write_deduplicates_duplicate_ids(self):
+        store = TodoStore()
+        result = store.write([
+            {"id": "1", "content": "First version", "status": "pending"},
+            {"id": "2", "content": "Other task", "status": "pending"},
+            {"id": "1", "content": "Latest version", "status": "in_progress"},
+        ])
+        assert result == [
+            {"id": "2", "content": "Other task", "status": "pending"},
+            {"id": "1", "content": "Latest version", "status": "in_progress"},
+        ]
+
 
 class TestHasItems:
     def test_empty_store(self):
@@ -105,3 +117,61 @@ class TestTodoToolFunction:
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
+
+
+class TestTodoStoreBounds:
+    """Bounds on persisted todo state (GHSA-5g4g-6jrg-mw3g hardening).
+
+    The todo list is re-injected into context after every compression event,
+    so an unbounded item — whether authored by the model or replayed from
+    caller-supplied history on the API server's _hydrate_todo_store path —
+    would defeat the compression it rides through. These pin the caps.
+    Not a security boundary (the API surface is authenticated and the caller
+    supplies their own history); this is footgun containment / parity.
+    """
+
+    def test_oversized_content_is_truncated(self):
+        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
+        store = TodoStore()
+        store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
+        item = store.read()[0]
+        assert len(item["content"]) <= MAX_TODO_CONTENT_CHARS
+        assert item["content"].endswith("… [truncated]")
+
+    def test_injection_block_is_bounded(self):
+        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
+        store = TodoStore()
+        store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
+        inj = store.format_for_injection()
+        # Before the fix this was ~50085 chars; now it tracks the cap.
+        assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
+
+    def test_merge_update_content_is_capped(self):
+        """The merge path updates content directly, bypassing _validate —
+        verify it is capped too."""
+        from tools.todo_tool import MAX_TODO_CONTENT_CHARS
+        store = TodoStore()
+        store.write([{"id": "1", "content": "short", "status": "pending"}])
+        store.write([{"id": "1", "content": "B" * 50001}], merge=True)
+        assert len(store.read()[0]["content"]) <= MAX_TODO_CONTENT_CHARS
+
+    def test_item_count_is_bounded(self):
+        from tools.todo_tool import MAX_TODO_ITEMS
+        store = TodoStore()
+        store.write([
+            {"id": str(i), "content": f"task {i}", "status": "pending"}
+            for i in range(5000)
+        ])
+        assert len(store.read()) == MAX_TODO_ITEMS
+
+    def test_normal_list_is_unchanged(self):
+        """No regression: ordinary plans pass through untouched (no marker,
+        same content, same order)."""
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "write the report", "status": "in_progress"},
+            {"id": "2", "content": "review PR", "status": "pending"},
+        ])
+        items = store.read()
+        assert [i["content"] for i in items] == ["write the report", "review PR"]
+        assert "[truncated]" not in items[0]["content"]

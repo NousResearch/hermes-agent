@@ -1177,6 +1177,24 @@ def create_profile(
     # unit-generation paths handle gateway lifecycle.
     _maybe_register_gateway_service(canon)
 
+    # Commissioning-time readiness contract: a profile is not merely created;
+    # it must also prove its path/credential boundary is internally wired to
+    # the profile it represents.  Persisting the result gives the dashboard and
+    # doctor cron a common issue file to surface/repair if creation drift ever
+    # appears.
+    try:
+        from hermes_cli.agent_readiness import check_agent_readiness
+
+        check_agent_readiness(
+            profile_name=canon,
+            profile_dir=profile_dir,
+            runtime_home=profile_dir,
+            repair=True,
+            persist=True,
+        )
+    except Exception:
+        pass  # readiness diagnostics must not strand an otherwise valid profile
+
     return profile_dir
 
 

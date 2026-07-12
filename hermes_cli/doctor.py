@@ -688,6 +688,31 @@ def run_doctor(args):
         except ImportError:
             check_warn(name, "(optional, not installed)")
     
+    _section("Agent Readiness")
+    try:
+        from hermes_cli.agent_readiness import check_agent_readiness
+
+        readiness = check_agent_readiness(repair=should_fix)
+        if readiness.issues:
+            for item in readiness.issues:
+                detail = f"expected={item.expected} actual={item.actual}"
+                check_warn(item.message, detail)
+                if item.repairable and not should_fix:
+                    issues.append("Run `hermes doctor --fix` to repair profile readiness drift")
+                elif not item.repairable:
+                    manual_issues.append(
+                        f"Agent readiness drift ({item.check}): {item.message}"
+                    )
+        else:
+            check_ok("Agent profile paths and credential boundary are ready")
+        if should_fix and readiness.repaired:
+            fixed_count += readiness.repaired
+            check_info(f"Repaired {readiness.repaired} readiness issue(s); log: {readiness.log_path}")
+        elif readiness.issues_path:
+            check_info(f"Readiness state: {readiness.issues_path}")
+    except Exception as e:
+        check_warn(f"Agent readiness check failed: {e}")
+
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.
     managed_scope_check()

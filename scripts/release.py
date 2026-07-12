@@ -1283,6 +1283,7 @@ AUTHOR_MAP = {
     "james.russo@heygen.com": "jrusso1020",  # via PR salvage
     "leon@sgp43.com": "LeonSGP43",  # PR #18739 salvage of #14570
     "miniding@miniding.home": "Foolafroos",  # PR #20329 French locale
+    "foolafroos@gmail.com": "Foolafroos",
     "montbra@gmail.com": "Montbra",  # PR #20897 salvage of #16189 (TUI voice PTT)
     "275835513+paulb26@users.noreply.github.com": "paulb26",  # PR #24135 salvage (pty-bridge killpg)
     "promptsiren@gmail.com": "firefly",  # PR #18123 salvage of #16660 (ContextVars)

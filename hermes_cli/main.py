@@ -855,16 +855,9 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
-    try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
-    except Exception:
-        pass
+    # Cheap local checks first: auth.json and config.yaml are on-disk lookups,
+    # while the PROVIDER_REGISTRY sweep below spawns subprocesses (gh) and can
+    # take 15-20s — long enough that desktop setup.status calls time out.
 
     # Check for Nous Portal OAuth credentials
     auth_file = get_hermes_home() / "auth.json"
@@ -891,6 +884,17 @@ def _has_any_provider_configured() -> bool:
         cfg_api_key = (model_cfg.get("api_key") or "").strip()
         if cfg_provider or cfg_base_url or cfg_api_key:
             return True
+
+    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
+    try:
+        for provider_id, pconfig in PROVIDER_REGISTRY.items():
+            if pconfig.auth_type != "api_key":
+                continue
+            status = get_auth_status(provider_id)
+            if status.get("logged_in"):
+                return True
+    except Exception:
+        pass
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
     # Only count these if Hermes has been explicitly configured — Claude Code

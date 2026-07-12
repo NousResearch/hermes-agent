@@ -284,3 +284,40 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
     assert call_kwargs.get("config_context_length") == 100_000
     assert agent._config_context_length == 120_000
     assert agent.context_compressor.context_length == 100_000
+
+
+@patch("agent.model_metadata.get_model_context_length")
+def test_switch_model_custom_codex_threshold_uses_resolved_window(mock_ctx_len):
+    """Custom Codex routes raise, then restore the preserved baseline."""
+    mock_ctx_len.side_effect = [410_000, 1_050_000]
+    agent = _make_agent_with_compressor(config_context_length=None)
+
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-custom",
+        base_url="https://custom.example/v1",
+        api_mode="codex_responses",
+    )
+
+    compressor = agent.context_compressor
+    assert compressor.context_length == 410_000
+    assert compressor._config_threshold_percent == 0.50
+    assert compressor._configured_threshold_percent == 0.85
+    assert compressor.threshold_percent == 0.85
+    assert compressor.threshold_tokens == int(410_000 * 0.85)
+
+    agent.switch_model(
+        "glm-5.2-heavy",
+        "custom",
+        api_key="sk-custom",
+        base_url="https://custom.example/v1",
+        api_mode="chat_completions",
+    )
+
+    assert compressor.context_length == 1_050_000
+    assert compressor._config_threshold_percent == 0.50
+    assert compressor._configured_threshold_percent == 0.50
+    assert compressor.threshold_percent == 0.50
+    assert compressor.threshold_tokens == int(1_050_000 * 0.50)
+    assert mock_ctx_len.call_count == 2

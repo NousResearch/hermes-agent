@@ -867,6 +867,12 @@ def compress_context(
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     agent._session_db.end_session(agent.session_id, "compression")
                     old_session_id = agent.session_id
+                    try:
+                        from agent.codex_websocket_transport import cleanup_codex_websocket_session
+
+                        cleanup_codex_websocket_session(old_session_id)
+                    except Exception:
+                        pass
                     agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                     # Ordering contract: the agent thread updates the contextvar here;
                     # the gateway propagates to SessionEntry after run_in_executor returns.

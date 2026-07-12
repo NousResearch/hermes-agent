@@ -3546,12 +3546,19 @@ class AIAgent:
         except Exception:
             pass
 
-        # Close the OpenAI/httpx client to release sockets immediately.
+        # Close LLM transport sockets immediately. A rebuilt agent receives
+        # fresh runtime credentials and must start a fresh continuation chain.
         try:
             client = getattr(self, "client", None)
             if client is not None:
                 self._close_openai_client(client, reason="cache_evict", shared=True)
                 self.client = None
+        except Exception:
+            pass
+        try:
+            from agent.codex_websocket_transport import cleanup_codex_websocket_session
+
+            cleanup_codex_websocket_session(getattr(self, "session_id", None))
         except Exception:
             pass
 
@@ -3602,12 +3609,18 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Close LLM transport sockets
         try:
             client = getattr(self, "client", None)
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+        try:
+            from agent.codex_websocket_transport import cleanup_codex_websocket_session
+
+            cleanup_codex_websocket_session(getattr(self, "session_id", None))
         except Exception:
             pass
 

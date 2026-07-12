@@ -298,13 +298,15 @@ def _build_mailbox_block(agent) -> str:
     if not messages:
         return ""
 
+    from agent.i18n import t as _t
+
     now = _time.time()
-    block = [f"[AGENT MAILBOX — {len(messages)} unread message(s)]"]
+    block = [_t("mailbox_header", count=len(messages))]
     block.append("─" * 50)
 
     for msg in messages:
         age_sec = int(now - msg.get("at", now))
-        age_str = f"{age_sec}s ago" if age_sec < 120 else f"{age_sec // 60}m ago"
+        age_str = _t("mailbox_age_s", age=age_sec) if age_sec < 120 else _t("mailbox_age_m", age=age_sec // 60)
         block.append(f"From: {msg['from']:24s}  Type: {msg['type']:12s}  {age_str}")
         payload = msg.get("payload", {})
         if isinstance(payload, dict):
@@ -333,17 +335,19 @@ def _build_task_resume_block(checkpoint: dict) -> str:
     if not goal or not completed:
         return ""
 
+    from agent.i18n import t as _t
+
     lines = [
-        "[TASK RESUME]",
-        "You are resuming a previously interrupted task.",
+        _t("task_resume_header"),
+        _t("task_resume_body"),
         "",
-        f"Original task: {goal}",
+        f"{_t('task_resume_original')}: {goal}",
     ]
     if phase:
-        lines.append(f"Current phase: {phase}")
+        lines.append(f"{_t('task_resume_phase')}: {phase}")
 
     lines.append("")
-    lines.append(f"Progress: {len(completed)} steps completed (do NOT re-execute):")
+    lines.append(_t("task_resume_progress", count=len(completed)))
     for i, step in enumerate(completed):
         if not isinstance(step, dict):
             continue
@@ -353,8 +357,8 @@ def _build_task_resume_block(checkpoint: dict) -> str:
 
     lines.append("")
     if budget > 0:
-        lines.append(f"Budget: {budget} turns remaining.")
-    lines.append("Continue from where you left off. Verify state before repeating any action.")
+        lines.append(_t("task_resume_budget", count=budget))
+    lines.append(_t("task_resume_continue"))
 
     return "\n".join(lines)
 

@@ -435,6 +435,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _effective_hint:
         stable_parts.append(_effective_hint)
 
+    # ── Language directive ────────────────────────────────────────────
+    # If agent.lang is set to a non-English locale, inject a one-line
+    # directive so the LLM responds in the user's language.  This keeps
+    # the full system prompt in English (preserving prompt-cache hits)
+    # while the LLM mentally translates it.  Set via config.yaml
+    # (agent.lang: id) or env HERMES_LANG=id.
+    try:
+        _lang = getattr(agent, "lang", "") or os.environ.get("HERMES_LANG", "")
+        if _lang and _lang != "en":
+            from agent.i18n import lang_directive
+            _dir = lang_directive(_lang)
+            if _dir:
+                stable_parts.append(_dir)
+    except Exception:
+        pass
+
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
 

@@ -1059,6 +1059,27 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _resolve_prompt_user_home() -> str:
+    """Return the host home directory for environment hints.
+
+    In containerized Hermes installs, ``HOME`` may be pinned to ``HERMES_HOME``
+    (for example ``/opt/data``), which is the data mount, not the user's real
+    home directory. In that case, prefer the actual OS user home from
+    ``Path.home()`` so the prompt header matches what shells report in-session.
+    """
+    explicit_home = os.environ.get("HOME", "").strip()
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if explicit_home and hermes_home:
+        try:
+            if Path(explicit_home).resolve() == Path(hermes_home).resolve():
+                explicit_home = ""
+        except OSError:
+            explicit_home = explicit_home.strip()
+    if explicit_home:
+        return explicit_home
+    return str(Path.home())
+
+
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
@@ -1096,10 +1117,7 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
-        user_home = os.environ.get("HOME", "").strip()
-        if not user_home:
-            user_home = os.path.expanduser("~")
-        host_lines.append(f"User home directory: {user_home}")
+        host_lines.append(f"User home directory: {_resolve_prompt_user_home()}")
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:

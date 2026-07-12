@@ -441,6 +441,15 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "clarify": "question", "skill_manage": "name",
     }
 
+    # reasoning_effort: show the target level (+ persistence marker)
+    if tool_name == "reasoning_effort":
+        level = _oneline(str(args.get("level", "")).strip().lower())
+        if not level:
+            return None
+        if args.get("persist"):
+            level += " (persist)"
+        return level
+
     # delegate_task: show goal (single) or individual task goals (batch)
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
@@ -592,6 +601,7 @@ _TOOL_VERBS: dict[str, str] = {
     "clarify": "Asking",
     "memory": "Updating memory",
     "todo": "Updating tasks",
+    "reasoning_effort": "Adjusting reasoning effort",
 }
 
 # Verbs that read better without the raw argument preview appended.

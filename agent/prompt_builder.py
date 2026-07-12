@@ -186,6 +186,20 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+# NOTE: deliberately static text — the system prompt is byte-stable for the
+# lifetime of the agent (see agent/system_prompt.py), so the CURRENT level is
+# never rendered here. The model learns the active level from the
+# reasoning_effort tool result; request construction reads
+# agent.reasoning_config live on every API call.
+REASONING_EFFORT_GUIDANCE = (
+    "You can adjust your own reasoning depth with the reasoning_effort tool: "
+    "raise it for ambiguity, debugging, risky changes, or multi-step synthesis; "
+    "lower it for trivial, mechanical, or routine turns. "
+    "Changes apply from your next model request onward and last for the rest of "
+    "the session unless changed again; pass persist=true only when the user asks "
+    "for a permanent default."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

@@ -450,6 +450,7 @@ class AIAgent:
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
         read_terminal_callback: callable = None,
+        reasoning_update_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
         interim_assistant_callback: callable = None,
@@ -526,6 +527,7 @@ class AIAgent:
             reasoning_callback=reasoning_callback,
             clarify_callback=clarify_callback,
             read_terminal_callback=read_terminal_callback,
+            reasoning_update_callback=reasoning_update_callback,
             step_callback=step_callback,
             stream_delta_callback=stream_delta_callback,
             interim_assistant_callback=interim_assistant_callback,
@@ -5723,6 +5725,62 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,
+        )
+
+    def _apply_reasoning_effort(self, function_args: dict) -> str:
+        """Apply a runtime reasoning-effort update to the live agent.
+
+        Mutates ``self.reasoning_config`` only — request construction reads it
+        on every API call, so the change takes effect on the next request. The
+        cached system prompt is deliberately left untouched: it must stay
+        byte-stable for the lifetime of the agent to keep provider prompt
+        caches warm (see agent/system_prompt.py).
+
+        ``reasoning_update_callback(level, parsed_config, persist)`` lets the
+        platform layer scope the change beyond this process — the gateway
+        stores a session override so the level survives its per-message
+        ``agent.reasoning_config`` reset, and both CLI and gateway persist to
+        config.yaml when ``persist`` is true. Returns True when the change was
+        durably persisted.
+        """
+        from tools.reasoning_effort_tool import reasoning_effort_tool as _reasoning_effort_tool
+
+        def _callback(parsed_config, *, level: str, persist: bool = False):
+            current_config = self.reasoning_config if isinstance(self.reasoning_config, dict) else None
+            no_change = current_config == parsed_config
+            persisted = False
+            if self.reasoning_update_callback:
+                try:
+                    persisted = bool(
+                        self.reasoning_update_callback(level, parsed_config, persist)
+                    )
+                except Exception as cb_err:
+                    logger.warning("reasoning_update_callback failed: %s", cb_err)
+            if not no_change:
+                self.reasoning_config = parsed_config
+            enabled = parsed_config.get("enabled") is not False
+            message = (
+                f"Reasoning effort already at {level}"
+                if no_change
+                else f"Reasoning effort set to {level}"
+            )
+            message += " and saved as the default." if persisted else " for this session."
+            if not no_change:
+                message += " The new level applies from your next model request."
+            return {
+                "success": True,
+                "level": level,
+                "enabled": enabled,
+                "reasoning_config": parsed_config,
+                "persisted": persisted,
+                "no_change": no_change,
+                "message": message,
+            }
+
+        return _reasoning_effort_tool(
+            level=function_args.get("level", ""),
+            persist=function_args.get("persist", False),
+            callback=_callback,
         )
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,

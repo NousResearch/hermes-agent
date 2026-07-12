@@ -25,6 +25,46 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _approval_record_matches_subscription(record: Any, sub: dict) -> bool:
+    """Return whether a durable approval belongs to this exact subscriber.
+
+    Approval request ids are intentionally not sufficient authorization: a
+    request may be copied out of one chat and pasted into another.  The
+    persisted route is therefore compared with the subscription that is about
+    to receive the notification before any request details are surfaced.
+    """
+
+    if not isinstance(record, dict):
+        return False
+
+    def _text(value: Any) -> str:
+        return str(value or "")
+
+    def _platform(value: Any) -> str:
+        return _text(getattr(value, "value", value)).lower()
+
+    def _profile(value: Any) -> str:
+        # The default profile predates notifier_profile and is represented by
+        # both NULL/"" and "default" in existing subscription rows.
+        return _text(value).strip() or "default"
+
+    return (
+        _text(record.get("task_id")) == _text(sub.get("task_id"))
+        and _platform(record.get("platform")) == _platform(sub.get("platform"))
+        and _text(record.get("chat_id")) == _text(sub.get("chat_id"))
+        and _text(record.get("thread_id")) == _text(sub.get("thread_id"))
+        and _text(record.get("user_id")) == _text(sub.get("user_id"))
+        and _profile(record.get("notifier_profile"))
+        == _profile(sub.get("notifier_profile"))
+    )
+
+
+def _approval_notice_line(value: Any, *, limit: int) -> str:
+    """Bound a pre-redacted approval field to one chat-safe line."""
+
+    return " ".join(str(value or "").split())[:limit]
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -163,8 +203,14 @@ class GatewayKanbanWatchersMixin:
             return
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
-        # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+        # writes — surface those transitions to subscribers too. Durable
+        # worker approvals use the same claimed-event/cursor machinery so a
+        # gateway restart cannot lose the request and a transient send failure
+        # is retried with the existing rewind semantics.
+        TERMINAL_KINDS = (
+            "completed", "blocked", "gave_up", "crashed", "timed_out",
+            "status", "archived", "unblocked", "approval_requested",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -279,6 +325,25 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                approvals: dict[int, dict] = {}
+                                for event in events:
+                                    if event.kind != "approval_requested":
+                                        continue
+                                    request_id = (
+                                        event.payload.get("request_id")
+                                        or event.payload.get("approval_id")
+                                        if isinstance(event.payload, dict)
+                                        else None
+                                    )
+                                    if not request_id:
+                                        continue
+                                    request = _kb.get_task_approval(conn, str(request_id))
+                                    if (
+                                        isinstance(request, dict)
+                                        and request.get("status") == "pending"
+                                        and _approval_record_matches_subscription(request, sub)
+                                    ):
+                                        approvals[event.id] = request
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -288,6 +353,7 @@ class GatewayKanbanWatchersMixin:
                                     "old_cursor": old_cursor,
                                     "cursor": cursor,
                                     "events": events,
+                                    "approvals": approvals,
                                     "task": task,
                                     "board": slug,
                                 })
@@ -396,6 +462,30 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("status"):
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
+                        elif kind == "approval_requested":
+                            request = d.get("approvals", {}).get(ev.id)
+                            if not request:
+                                # Missing, already-decided, or routed to a
+                                # different subscription. Advance this sub's
+                                # cursor silently; request ids never authorize
+                                # cross-chat disclosure by themselves.
+                                continue
+                            request_id = str(request.get("id") or "")
+                            if not request_id:
+                                continue
+                            display_target = _approval_notice_line(
+                                request.get("display_target"), limit=240,
+                            ) or "(redacted command)"
+                            description = _approval_notice_line(
+                                request.get("description"), limit=200,
+                            )
+                            detail = f" — {description}" if description else ""
+                            msg = (
+                                f"⚠ {board_tag}{tag}Kanban {sub['task_id']} needs approval{detail}\n"
+                                f"Target: {display_target}\n"
+                                f"Approve once: /approve {request_id}\n"
+                                f"Deny: /deny {request_id}"
+                            )
                         else:
                             # archived / unblocked are claimed by TERMINAL_KINDS
                             # (so the cursor advances past them and they can't

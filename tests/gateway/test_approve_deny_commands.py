@@ -272,6 +272,158 @@ class TestApproveCommand:
         assert "expired" in result.lower() or "no longer waiting" in result.lower()
         assert session_key not in runner._pending_approvals
 
+    @pytest.mark.asyncio
+    async def test_approve_explicit_durable_kanban_request(self):
+        runner = _make_runner()
+        runner._active_profile_name = lambda: "default"
+
+        with patch(
+            "gateway.slash_commands._decide_durable_kanban_approval",
+            return_value="approved",
+        ) as decide:
+            result = await runner._handle_approve_command(
+                _make_event("/approve kapr_12345678")
+            )
+
+        assert "approved" in result.lower()
+        assert "once" in result.lower()
+        decide.assert_called_once_with(
+            request_id="kapr_12345678",
+            decision="approve",
+            route={
+                "platform": "telegram",
+                "chat_id": "c1",
+                "thread_id": "",
+                "user_id": "u1",
+                "notifier_profile": "default",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_local_approval_queue_precedes_durable_request_id(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "local"})
+        _gateway_queues[session_key] = [entry]
+
+        with patch(
+            "gateway.slash_commands._decide_durable_kanban_approval",
+        ) as durable_decide:
+            await runner._handle_approve_command(
+                _make_event("/approve kapr_12345678")
+            )
+
+        assert entry.result == "once"
+        durable_decide.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_durable_approve_reports_expired_request(self):
+        runner = _make_runner()
+        runner._active_profile_name = lambda: "default"
+
+        with patch(
+            "gateway.slash_commands._decide_durable_kanban_approval",
+            return_value="expired",
+        ):
+            result = await runner._handle_approve_command(
+                _make_event("/approve kapr_12345678")
+            )
+
+        assert "no longer pending" in result.lower()
+
+    def test_durable_decider_does_not_report_truthy_expired_record_as_approved(
+        self, tmp_path, monkeypatch,
+    ):
+        from gateway.slash_commands import _decide_durable_kanban_approval
+        from hermes_cli import kanban_db as kb
+
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "approval.db"))
+        kb.init_db()
+        route = {
+            "platform": "telegram",
+            "chat_id": "c1",
+            "thread_id": "",
+            "user_id": "u1",
+            "notifier_profile": "default",
+        }
+        record = {
+            "id": "ka_12345678",
+            "status": "pending",
+            **route,
+        }
+        monkeypatch.setattr(kb, "get_task_approval", lambda *_args: record)
+        monkeypatch.setattr(
+            kb,
+            "decide_task_approval",
+            lambda *_args, **_kwargs: {**record, "status": "expired"},
+        )
+
+        state = _decide_durable_kanban_approval(
+            request_id="ka_12345678",
+            decision="approve",
+            route=route,
+        )
+
+        assert state == "expired"
+
+    @pytest.mark.asyncio
+    async def test_durable_approve_round_trip_requeues_exact_routed_task(
+        self, tmp_path, monkeypatch,
+    ):
+        from hermes_cli import kanban_db as kb
+
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "round-trip.db"))
+        kb.init_db()
+        conn = kb.connect()
+        try:
+            task_id = kb.create_task(
+                conn,
+                title="routed approval",
+                assignee="worker",
+            )
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform="telegram",
+                chat_id="c1",
+                user_id="u1",
+                notifier_profile="default",
+            )
+            claimed = kb.claim_task(conn, task_id, claimer="test:gateway")
+            assert claimed is not None
+            request = kb.request_task_approval(
+                conn,
+                task_id=task_id,
+                action_kind="terminal",
+                action_digest="sha256:test",
+                display_target="rm -rf /tmp/example",
+                worker_session_id="worker-session",
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
+                profile="worker",
+                description="destructive command",
+            )
+            assert request is not None
+        finally:
+            conn.close()
+
+        runner = _make_runner()
+        runner._active_profile_name = lambda: "default"
+        result = await runner._handle_approve_command(
+            _make_event(f"/approve {request['id']}")
+        )
+
+        assert "approved" in result.lower()
+        conn = kb.connect()
+        try:
+            assert kb.get_task_approval(conn, request["id"])["status"] == "approved"
+            assert kb.get_task(conn, task_id).status == "ready"
+        finally:
+            conn.close()
+
 
 # ------------------------------------------------------------------
 # /deny command
@@ -378,6 +530,34 @@ class TestDenyCommand:
         await runner._handle_deny_command(_make_event("/deny"))
         assert entry.result == "deny"
         assert entry.reason is None
+
+    @pytest.mark.asyncio
+    async def test_deny_explicit_durable_kanban_request_with_reason(self):
+        runner = _make_runner()
+        runner._active_profile_name = lambda: "default"
+
+        with patch(
+            "gateway.slash_commands._decide_durable_kanban_approval",
+            return_value="denied",
+        ) as decide:
+            result = await runner._handle_deny_command(
+                _make_event("/deny kapr_12345678 wrong directory")
+            )
+
+        assert "denied" in result.lower()
+        assert "wrong directory" in result
+        decide.assert_called_once_with(
+            request_id="kapr_12345678",
+            decision="deny",
+            route={
+                "platform": "telegram",
+                "chat_id": "c1",
+                "thread_id": "",
+                "user_id": "u1",
+                "notifier_profile": "default",
+            },
+            reason="wrong directory",
+        )
 
 
 # ------------------------------------------------------------------

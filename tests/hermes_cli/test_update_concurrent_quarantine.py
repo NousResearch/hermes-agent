@@ -514,6 +514,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
     assert marker["target_pid"] == 101
     assert marker["stopper_pid"] == os.getpid()
+    assert marker["suppress_notification"] is True
 
     captured = capsys.readouterr().out
     assert "Paused gateway profile(s): work" in captured

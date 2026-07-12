@@ -1311,12 +1311,40 @@ class TestPlannedStopMarker:
         assert payload["target_start_time"] == 42
         assert payload["stopper_pid"] == os.getpid()
         assert "written_at" in payload
+        assert payload.get("suppress_notification") is not True
+
+    def test_update_marker_suppresses_notification_only_for_target_self(
+        self, tmp_path, monkeypatch
+    ):
+        from datetime import datetime, timezone
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        marker = tmp_path / ".gateway-planned-stop.json"
+        marker.write_text(
+            json.dumps({
+                "target_pid": os.getpid(),
+                "target_start_time": 42,
+                "stopper_pid": 99999,
+                "written_at": datetime.now(timezone.utc).isoformat(),
+                "suppress_notification": True,
+            })
+        )
+
+        assert status.planned_stop_notification_suppressed_for_self() is True
+        assert marker.exists(), "suppression probe must be non-destructive"
+
+        payload = json.loads(marker.read_text())
+        payload["target_pid"] = os.getpid() + 9999
+        marker.write_text(json.dumps(payload))
+        assert status.planned_stop_notification_suppressed_for_self() is False
 
     def test_consume_returns_true_when_marker_names_self(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         ok = status.write_planned_stop_marker(target_pid=os.getpid())
         assert ok is True
+        assert status.planned_stop_notification_suppressed_for_self() is False
 
         result = status.consume_planned_stop_marker_for_self()
 

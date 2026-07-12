@@ -1428,6 +1428,21 @@ def planned_stop_marker_targets_self() -> bool:
     return True
 
 
+def planned_stop_notification_suppressed_for_self() -> bool:
+    """Return whether this process's live planned stop requests quiet shutdown.
+
+    Only update-specific writers set ``suppress_notification=true``. Legacy
+    markers and normal ``hermes gateway stop`` / service-stop markers omit the
+    field, preserving their existing user-visible shutdown notifications.
+    Validation is delegated to :func:`planned_stop_marker_targets_self` so a
+    stale or foreign marker can never silence this gateway.
+    """
+    if not planned_stop_marker_targets_self():
+        return False
+    record = _read_json_file(_get_planned_stop_marker_path())
+    return bool(record and record.get("suppress_notification") is True)
+
+
 def clear_planned_stop_marker() -> None:
     """Remove the planned-stop marker unconditionally."""
     try:

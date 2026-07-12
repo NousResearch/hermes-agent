@@ -478,6 +478,25 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
 
 @pytest.mark.asyncio
+async def test_update_planned_stop_suppresses_all_shutdown_notifications():
+    """Routine updates stay quiet while preserving normal stop notifications."""
+    from gateway.config import HomeChannel, Platform
+
+    runner, adapter = make_restart_runner()
+    runner._suppress_shutdown_notifications = True
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_suppressed_when_flag_disabled():
     """Active-session ping is muted when gateway_restart_notification=False on the platform."""
     from gateway.config import Platform

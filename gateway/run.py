@@ -2878,6 +2878,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # request -> poll -> proceed loop.
         self._external_drain_active = False
         self._restart_requested = False
+        # Update-specific planned-stop markers set this before stop() starts.
+        # It suppresses only user-facing shutdown pings; drain, resume_pending,
+        # interruption, cleanup, and restart behavior remain unchanged.
+        self._suppress_shutdown_notifications = False
         # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
         # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
         # external signal (container/s6 SIGTERM on `docker restart` or
@@ -5718,6 +5722,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
         """
+        if getattr(self, "_suppress_shutdown_notifications", False):
+            logger.info("Shutdown notifications suppressed for planned update")
+            return
+
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
@@ -20613,14 +20621,28 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # external kill unless the CLI marks it first. SIGINT comes from an
         # interactive Ctrl+C and is likewise an intentional foreground stop.
         planned_stop = False
+        suppress_planned_stop_notification = False
         if received_signal == signal.SIGINT:
             planned_stop = True
         elif not planned_takeover:
+            try:
+                from gateway.status import (
+                    planned_stop_notification_suppressed_for_self,
+                )
+
+                suppress_planned_stop_notification = (
+                    planned_stop_notification_suppressed_for_self()
+                )
+            except Exception as e:
+                logger.debug("Planned stop notification check failed: %s", e)
             try:
                 from gateway.status import consume_planned_stop_marker_for_self
                 planned_stop = consume_planned_stop_marker_for_self()
             except Exception as e:
                 logger.debug("Planned stop marker check failed: %s", e)
+
+        if planned_stop and suppress_planned_stop_notification:
+            runner._suppress_shutdown_notifications = True
 
         # Fast (<10ms) snapshot of who's asking us to shut down — runs
         # synchronously inside the asyncio signal handler, so we keep it

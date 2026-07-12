@@ -8796,6 +8796,11 @@ def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
             "target_start_time": _get_process_start_time(pid),
             "stopper_pid": os.getpid(),
             "written_at": datetime.now(timezone.utc).isoformat(),
+            # Desktop/CLI updates intentionally stop and later restart the
+            # gateway. Active tasks are still drained/interrupted normally,
+            # but routine maintenance should not emit the generic shutdown
+            # warning users need for other stop paths.
+            "suppress_notification": True,
         }
         atomic_json_write(
             Path(profile_path) / ".gateway-planned-stop.json",

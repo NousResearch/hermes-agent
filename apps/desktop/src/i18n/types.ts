@@ -1947,6 +1947,7 @@ export interface Translations {
       other: string
       placeholder: string
       skip: string
+      skipped: string
       continueLabel: string
     }
     tool: {

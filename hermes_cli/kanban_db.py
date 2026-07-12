@@ -8070,7 +8070,7 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
-            released, _retry_status, _active_run_id = _requeue_from_active_run(
+            released, retry_status, _active_run_id = _requeue_from_active_run(
                 conn,
                 tid,
                 expected_run_id=row["active_run_id"],
@@ -8107,6 +8107,9 @@ def enforce_max_runtime(
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
+                expected_retry_status=retry_status,
+                require_unclaimed=True,
+                failure_run_id=run_id,
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
     return timed_out
@@ -8366,9 +8369,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # write_txn so can't nest). ``protocol_violation`` flags the
     # clean-exit-but-still-running case, which is accounted against its
     # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    # counter (see the post-txn loop below). Retry status and released run
+    # identity bind the later failure-accounting transaction to this exact
+    # reaped run so it cannot mutate a successor claim.
+    crash_details: list[tuple[str, int, str, bool, str, str, Optional[int]]] = []
+    # (task_id, pid, claimer, protocol_violation, error_text,
+    #  retry_status, released_run_id)
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
@@ -8456,7 +8462,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
-            released, _retry_status, _active_run_id = _requeue_from_active_run(
+            released, retry_status, _active_run_id = _requeue_from_active_run(
                 conn,
                 row["id"],
                 expected_run_id=row["current_run_id"],
@@ -8506,7 +8512,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                         protocol_violation, error_text, retry_status, run_id)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
@@ -8528,10 +8534,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, _, err_text, _, _ in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
+        for (
+            tid,
+            pid,
+            claimer,
+            protocol_violation,
+            error_text,
+            retry_status,
+            released_run_id,
+        ) in crash_details:
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -8568,6 +8582,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     force_trip=True,
                     release_claim=False,
                     end_run=False,
+                    expected_retry_status=retry_status,
+                    require_unclaimed=True,
+                    failure_run_id=released_run_id,
                     event_payload_extra={
                         "pid": pid,
                         "claimer": claimer,
@@ -8587,6 +8604,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
+                expected_retry_status=retry_status,
+                require_unclaimed=True,
+                failure_run_id=released_run_id,
                 event_payload_extra={"pid": pid, "claimer": claimer},
             )
             if tripped:
@@ -8612,6 +8632,11 @@ def _record_task_failure(
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
+    expected_run_id: Optional[int] = None,
+    expected_claim_lock: Any = _REQUEUE_ANY,
+    expected_retry_status: Optional[str] = None,
+    require_unclaimed: bool = False,
+    failure_run_id: Optional[int] = None,
     event_payload_extra: Optional[dict] = None,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
@@ -8663,13 +8688,38 @@ def _record_task_failure(
     blocked = False
     with write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries "
+            "SELECT consecutive_failures, status, max_retries, "
+            "       current_run_id, claim_lock, worker_pid "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
             return False
+        current_run_id = (
+            int(row["current_run_id"])
+            if row["current_run_id"] is not None
+            else None
+        )
+        if expected_run_id is not None and current_run_id != int(expected_run_id):
+            return False
+        if (
+            expected_claim_lock is not _REQUEUE_ANY
+            and row["claim_lock"] != expected_claim_lock
+        ):
+            return False
+        if require_unclaimed:
+            if expected_retry_status not in {"ready", "review"}:
+                raise ValueError(
+                    "expected_retry_status must be ready or review when "
+                    "require_unclaimed is true"
+                )
+            if (
+                row["status"] != expected_retry_status
+                or current_run_id is not None
+                or row["claim_lock"] is not None
+                or row["worker_pid"] is not None
+            ):
+                return False
         failures = int(row["consecutive_failures"]) + 1
-        cur_status = row["status"]
 
         # Per-task override wins over both caller-supplied and default
         # thresholds. None (the common case) falls through.
@@ -8685,25 +8735,27 @@ def _record_task_failure(
 
         if force_trip or failures >= effective_limit:
             # Trip the breaker.
-            if release_claim:
-                # Spawn path: still running, also clear claim state.
-                conn.execute(
-                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-                    (failures, error[:500], task_id),
-                )
-            else:
-                # Timeout/crash path: task is already at ``ready``
-                # with claim cleared; just flip to blocked + update
-                # counter fields.
-                conn.execute(
-                    "UPDATE tasks SET status = 'blocked', "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status IN ('ready', 'review', 'running')",
-                    (failures, error[:500], task_id),
-                )
+            # CAS the exact snapshot inspected above. In particular, stale
+            # failure bookkeeping must never block a successor run claimed
+            # between a reaper's release transaction and this transaction.
+            changed = conn.execute(
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "consecutive_failures = ?, last_failure_error = ? "
+                "WHERE id = ? AND status = ? AND current_run_id IS ? "
+                "  AND claim_lock IS ? AND worker_pid IS ?",
+                (
+                    failures,
+                    error[:500],
+                    task_id,
+                    row["status"],
+                    current_run_id,
+                    row["claim_lock"],
+                    row["worker_pid"],
+                ),
+            )
+            if changed.rowcount != 1:
+                return False
             run_id = None
             if end_run:
                 # Only the spawn path has an open run to close.
@@ -8728,7 +8780,11 @@ def _record_task_failure(
             if event_payload_extra:
                 payload.update(event_payload_extra)
             _append_event(
-                conn, task_id, "gave_up", payload, run_id=run_id,
+                conn,
+                task_id,
+                "gave_up",
+                payload,
+                run_id=run_id if run_id is not None else failure_run_id,
             )
             blocked = True
         else:
@@ -8740,6 +8796,9 @@ def _record_task_failure(
                     _requeue_from_active_run(
                         conn,
                         task_id,
+                        expected_run_id=expected_run_id,
+                        expected_claim_lock=expected_claim_lock,
+                        expected_worker_pid=row["worker_pid"],
                         consecutive_failures=failures,
                         last_failure_error=error,
                     )
@@ -8747,13 +8806,25 @@ def _record_task_failure(
                 if not released:
                     return False
             else:
-                # Timeout/crash path: task is already at ``ready`` via
-                # its own UPDATE. Just bookkeep the counter + last error.
-                conn.execute(
+                # Timeout/crash path: bookkeep only the exact unclaimed retry
+                # snapshot validated above.
+                changed = conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
-                    (failures, error[:500], task_id),
+                    "last_failure_error = ? "
+                    "WHERE id = ? AND status = ? AND current_run_id IS ? "
+                    "  AND claim_lock IS ? AND worker_pid IS ?",
+                    (
+                        failures,
+                        error[:500],
+                        task_id,
+                        row["status"],
+                        current_run_id,
+                        row["claim_lock"],
+                        row["worker_pid"],
+                    ),
                 )
+                if changed.rowcount != 1:
+                    return False
             if end_run:
                 # Spawn path: close the open run with outcome.
                 run_id = _end_run(
@@ -8778,6 +8849,8 @@ def _record_spawn_failure(
     task_id: str,
     error: str,
     *,
+    expected_run_id: int,
+    expected_claim_lock: str,
     failure_limit: int = None,
 ) -> bool:
     return _record_task_failure(
@@ -8786,6 +8859,8 @@ def _record_spawn_failure(
         failure_limit=failure_limit,
         release_claim=True,
         end_run=True,
+        expected_run_id=int(expected_run_id),
+        expected_claim_lock=str(expected_claim_lock),
     )
 
 
@@ -9420,6 +9495,8 @@ def _dispatch_once_locked(
                 )
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -9479,6 +9556,8 @@ def _dispatch_once_locked(
                 )
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -9511,6 +9590,21 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Review retries obey the same cooldown/blocker guard as ready-lane
+        # retries. In particular, a rate-limited reviewer must not respawn on
+        # every dispatcher tick merely because its source lane is review.
+        guard_reason = check_respawn_guard(conn, row["id"])
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "respawn_guarded",
+                        {"reason": guard_reason, "source_status": "review"},
+                    )
+            continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -9534,6 +9628,8 @@ def _dispatch_once_locked(
                 )
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:
@@ -9582,6 +9678,8 @@ def _dispatch_once_locked(
                 )
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
+                expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock,
                 failure_limit=failure_limit,
             )
             if auto:

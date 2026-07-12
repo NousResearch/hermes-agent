@@ -703,6 +703,194 @@ def test_review_crash_at_failure_threshold_blocks_instead_of_respawning(
         assert kb.list_events(conn, task_id)[-1].kind == "gave_up"
 
 
+@pytest.mark.parametrize("failure_stage", ["workspace", "spawn"])
+@pytest.mark.parametrize("failure_limit", [1, 5])
+def test_stale_dispatch_failure_cannot_mutate_successor_run(
+    kanban_home,
+    monkeypatch,
+    failure_stage,
+    failure_limit,
+):
+    profile = kanban_home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title=f"stale {failure_stage} failure",
+            assignee="worker",
+        )
+        successor = {}
+
+        def replace_claimed_run():
+            active = kb.get_task(conn, task_id)
+            assert active.status == "running"
+            assert kb.reclaim_task(conn, task_id, reason="synthetic race")
+            claimed_b = kb.claim_task(conn, task_id, claimer="successor:B")
+            assert claimed_b is not None
+            successor["task"] = claimed_b
+
+        if failure_stage == "workspace":
+            def fail_workspace(_task, *, board=None):
+                del board
+                replace_claimed_run()
+                raise OSError("stale workspace failure from run A")
+
+            monkeypatch.setattr(kb, "resolve_workspace", fail_workspace)
+
+            def spawn_fn(*_args, **_kwargs):
+                raise AssertionError("spawn reached after workspace failure")
+        else:
+            def spawn_fn(*_args, **_kwargs):
+                replace_claimed_run()
+                raise OSError("stale Popen failure from run A")
+
+        kb.dispatch_once(conn, spawn_fn=spawn_fn, failure_limit=failure_limit)
+
+        claimed_b = successor["task"]
+        after = kb.get_task(conn, task_id)
+        run_b = kb.get_run(conn, claimed_b.current_run_id)
+        assert after.status == "running"
+        assert after.current_run_id == claimed_b.current_run_id
+        assert after.claim_lock == "successor:B"
+        assert after.consecutive_failures == 0
+        assert run_b.status == "running"
+        assert run_b.ended_at is None
+        assert not any(
+            event.kind == "gave_up"
+            and event.run_id == claimed_b.current_run_id
+            for event in kb.list_events(conn, task_id)
+        )
+
+
+@pytest.mark.parametrize("max_retries", [1, 5])
+def test_timeout_failure_accounting_cannot_mutate_successor_run(
+    kanban_home,
+    monkeypatch,
+    max_retries,
+):
+    host = kb._claimer_id().split(":", 1)[0]
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="timeout accounting race",
+            assignee="worker",
+            max_retries=max_retries,
+            max_runtime_seconds=1,
+        )
+        claimed_a = kb.claim_task(conn, task_id, claimer=f"{host}:run-a")
+        assert claimed_a is not None
+        assert kb._set_worker_pid(
+            conn,
+            task_id,
+            424242,
+            expected_run_id=claimed_a.current_run_id,
+            expected_claim_lock=claimed_a.claim_lock,
+        )
+        conn.execute(
+            "UPDATE tasks SET started_at = 1 WHERE id = ?",
+            (task_id,),
+        )
+        conn.execute(
+            "UPDATE task_runs SET started_at = 1 WHERE id = ?",
+            (claimed_a.current_run_id,),
+        )
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        original_record_failure = kb._record_task_failure
+        successor = {}
+
+        def claim_successor_before_accounting(*args, **kwargs):
+            claimed_b = kb.claim_task(conn, task_id, claimer="successor:B")
+            assert claimed_b is not None
+            successor["task"] = claimed_b
+            return original_record_failure(*args, **kwargs)
+
+        monkeypatch.setattr(
+            kb,
+            "_record_task_failure",
+            claim_successor_before_accounting,
+        )
+
+        assert kb.enforce_max_runtime(
+            conn,
+            signal_fn=lambda _pid, _signal: None,
+        ) == [task_id]
+
+        claimed_b = successor["task"]
+        after = kb.get_task(conn, task_id)
+        run_a = kb.get_run(conn, claimed_a.current_run_id)
+        run_b = kb.get_run(conn, claimed_b.current_run_id)
+        assert run_a.outcome == "timed_out"
+        assert after.status == "running"
+        assert after.current_run_id == claimed_b.current_run_id
+        assert after.claim_lock == "successor:B"
+        assert after.consecutive_failures == 0
+        assert run_b.status == "running"
+        assert run_b.ended_at is None
+        assert not any(
+            event.kind == "gave_up" and event.run_id == claimed_a.current_run_id
+            for event in kb.list_events(conn, task_id)
+        )
+
+
+def test_rate_limited_review_retry_obeys_respawn_cooldown(
+    kanban_home,
+    monkeypatch,
+):
+    profile = kanban_home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    host = kb._claimer_id().split(":", 1)[0]
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="rate-limited review",
+            assignee="worker",
+        )
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        claimed = kb.claim_review_task(
+            conn,
+            task_id,
+            claimer=f"{host}:review",
+        )
+        assert claimed is not None
+        assert kb._set_worker_pid(
+            conn,
+            task_id,
+            424242,
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+        )
+        conn.execute(
+            "UPDATE tasks SET started_at = 1 WHERE id = ?",
+            (task_id,),
+        )
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(
+            kb,
+            "_classify_worker_exit",
+            lambda _pid: ("rate_limited", kb.KANBAN_RATE_LIMIT_EXIT_CODE),
+        )
+        monkeypatch.setattr(
+            kb,
+            "_resolve_rate_limit_cooldown_seconds",
+            lambda: 3600,
+        )
+
+        assert kb.detect_crashed_workers(conn) == []
+        assert kb.get_task(conn, task_id).status == "review"
+        spawned = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: spawned.append(True),
+        )
+
+        assert spawned == []
+        assert (task_id, "rate_limit_cooldown") in result.respawn_guarded
+        assert kb.get_task(conn, task_id).status == "review"
+        assert kb.list_events(conn, task_id)[-1].kind == "respawn_guarded"
+
+
 def test_legacy_claim_event_without_source_status_resumes_ready(kanban_home):
     with kb.connect() as conn:
         task = _claimed_task(conn)

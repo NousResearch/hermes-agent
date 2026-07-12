@@ -20,6 +20,8 @@ mcp_servers:
     command: "..."      # stdio servers
     args: []
     env: {}
+    cwd: "/path/to/server"
+    # workdir: "/path/to/server"  # compatibility alias for cwd
 
     # OR
     url: "..."          # HTTP servers
@@ -48,6 +50,8 @@ mcp_servers:
 | `command` | string | stdio | Executable to launch |
 | `args` | list | stdio | Arguments for the subprocess |
 | `env` | mapping | stdio | Environment passed to the subprocess |
+| `cwd` | string | stdio | Working directory for the subprocess. `~` is expanded. Takes precedence if both working-directory keys are set |
+| `workdir` | string | stdio | Compatibility alias for `cwd` |
 | `url` | string | HTTP | Remote MCP endpoint |
 | `headers` | mapping | HTTP | Headers for remote server requests |
 | `ssl_verify` | bool or string | HTTP | TLS verification. `true` (default) uses system CAs, `false` disables verification (insecure), or a string path to a custom CA bundle (PEM) |

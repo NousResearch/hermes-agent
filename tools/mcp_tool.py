@@ -2018,7 +2018,7 @@ class MCPServerTask:
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
-        workdir = config.get("workdir") or config.get("cwd")
+        workdir = config.get("cwd") or config.get("workdir")
 
         if not command:
             raise ValueError(

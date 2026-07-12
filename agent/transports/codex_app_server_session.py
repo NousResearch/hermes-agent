@@ -92,6 +92,67 @@ class TurnResult:
 _TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
 
 
+def _notification_belongs_to_turn(
+    note: dict,
+    *,
+    thread_id: Optional[str],
+    turn_id: Optional[str],
+) -> bool:
+    """Return whether a multiplexed notification belongs to this turn.
+
+    Codex app-server can carry parent and hosted subagent threads over one
+    JSON-RPC connection.  An explicitly foreign child or
+    stale-turn event must not mutate the active parent's transcript or mark
+    its turn complete.  Unscoped notifications remain accepted for protocol
+    compatibility.
+    """
+    if not isinstance(note, dict):
+        return False
+    params = note.get("params") or {}
+    if not isinstance(params, dict):
+        return True
+
+    nested_turn = params.get("turn") or {}
+    nested_item = params.get("item") or {}
+
+    observed_thread_id = params.get("threadId") or params.get("thread_id")
+    if observed_thread_id is None and isinstance(nested_turn, dict):
+        observed_thread_id = (
+            nested_turn.get("threadId")
+            or nested_turn.get("thread_id")
+        )
+    if observed_thread_id is None and isinstance(nested_item, dict):
+        observed_thread_id = (
+            nested_item.get("threadId")
+            or nested_item.get("thread_id")
+        )
+
+    if (
+        thread_id is not None
+        and observed_thread_id is not None
+        and str(observed_thread_id) != str(thread_id)
+    ):
+        return False
+
+    observed_turn_id = params.get("turnId") or params.get("turn_id")
+    if observed_turn_id is None and isinstance(nested_turn, dict):
+        observed_turn_id = nested_turn.get("id") or nested_turn.get("turnId")
+    if observed_turn_id is None and isinstance(nested_item, dict):
+        observed_turn_id = (
+            nested_item.get("turnId")
+            or nested_item.get("turn_id")
+        )
+
+    if (
+        turn_id is not None
+        and observed_turn_id is not None
+        and str(observed_turn_id) != str(turn_id)
+    ):
+        return False
+
+    return True
+
+
 def _coerce_turn_input_text(user_input: Any) -> str:
     """Collapse Hermes/OpenAI rich content into app-server text input.
 
@@ -505,6 +566,17 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    if not _notification_belongs_to_turn(
+                        pending,
+                        thread_id=self._thread_id,
+                        turn_id=result.turn_id,
+                    ):
+                        logger.debug(
+                            "ignoring foreign codex notification while draining "
+                            "server request: method=%s",
+                            pending.get("method"),
+                        )
+                        continue
                     _apply_token_usage_notification(result, pending)
                     _apply_compaction_notification(result, pending)
                     self._track_pending_file_change(pending)
@@ -536,6 +608,16 @@ class CodexAppServerSession:
                 continue
 
             method = note.get("method", "")
+            if not _notification_belongs_to_turn(
+                note,
+                thread_id=self._thread_id,
+                turn_id=result.turn_id,
+            ):
+                logger.debug(
+                    "ignoring foreign codex notification: method=%s", method
+                )
+                continue
+
             if self._on_event is not None:
                 try:
                     self._on_event(note)
@@ -723,6 +805,16 @@ class CodexAppServerSession:
                 continue
 
             method = note.get("method", "")
+            if not _notification_belongs_to_turn(
+                note,
+                thread_id=self._thread_id,
+                turn_id=result.turn_id,
+            ):
+                logger.debug(
+                    "ignoring foreign codex notification: method=%s", method
+                )
+                continue
+
             if self._on_event is not None:
                 try:
                     self._on_event(note)

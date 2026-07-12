@@ -592,7 +592,15 @@ def _build_child_system_prompt(
         "verified against independent evidence. The task is not complete until "
         "correctness is verified — there is no other completion signal. "
         "If you encounter problems, errors, or failures, DO NOT summarize them "
-        "away — report them explicitly as findings.",
+        "away — FIX them or report them as explicit BLOCKERS, not informational "
+        "findings. **Pre-existing test failures are YOUR responsibility.** "
+        "There is NO concept of 'authorship' or 'pre-existing failure' as a "
+        "dismissal rationale. Any test failure you encounter — regardless of "
+        "who wrote the code or when — is yours to fix. The following phrases "
+        "are FORBIDDEN as dismissal rationales: 'pre-existing,' 'not from my "
+        "changes,' 'unrelated to our work,' 'not my commit,' 'separate issue.' "
+        "**Persistent failures spanning multiple sessions are STILL your "
+        "responsibility — session boundaries do not create attribution exemptions.**",
         "",
         f"YOUR TASK:\n{goal}",
     ]
@@ -605,18 +613,22 @@ def _build_child_system_prompt(
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
     parts.append(
-        "\nComplete this task using the tools available to you. "
-        "When finished, provide a verified summary with evidence of:\n"
+        "\nWork this task thoroughly using the tools available to you. "
+        "Deliver a verified summary with evidence of:\n"
         "- What you did\n"
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
-        "- Any issues encountered\n\n"
+        "- Any issues encountered AND any issues FIXED (including pre-existing failures)\n"
+        "- What remains unresolved (if any) and why\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough and verified — verify claims against evidence before reporting. "
         "Your response is returned to the parent agent as a summary. "
         "If you encounter problems, errors, or failures, DO NOT summarize them away — "
-        "report them explicitly as findings. Accuracy matters more than brevity."
+        "either FIX them or report them as explicit BLOCKERS with the reason "
+        "they could not be fixed (BLOCKER means: missing tool, unavailable API, "
+        "disk full, network down — NOT difficult or pre-existing failures, which "
+        "are YOUR responsibility per the QUALITY MANDATE above). Accuracy matters more than brevity."
     )
     if role == "orchestrator":
         child_note = (
@@ -1131,7 +1143,7 @@ def _build_child_agent(
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
-        skip_context_files=True,  # Block workspace files; quality mandates injected in child prompt
+        skip_context_files=False,  # Load SOUL.md for subagent quality mandates (SYS-2151)
         skip_memory=True,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,

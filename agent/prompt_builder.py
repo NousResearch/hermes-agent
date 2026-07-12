@@ -161,7 +161,12 @@ MEMORY_GUIDANCE = (
     "state to memory; use session_search to recall those from past transcripts. "
     "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
     "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
-    "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
+    "in 7 days. If a fact will be stale in a week, it does not belong in memory.\n"
+    "IMPORTANT: The fact that you should not save session-specific details to memory "
+    "does NOT mean past sessions are irrelevant. Persistent failures (e.g., test "
+    "failures that span multiple sessions) are STILL your responsibility regardless "
+    "of when they started. Memory discipline is about storage efficiency, not about "
+    "narrowing your scope of responsibility to this session only.\n"
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool.\n"
     "Write memories as declarative facts, not instructions to yourself. "
@@ -178,9 +183,10 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
+    "When you fix a tricky error, discover a non-trivial workflow, or handle a "
+    "task involving 5+ tool calls, save the approach as a skill with skill_manage "
+    "so you can reuse it next time. The skill captures the workflow — it does not "
+    "depend on the task being 'complete.'\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
@@ -264,7 +270,13 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "Every response should either (a) contain tool calls that make progress, "
     "(b) deliver a final verified result to the user, or "
     "(c) report a specific blocker, missing capability, or verification-in-progress "
-    "that prevents completion. Option (c) is a valid and complete response. "
+    "that prevents completion. Option (c) is a valid and complete response.\n"
+    "SCOPE: 'The task' includes verifying the FULL test suite at 100%% pass. "
+    "Any test failure encountered while working — in ANY file, regardless of who "
+    "authored it or when — is part of the task. Pre-existing failures are NOT "
+    "excluded from scope. If a test was failing before you started, it is STILL "
+    "your responsibility to fix. There is no concept of 'not my test' or "
+    "'not from my changes.'"
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

@@ -55,6 +55,8 @@ from agent.secret_sources.base import ErrorKind, SecretSource
 
 logger = logging.getLogger(__name__)
 
+_FLEET_GRANTS_CACHE: Dict[str, Tuple[float, dict]] = {}
+
 
 # ---------------------------------------------------------------------------
 # Configuration constants
@@ -487,6 +489,147 @@ def _run_bws_list(
     return secrets, warnings
 
 
+def _profile_namespace(home_path: Optional[Path]) -> Optional[str]:
+    """Return the vault namespace for the active Hermes profile."""
+    try:
+        home = Path(home_path or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    except Exception:
+        return None
+    profile_name = home.name.strip()
+    if not profile_name or profile_name.startswith("."):
+        return None
+    namespace = "".join(
+        character.upper() if character.isalnum() else "_"
+        for character in profile_name
+    ).strip("_")
+    return namespace or None
+
+
+def _is_credential_shaped(key: str) -> bool:
+    return (
+        key.endswith("_API_KEY")
+        or key == "API_KEY"
+        or key.endswith("_AUTH_JSON")
+        or key == "AUTH_JSON"
+    )
+
+
+def _load_fleet_grants(path: str) -> Optional[dict]:
+    try:
+        modified_at = os.path.getmtime(path)
+    except OSError:
+        return None
+    cached = _FLEET_GRANTS_CACHE.get(path)
+    if cached and cached[0] == modified_at:
+        return cached[1]
+    try:
+        with open(path, "r", encoding="utf-8") as grants_file:
+            data = json.load(grants_file)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("secrets"), dict):
+        return None
+    _FLEET_GRANTS_CACHE[path] = (modified_at, data)
+    return data
+
+
+def _grant_allows(entry: object, profile_slug: str) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    agents = entry.get("agents")
+    if agents == "*":
+        return True
+    if isinstance(agents, list):
+        return profile_slug in {
+            str(agent).strip().lower()
+            for agent in agents
+        }
+    return False
+
+
+def _apply_fleet_grants(
+    secrets: Dict[str, str],
+    profile_secrets: Dict[str, str],
+    *,
+    profile_slug: Optional[str],
+    skipped: List[str],
+    warnings: List[str],
+) -> None:
+    grants_path = os.environ.get("FLEET_SECRET_GRANTS", "").strip()
+    if not grants_path or not profile_slug:
+        return
+    grants_document = _load_fleet_grants(grants_path)
+    if grants_document is None:
+        warnings.append(
+            f"FLEET_SECRET_GRANTS={grants_path!r} is missing or unreadable; "
+            "credential grant filtering is inactive for this startup"
+        )
+        return
+    if grants_document.get("enforce") is not True:
+        return
+
+    grants = grants_document["secrets"]
+    deny_unlisted = os.environ.get(
+        "FLEET_SECRET_GRANTS_DENY_UNLISTED", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    for key in list(secrets):
+        if not _is_credential_shaped(key) or key in profile_secrets:
+            continue
+        grant = grants.get(key)
+        if grant is None and not deny_unlisted:
+            continue
+        if grant is None or not _grant_allows(grant, profile_slug):
+            del secrets[key]
+            skipped.append(key)
+
+
+def _scope_secrets_for_profile(
+    secrets: Dict[str, str],
+    *,
+    home_path: Optional[Path],
+) -> Tuple[Dict[str, str], List[str], List[str]]:
+    """Map this profile's ``PROFILE__KEY`` secrets to ordinary env names.
+
+    Shared keys remain available. The active profile's namespaced value wins
+    over a shared value with the same target name, while every foreign profile
+    namespace is excluded from the process environment.
+    """
+    namespace = _profile_namespace(home_path)
+    shared_secrets: Dict[str, str] = {}
+    profile_secrets: Dict[str, str] = {}
+    skipped: List[str] = []
+    warnings: List[str] = []
+
+    for key, value in secrets.items():
+        if "__" not in key:
+            shared_secrets[key] = value
+            continue
+
+        prefix, target = key.split("__", 1)
+        if not target or not _is_valid_env_name(target):
+            warnings.append(
+                f"Skipping secret {key!r}: namespaced target is not a valid env-var name"
+            )
+            skipped.append(key)
+            continue
+
+        if namespace and prefix.upper() == namespace:
+            profile_secrets[target] = value
+        else:
+            skipped.append(key)
+
+    scoped_secrets = {**shared_secrets, **profile_secrets}
+    profile_slug = Path(home_path).name.strip().lower() if home_path else None
+    _apply_fleet_grants(
+        scoped_secrets,
+        profile_secrets,
+        profile_slug=profile_slug,
+        skipped=skipped,
+        warnings=warnings,
+    )
+    return scoped_secrets, skipped, warnings
+
+
 # ---------------------------------------------------------------------------
 # Public entry point — called from hermes_cli.env_loader
 # ---------------------------------------------------------------------------
@@ -558,8 +701,14 @@ def apply_bitwarden_secrets(
         result.error = str(exc)
         return result
 
+    secrets, namespace_skipped, namespace_warnings = _scope_secrets_for_profile(
+        secrets,
+        home_path=home_path,
+    )
     result.secrets = secrets
+    result.skipped.extend(namespace_skipped)
     result.warnings.extend(warnings)
+    result.warnings.extend(namespace_warnings)
 
     for key, value in secrets.items():
         if key == access_token_env:
@@ -692,8 +841,14 @@ class BitwardenSource(SecretSource):
             result.error_kind = _classify_bws_error(str(exc))
             return result
 
+        secrets, namespace_skipped, namespace_warnings = _scope_secrets_for_profile(
+            secrets,
+            home_path=home_path,
+        )
         result.secrets = secrets
+        result.skipped.extend(namespace_skipped)
         result.warnings.extend(warnings)
+        result.warnings.extend(namespace_warnings)
         return result
 
 
@@ -727,3 +882,4 @@ def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
     """
     _CACHE.clear()
     _DISK_CACHE.clear(home_path)
+    _FLEET_GRANTS_CACHE.clear()

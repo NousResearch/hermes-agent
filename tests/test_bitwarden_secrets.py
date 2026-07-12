@@ -664,6 +664,95 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
     assert os.environ.get("MY_BSM_KEY") == "from-bsm"
 
 
+def test_env_loader_maps_only_the_active_profile_namespace(tmp_path, monkeypatch):
+    """A profile receives its namespaced secret under Hermes' ordinary env name."""
+    home = tmp_path / "profiles" / "iris"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: 'proj-1'\n"
+        "    access_token_env: 'BWS_ACCESS_TOKEN'\n"
+        "    cache_ttl_seconds: 0\n"
+        "    override_existing: true\n"
+        "    auto_install: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("IRIS__TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("LEXI__TELEGRAM_BOT_TOKEN", raising=False)
+
+    def fake_fetch(**_kwargs):
+        return {
+            "IRIS__TELEGRAM_BOT_TOKEN": "iris-token",
+            "LEXI__TELEGRAM_BOT_TOKEN": "lexi-token",
+        }, []
+
+    monkeypatch.setattr(
+        "agent.secret_sources.bitwarden.find_bws",
+        lambda **_kwargs: Path("/fake/bws"),
+    )
+    monkeypatch.setattr(
+        "agent.secret_sources.bitwarden.fetch_bitwarden_secrets",
+        fake_fetch,
+    )
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    from hermes_cli.env_loader import _apply_external_secret_sources
+    _apply_external_secret_sources(home)
+
+    assert os.environ.get("TELEGRAM_BOT_TOKEN") == "iris-token"
+    assert "IRIS__TELEGRAM_BOT_TOKEN" not in os.environ
+    assert "LEXI__TELEGRAM_BOT_TOKEN" not in os.environ
+
+
+def test_env_loader_drops_a_shared_credential_not_granted_to_the_profile(tmp_path, monkeypatch):
+    home = tmp_path / "profiles" / "iris"
+    home.mkdir(parents=True)
+    grants_path = tmp_path / ".fleet-secret-grants.json"
+    grants_path.write_text(json.dumps({
+        "version": 1,
+        "enforce": True,
+        "secrets": {
+            "EXAMPLE_API_KEY": {"agents": ["lexi"], "env": "EXAMPLE_API_KEY"},
+        },
+    }))
+    (home / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: 'proj-1'\n"
+        "    access_token_env: 'BWS_ACCESS_TOKEN'\n"
+        "    cache_ttl_seconds: 0\n"
+        "    override_existing: true\n"
+        "    auto_install: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.setenv("FLEET_SECRET_GRANTS", str(grants_path))
+    monkeypatch.delenv("EXAMPLE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "agent.secret_sources.bitwarden.find_bws",
+        lambda **_kwargs: Path("/fake/bws"),
+    )
+    monkeypatch.setattr(
+        "agent.secret_sources.bitwarden.fetch_bitwarden_secrets",
+        lambda **_kwargs: ({"EXAMPLE_API_KEY": "not-for-iris"}, []),
+    )
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+
+    from hermes_cli.env_loader import _apply_external_secret_sources
+    _apply_external_secret_sources(home)
+
+    assert "EXAMPLE_API_KEY" not in os.environ
+
+
 # ---------------------------------------------------------------------------
 # Disk-persisted cache (cross-process — speeds up back-to-back CLI invocations)
 # ---------------------------------------------------------------------------

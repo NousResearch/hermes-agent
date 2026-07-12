@@ -1286,16 +1286,17 @@ def _exec_in_container(container_info: dict, cli_args: list):
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
-    """Resolve a session name (title) or ID to a session ID.
+    """Resolve a session title, exact ID, or unique ID prefix.
 
-    - If it looks like a session ID (contains underscore + hex), try direct lookup first.
-    - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
-    - Falls back to the other method if the first doesn't match.
-    - If the resolved session is a compression root, follow the chain forward
-      to the latest continuation. Users who remember the old root ID (e.g.
-      from an exit summary printed before the bug fix, or from notes) get
-      resumed at the live tip instead of a stale parent with no messages.
+    Resolution precedence is exact session ID, exact title (including the
+    latest numbered lineage), then unique session ID prefix. If the resolved
+    session is a compression root, follow the chain forward to the latest
+    continuation so resumes land on the live tip.
     """
+    if not name_or_id.strip():
+        return None
+
+    db = None
     try:
         from hermes_state import SessionDB
 
@@ -1307,8 +1308,10 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
         if session:
             resolved_id = session["id"]
         else:
-            # Try as title (with auto-latest for lineage)
+            # Preserve exact-title precedence over session ID prefixes.
             resolved_id = db.resolve_session_by_title(name_or_id)
+            if not resolved_id:
+                resolved_id = db.resolve_session_id(name_or_id)
 
         if resolved_id:
             # Project forward through compression chain so resumes land on
@@ -1318,11 +1321,15 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             except Exception:
                 pass
 
-        db.close()
         return resolved_id
     except Exception:
-        pass
-    return None
+        return None
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _read_tui_active_session_file(path: Optional[str]) -> Optional[str]:

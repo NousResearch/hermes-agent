@@ -29,6 +29,21 @@ def main_mod(monkeypatch):
     return mod
 
 
+@pytest.fixture
+def resume_db_factory(monkeypatch, tmp_path):
+    import hermes_state
+
+    db_path = tmp_path / "state.db"
+    session_db_cls = hermes_state.SessionDB
+
+    class ResumeSessionDB(session_db_cls):
+        def __init__(self):
+            super().__init__(db_path=db_path)
+
+    monkeypatch.setattr(hermes_state, "SessionDB", ResumeSessionDB)
+    return ResumeSessionDB
+
+
 def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
     calls = []
     captured = {}
@@ -116,6 +131,104 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
         main_mod.cmd_chat(_args(resume="my t0p session"))
 
     assert captured["resume"] == "20260409_000000_aa11bb"
+
+
+def test_cmd_chat_tui_resume_resolves_unique_id_prefix(
+    monkeypatch, resume_db_factory, main_mod
+):
+    full_id = "20260712_101010_abc123"
+    seed_db = resume_db_factory()
+    seed_db.create_session(full_id, "cli")
+    seed_db.close()
+    captured = {}
+
+    def fake_launch(resume_session_id=None, **_kwargs):
+        captured["resume"] = resume_session_id
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(_args(resume="20260712_101010_abc"))
+
+    assert captured["resume"] == full_id
+
+
+def test_resolve_session_by_name_or_id_rejects_blank_prefix(
+    resume_db_factory, main_mod
+):
+    seed_db = resume_db_factory()
+    seed_db.create_session("20260712_101010_abc123", "cli")
+    seed_db.close()
+
+    assert main_mod._resolve_session_by_name_or_id("") is None
+
+
+def test_resolve_session_by_name_or_id_prefers_exact_title_over_id_prefix(
+    resume_db_factory, main_mod
+):
+    prefix = "20260712_101010_abc"
+    titled_session_id = "20260712_111111_def456"
+    seed_db = resume_db_factory()
+    seed_db.create_session(f"{prefix}123", "cli")
+    seed_db.create_session(titled_session_id, "cli")
+    seed_db.set_session_title(titled_session_id, prefix)
+    seed_db.close()
+
+    assert main_mod._resolve_session_by_name_or_id(prefix) == titled_session_id
+
+
+def test_resolve_session_by_name_or_id_rejects_ambiguous_id_prefix(
+    resume_db_factory, main_mod
+):
+    prefix = "20260712_101010_abc"
+    seed_db = resume_db_factory()
+    seed_db.create_session(f"{prefix}123", "cli")
+    seed_db.create_session(f"{prefix}456", "cli")
+    seed_db.close()
+
+    assert main_mod._resolve_session_by_name_or_id(prefix) is None
+
+
+def test_resolve_session_by_name_or_id_projects_prefix_to_compression_tip(
+    resume_db_factory, main_mod
+):
+    root_id = "20260712_101010_abc123"
+    child_id = "20260712_111111_def456"
+    seed_db = resume_db_factory()
+    seed_db.create_session(root_id, "cli")
+    seed_db.end_session(root_id, "compression")
+    seed_db.create_session(child_id, "cli", parent_session_id=root_id)
+    seed_db.close()
+
+    assert main_mod._resolve_session_by_name_or_id("20260712_101010_abc") == child_id
+
+
+def test_resolve_session_by_name_or_id_closes_db_after_prefix_error(
+    monkeypatch, main_mod
+):
+    import hermes_state
+
+    class FailingSessionDB:
+        closed = False
+
+        def get_session(self, _value):
+            return None
+
+        def resolve_session_by_title(self, _value):
+            return None
+
+        def resolve_session_id(self, _value):
+            raise RuntimeError("prefix lookup failed")
+
+        def close(self):
+            self.closed = True
+
+    db = FailingSessionDB()
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: db)
+
+    assert main_mod._resolve_session_by_name_or_id("20260712_101010_abc") is None
+    assert db.closed is True
 
 
 def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):

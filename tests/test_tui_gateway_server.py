@@ -9114,3 +9114,20 @@ def test_session_resume_echoes_effective_profile(monkeypatch):
         assert sid and sid != "tip"
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_gateway_ready_advertises_session_profile_capability():
+    """Both gateway.ready emitters advertise the session_profiles capability.
+
+    Clients (the browser extension's remote dashboard mode) refuse to send a
+    profile-scoped session.create/session.resume unless this flag arrives on
+    gateway.ready, so a legacy gateway never receives a scoped RPC it would
+    silently resolve to the launch profile.
+    """
+    import inspect
+
+    from tui_gateway import entry, ws
+
+    assert server.GATEWAY_CAPABILITIES["session_profiles"] is True
+    assert "GATEWAY_CAPABILITIES" in inspect.getsource(ws)
+    assert "GATEWAY_CAPABILITIES" in inspect.getsource(entry)

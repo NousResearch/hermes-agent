@@ -3370,6 +3370,15 @@ def _current_profile_name() -> str:
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 DESKTOP_BACKEND_CONTRACT = 3
 
+# Capabilities advertised on the gateway.ready event (both the WS accept and
+# the stdio startup emit them). Clients gate optional request surfaces on
+# these flags BEFORE sending the RPC: the browser extension refuses to send a
+# profile-scoped session.create/session.resume unless ``session_profiles`` is
+# advertised, because a gateway without this build would silently create the
+# session in the launch scope. Legacy gateways advertise nothing, which
+# clients must treat as "unsupported".
+GATEWAY_CAPABILITIES = {"session_profiles": True}
+
 
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:

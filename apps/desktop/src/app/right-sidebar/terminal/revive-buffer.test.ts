@@ -33,25 +33,40 @@ describe('isIdlePromptOnly', () => {
 })
 
 describe('cleanReviveSnapshot', () => {
-  it('drops a short trailing prompt block after a blank separator', () => {
+  it('drops a spaced trailing prompt block after a blank separator (starship)', () => {
     const snapshot = ['echo hi', 'hi', '', PS_PROMPT].join('\r\n')
 
     expect(cleanReviveSnapshot(snapshot)).toBe('echo hi\r\nhi')
   })
 
-  it('keeps real output when the tail after the blank line is long', () => {
-    const tail = ['line1', 'line2', 'line3', 'line4', 'line5']
-    const snapshot = ['start', '', ...tail].join('\r\n')
+  it('drops a multi-line prompt block after a blank separator (powerline)', () => {
+    const snapshot = ['work', '', '┌─ user@host ~/project', '└─$'].join('\r\n')
 
-    expect(cleanReviveSnapshot(snapshot)).toBe(['start', '', ...tail].join('\r\n'))
+    expect(cleanReviveSnapshot(snapshot)).toBe('work')
   })
 
-  it('leaves a prompt with no preceding blank line untouched (heuristic limitation)', () => {
-    // Default PowerShell prints no blank line before its prompt, so the trailing
-    // prompt survives here — the idle-accumulation path (isIdlePromptOnly) is what
-    // actually covers that shell, not this trimmer.
+  it('drops a single-line trailing prompt with no preceding blank line (PowerShell)', () => {
+    // Default PowerShell prints no blank line before its prompt; the fresh shell
+    // reprints it on boot, so the redundant idle prompt must be trimmed here.
     const snapshot = ['echo hi', 'hi', PS_PROMPT].join('\r\n')
 
-    expect(cleanReviveSnapshot(snapshot)).toBe(snapshot)
+    expect(cleanReviveSnapshot(snapshot)).toBe('echo hi\r\nhi')
+  })
+
+  it('keeps command output and drops only the trailing prompt on a long history', () => {
+    const history = ['cmd1', 'out1', 'cmd2', 'out2']
+    const snapshot = [...history, PS_PROMPT].join('\r\n')
+
+    expect(cleanReviveSnapshot(snapshot)).toBe(history.join('\r\n'))
+  })
+
+  it('reduces a lone prompt to an empty buffer', () => {
+    expect(cleanReviveSnapshot(PS_PROMPT)).toBe('')
+    expect(cleanReviveSnapshot([PS_PROMPT, '', ''].join('\r\n'))).toBe('')
+  })
+
+  it('returns empty for a blank-only buffer without throwing', () => {
+    expect(cleanReviveSnapshot('')).toBe('')
+    expect(cleanReviveSnapshot('\r\n  \r\n')).toBe('')
   })
 })

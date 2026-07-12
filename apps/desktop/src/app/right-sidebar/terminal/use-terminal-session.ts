@@ -174,32 +174,34 @@ const visibleText = (line: string) => stripEscapeSequences(line).replace(/[\s%]/
 
 // Trim the shell's trailing idle prompt from a serialized snapshot before it's
 // persisted. Without it, the saved buffer ends in the old prompt, so the next
-// launch replays it directly above the fresh shell's prompt ("double bar"). The
-// prompt is the short block after the last blank line (starship's add_newline
-// gap); only a short tail is dropped, so real command output is never trimmed and
-// configs without that blank line simply keep the historical prompt (no loss).
+// launch replays it directly above the fresh shell's prompt ("double bar").
+//
+// An interactive shell always reprints its prompt after a command finishes, so
+// the tail of an idle buffer is the prompt, never real history. Two prompt
+// shapes exist:
+//   - Spaced/multi-line (starship add_newline, powerline): a blank line sits
+//     just above the prompt, so the short block after the last blank is dropped.
+//   - Single-line (default PowerShell `PS C:\..>`, bash `user@host:~$`): no blank
+//     separator, so the final line itself is the prompt and is dropped.
+// The fresh shell reprints the current prompt on boot either way, so only the
+// redundant idle prompt is removed — command output is preserved.
 export function cleanReviveSnapshot(serialized: string): string {
-  const visible = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
   const lines = serialized.split(/\r?\n/)
 
-  while (lines.length && visible(lines[lines.length - 1]) === '') {
+  while (lines.length && !visibleText(lines[lines.length - 1])) {
     lines.pop()
   }
 
-  let lastBlank = -1
-
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (visible(lines[i]) === '') {
-      lastBlank = i
-
-      break
-    }
+  if (lines.length === 0) {
+    return ''
   }
 
-  // A prompt is a short block; a long tail after the blank is real output, leave it.
-  if (lastBlank >= 0 && lines.length - 1 - lastBlank <= 3) {
-    lines.length = lastBlank
-  }
+  const lastBlank = lines.findLastIndex(line => !visibleText(line))
+  const spacedPrompt = lastBlank >= 0 && lines.length - 1 - lastBlank <= 3
+
+  // Spaced prompt (starship/powerline): drop the block after the blank
+  // separator. Otherwise the last line is the single-line prompt itself.
+  lines.length = spacedPrompt ? lastBlank : lines.length - 1
 
   return lines.join('\r\n')
 }

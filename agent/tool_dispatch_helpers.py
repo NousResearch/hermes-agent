@@ -370,6 +370,12 @@ def make_tool_result_message(
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
 
+    Normalizes composite tool_call ids (e.g., ``call_xxx|fc_yyy``) to the
+    short form (``call_xxx``) before building the message, ensuring
+    compatibility with providers that bridge Chat Completions to the Responses
+    API. The full composite id is already persisted separately as
+    ``response_item_id`` in the assistant message.
+
     Content from high-risk tools (``web_extract``, ``web_search``, ``browser_*``,
     ``mcp_*``) gets wrapped in semantic delimiters telling the model the content
     is untrusted data, not instructions.  This is the architectural defense
@@ -385,6 +391,10 @@ def make_tool_result_message(
     The outer list itself is rebuilt rather than returned by identity, so
     callers should compare by value, not by ``is``.
     """
+    # Normalize composite tool_call ids (e.g., call_xxx|fc_yyy -> call_xxx)
+    # to match the short id stored in assistant tool_calls entries.
+    if isinstance(tool_call_id, str) and "|" in tool_call_id:
+        tool_call_id = tool_call_id.split("|", 1)[0]
     wrapped = _maybe_wrap_untrusted(name, content)
     message = {
         "role": "tool",

@@ -42,6 +42,26 @@ class _FakeFailure:
         return False
 
 
+class _FakeTimeoutFailure:
+    """Simulates a Feishu API response that failed with a timeout-like message."""
+    code = 99991636
+    msg = "read timeout"
+    data = None
+
+    def success(self):
+        return False
+
+
+class _FakeRequestTimeoutFailure:
+    """Simulates a Feishu API response that failed with 'request timeout'."""
+    code = 99991637
+    msg = "request timeout"
+    data = None
+
+    def success(self):
+        return False
+
+
 def _make_adapter():
     cfg = PlatformConfig(
         enabled=True,
@@ -281,6 +301,110 @@ async def test_try_send_final_rich_first_card_timeout_never_falls_back():
     assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
     assert result.raw_response["delivery_ambiguous"] is True
     assert [call["msg_type"] for call in calls] == ["interactive"]
+
+
+@pytest.mark.asyncio
+async def test_first_card_timeout_string_in_result_suppresses_fallback():
+    """When _feishu_send_with_retry returns a failed response with a timeout
+    error string (not raising), the adapter must suppress legacy fallback."""
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return _FakeTimeoutFailure()
+
+    adapter._feishu_send_with_retry = fake_send
+
+    result = await adapter.send(
+        "oc_1",
+        "ambiguous timeout final response",
+        metadata={"hermes_final_response": True},
+    )
+
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivery_ambiguous"] is True
+    assert [call["msg_type"] for call in calls] == ["interactive"]
+
+
+@pytest.mark.asyncio
+async def test_first_card_request_timeout_string_in_result_suppresses_fallback():
+    """'request timeout' in the error string must also suppress fallback."""
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return _FakeRequestTimeoutFailure()
+
+    adapter._feishu_send_with_retry = fake_send
+
+    result = await adapter.send(
+        "oc_1",
+        "ambiguous request timeout final response",
+        metadata={"hermes_final_response": True},
+    )
+
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivery_ambiguous"] is True
+    assert [call["msg_type"] for call in calls] == ["interactive"]
+
+
+@pytest.mark.asyncio
+async def test_try_send_final_rich_timeout_string_in_result_suppresses_fallback():
+    """Rich path: returned-failure with timeout string must suppress fallback."""
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return _FakeTimeoutFailure()
+
+    adapter._feishu_send_with_retry = fake_send
+    adapter._download_remote_image = AsyncMock(return_value="/tmp/fake.png")
+    adapter._upload_image_for_card = AsyncMock(return_value="img_key")
+
+    result = await adapter.try_send_final_rich_response(
+        chat_id="oc_1",
+        original_response="ambiguous rich timeout string",
+        text_content="ambiguous rich timeout string",
+        images=[("http://example.com/img.png", "test")],
+        media_files=[],
+        local_files=[],
+        force_document_attachments=False,
+        reply_to=None,
+        metadata={"hermes_final_response": True},
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.delivery_state is FinalDeliveryState.PARTIALLY_DELIVERED
+    assert result.raw_response["delivery_ambiguous"] is True
+    assert [call["msg_type"] for call in calls] == ["interactive"]
+
+
+@pytest.mark.asyncio
+async def test_non_timeout_failure_still_falls_back():
+    """Non-timeout API failures must still fall back to legacy delivery."""
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return _FakeFailure()
+
+    adapter._feishu_send_with_retry = fake_send
+
+    result = await adapter.send(
+        "oc_1",
+        "non-timeout failure final response",
+        metadata={"hermes_final_response": True},
+    )
+
+    # Should have fallen back to legacy text
+    assert any(c["msg_type"] != "interactive" for c in calls)
 
 
 @pytest.mark.asyncio

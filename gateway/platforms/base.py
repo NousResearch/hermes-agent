@@ -4103,7 +4103,16 @@ class BasePlatformAdapter(ABC):
         if not error:
             return False
         lowered = error.lower()
-        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+        return any(
+            pat in lowered
+            for pat in (
+                "timed out",
+                "timeout",
+                "read timeout",
+                "write timeout",
+                "request timeout",
+            )
+        )
 
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).

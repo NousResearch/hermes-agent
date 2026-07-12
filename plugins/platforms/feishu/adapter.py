@@ -294,7 +294,15 @@ def _validate_interactive_request_body_size(request_body: Any) -> None:
 
 def _is_ambiguous_delivery_exception(exc: Exception) -> bool:
     """Return True when an interactive request may have landed despite an error."""
-    return isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+    if isinstance(exc, TimeoutError):
+        return True
+    exc_name = type(exc).__name__.lower()
+    if "timeout" in exc_name:
+        return True
+    # Also check the exception's string representation for timeout indicators
+    # (e.g. httpx.ReadTimeout("read timeout") or similar SDK wrappers)
+    exc_str = str(exc).lower()
+    return any(pat in exc_str for pat in ("timed out", "timeout"))
 
 
 def _ambiguous_card_delivery_result(

@@ -180,6 +180,9 @@ class MemoryRecoveryWrite:
     durable_note_terms: tuple[str, ...] = ()
     conflict_key: str = ""
     recovery_warnings: tuple[str, ...] = ()
+    sync_retry_attempts: int = 0
+    next_sync_retry_at: str = ""
+    last_sync_error_code: str = ""
 
     @property
     def needs_durable_protection(self) -> bool:
@@ -366,6 +369,7 @@ class MemoryBackupRecoveryReport:
     missing_durable_note_ids: tuple[str, ...] = ()
     missing_local_index_ids: tuple[str, ...] = ()
     retryable_write_ids: tuple[str, ...] = ()
+    sync_retry_plan_by_id: dict[str, dict[str, object]] = field(default_factory=dict)
     recoverable_index_ids: tuple[str, ...] = ()
     unrecoverable_index_ids: tuple[str, ...] = ()
     recovery_sources_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -423,6 +427,20 @@ class MemoryBackupRecoveryReport:
         _extend_id_lines(lines, "recoverable local index", self.recoverable_index_ids)
         _extend_id_lines(lines, "unrecoverable local index", self.unrecoverable_index_ids)
         _extend_id_lines(lines, "protected from GC", self.protected_from_gc_ids)
+        lines.append("")
+
+        lines.append("## Sync retry plan")
+        if self.sync_retry_plan_by_id:
+            for write_id, plan in sorted(self.sync_retry_plan_by_id.items()):
+                attempts = plan.get("attempts", 0)
+                next_retry_at = plan.get("next_retry_at") or "unknown"
+                last_error_code = plan.get("last_error_code") or "unknown"
+                lines.append(
+                    f"- {write_id}: attempts={attempts} "
+                    f"next_retry_at={next_retry_at} last_error_code={last_error_code}"
+                )
+        else:
+            lines.append("- none")
         lines.append("")
 
         lines.append("## recovery sources")
@@ -620,6 +638,7 @@ def build_memory_backup_recovery_report(
     missing_notes: list[str] = []
     missing_index: list[str] = []
     retryable: list[str] = []
+    sync_retry_plans: dict[str, dict[str, object]] = {}
     recoverable: list[str] = []
     unrecoverable: list[str] = []
     recovery_sources: dict[str, tuple[str, ...]] = {}
@@ -670,6 +689,16 @@ def build_memory_backup_recovery_report(
 
         if write.journaled and not write.synced:
             retryable.append(write.id)
+            if (
+                write.sync_retry_attempts
+                or write.next_sync_retry_at
+                or write.last_sync_error_code
+            ):
+                sync_retry_plans[write.id] = {
+                    "attempts": write.sync_retry_attempts,
+                    "next_retry_at": write.next_sync_retry_at or "unknown",
+                    "last_error_code": write.last_sync_error_code or "unknown",
+                }
 
         if write.conflict_key:
             conflict_groups.setdefault(write.conflict_key, []).append(write.content)
@@ -685,6 +714,7 @@ def build_memory_backup_recovery_report(
         "last_garbage_collection_run_at": last_gc_run_at or "unknown",
         "last_refinement_run_at": last_refinement_run_at or "unknown",
         "queued_write_count": len(retryable),
+        "sync_retry_plan_count": len(sync_retry_plans),
         "startup_recovery_task_count": len(startup_tasks),
         "conflict_count": len(conflicts),
         "protected_memory_count": len(protected),
@@ -704,6 +734,7 @@ def build_memory_backup_recovery_report(
             "missing_journal": len(missing_journal),
             "missing_durable_note": len(missing_notes),
             "missing_local_index": len(missing_index),
+            "sync_retry_plan": len(sync_retry_plans),
             "recoverable_index": len(recoverable),
             "unrecoverable_index": len(unrecoverable),
             "blocked_gc_delete": len(blocked_gc_deletes),
@@ -718,6 +749,7 @@ def build_memory_backup_recovery_report(
         missing_durable_note_ids=tuple(missing_notes),
         missing_local_index_ids=tuple(missing_index),
         retryable_write_ids=tuple(retryable),
+        sync_retry_plan_by_id=sync_retry_plans,
         recoverable_index_ids=tuple(recoverable),
         unrecoverable_index_ids=tuple(unrecoverable),
         recovery_sources_by_id=recovery_sources,

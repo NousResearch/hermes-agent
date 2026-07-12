@@ -185,6 +185,49 @@ def test_memory_backup_recovery_report_surfaces_retryable_missing_index(tmp_path
     assert checks["recoverable_index"] == 1
 
 
+def test_memory_backup_recovery_report_names_sync_retry_plan_without_content(tmp_path):
+    vault = tmp_path / "vault"
+    note = vault / "memories" / "sync-retry.md"
+    note.parent.mkdir(parents=True)
+    note.write_text(
+        "# Sync retry\n\nImportant memory: Quartz buyer phone token amethyst awaits provider sync.\n",
+        encoding="utf-8",
+    )
+
+    report = build_memory_backup_recovery_report(
+        [
+            MemoryRecoveryWrite(
+                id="mem-quartz-sync",
+                content="Quartz buyer phone token amethyst awaits provider sync.",
+                important=True,
+                journaled=True,
+                synced=False,
+                local_indexed=True,
+                durable_note_terms=("Quartz", "provider sync"),
+                sync_retry_attempts=2,
+                next_sync_retry_at="2026-07-12T16:05:00Z",
+                last_sync_error_code="provider_503",
+            )
+        ],
+        note_index=LocalNoteIndex.from_path(vault),
+    )
+
+    assert report.retryable_write_ids == ("mem-quartz-sync",)
+    assert report.sync_retry_plan_by_id == {
+        "mem-quartz-sync": {
+            "attempts": 2,
+            "next_retry_at": "2026-07-12T16:05:00Z",
+            "last_error_code": "provider_503",
+        }
+    }
+    assert report.diagnostics["checks"]["sync_retry_plan"] == 1
+    rendered = report.to_markdown()
+    assert "Sync retry plan" in rendered
+    assert "mem-quartz-sync: attempts=2 next_retry_at=2026-07-12T16:05:00Z last_error_code=provider_503" in rendered
+    assert "Quartz buyer" not in rendered
+    assert "amethyst" not in rendered
+
+
 def test_memory_backup_recovery_report_preserves_conflicting_facts():
     report = build_memory_backup_recovery_report(
         [

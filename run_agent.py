@@ -3539,6 +3539,15 @@ class AIAgent:
         except Exception:
             pass
 
+        # The references above are now gone; on Linux/glibc, return their free
+        # heap pages immediately instead of retaining the process RSS high-water
+        # mark until exit.  This helper is a safe no-op on other allocators.
+        try:
+            from hermes_cli.mem_trim import trim_memory
+            trim_memory(force=True, reason="agent close")
+        except Exception:
+            pass
+
         # 7. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
         # (manual compression helpers that rotate to a continuation session_id,

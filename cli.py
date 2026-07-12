@@ -13581,6 +13581,14 @@ def main(
     
     # Handle query shorthand
     query = query or q
+
+    # ``hermes chat`` normalizes this before it reaches here. Keep the direct
+    # Fire entry point equally safe: structured output is a single-query,
+    # non-interactive protocol, not an alternative interactive renderer.
+    if output_format == "stream-json":
+        if not query:
+            raise ValueError("--format stream-json requires -q/--query")
+        quiet = True
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to hermes-cli toolset which includes cronjob management tools
@@ -13882,6 +13890,15 @@ def main(
                             )
                         except KeyboardInterrupt:
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                            if use_stream_json:
+                                assert emitter is not None
+                                sys.exit(
+                                    emitter.emit_result(
+                                        {"failed": True, "error": "Interrupted"},
+                                        session_id=cli.session_id or "",
+                                        exit_code=130,
+                                    )
+                                )
                             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                             sys.exit(130)
                         # Sync session_id if mid-run compression created a

@@ -1,11 +1,89 @@
 """Tests for stream_json module — structured JSONL output for programmatic use."""
 
-import json
-import sys
 import io
+import json
+import signal
+import sys
+
 import pytest
 
 from stream_json import StreamJsonEmitter
+
+
+def _run_stream_json_chat(monkeypatch, capsys, run_conversation):
+    """Exercise parser -> cmd_chat -> cli.main with a deterministic agent."""
+    import cli
+    import hermes_cli.main as cli_entry
+    from hermes_cli._parser import build_top_level_parser
+
+    class FakeAgent:
+        model = "test-model"
+        session_id = "session-123"
+
+        def __init__(self):
+            self.stream_delta_callback = None
+            self.tool_gen_callback = None
+            self.tool_progress_callback = None
+
+        def run_conversation(self, **_kwargs):
+            return run_conversation(self)
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.session_id = "session-123"
+            self.conversation_history = []
+            self.provider = ""
+            self.model = "test-model"
+            self.agent = None
+            self._active_agent_route_signature = None
+            self.tool_progress_mode = None
+            self.console = type("Console", (), {"print": staticmethod(print)})()
+
+        def _claim_active_session(self, *_args, **_kwargs):
+            return True
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _resolve_turn_agent_config(self, _query):
+            return {
+                "signature": "test-route",
+                "model": None,
+                "runtime": None,
+                "request_overrides": None,
+            }
+
+        def _init_agent(self, **_kwargs):
+            self.agent = FakeAgent()
+            return True
+
+        def _show_security_advisories(self):
+            pass
+
+        def chat(self, _query, images=None):
+            print("human output")
+
+        def _print_exit_summary(self):
+            pass
+
+    monkeypatch.setattr(cli, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli, "_finalize_single_query", lambda _cli: None)
+    monkeypatch.setattr(cli, "_emit_interrupted_session_end", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_entry, "_resolve_use_tui", lambda _args: False)
+    monkeypatch.setattr(cli_entry, "_has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(cli_entry, "_termux_should_prefetch_update_check", lambda: False)
+    monkeypatch.setattr(cli_entry, "_sync_bundled_skills_for_startup", lambda: None)
+    monkeypatch.setattr(cli_entry, "_pin_kanban_board_env", lambda: None)
+
+    parser, _, _ = build_top_level_parser()
+    args = parser.parse_args(["chat", "-q", "hello", "--format", "stream-json"])
+    with pytest.raises(SystemExit) as exc_info:
+        cli_entry.cmd_chat(args)
+
+    captured = capsys.readouterr()
+    return exc_info.value.code, [json.loads(line) for line in captured.out.splitlines() if line]
 
 
 class TestStreamJsonEmitter:
@@ -351,3 +429,79 @@ class TestStreamJsonEmitter:
         finally:
             sys.stdout = old
             self._teardown()
+
+
+def test_chat_stream_json_implies_quiet_and_emits_jsonl(monkeypatch, capsys):
+    """The public chat command must not require callers to add ``-Q``."""
+    def run_conversation(agent):
+        agent.stream_delta_callback("hello")
+        agent.tool_gen_callback("read_file")
+        agent.tool_progress_callback(
+            "tool.completed",
+            "read_file",
+            duration=0.01,
+            result="contents",
+        )
+        return {"final_response": "hello", "failed": False}
+
+    exit_code, events = _run_stream_json_chat(monkeypatch, capsys, run_conversation)
+
+    assert exit_code == 0
+    assert [event["type"] for event in events] == [
+        "system",
+        "text",
+        "tool_use",
+        "tool_result",
+        "result",
+    ]
+    assert events[-1]["exit_code"] == 0
+
+
+def test_chat_stream_json_interrupt_emits_terminal_result(monkeypatch, capsys):
+    """Interrupts must still close a JSONL stream with the process exit code."""
+    def run_conversation(_agent):
+        raise KeyboardInterrupt
+
+    exit_code, events = _run_stream_json_chat(monkeypatch, capsys, run_conversation)
+
+    assert exit_code == 130
+    assert events[-1]["type"] == "result"
+    assert events[-1]["exit_code"] == 130
+
+
+def test_chat_stream_json_requires_query(monkeypatch, capsys):
+    """A stream format cannot fall through into an interactive session."""
+    import hermes_cli.main as cli_entry
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _, _ = build_top_level_parser()
+    args = parser.parse_args(["chat", "--format", "stream-json"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_entry.cmd_chat(args)
+
+    assert exc_info.value.code == 2
+    assert "--format stream-json requires -q/--query" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["chat", "-q", "hello", "--format", "stream-json", "--tui"],
+        ["--tui", "chat", "-q", "hello", "--format", "stream-json"],
+    ],
+)
+def test_chat_stream_json_rejects_explicit_tui(monkeypatch, capsys, argv):
+    """The JSONL stream is incompatible with the interactive TUI transport."""
+    import hermes_cli.main as cli_entry
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _, _ = build_top_level_parser()
+    args = parser.parse_args(argv)
+    monkeypatch.setattr(cli_entry, "_launch_tui", lambda *_args, **_kwargs: pytest.fail("TUI launched"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_entry.cmd_chat(args)
+
+    assert exc_info.value.code == 2
+    assert "--format stream-json cannot be used with --tui" in capsys.readouterr().err

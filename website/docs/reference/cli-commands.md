@@ -104,6 +104,7 @@ Common options:
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--format stream-json` | Emit structured JSONL for a `-q` / `--query` invocation. Implies `--quiet`; cannot be combined with `--tui`. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
@@ -124,10 +125,37 @@ hermes chat -q "Summarize the latest PRs"
 hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
+hermes chat -q "Inspect this repository" --format stream-json
 hermes chat --worktree -q "Review this repo and open a PR"
 hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 ```
+
+### `--format stream-json` — structured JSONL output
+
+Use `--format stream-json` when a program needs to consume progress without
+scraping terminal output. It requires `-q` / `--query`, implies quiet
+non-interactive CLI mode, and rejects an explicit `--tui` request. Every stdout
+line is one JSON object; diagnostic and session information remains on stderr.
+
+```bash
+hermes chat -q "Summarize this repository" --format stream-json
+```
+
+The stream records use these event envelopes. `timestamp` is Unix epoch
+milliseconds on every event.
+
+| Event `type` | Fields |
+|---|---|
+| `system` | `subtype: "init"`, `model`, `session_id` |
+| `text` | `text` — a streamed assistant text delta |
+| `tool_use` | `name`; `input` is included when tool arguments are available |
+| `tool_result` | `name`, `output`, `duration_ms`, `is_error` |
+| `result` | `session_id`, `exit_code`, `text`, `tokens` (`input`, `output`, `total`, `cache_read`, `cache_write`), `duration_ms`; `error` is included when available |
+
+Once a conversation starts, its terminal record is always `result`, including
+`exit_code: 130` when it is interrupted with Ctrl-C. Consumers should treat that
+record as the completion signal rather than relying on process output timing.
 
 ### `hermes -z <prompt>` — scripted one-shot
 

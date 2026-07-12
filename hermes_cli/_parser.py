@@ -302,7 +302,7 @@ def build_top_level_parser():
         choices=["text", "stream-json"],
         default="text",
         dest="output_format",
-        help="Output format for single-query mode (-q). 'text' prints the final response as plain text (default). 'stream-json' emits newline-delimited JSON events (JSONL) with system/text/tool/result records.",
+        help="Output format for single-query mode (-q). 'text' prints the final response as plain text (default). 'stream-json' emits newline-delimited JSON events (JSONL), implies --quiet, and cannot be combined with --tui.",
     )
     chat_parser.add_argument(
         "--resume",
@@ -396,7 +396,7 @@ def build_top_level_parser():
         chat_parser,
         "--tui",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Launch the modern TUI instead of the classic REPL",
     )
     _inherited_flag(

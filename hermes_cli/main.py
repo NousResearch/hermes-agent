@@ -2087,7 +2087,21 @@ def _resolve_use_tui(args) -> bool:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = _resolve_use_tui(args)
+    output_format = getattr(args, "output_format", "text")
+    if output_format == "stream-json":
+        if not getattr(args, "query", None):
+            print("Error: --format stream-json requires -q/--query.", file=sys.stderr)
+            raise SystemExit(2)
+        if getattr(args, "tui", False):
+            print("Error: --format stream-json cannot be used with --tui.", file=sys.stderr)
+            raise SystemExit(2)
+        # Structured stdout is a non-interactive protocol. It must override a
+        # configured HERMES_TUI/display.interface setting as well as suppress
+        # the normal CLI display callbacks.
+        args.quiet = True
+        use_tui = False
+    else:
+        use_tui = _resolve_use_tui(args)
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)

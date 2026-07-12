@@ -3140,6 +3140,44 @@ class TestSlashCommands:
         assert msg.text == "/reasoning"
 
     # ------------------------------------------------------------------
+    # Profile-derived catch-all — a named profile "foo" registers /foo as
+    # its catch-all instead of /hermes, so multiple profiles running as
+    # separate Slack apps in one workspace don't collide.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_profile_catchall_routes_subcommands(self, adapter, monkeypatch):
+        """/foo new must route like /hermes new when profile is "foo"."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "foo"
+        )
+        command = {
+            "command": "/foo",
+            "text": "new",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/new"
+
+    @pytest.mark.asyncio
+    async def test_legacy_hermes_still_routes_on_named_profile(self, adapter, monkeypatch):
+        """Bare /hermes stays accepted for older workspace manifests."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "foo"
+        )
+        command = {
+            "command": "/hermes",
+            "text": "new",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/new"
+
+    # ------------------------------------------------------------------
     # Native slash commands — /btw, /stop, /model, ... dispatched directly
     # instead of as /hermes subcommands. This is the Discord/Telegram parity
     # fix: the slash name itself becomes the command.

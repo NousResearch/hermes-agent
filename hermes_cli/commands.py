@@ -1178,6 +1178,32 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
+def slack_catchall_command() -> str:
+    """Return the catch-all slash command name for the active profile.
+
+    Default profile → ``hermes`` (backward compatible). A named profile
+    ``foo`` → ``foo``, so multiple profiles running as separate Slack apps
+    in the same workspace don't fight over ``/hermes`` — Slack routes a
+    slash name to a single app, so the last one registered wins and the
+    others lose all slash access.
+
+    Profile ids allow up to 64 chars (``[a-z0-9][a-z0-9_-]{0,63}``) while
+    Slack command names cap at 32, so the name is routed through
+    :func:`_sanitize_slack_name`. Falls back to ``hermes`` when the
+    sanitized name is empty, collides with a Slack built-in, or the
+    profile is the ``custom`` sentinel (HERMES_HOME outside profiles/).
+    """
+    from hermes_cli.profiles import get_active_profile_name
+
+    profile = get_active_profile_name()
+    if profile in ("default", "custom"):
+        return "hermes"
+    name = _sanitize_slack_name(profile)
+    if not name or name in _SLACK_RESERVED_COMMANDS:
+        return "hermes"
+    return name
+
+
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
@@ -1195,17 +1221,20 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     can still reach them via ``/hermes <command>``.
 
     Results are clamped to Slack's 50-command limit with duplicate-name
-    avoidance. ``/hermes`` is always reserved as the first entry so the
-    legacy ``/hermes <subcommand>`` form keeps working for anything that
-    gets dropped by the clamp or for free-form questions.
+    avoidance. The profile catch-all (default → ``/hermes``, profile
+    ``foo`` → ``/foo``; see :func:`slack_catchall_command`) is always
+    reserved as the first entry so the legacy ``<catch-all> <subcommand>``
+    form keeps working for anything that gets dropped by the clamp or for
+    free-form questions.
     """
     overrides = _resolve_config_gates()
     entries: list[tuple[str, str, str]] = []
     seen: set[str] = set()
 
-    # Reserve /hermes as the catch-all top-level command.
-    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
-    seen.add("hermes")
+    # Reserve the profile catch-all as the top-level command.
+    _catchall = slack_catchall_command()
+    entries.append((_catchall, "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    seen.add(_catchall)
 
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)

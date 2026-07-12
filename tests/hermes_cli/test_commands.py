@@ -23,6 +23,7 @@ from hermes_cli.commands import (
     gateway_help_lines,
     resolve_command,
     slack_app_manifest,
+    slack_catchall_command,
     slack_native_slashes,
     slack_subcommand_map,
     telegram_bot_commands,
@@ -389,6 +390,66 @@ class TestSlackNativeSlashes:
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
+
+
+class TestSlackCatchallCommand:
+    """Profile-derived catch-all slash name (default → /hermes, profile
+    "foo" → /foo) so multiple profiles running as separate Slack apps in
+    one workspace don't collide on /hermes."""
+
+    def test_default_profile_is_hermes(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        assert slack_catchall_command() == "hermes"
+
+    def test_custom_home_falls_back_to_hermes(self, monkeypatch):
+        """HERMES_HOME pointing outside profiles/ resolves to "custom" —
+        there is no meaningful profile name, keep /hermes."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "custom"
+        )
+        assert slack_catchall_command() == "hermes"
+
+    def test_named_profile_uses_profile_name(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "foo"
+        )
+        assert slack_catchall_command() == "foo"
+
+    def test_long_profile_name_clamped_to_slack_limit(self, monkeypatch):
+        """Profile ids allow up to 64 chars; Slack slash names cap at 32."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "a" * 64
+        )
+        name = slack_catchall_command()
+        assert name == "a" * 32
+
+    def test_slack_reserved_profile_name_falls_back_to_hermes(self, monkeypatch):
+        """A profile named after a Slack built-in (e.g. "away") cannot be
+        registered as a slash — fall back to /hermes."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "away"
+        )
+        assert slack_catchall_command() == "hermes"
+
+    def test_named_profile_replaces_hermes_in_native_slashes(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "foo"
+        )
+        slashes = slack_native_slashes()
+        names = {n for n, _d, _h in slashes}
+        assert slashes[0][0] == "foo"
+        assert "hermes" not in names
+
+    def test_named_profile_lands_in_manifest(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "foo"
+        )
+        m = slack_app_manifest()
+        commands = {e["command"] for e in m["features"]["slash_commands"]}
+        assert "/foo" in commands
+        assert "/hermes" not in commands
 
 
 class TestSlackAppManifest:

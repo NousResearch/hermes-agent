@@ -3920,10 +3920,14 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        if slash_name in {"hermes", ""}:
-            # Legacy /hermes <subcommand> [args] routing + free-form questions.
-            # Empty slash_name falls into this branch for backward compat
-            # with any caller that didn't populate command["command"].
+        from hermes_cli.commands import slack_catchall_command
+
+        if slash_name in {slack_catchall_command(), "hermes", ""}:
+            # Catch-all <slash> <subcommand> [args] routing + free-form
+            # questions. The catch-all is profile-derived (default →
+            # /hermes, profile "foo" → /foo); bare "hermes" stays accepted
+            # for older workspace manifests, and empty slash_name falls in
+            # for callers that didn't populate command["command"].
             from hermes_cli.commands import slack_subcommand_map
 
             subcommand_map = slack_subcommand_map()

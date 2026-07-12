@@ -6954,6 +6954,20 @@ async function startHermes() {
       },
       { allowDecrease: true }
     )
+    // A backend that missed the readiness deadline must not be abandoned:
+    // the orphan keeps running on its port, contends for CPU with the next
+    // spawn, slows ITS boot past the deadline too, and the retries cascade
+    // into a backend-per-3-minutes process storm. Kill it so retries are
+    // strictly serialized — at most one backend exists at any time.
+    if (hermesProcess && !hermesProcess.killed) {
+      rememberLog('[boot] killing backend that missed the readiness deadline')
+      try {
+        hermesProcess.kill('SIGTERM')
+      } catch {
+        // already gone
+      }
+      hermesProcess = null
+    }
     connectionPromise = null
     throw error
   })

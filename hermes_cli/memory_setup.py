@@ -423,7 +423,13 @@ def cmd_status(args) -> None:
     provider_name = mem_config.get("provider", "")
 
     print("\nMemory status\n" + "─" * 40)
-    print("  Built-in:  always active")
+    # Built-in store state (MEMORY.md/USER.md) depends on config flags
+    mem_enabled = mem_config.get("memory_enabled", False)
+    profile_enabled = mem_config.get("user_profile_enabled", False)
+    if mem_enabled or profile_enabled:
+        print(f"  Built-in store: active")
+    else:
+        print(f"  Built-in store: disabled")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()

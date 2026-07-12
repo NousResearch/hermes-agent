@@ -4092,6 +4092,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
             )
+            agent = None
             try:
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
@@ -4124,6 +4125,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
+                self._cleanup_ephemeral_agent(agent)
                 clear_session_vars(tokens)
 
         self._inflight_agent_runs += 1
@@ -4131,6 +4133,49 @@ class APIServerAdapter(BasePlatformAdapter):
             return await loop.run_in_executor(None, _run)
         finally:
             self._inflight_agent_runs -= 1
+
+    # ------------------------------------------------------------------
+    # Ephemeral agent lifecycle — shared by _run_agent and /v1/runs
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cleanup_ephemeral_agent(agent: Any) -> None:
+        """Release all resources held by an ephemeral API-server agent.
+
+        Called in the ``finally`` block of every request path that constructs
+        a fresh ``AIAgent`` via ``_create_agent``.  Without this, each request
+        leaks:
+
+        * SQLite connections from the LCM / memory-provider engine (EMFILE).
+        * Subprocess handles (terminal sandbox), browser daemon sessions, and
+          child-agent references via ``AIAgent.close()``.
+        * OpenAI / httpx client connections.
+
+        ``_end_session_on_close`` is set to ``False`` so that ``close()``
+        does not finalise the persisted session row — the API server reuses
+        session IDs across requests, and the caller owns the row lifecycle.
+
+        See #50197, #61714.
+        """
+        if agent is None:
+            return
+        # 1. Flush memory provider and close LCM DB connections.
+        try:
+            messages = list(getattr(agent, "_session_messages", []) or [])
+            agent.shutdown_memory_provider(messages)
+        except Exception:
+            pass
+        # 2. Full agent teardown — subprocess, browser, child agents, httpx.
+        #    Prevent close() from ending the session row: API-server sessions
+        #    are long-lived and the caller manages their lifecycle.
+        try:
+            agent._end_session_on_close = False
+        except Exception:
+            pass
+        try:
+            agent.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -4321,6 +4366,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route = self._resolve_route(body.get("model"))
 
         async def _run_and_close():
+            agent = None
             try:
                 self._set_run_status(run_id, "running")
                 agent = self._create_agent(
@@ -4492,6 +4538,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                # Release ephemeral agent resources (LCM DBs, subprocesses,
+                # httpx connections).  Mirrors the cleanup in _run_agent.
+                self._cleanup_ephemeral_agent(agent)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task

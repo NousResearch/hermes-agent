@@ -1702,15 +1702,13 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
-        # Skip providers that have no PROVIDER_REGISTRY entry. They appear
-        # in PROVIDER_TO_MODELS_DEV (so the picker sees their models.dev
-        # catalog and emits a row), but runtime resolution in
-        # resolve_provider() rejects them as "Unknown provider". Filter
-        # them here so the /model picker only ever lists providers that
-        # can actually be switched to. Fixes #57503 (mistral).
-        if not pconfig:
+        # models.dev catalogs include providers Hermes may not route yet.
+        # Gate on runtime capability rather than registry membership: special
+        # providers and plugin aliases can be routable without a registry row.
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
             continue
-        if pconfig.api_key_env_vars:
+        if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
             env_vars = pdata.get("env", [])

@@ -4765,6 +4765,26 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                # Mirror the explicit-custom branch: apply provider-specific
+                # attribution headers (Kimi, Copilot, NVIDIA, profile defaults)
+                # before layering user-configured model.default_headers on top.
+                if base_url_host_matches(custom_base, "api.kimi.com"):
+                    _extra2["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+                elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
+                    from hermes_cli.copilot_auth import copilot_request_headers
+                    _extra2["default_headers"] = copilot_request_headers(
+                        is_agent_turn=True, is_vision=is_vision
+                    )
+                elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
+                    _extra2["default_headers"] = build_nvidia_nim_headers(custom_base)
+                else:
+                    try:
+                        from providers import get_provider_profile as _gpf_named
+                        _ph_named = _gpf_named(provider)
+                        if _ph_named and _ph_named.default_headers:
+                            _extra2["default_headers"] = dict(_ph_named.default_headers)
+                    except Exception:
+                        pass
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
@@ -4790,6 +4810,15 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        if base_url_host_matches(custom_base, "api.kimi.com"):
+                            _fb_extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+                        elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
+                            from hermes_cli.copilot_auth import copilot_request_headers
+                            _fb_extra["default_headers"] = copilot_request_headers(
+                                is_agent_turn=True, is_vision=is_vision
+                            )
+                        elif base_url_host_matches(custom_base, "integrate.api.nvidia.com"):
+                            _fb_extra["default_headers"] = build_nvidia_nim_headers(custom_base)
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers

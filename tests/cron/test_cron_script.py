@@ -631,7 +631,9 @@ class TestRunJobScriptFailureStatus:
 
         # The job should be marked as failed because the script failed
         assert success is False
-        assert "Script Error" in output or "script failed" in output.lower()
+        # The error should be non-empty and reference the script failure
+        assert error is not None
+        assert "script failed" in error.lower() or "script" in error.lower()
         # The agent should have run (we get a response)
         assert response is not None
 

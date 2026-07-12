@@ -3300,7 +3300,11 @@ def run_job(
         # If the pre-run script failed, mark the job as failed even though
         # the agent ran successfully.  The script failure means the agent
         # may have been working with stale or missing data.
-        return not _script_failed, output, final_response, None
+        # Return the script error as the job error so mark_job_run() can
+        # persist it and _process_job() can deliver a meaningful message.
+        if _script_failed:
+            return False, output, final_response, f"Pre-run script failed: {_script_output}"
+        return True, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"

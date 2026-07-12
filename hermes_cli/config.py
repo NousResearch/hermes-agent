@@ -2241,6 +2241,14 @@ DEFAULT_CONFIG = {
                                      # stopwatch. Set a positive number of seconds
                                      # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
+
+        # SSL/TLS configuration for all HTTP clients.
+        # ca_bundle: path to a custom CA bundle PEM file.
+        # insecure: set True to disable certificate verification.
+        "tls": {
+            "ca_bundle": "",
+            "insecure": False,
+        },
                                  # "medium", "low", "minimal", "none" (empty = inherit)
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)

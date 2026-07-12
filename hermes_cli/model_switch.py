@@ -1702,6 +1702,12 @@ def list_authenticated_providers(
         # section 2 (HERMES_OVERLAYS) with proper auth store checking.
         if pconfig and pconfig.auth_type != "api_key":
             continue
+        # models.dev catalogs include providers Hermes may not route yet.
+        # Gate on runtime capability rather than registry membership: special
+        # providers and plugin aliases can be routable without a registry row.
+        from hermes_cli.auth import is_runtime_provider_routable
+        if not is_runtime_provider_routable(hermes_id):
+            continue
         if pconfig and pconfig.api_key_env_vars:
             env_vars = list(pconfig.api_key_env_vars)
         else:
@@ -1736,6 +1742,15 @@ def list_authenticated_providers(
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        # A providers.<built-in>.models block extends the provider's discovered
+        # catalog. Section 3 cannot emit it later because this built-in row owns
+        # the slug, so merge declarations here before applying max_models.
+        configured_models: list[str] = []
+        if isinstance(user_providers, dict):
+            configured = user_providers.get(hermes_id)
+            if isinstance(configured, dict):
+                configured_models = _declared_model_ids(configured.get("models"))
+        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         total = len(model_ids)
         if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models

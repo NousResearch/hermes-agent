@@ -1942,6 +1942,14 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     except Exception as e:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+    try:
+        from tools.process_registry import process_registry
+        killed = process_registry.kill_all(task_id=task_id)
+        if agent.verbose_logging and killed:
+            logger.debug(f"Killed {killed} child processes for task {task_id}")
+    except Exception as e:
+        if agent.verbose_logging:
+            logger.warning(f"Failed to kill child processes for task {task_id}: {e}")
 
 
 

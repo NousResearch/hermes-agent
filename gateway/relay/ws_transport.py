@@ -6,7 +6,9 @@ speaks the newline-delimited JSON frame protocol defined in the connector repo
 ``docs/relay-connector-contract.md``:
 
   gateway -> connector : hello, outbound, interrupt
-  connector -> gateway : descriptor, inbound, outbound_result, interrupt_inbound
+  connector -> gateway : descriptor, inbound, outbound_result, interrupt_inbound,
+                         brain_rpc_request
+  gateway -> connector : brain_rpc_result
 
 Frames:
   hello            {type, platform, botId}
@@ -16,6 +18,8 @@ Frames:
   outbound_result  {type, requestId, result}
   interrupt        {type, session_key, reason?}             (gateway egresses /stop)
   interrupt_inbound{type, session_key, chat_id}             (connector -> owning gateway)
+  brain_rpc_request{type, contract_version, request_id, …}  (Lanyard G3 host ops)
+  brain_rpc_result {type, contract_version, request_id, …}
 
 This is the concrete transport behind the ``RelayTransport`` Protocol; the
 ``RelayAdapter`` delegates all wire I/O to it. Outbound calls block on a
@@ -700,9 +704,51 @@ class WebSocketRelayTransport:
             if handler is not None:
                 fwd = _passthrough_from_wire(frame.get("forward", {}))
                 await handler(fwd, frame.get("bufferId"))
+        elif ftype == "brain_rpc_request":
+            # Lanyard G3.2: host-side brain RPC (vault/settings/projects). Rides
+            # the same authenticated outbound WS as chat inbound — no public
+            # host port. Feature-gated via BRAIN_RPC_ENABLED (default on).
+            await self._handle_brain_rpc_request(frame)
         else:
             # hello/outbound/interrupt are gateway->connector; ignore if echoed.
             pass
+
+    async def _handle_brain_rpc_request(self, frame: Dict[str, Any]) -> None:
+        """Dispatch a brain_rpc_request and emit brain_rpc_result on the wire.
+
+        Failures never drop the relay socket: every path yields a result frame
+        (or a best-effort internal error if the dispatcher itself crashes).
+        Vault file bodies are never logged here.
+        """
+        request_id = str(frame.get("request_id") or "")
+        try:
+            from gateway.brain_rpc import handle_brain_rpc_request
+
+            result = await handle_brain_rpc_request(frame)
+        except Exception:  # noqa: BLE001 - never kill the reader for RPC faults
+            logger.exception("relay: brain_rpc_request dispatch failed request_id=%s", request_id)
+            result = {
+                "type": "brain_rpc_result",
+                "contract_version": int(frame.get("contract_version") or 1),
+                "request_id": request_id,
+                "ok": False,
+                "result": None,
+                "error": {
+                    "code": "internal",
+                    "message": "internal host error",
+                    "retryable": True,
+                    "details": {},
+                },
+                "meta": {},
+            }
+        try:
+            await self._send(result)
+        except Exception:  # noqa: BLE001 - socket may be closing mid-RPC
+            logger.debug(
+                "relay: brain_rpc_result send failed request_id=%s",
+                request_id,
+                exc_info=True,
+            )
 
     def set_interrupt_inbound_handler(self, handler: Any) -> None:
         """Register the callback for connector->gateway interrupt_inbound frames."""

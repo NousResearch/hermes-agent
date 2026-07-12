@@ -1267,6 +1267,65 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
 
+    def test_reasoning_effort_guidance_when_tool_loaded(self):
+        from agent.prompt_builder import REASONING_EFFORT_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "reasoning_effort"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        prompt = agent._build_system_prompt()
+        assert REASONING_EFFORT_GUIDANCE in prompt
+
+    def test_no_reasoning_effort_guidance_without_tool(self, agent):
+        from agent.prompt_builder import REASONING_EFFORT_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+        assert REASONING_EFFORT_GUIDANCE not in prompt
+
+    def test_system_prompt_stays_stable_after_reasoning_effort_change(self):
+        """The cached system prompt must remain byte-identical across a
+        reasoning_effort tool call — invalidating it mid-session breaks
+        provider prefix caching (see agent/system_prompt.py)."""
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "reasoning_effort"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        original_prompt = agent._build_system_prompt()
+        cached_before = agent._cached_system_prompt
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "high"}))
+        assert result["success"] is True
+
+        assert agent._cached_system_prompt is cached_before
+        assert agent._build_system_prompt() == original_prompt
+        # The runtime config DID change — only the prompt is stable.
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}
+
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
         # Should contain current date info like "Conversation started:"
@@ -2031,6 +2090,116 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs.get("extra_body", {}).get("think") is None
 
+
+
+class TestApplyReasoningEffort:
+    def test_updates_reasoning_config(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "low"}))
+
+        assert result["success"] is True
+        assert result["level"] == "low"
+        assert result["reasoning_config"] == {"enabled": True, "effort": "low"}
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+    def test_new_level_reaches_next_api_request(self, agent):
+        """The changed level must flow into request construction — that is
+        the mechanism that replaces mutating the system prompt."""
+        agent.provider = "openrouter"
+        agent.model = "qwen/qwen3.5-plus-02-15"
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        json.loads(agent._apply_reasoning_effort({"level": "high"}))
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs.get("extra_body", {}).get("reasoning", {}).get("effort") == "high"
+
+    def test_can_disable_reasoning(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "none"}))
+
+        assert result["success"] is True
+        assert result["enabled"] is False
+        assert agent.reasoning_config == {"enabled": False}
+
+    def test_rejects_invalid_level(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "galaxy-brain"}))
+
+        assert "error" in result
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+    def test_rejects_missing_level(self, agent):
+        result = json.loads(agent._apply_reasoning_effort({}))
+        assert "error" in result
+
+    def test_callback_receives_session_scope_by_default(self, agent):
+        calls = []
+
+        def _update(level, parsed_config, persist=False):
+            calls.append((level, parsed_config, persist))
+            return False
+
+        agent.reasoning_update_callback = _update
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "high"}))
+
+        assert result["success"] is True
+        assert result["persisted"] is False
+        assert calls == [("high", {"enabled": True, "effort": "high"}, False)]
+
+    def test_persist_flag_reaches_callback(self, agent):
+        calls = []
+
+        def _update(level, parsed_config, persist=False):
+            calls.append((level, parsed_config, persist))
+            return True
+
+        agent.reasoning_update_callback = _update
+
+        result = json.loads(
+            agent._apply_reasoning_effort({"level": "high", "persist": True})
+        )
+
+        assert result["success"] is True
+        assert result["persisted"] is True
+        assert calls == [("high", {"enabled": True, "effort": "high"}, True)]
+
+    def test_reports_no_change_for_same_level(self, agent):
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "medium"}))
+
+        assert result["success"] is True
+        assert result["no_change"] is True
+        assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+
+    def test_callback_failure_does_not_block_runtime_change(self, agent):
+        def _update(level, parsed_config, persist=False):
+            raise RuntimeError("disk full")
+
+        agent.reasoning_update_callback = _update
+
+        result = json.loads(agent._apply_reasoning_effort({"level": "low"}))
+
+        assert result["success"] is True
+        assert result["persisted"] is False
+        assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+
+    def test_invoke_tool_routes_reasoning_effort(self, agent):
+        """The agent-loop interception must handle reasoning_effort — the
+        registry dispatcher only returns a stub error for loop tools."""
+        agent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        result = json.loads(
+            agent._invoke_tool("reasoning_effort", {"level": "xhigh"}, "task-1")
+        )
+
+        assert result["success"] is True
+        assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
 
 
 class TestBuildAssistantMessage:

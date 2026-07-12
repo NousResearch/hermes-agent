@@ -30,6 +30,7 @@ from agent.prompt_builder import (
     PARALLEL_TOOL_CALL_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
+    REASONING_EFFORT_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
@@ -53,6 +54,19 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_reasoning_effort_guidance_gives_raise_and_lower_triggers(self):
+        assert "reasoning_effort tool" in REASONING_EFFORT_GUIDANCE
+        assert "raise it for ambiguity" in REASONING_EFFORT_GUIDANCE
+        assert "lower it for trivial, mechanical, or routine turns" in REASONING_EFFORT_GUIDANCE
+        assert "persist=true" in REASONING_EFFORT_GUIDANCE
+
+    def test_reasoning_effort_guidance_is_static_no_level_placeholder(self):
+        # The guidance lives in the STABLE prompt tier — it must never embed
+        # the current level (which would force a prompt rebuild per change).
+        assert "Current reasoning effort" not in REASONING_EFFORT_GUIDANCE
+        assert "{" not in REASONING_EFFORT_GUIDANCE
+        assert "%s" not in REASONING_EFFORT_GUIDANCE
 
 
 # =========================================================================

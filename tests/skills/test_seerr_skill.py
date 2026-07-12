@@ -13,6 +13,7 @@ import json
 import re
 import sys
 import urllib.error
+from email.message import Message
 from pathlib import Path
 from unittest import mock
 
@@ -29,13 +30,19 @@ import seerr  # noqa: E402
 ENV = {"SEERR_URL": "http://seerr.test:5055", "SEERR_API_KEY": "k3y"}
 
 
-class _Response(io.BytesIO):
+class _Response:
     """Minimal stand-in for the urlopen context manager."""
 
-    def __enter__(self):
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> "_Response":
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> bool:
         return False
 
 
@@ -243,7 +250,9 @@ def test_missing_config_reports_a_clean_error(missing):
 
 def test_rejected_api_key_reports_a_clean_error():
     def _raise(request, timeout=None):
-        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+        raise urllib.error.HTTPError(
+            request.full_url, 401, "Unauthorized", Message(), io.BytesIO(b"")
+        )
 
     with mock.patch.dict("os.environ", ENV, clear=True), \
          mock.patch("urllib.request.urlopen", _raise):

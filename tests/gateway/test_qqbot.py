@@ -2254,3 +2254,56 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+class TestConvertFfmpegToWav:
+    @staticmethod
+    def _adapter():
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = object.__new__(QQAdapter)
+        adapter._app_id = "test"  # _log_tag is a read-only property over this
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_child_and_returns_none(self, monkeypatch):
+        # A hung/verbose ffmpeg must be killed on timeout, not left orphaned.
+        killed = {"v": False}
+
+        class _FakeProc:
+            returncode = None
+
+            async def communicate(self):
+                await asyncio.sleep(3600)  # never resolves within the timeout
+
+            def kill(self):
+                killed["v"] = True
+
+            async def wait(self):
+                return 0
+
+        async def _fake_exec(*args, **kwargs):
+            return _FakeProc()
+
+        real_wait_for = asyncio.wait_for
+
+        async def _fast_wait_for(coro, timeout):
+            return await real_wait_for(coro, timeout=0.05)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+        monkeypatch.setattr(asyncio, "wait_for", _fast_wait_for)
+
+        result = await self._adapter()._convert_ffmpeg_to_wav("in.amr", "out.wav")
+        assert result is None
+        assert killed["v"] is True
+
+    @pytest.mark.asyncio
+    async def test_missing_ffmpeg_binary_returns_none(self, monkeypatch):
+        # FileNotFoundError is raised before `proc` is bound — the handler must
+        # not try to kill a nonexistent process.
+        async def _raise(*args, **kwargs):
+            raise FileNotFoundError("ffmpeg")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _raise)
+        result = await self._adapter()._convert_ffmpeg_to_wav("in.amr", "out.wav")
+        assert result is None

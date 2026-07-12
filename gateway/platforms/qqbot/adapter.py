@@ -2125,18 +2125,34 @@ class QQAdapter(BasePlatformAdapter):
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await asyncio.wait_for(proc.wait(), timeout=30)
-            if proc.returncode != 0:
-                stderr = await proc.stderr.read() if proc.stderr else b""
-                logger.warning(
-                    "[%s] ffmpeg failed for %s: %s",
-                    self._log_tag,
-                    Path(src_path).name,
-                    stderr[:200].decode(errors="replace"),
-                )
-                return None
-        except (asyncio.TimeoutError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
             logger.warning("[%s] ffmpeg conversion error: %s", self._log_tag, exc)
+            return None
+        try:
+            # communicate() drains the stderr pipe; proc.wait() alone would
+            # deadlock if ffmpeg writes more than the ~64KB pipe buffer.
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            # wait_for only cancels the local await — kill and reap the child
+            # so we don't leak an orphaned ffmpeg process and its pipe fd.
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            logger.warning(
+                "[%s] ffmpeg conversion timed out for %s",
+                self._log_tag,
+                Path(src_path).name,
+            )
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                "[%s] ffmpeg failed for %s: %s",
+                self._log_tag,
+                Path(src_path).name,
+                (stderr or b"")[:200].decode(errors="replace"),
+            )
             return None
 
         if not Path(wav_path).exists() or Path(wav_path).stat().st_size <= 44:

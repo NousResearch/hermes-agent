@@ -48,6 +48,14 @@ from agent.runtime_cwd import resolve_context_cwd
 from utils import is_truthy_value
 
 
+PARENT_MODE_ROUTING_GUIDANCE = (
+    "Routing policy: choose thinking-expansion for exploration with no side effects; "
+    "choose research-analysis for evidence work; choose execution-development only "
+    "for explicitly requested or approved changes. Do not transition from "
+    "research-analysis to execution-development implicitly; verification is required."
+)
+
+
 def _ra():
     """Lazy reference to the ``run_agent`` module.
 
@@ -195,6 +203,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    if getattr(agent, "_mode_router_enabled", False):
+        stable_parts.append(PARENT_MODE_ROUTING_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

@@ -1464,6 +1464,13 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Snapshot the opt-in router flag at construction so prompt rebuilds (for
+    # example after compression) cannot change the cached prefix mid-session.
+    _mode_router = _agent_section.get("mode_router", {})
+    agent._mode_router_enabled = bool(
+        isinstance(_mode_router, dict) and _mode_router.get("enabled") is True
+    )
+
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the

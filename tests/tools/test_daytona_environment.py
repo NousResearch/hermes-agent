@@ -145,14 +145,22 @@ class TestCwdResolution:
 # ---------------------------------------------------------------------------
 
 class TestPersistence:
-    def test_persistent_resumes_via_get(self, make_env):
+    def test_persistent_recreates_unlabeled_named_sandbox(self, make_env):
         existing = _make_sandbox(sandbox_id="sb-existing")
-        existing.process.exec.return_value = _make_exec_response(result="/root")
-        env = make_env(get_side_effect=lambda name: existing, persistent=True,
-                       task_id="mytask")
-        existing.start.assert_called_once()
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+        )
+
+        existing.start.assert_not_called()
         env._mock_client.get.assert_called_once_with("hermes-mytask")
-        env._mock_client.create.assert_not_called()
+        env._mock_client.delete.assert_called_once_with(existing)
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
 
     def test_persistent_resumes_matching_image_via_get(self, make_env):
         existing = _make_sandbox(
@@ -190,18 +198,45 @@ class TestPersistence:
         env._mock_client.create.assert_called_once()
         assert env._sandbox is replacement
 
-    def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
+    def test_persistent_recreates_unlabeled_legacy_sandbox(
+        self, make_env, daytona_sdk
+    ):
         legacy = _make_sandbox(sandbox_id="sb-legacy")
+        replacement = _make_sandbox(sandbox_id="sb-replacement")
+
+        env = make_env(
+            sandbox=replacement,
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=iter([legacy]),
+            persistent=True,
+            task_id="mytask",
+        )
+
+        legacy.start.assert_not_called()
+        env._mock_client.list.assert_called_once_with(
+            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.delete.assert_called_once_with(legacy)
+        env._mock_client.create.assert_called_once()
+        assert env._sandbox is replacement
+
+    def test_persistent_resumes_matching_image_via_legacy_lookup(
+        self, make_env, daytona_sdk
+    ):
+        legacy = _make_sandbox(
+            sandbox_id="sb-legacy",
+            labels={"hermes_image": "test-image:latest"},
+        )
         legacy.process.exec.return_value = _make_exec_response(result="/root")
+
         env = make_env(
             get_side_effect=daytona_sdk.DaytonaError("not found"),
             list_return=iter([legacy]),
             persistent=True,
             task_id="mytask",
         )
+
         legacy.start.assert_called_once()
-        env._mock_client.list.assert_called_once_with(
-            labels={"hermes_task_id": "mytask"}, limit=1)
+        env._mock_client.delete.assert_not_called()
         env._mock_client.create.assert_not_called()
 
     def test_persistent_recreates_legacy_lookup_when_image_changed(

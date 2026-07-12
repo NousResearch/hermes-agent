@@ -157,30 +157,30 @@ class DaytonaEnvironment(BaseEnvironment):
 
     def _resume_if_image_matches(self, sandbox, *, image: str,
                                  task_id: str, source: str):
-        """Resume a sandbox unless its Hermes image label proves it is stale."""
+        """Resume a sandbox only when its Hermes image label matches."""
         labels = getattr(sandbox, "labels", None)
         recorded_image = labels.get(_IMAGE_LABEL) if isinstance(labels, dict) else None
-        if recorded_image is not None and recorded_image != image:
-            logger.warning(
-                "Daytona: deleting %s sandbox %s for task %s after image "
-                "changed from %s to %s",
-                source, sandbox.id, task_id, recorded_image, image,
-            )
+        if recorded_image != image:
+            if recorded_image is None:
+                logger.warning(
+                    "Daytona: deleting unlabeled %s sandbox %s for task %s; "
+                    "cannot verify requested image %s",
+                    source, sandbox.id, task_id, image,
+                )
+            else:
+                logger.warning(
+                    "Daytona: deleting %s sandbox %s for task %s after image "
+                    "changed from %s to %s",
+                    source, sandbox.id, task_id, recorded_image, image,
+                )
             self._daytona.delete(sandbox)
             return None
 
         sandbox.start()
-        if recorded_image is None:
-            logger.info(
-                "Daytona: resumed unlabeled %s sandbox %s for task %s; "
-                "use explicit teardown to recreate it with image tracking",
-                source, sandbox.id, task_id,
-            )
-        else:
-            logger.info(
-                "Daytona: resumed %s sandbox %s for task %s with image %s",
-                source, sandbox.id, task_id, recorded_image,
-            )
+        logger.info(
+            "Daytona: resumed %s sandbox %s for task %s with image %s",
+            source, sandbox.id, task_id, recorded_image,
+        )
         return sandbox
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:

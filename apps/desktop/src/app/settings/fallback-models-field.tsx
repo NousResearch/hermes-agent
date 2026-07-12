@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -69,6 +69,12 @@ export function FallbackModelsField({
   const providers = (modelOptions.data?.providers ?? []).filter(provider => provider.slug)
 
   const [rows, setRows] = useState<FallbackEntry[]>(() => normalizeEntries(value))
+
+  // Settings can reload after a profile/config change while this component
+  // stays mounted. Avoid displaying or saving the previous profile's chain.
+  useEffect(() => {
+    setRows(normalizeEntries(value))
+  }, [value])
 
   const commit = (next: FallbackEntry[]) => {
     setRows(next)

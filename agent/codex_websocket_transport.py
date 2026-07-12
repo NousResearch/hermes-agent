@@ -9,10 +9,12 @@ are different from ChatGPT Codex's connection-scoped continuation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import ssl
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -44,9 +46,9 @@ CODEX_RESPONSES_WIRE_FIELDS = frozenset({
     "previous_response_id",
 })
 SESSION_WEBSOCKET_CACHE_TTL_SECONDS = 5 * 60
+WEBSOCKET_RECV_POLL_TIMEOUT_SECONDS = 1.0
 _TERMINAL_EVENTS = {
     "response.completed",
-    "response.done",
     "response.incomplete",
     "response.failed",
     "response.cancelled",
@@ -147,6 +149,7 @@ class CachedWebSocketContinuationState:
 @dataclass
 class CachedWebSocketConnection:
     ws: Any
+    cache_key: tuple[str, str] | None = None
     busy: bool = False
     continuation: CachedWebSocketContinuationState | None = None
     last_used_at: float = 0.0
@@ -160,12 +163,10 @@ class WebSocketNotStartedError(RuntimeError):
     """Raised before a WebSocket request was sent; auto mode may fallback."""
 
 
-_websocket_session_cache: Dict[str, CachedWebSocketConnection] = {}
+_websocket_session_cache: Dict[tuple[str, str], CachedWebSocketConnection] = {}
 
 # A process-wide lock is enough: entries are held briefly only while acquiring or
 # releasing. The actual socket read/write stays outside this lock.
-import threading
-
 _cache_lock = threading.RLock()
 
 
@@ -174,6 +175,22 @@ def cleanup_codex_websocket_sessions() -> None:
         entries = list(_websocket_session_cache.items())
         _websocket_session_cache.clear()
     for _, entry in entries:
+        _close_websocket_silently(entry.ws)
+
+
+def cleanup_codex_websocket_session(session_id: str | None) -> None:
+    """Close cached Codex WebSockets for one Hermes session."""
+    if not session_id:
+        return
+    stale: list[CachedWebSocketConnection] = []
+    with _cache_lock:
+        for key, entry in list(_websocket_session_cache.items()):
+            if key[0] == session_id:
+                stale.append(entry)
+                _websocket_session_cache.pop(key, None)
+                entry.busy = False
+                entry.continuation = None
+    for entry in stale:
         _close_websocket_silently(entry.ws)
 
 
@@ -208,6 +225,20 @@ def _close_websocket_silently(ws: Any) -> None:
             pass
 
 
+def _websocket_cache_key(session_id: str, url: str, headers: list[tuple[str, str]]) -> tuple[str, str]:
+    """Key cached sockets by session plus endpoint/auth header fingerprint.
+
+    Codex OAuth credentials can refresh while a Hermes session keeps the same
+    ``session_id``. Including a stable fingerprint prevents reusing a socket
+    authenticated for an older token or a different backend URL.
+    """
+    normalized_headers = sorted((str(k).lower(), str(v)) for k, v in headers)
+    fingerprint = hashlib.sha256(
+        _stable_json({"url": url, "headers": normalized_headers}).encode("utf-8")
+    ).hexdigest()
+    return session_id, fingerprint
+
+
 def _connect_websocket(url: str, headers: list[tuple[str, str]], *, timeout: float | None = None) -> Any:
     connect = _require_websockets_connect()
     kwargs: Dict[str, Any] = {}
@@ -235,31 +266,35 @@ def _acquire_websocket(url: str, headers: list[tuple[str, str]], session_id: str
         ws = _connect_websocket(url, headers, timeout=timeout)
         return ws, None, False, lambda keep=True: _close_websocket_silently(ws)
 
+    cache_key = _websocket_cache_key(session_id, url, headers)
+
     with _cache_lock:
-        cached = _websocket_session_cache.get(session_id)
+        cached = _websocket_session_cache.get(cache_key)
         if cached and not cached.busy and _is_websocket_reusable(cached.ws):
             cached.busy = True
-            return cached.ws, cached, True, _make_release(session_id, cached)
+            return cached.ws, cached, True, _make_release(cache_key, cached)
         if cached and cached.busy:
+            # Parallel turns on the same session use an uncached temporary
+            # socket rather than racing on one continuation chain.
             ws = _connect_websocket(url, headers, timeout=timeout)
             return ws, None, False, lambda keep=True: _close_websocket_silently(ws)
         if cached:
-            _websocket_session_cache.pop(session_id, None)
+            _websocket_session_cache.pop(cache_key, None)
             _close_websocket_silently(cached.ws)
 
     ws = _connect_websocket(url, headers, timeout=timeout)
-    entry = CachedWebSocketConnection(ws=ws, busy=True)
+    entry = CachedWebSocketConnection(ws=ws, cache_key=cache_key, busy=True)
     with _cache_lock:
-        _websocket_session_cache[session_id] = entry
-    return ws, entry, False, _make_release(session_id, entry)
+        _websocket_session_cache[cache_key] = entry
+    return ws, entry, False, _make_release(cache_key, entry)
 
 
-def _make_release(session_id: str, entry: CachedWebSocketConnection):
+def _make_release(cache_key: tuple[str, str], entry: CachedWebSocketConnection):
     def release(*, keep: bool = True) -> None:
         with _cache_lock:
             if not keep or not _is_websocket_reusable(entry.ws):
-                if _websocket_session_cache.get(session_id) is entry:
-                    _websocket_session_cache.pop(session_id, None)
+                if _websocket_session_cache.get(cache_key) is entry:
+                    _websocket_session_cache.pop(cache_key, None)
                 entry.busy = False
                 entry.continuation = None
                 close_ws = entry.ws
@@ -270,6 +305,14 @@ def _make_release(session_id: str, entry: CachedWebSocketConnection):
         if close_ws is not None:
             _close_websocket_silently(close_ws)
     return release
+
+
+def _recv_websocket_frame(ws: Any) -> Any:
+    try:
+        return ws.recv(timeout=WEBSOCKET_RECV_POLL_TIMEOUT_SECONDS)
+    except TypeError:
+        # Compatibility for tests and older local websockets versions.
+        return ws.recv()
 
 
 def get_cached_websocket_input_delta(
@@ -418,11 +461,16 @@ def run_codex_websocket_stream(
             while True:
                 if interrupted and interrupted():
                     raise InterruptedError("Agent interrupted during Codex WebSocket stream")
-                raw = _recv_websocket_frame(ws)
+                try:
+                    raw = _recv_websocket_frame(ws)
+                except TimeoutError:
+                    continue
                 event = websocket_event_to_object(raw)
                 event_type = getattr(event, "type", "")
                 if event_type == "error":
-                    message = getattr(event, "message", None) or json.dumps(raw, ensure_ascii=False)
+                    message = getattr(event, "message", None) or (
+                        raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                    )
                     raise RuntimeError(f"Codex WebSocket error: {message}")
                 yield event
                 if event_type in _TERMINAL_EVENTS:
@@ -430,7 +478,7 @@ def run_codex_websocket_stream(
 
         final_response = collect_events(iter_events(), None)
         status = str(getattr(final_response, "status", "") or "").lower()
-        if status in {"failed", "cancelled"}:
+        if status in {"failed", "cancelled", "incomplete"}:
             keep_connection = False
             if entry is not None:
                 entry.continuation = None

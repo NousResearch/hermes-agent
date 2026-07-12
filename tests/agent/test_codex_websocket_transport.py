@@ -204,3 +204,132 @@ def test_connection_reuse_busy_socket_uses_temporary(monkeypatch):
     release2(keep=True)
     release3(keep=True)
     cleanup_codex_websocket_sessions()
+
+
+def test_connection_cache_key_includes_auth_headers(monkeypatch):
+    import agent.codex_websocket_transport as mod
+
+    cleanup_codex_websocket_sessions()
+    sockets = []
+
+    class FakeWS:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def fake_connect(url, headers, timeout=None):
+        ws = FakeWS()
+        sockets.append(ws)
+        return ws
+
+    monkeypatch.setattr(mod, "_connect_websocket", fake_connect)
+    ws1, _entry1, _reused1, release1 = mod._acquire_websocket("wss://x", [("Authorization", "Bearer old")], "s")
+    release1(keep=True)
+    ws2, _entry2, reused2, release2 = mod._acquire_websocket("wss://x", [("Authorization", "Bearer new")], "s")
+    assert ws2 is not ws1
+    assert not reused2
+    release2(keep=True)
+    mod.cleanup_codex_websocket_session("s")
+    assert all(ws.closed for ws in sockets)
+
+
+def test_cleanup_codex_websocket_session_only_closes_matching_session(monkeypatch):
+    import agent.codex_websocket_transport as mod
+
+    cleanup_codex_websocket_sessions()
+    sockets = []
+
+    class FakeWS:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def fake_connect(url, headers, timeout=None):
+        ws = FakeWS()
+        sockets.append(ws)
+        return ws
+
+    monkeypatch.setattr(mod, "_connect_websocket", fake_connect)
+    ws1, _entry1, _reused1, release1 = mod._acquire_websocket("wss://x", [], "s1")
+    ws2, _entry2, _reused2, release2 = mod._acquire_websocket("wss://x", [], "s2")
+    release1(keep=True)
+    release2(keep=True)
+    mod.cleanup_codex_websocket_session("s1")
+    assert ws1.closed
+    assert not ws2.closed
+    mod.cleanup_codex_websocket_sessions()
+
+
+def test_recv_timeout_polls_interruption(monkeypatch):
+    import agent.codex_websocket_transport as mod
+
+    cleanup_codex_websocket_sessions()
+
+    class FakeWS:
+        closed = False
+
+        def send(self, payload):
+            self.sent = payload
+
+        def recv(self, timeout=None):
+            raise TimeoutError()
+
+        def close(self):
+            self.closed = True
+
+    ws = FakeWS()
+    monkeypatch.setattr(mod, "_connect_websocket", lambda url, headers, timeout=None: ws)
+    calls = {"n": 0}
+
+    def interrupted():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    with pytest.raises(mod.WebSocketStartedError):
+        run_codex_websocket_stream(
+            api_kwargs=_body(),
+            client=SimpleNamespace(api_key="k", default_headers={}),
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            session_id="timeout-interrupt",
+            transport="websocket-cached",
+            collect_events=lambda events, getter: getter(),
+            interrupted=interrupted,
+        )
+    assert calls["n"] >= 2
+    assert ws.closed
+
+
+def test_incomplete_response_does_not_seed_continuation(monkeypatch):
+    import agent.codex_websocket_transport as mod
+
+    cleanup_codex_websocket_sessions()
+
+    class FakeWS:
+        closed = False
+
+        def send(self, payload):
+            self.sent = payload
+
+        def recv(self, timeout=None):
+            return '{"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","output":[]}}'
+
+        def close(self):
+            self.closed = True
+
+    ws = FakeWS()
+    monkeypatch.setattr(mod, "_connect_websocket", lambda url, headers, timeout=None: ws)
+    response = run_codex_websocket_stream(
+        api_kwargs=_body(),
+        client=SimpleNamespace(api_key="k", default_headers={}),
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        session_id="incomplete-session",
+        transport="websocket-cached",
+        collect_events=lambda events, getter: SimpleNamespace(id="resp_incomplete", status="incomplete", output=[]),
+    )
+    assert response.status == "incomplete"
+    assert ws.closed
+    assert not mod._websocket_session_cache

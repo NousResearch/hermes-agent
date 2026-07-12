@@ -75,6 +75,7 @@ from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
 from tools.approval import (
+    _get_approval_timeout,
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
 )
@@ -1426,6 +1427,7 @@ class HermesACPAgent(acp.Agent):
                     conn.request_permission,
                     loop,
                     session_id,
+                    timeout=float(_get_approval_timeout()),
                     auto_approve_getter=lambda: self._edit_approval_policy_for_state(state),
                 )
             except Exception:

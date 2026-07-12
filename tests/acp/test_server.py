@@ -1051,6 +1051,43 @@ class TestPrompt:
         assert state.agent.thinking_callback is None
 
     @pytest.mark.asyncio
+    async def test_prompt_uses_configured_edit_approval_timeout(self, agent, monkeypatch):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok",
+            "messages": [],
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        mock_conn.request_permission = AsyncMock(return_value=None)
+        agent._conn = mock_conn
+
+        captured: dict[str, object] = {}
+
+        def fake_make_requester(request_permission, loop, session_id, timeout, auto_approve_getter):
+            captured["request_permission"] = request_permission
+            captured["session_id"] = session_id
+            captured["timeout"] = timeout
+            captured["policy"] = auto_approve_getter()
+            return None
+
+        monkeypatch.setattr("acp_adapter.server._get_approval_timeout", lambda: 123)
+        monkeypatch.setattr("acp_adapter.edit_approval.make_acp_edit_approval_requester", fake_make_requester)
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hello")],
+            session_id=new_resp.session_id,
+        )
+
+        assert resp.stop_reason == "end_turn"
+        assert captured["request_permission"] is mock_conn.request_permission
+        assert captured["session_id"] == new_resp.session_id
+        assert captured["timeout"] == 123.0
+        assert captured["policy"] == ("ask", ".")
+
+    @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
         """After a prompt, session history should be updated."""
         new_resp = await agent.new_session(cwd=".")

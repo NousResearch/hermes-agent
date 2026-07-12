@@ -703,6 +703,53 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         server._sessions.clear()
 
 
+def test_old_socket_disconnect_cannot_detach_a_concurrent_reconnect(monkeypatch):
+    old_transport = object()
+    new_transport = object()
+    cleanup_reached_session = threading.Event()
+    allow_cleanup = threading.Event()
+    scheduled = []
+
+    class GateLock:
+        def __enter__(self):
+            cleanup_reached_session.set()
+            assert allow_cleanup.wait(timeout=2)
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    server._sessions.clear()
+    server._sessions["raced"] = {
+        "transport": old_transport,
+        "close_on_disconnect": False,
+        "history_lock": GateLock(),
+        "session_key": "stored",
+    }
+    monkeypatch.setattr(
+        server,
+        "_schedule_ws_orphan_reap",
+        lambda sid: scheduled.append(sid),
+    )
+    result = {}
+
+    def disconnect_old_socket():
+        result["counts"] = server._close_sessions_for_transport(old_transport)
+
+    cleanup = threading.Thread(target=disconnect_old_socket)
+    cleanup.start()
+    assert cleanup_reached_session.wait(timeout=1)
+    server._sessions["raced"]["transport"] = new_transport
+    allow_cleanup.set()
+    cleanup.join(timeout=1)
+    assert not cleanup.is_alive()
+
+    assert result["counts"] == (0, 0)
+    assert server._sessions["raced"]["transport"] is new_transport
+    assert scheduled == []
+    server._sessions.clear()
+
+
 def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
     """A write that times out because the event loop is stalled (GIL-heavy
     agent turn) must NOT latch the transport closed — the frame is already

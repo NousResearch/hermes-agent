@@ -814,6 +814,19 @@ def _close_sessions_for_transport(
     reaped = 0
     detached = 0
     for sid, session in owned:
+        claimed = False
+        with session.setdefault("history_lock", threading.RLock()):
+            stream = _session_event_stream(session)
+            with stream.transition(lambda _stream: None):
+                # The ownership snapshot above can race a reconnect. The old
+                # socket may detach only if it still owns the session at this
+                # exact handoff boundary.
+                if session.get("transport") is transport:
+                    claimed = True
+                    if not session.get("close_on_disconnect"):
+                        session["transport"] = _detached_ws_transport
+        if not claimed:
+            continue
         if session.get("close_on_disconnect"):
             _close_session_by_id(sid, end_reason=end_reason)
             reaped += 1
@@ -821,8 +834,6 @@ def _close_sessions_for_transport(
             # Point detached sessions at the drop sentinel (NOT real stdio) so
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            with session.setdefault("history_lock", threading.RLock()):
-                _set_session_transport_locked(session, _detached_ws_transport)
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)

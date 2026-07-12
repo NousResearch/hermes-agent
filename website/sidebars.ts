@@ -819,6 +819,7 @@ const sidebars: SidebarsConfig = {
               items: [
                 'developer-guide/plugin-llm-access',
                 'developer-guide/observer-hooks',
+                'developer-guide/pre-persist-user-message-hook',
                 'developer-guide/middleware',
                 'developer-guide/subagent-lifecycle-api',
                 'developer-guide/desktop-plugin-sdk',

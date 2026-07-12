@@ -3435,10 +3435,27 @@ class MatrixAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped, per-sender key for text message batching.
+
+        Batching coalesces one participant's client-side message splits, so the
+        key must isolate senders. In a *shared* thread
+        (``thread_sessions_per_user=False``, the default) ``build_session_key``
+        intentionally omits ``user_id`` — every participant in the thread shares
+        one session key. Without an explicit sender component two different
+        users posting within the batch window would then share a batch key, and
+        ``_enqueue_text_event`` would concatenate their text into a single event
+        under the *first* sender's identity: the second sender's authorship is
+        lost, and because downstream authorization reads ``event.source.user_id``
+        an unauthorized user's text could ride an authorized user's merged event.
+
+        The sender component is internal to the batch bookkeeping
+        (``_pending_text_batches`` / ``_pending_text_batch_tasks``) and does not
+        change session-key semantics; a single sender's split chunks still share
+        it and batch as before.
+        """
         from gateway.session import build_session_key
 
-        return build_session_key(
+        session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get(
                 "group_sessions_per_user", True
@@ -3447,6 +3464,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 "thread_sessions_per_user", False
             ),
         )
+        sender = event.source.user_id or event.source.user_id_alt or ""
+        return f"{session_key}|sender={sender}"
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer."""

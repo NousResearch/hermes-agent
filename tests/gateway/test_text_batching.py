@@ -296,6 +296,81 @@ class TestMatrixTextBatching:
         await asyncio.sleep(0.2)
         assert len(adapter._pending_text_batches) == 0
 
+    @pytest.mark.asyncio
+    async def test_different_senders_in_shared_thread_not_merged(self):
+        """Two participants in one shared thread must not batch together.
+
+        In a shared thread (``thread_sessions_per_user=False``, the default)
+        ``build_session_key`` omits ``user_id``, so both senders resolve to the
+        same session key. Batching must still key off the sender: otherwise both
+        messages merge into one event attributed to the first sender — dropping
+        the second sender's authorship (and letting their text ride the first
+        sender's identity through downstream authorization).
+        """
+        adapter = _make_matrix_adapter()
+
+        def _thread_event(text: str, user_id: str) -> MessageEvent:
+            return MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=SessionSource(
+                    platform=Platform.MATRIX,
+                    chat_id="!room:matrix.org",
+                    chat_type="group",
+                    thread_id="$thread:matrix.org",
+                    user_id=user_id,
+                ),
+            )
+
+        adapter._enqueue_text_event(_thread_event("hi from alice", "@alice:matrix.org"))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(_thread_event("hi from bob", "@bob:matrix.org"))
+
+        await asyncio.sleep(0.2)
+
+        # Each sender is dispatched as its own event — never fused into one.
+        assert adapter.handle_message.call_count == 2
+        dispatched = {
+            call.args[0].source.user_id: call.args[0].text
+            for call in adapter.handle_message.call_args_list
+        }
+        assert dispatched == {
+            "@alice:matrix.org": "hi from alice",
+            "@bob:matrix.org": "hi from bob",
+        }
+        # No single dispatched event carries both senders' text.
+        for text in dispatched.values():
+            assert not ("alice" in text and "bob" in text)
+
+    @pytest.mark.asyncio
+    async def test_same_sender_in_shared_thread_still_batches(self):
+        """One participant's split chunks in a shared thread still aggregate."""
+        adapter = _make_matrix_adapter()
+
+        def _thread_event(text: str) -> MessageEvent:
+            return MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=SessionSource(
+                    platform=Platform.MATRIX,
+                    chat_id="!room:matrix.org",
+                    chat_type="group",
+                    thread_id="$thread:matrix.org",
+                    user_id="@alice:matrix.org",
+                ),
+            )
+
+        adapter._enqueue_text_event(_thread_event("first part"))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(_thread_event("second part"))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        text = adapter.handle_message.call_args[0][0].text
+        assert "first part" in text
+        assert "second part" in text
+
 
 # =====================================================================
 # WeCom text batching

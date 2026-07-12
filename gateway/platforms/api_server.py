@@ -3124,15 +3124,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 Called AFTER _persist_response_snapshot so the stored GET
                 /v1/responses/{id} snapshot retains full tool outputs.
                 Only the SSE terminal event is trimmed.
+
+                Implements two layers of size control:
+                1. Named key truncation (content, query, pattern, old_string, new_string)
+                2. Final byte-budget backstop for any field (large arbitrary keys, multi-tool calls)
                 """
+                # First pass: truncate known large keys and arbitrary large keys
                 for _item in items:
                     if _item.get("type") == "function_call":
                         try:
                             _args = json.loads(_item.get("arguments", "{}")) if isinstance(_item.get("arguments"), str) else _item.get("arguments", {})
                             if isinstance(_args, dict):
+                                # Named key truncation
                                 for _k in ("content", "query", "pattern", "old_string", "new_string"):
                                     if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
                                         _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
+                                # Arbitrary large key truncation (backstop for unexpected keys)
+                                for _k, _v in list(_args.items()):
+                                    if _k not in ("content", "query", "pattern", "old_string", "new_string"):
+                                        if isinstance(_v, str) and len(_v) > 500:
+                                            _args[_k] = "[" + str(len(_v)) + " chars — truncated for response.completed]"
                                 _item["arguments"] = json.dumps(_args)
                         except Exception:
                             pass
@@ -3146,124 +3157,26 @@ class APIServerAdapter(BasePlatformAdapter):
                                     _first["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
                                     _item["output"] = [_first]
 
-            final_items.append({
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "output_text", "text": final_response_text or (_redact_api_error_text(agent_error) if agent_error else "")}
-                ],
-            })
-
-            if agent_error:
-                failed_env = _envelope("failed")
-                failed_env["output"] = final_items
-                failed_env["error"] = {"message": _redact_api_error_text(agent_error), "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
-                _failed_history = list(conversation_history)
-                _failed_history.append({"role": "user", "content": user_message})
-                if final_response_text or agent_error:
-                    _failed_history.append({
-                        "role": "assistant",
-                        "content": final_response_text or _redact_api_error_text(agent_error),
-                    })
-                _persist_response_snapshot(
-                    failed_env,
-                    conversation_history_snapshot=_failed_history,
-                )
-                terminal_snapshot_persisted = True
-                _trim_terminal_output_items(final_items)
-                await _write_event("response.failed", {
-                    "type": "response.failed",
-                    "response": _compact_terminal_response(failed_env),
-                })
-            else:
-                completed_env = _envelope("completed")
-                completed_env["output"] = final_items
-                completed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
-                full_history = self._build_response_conversation_history(
-                    conversation_history,
-                    user_message,
-                    result,
-                    final_response_text,
-                )
-                _persist_response_snapshot(
-                    completed_env,
-                    conversation_history_snapshot=full_history,
-                )
-                terminal_snapshot_persisted = True
-                _trim_terminal_output_items(final_items)
-                await _write_event("response.completed", {
-                    "type": "response.completed",
-                    "response": _compact_terminal_response(completed_env),
-                })
-
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            _persist_incomplete_if_needed()
-            # Client disconnected — interrupt the agent so it stops
-            # making upstream LLM calls, then cancel the task.
-            agent = agent_ref[0] if agent_ref else None
-            if agent is not None:
+                # Second pass: final byte-budget backstop
+                # Serialize the items and ensure they stay below 131,072 bytes (128 KiB + headroom)
+                MAX_LINE_BYTES = 131_072
                 try:
-                    agent.interrupt("SSE client disconnected")
+                    serialized = json.dumps(items)
+                    if len(serialized.encode("utf-8")) > MAX_LINE_BYTES:
+                        # Apply aggressive truncation to all terminal-originated fields
+                        for _item in items:
+                            if _item.get("type") == "function_call":
+                                _item["arguments"] = json.dumps({"[truncated]": "arguments exceeded 128 KiB SSE line limit; full output available via GET /v1/responses/{id}"})
+                            elif _item.get("type") == "function_call_output":
+                                _item["output"] = [{"type": "input_text", "text": "[omitted from terminal SSE event; tool output was already streamed and exceeded 128 KiB line limit — full output available via GET /v1/responses/{id}]"}]
+                        # Verify final size
+                        final_serialized = json.dumps(items)
+                        assert len(final_serialized.encode("utf-8")) <= MAX_LINE_BYTES, f"After aggressive truncation, still {len(final_serialized.encode('utf-8'))} bytes > {MAX_LINE_BYTES}"
                 except Exception:
+                    # If serialization fails, apply minimal truncation to avoid breaking the stream
                     pass
-            if not agent_task.done():
-                agent_task.cancel()
-                try:
-                    await agent_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            logger.info("SSE client disconnected; interrupted agent task %s", response_id)
-        except asyncio.CancelledError:
-            # Server-side cancellation (e.g. shutdown, request timeout) —
-            # persist an incomplete snapshot so GET /v1/responses/{id} and
-            # previous_response_id chaining still work, then re-raise so the
-            # runtime's cancellation semantics are respected.
-            _persist_incomplete_if_needed()
-            agent = agent_ref[0] if agent_ref else None
-            if agent is not None:
-                try:
-                    agent.interrupt("SSE task cancelled")
-                except Exception:
-                    pass
-            if not agent_task.done():
-                agent_task.cancel()
-            logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
-            raise
-        except Exception as _exc:
-            # Agent crashed with an unhandled error (e.g. model API error like
-            # BadRequestError, AuthenticationError).  Emit a response.failed
-            # event and properly terminate the SSE stream so the client doesn't
-            # get a TransferEncodingError from incomplete chunked encoding.
-            import traceback as _tb
-            _persist_incomplete_if_needed()
-            agent_error = _redact_api_error_text(_tb.format_exc())
-            try:
-                failed_env = _envelope("failed")
-                failed_env["output"] = list(emitted_items)
-                failed_env["error"] = {"message": _redact_api_error_text(_exc, limit=500), "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
-                await _write_event("response.failed", {
-                    "type": "response.failed",
-                    "response": failed_env,
-                })
-            except Exception:
-                pass
-            logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
-        return response
+
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""

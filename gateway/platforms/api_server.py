@@ -2494,6 +2494,11 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_prompt")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
+        # Resolve the routed agent at session creation time so the persisted
+        # agent_id is correct from the first write.  The first-writer-wins
+        # COALESCE in _insert_session_row means a later backfill cannot fix
+        # a row that was created with the DEFAULT 'main'.
+        _, resolved_agent_id = self._resolve_agent_profile(request)
         title = body.get("title")
 
         # Run the entire check-insert-title sequence inside a single
@@ -2511,13 +2516,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 import time as _time
                 conn.execute(
                     """INSERT INTO sessions (
-                       id, source, model, system_prompt, started_at
-                    ) VALUES (?, ?, ?, ?, ?)""",
+                       id, source, model, system_prompt, agent_id, started_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         "api_server",
                         str(model) if model else None,
                         system_prompt,
+                        resolved_agent_id,
                         _time.time(),
                     ),
                 )
@@ -2645,6 +2651,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # create a child session that carries the transcript forward. This uses
         # SessionDB's native parent_session_id/end_reason visibility model rather
         # than inventing a parallel fork store.
+        #
+        # agent_id is inherited from the source session, not re-resolved from
+        # routing headers.  A fork is a continuation of the parent conversation
+        # lineage and was already routed to a specific agent when it was first
+        # created; the fork endpoint carries no routing headers, so re-resolving
+        # would fall back to the default ('main') and break agent isolation.
         await asyncio.to_thread(db.end_session, source_id, "branched")
         await asyncio.to_thread(db.create_session,
             fork_id,
@@ -2652,6 +2664,7 @@ class APIServerAdapter(BasePlatformAdapter):
             model=source.get("model"),
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
+            agent_id=source.get("agent_id") or "main",
         )
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)

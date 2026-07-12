@@ -3376,38 +3376,111 @@ _MODE_CHILD_TOOLSET_POLICY = {
 }
 
 
+def _log_trusted_mode_decision(
+    *,
+    mode: str,
+    route: str,
+    delegated: bool,
+    policy_toolsets: tuple[str, ...],
+    execution_authorized: bool,
+    authorization_reason: str,
+    parent_agent,
+    child_session_id: Optional[str] = None,
+) -> None:
+    """Emit routing metadata only; task content must never enter this record."""
+    logger.info(
+        "trusted_mode_route_decision",
+        extra={
+            "event_name": "trusted_mode_route_decision",
+            "mode": mode,
+            "route": route,
+            "delegated": delegated,
+            "policy_toolsets": policy_toolsets,
+            "execution_authorized": execution_authorized,
+            "authorization_reason": authorization_reason,
+            "parent_session_id": getattr(parent_agent, "session_id", None),
+            "child_session_id": child_session_id,
+        },
+    )
+
+
 def route_trusted_mode(
     *,
     mode: str,
     goal: str,
     context: Optional[str] = None,
     parent_agent,
+    execution_authorized: bool = False,
 ):
     """Execute a code-selected mode route without creating a model tool."""
-    from agent.mode_router import ModeRoutingDecision, get_mode
+    from agent.mode_router import ModeRoutingDecision, UnknownModeError, get_mode
 
-    contract = get_mode(mode)
+    try:
+        contract = get_mode(mode)
+    except UnknownModeError:
+        _log_trusted_mode_decision(
+            mode="unknown", route="rejected", delegated=False,
+            policy_toolsets=(), execution_authorized=False,
+            authorization_reason="unknown-mode", parent_agent=parent_agent,
+        )
+        raise
+
+    policy_toolsets = _MODE_CHILD_TOOLSET_POLICY.get(contract.name, ())
+    authorized = execution_authorized is True
     if not getattr(parent_agent, "_mode_router_enabled", False):
-        return ModeRoutingDecision(
+        decision = ModeRoutingDecision(
             contract.name, goal, "direct-parent", "mode-router-disabled"
         )
+        _log_trusted_mode_decision(
+            mode=contract.name, route=decision.route, delegated=False,
+            policy_toolsets=policy_toolsets, execution_authorized=authorized,
+            authorization_reason=decision.reason, parent_agent=parent_agent,
+        )
+        return decision
     if contract.name == "thinking-expansion":
-        return ModeRoutingDecision(
+        decision = ModeRoutingDecision(
             contract.name, goal, "direct-parent", "mode-contract-requires-parent"
         )
+        _log_trusted_mode_decision(
+            mode=contract.name, route=decision.route, delegated=False,
+            policy_toolsets=policy_toolsets, execution_authorized=authorized,
+            authorization_reason="not-applicable", parent_agent=parent_agent,
+        )
+        return decision
+    if contract.name == "execution-development" and not authorized:
+        decision = ModeRoutingDecision(
+            contract.name, goal, "approval-required", "execution-authorization-required"
+        )
+        _log_trusted_mode_decision(
+            mode=contract.name, route=decision.route, delegated=False,
+            policy_toolsets=policy_toolsets, execution_authorized=False,
+            authorization_reason=decision.reason, parent_agent=parent_agent,
+        )
+        return decision
 
-    # Synchronous by design: the parent needs this result for same-turn synthesis.
-    # delegate_task remains authoritative for every child construction invariant.
+    # Log the decision before synchronous delegation so failures remain observable.
+    _log_trusted_mode_decision(
+        mode=contract.name, route="child", delegated=True,
+        policy_toolsets=policy_toolsets, execution_authorized=authorized,
+        authorization_reason=(
+            "explicitly-authorized"
+            if contract.name == "execution-development"
+            else "not-required"
+        ),
+        parent_agent=parent_agent,
+    )
+    # delegate_task remains authoritative for child capability intersection and
+    # dangerous-command approvals.
     result = delegate_task(
         goal=goal,
         context=context,
         background=False,
         parent_agent=parent_agent,
-        _trusted_toolsets=_MODE_CHILD_TOOLSET_POLICY[contract.name],
+        _trusted_toolsets=policy_toolsets,
         _trusted_mode=contract.name,
     )
     return ModeRoutingDecision(
-        contract.name, goal, "child", "mode-contract-requires-child", result
+        contract.name, goal, "child", "mode-contract-requires-child", result, True
     )
 
 

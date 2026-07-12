@@ -7,7 +7,7 @@ router integration may select.
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from typing import Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,8 @@ class ModeRoutingDecision:
     goal: str
     route: str
     reason: str
-    result: Optional[Any] = None
+    result: Optional[str] = None
+    delegated: bool = False
 
 
 MODE_DEFINITIONS: Mapping[str, ModeDefinition] = MappingProxyType(

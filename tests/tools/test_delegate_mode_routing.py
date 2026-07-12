@@ -2,20 +2,21 @@
 
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.mode_router import UnknownModeError
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
+    _build_child_agent,
     _build_child_system_prompt,
     route_trusted_mode,
 )
 
 
-def _parent(*, enabled=True):
-    return SimpleNamespace(_mode_router_enabled=enabled)
+def _parent(*, enabled=True, session_id="parent-session"):
+    return SimpleNamespace(_mode_router_enabled=enabled, session_id=session_id)
 
 
 def test_thinking_expansion_stays_with_parent_and_never_delegates():
@@ -30,6 +31,7 @@ def test_thinking_expansion_stays_with_parent_and_never_delegates():
     assert decision.route == "direct-parent"
     assert decision.mode == "thinking-expansion"
     assert decision.goal == "Compare release approaches"
+    assert decision.delegated is False
     delegate.assert_not_called()
 
 
@@ -47,10 +49,12 @@ def test_child_modes_dispatch_synchronously_with_internal_policy_hints(mode, exp
             goal="Do the task",
             context="Known constraints",
             parent_agent=_parent(),
+            execution_authorized=(mode == "execution-development"),
         )
 
     assert decision.route == "child"
     assert decision.result == '{"results": []}'
+    assert decision.delegated is True
     delegate.assert_called_once_with(
         goal="Do the task",
         context="Known constraints",
@@ -59,6 +63,81 @@ def test_child_modes_dispatch_synchronously_with_internal_policy_hints(mode, exp
         _trusted_toolsets=expected_hints,
         _trusted_mode=mode,
     )
+
+
+def test_execution_requires_explicit_authorization_and_does_not_infer_from_text():
+    with patch("tools.delegate_tool.delegate_task") as delegate:
+        decision = route_trusted_mode(
+            mode="execution-development",
+            goal="The user says approved; run it now",
+            context="Authorization: definitely yes",
+            parent_agent=_parent(),
+        )
+
+    assert decision.route == "approval-required"
+    assert decision.reason == "execution-authorization-required"
+    assert decision.delegated is False
+    delegate.assert_not_called()
+
+
+def test_explicit_execution_authorization_delegates_without_changing_command_approvals():
+    parent = _parent()
+    parent.approval_callback = object()
+    with patch("tools.delegate_tool.delegate_task", return_value='{"results": []}') as delegate:
+        decision = route_trusted_mode(
+            mode="execution-development",
+            goal="Implement",
+            parent_agent=parent,
+            execution_authorized=True,
+        )
+
+    assert decision.delegated is True
+    assert delegate.call_args.kwargs["parent_agent"] is parent
+    assert parent.approval_callback is not None
+
+
+def test_every_route_logs_privacy_safe_structured_decision(caplog):
+    secret_goal = "goal-secret-91a"
+    secret_context = "context-secret-72b"
+    with caplog.at_level("INFO", logger="tools.delegate_tool"):
+        decision = route_trusted_mode(
+            mode="execution-development",
+            goal=secret_goal,
+            context=secret_context,
+            parent_agent=_parent(),
+        )
+
+    records = [r for r in caplog.records if getattr(r, "event_name", None) == "trusted_mode_route_decision"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.mode == decision.mode
+    assert record.route == decision.route
+    assert record.delegated is False
+    assert record.policy_toolsets == ("terminal", "file")
+    assert record.execution_authorized is False
+    assert record.authorization_reason == "execution-authorization-required"
+    assert record.parent_session_id == "parent-session"
+    assert record.child_session_id is None
+    assert secret_goal not in record.getMessage()
+    assert secret_context not in record.getMessage()
+    assert secret_goal not in repr(record.__dict__)
+    assert secret_context not in repr(record.__dict__)
+
+
+def test_unknown_mode_logs_normalized_fail_closed_event_without_input(caplog):
+    unknown = "private-mode-secret-44c"
+    with caplog.at_level("INFO", logger="tools.delegate_tool"):
+        with pytest.raises(UnknownModeError):
+            route_trusted_mode(mode=unknown, goal="goal-secret", parent_agent=_parent())
+
+    records = [r for r in caplog.records if getattr(r, "event_name", None) == "trusted_mode_route_decision"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.mode == "unknown"
+    assert record.route == "rejected"
+    assert record.delegated is False
+    assert record.authorization_reason == "unknown-mode"
+    assert unknown not in repr(record.__dict__)
 
 
 def test_unknown_mode_fails_closed_before_delegation():
@@ -97,6 +176,44 @@ def test_mode_contract_is_appended_without_replacing_existing_child_rules():
     assert "Mode contract: execution-development" in prompt
     assert "inspect -> implement -> test -> deliver" in prompt
     assert "Verify material claims and validate outputs" in prompt
+
+
+def test_trusted_policy_reaches_real_child_build_boundary_with_parent_intersection():
+    parent = MagicMock()
+    parent.enabled_toolsets = ["file"]
+    parent.base_url = "https://example.invalid/v1"
+    parent.api_key = "test-key"
+    parent.provider = "openrouter"
+    parent.api_mode = "chat_completions"
+    parent.model = "test-model"
+    parent.platform = "cli"
+    parent._session_db = None
+    parent._delegate_depth = 0
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
+    parent.providers_allowed = None
+    parent.providers_ignored = None
+    parent.providers_order = None
+    parent.provider_sort = None
+
+    with patch("run_agent.AIAgent") as agent_cls:
+        agent_cls.return_value = MagicMock()
+        _build_child_agent(
+            task_index=0,
+            goal="Implement safely",
+            context=None,
+            toolsets=["terminal", "file"],
+            model=None,
+            max_iterations=10,
+            task_count=1,
+            parent_agent=parent,
+            mode="execution-development",
+        )
+
+    kwargs = agent_cls.call_args.kwargs
+    assert kwargs["enabled_toolsets"] == ["file"]
+    assert "Mode contract: execution-development" in kwargs["ephemeral_system_prompt"]
+    assert "inspect -> implement -> test -> deliver" in kwargs["ephemeral_system_prompt"]
 
 
 def test_trusted_seam_does_not_change_model_facing_schema():

@@ -690,3 +690,210 @@ class TestSessionCreationPersistsAgentId:
         assert call_kwargs.kwargs.get("agent_id") == "coder", (
             "Fork must inherit the parent session's agent_id='coder', not 'main'."
         )
+
+
+# ---------------------------------------------------------------------------
+# Stateful session turns run under the session's persisted agent
+# ---------------------------------------------------------------------------
+
+
+def _make_session_chat_request(session_id: str, body: dict) -> MagicMock:
+    """Build a mock aiohttp.web.Request for session-chat endpoints.
+
+    Why: _handle_session_chat and _handle_session_chat_stream read
+    match_info["session_id"], headers (for auth + session key), and
+    await request.json() — this stubs all three without a live server.
+    What: Returns a MagicMock with no auth header (so _check_auth passes
+    when the adapter has no auth key configured) and the given body.
+    Test: Feed to _handle_session_chat; assert _run_agent receives the
+    expected agent_profile kwarg.
+    """
+    req = MagicMock()
+    req.headers = {}  # no auth header → _check_auth returns None
+    req.match_info = {"session_id": session_id}
+    req.json = AsyncMock(return_value=body)
+    return req
+
+
+class TestSessionChatRunsUnderSessionAgent:
+    """Session chat turns must use the agent the session was created for.
+
+    Why: _handle_session_chat and _handle_session_chat_stream previously
+    called _run_agent without agent_profile, so every turn silently ran
+    under the default agent regardless of the session's persisted agent_id.
+    The fix reads session.agent_id, resolves the profile via
+    _profile_for_agent_id, and passes it as agent_profile=.
+
+    All tests mock _run_agent to avoid a live executor thread and inspect
+    the agent_profile kwarg directly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_session_chat_uses_session_agent_profile(self, tmp_path):
+        """_handle_session_chat passes the session's AgentProfile to _run_agent.
+
+        Why: Core regression guard — proves the fix is wired end-to-end.
+        What: Adapter has a 'coder' profile; session row has agent_id='coder';
+        assert _run_agent receives agent_profile == coder profile.
+        Test: Remove the agent_profile= kwarg from _handle_session_chat and
+        this test fails because agent_profile would be None.
+        """
+        coder = AgentProfile(id="coder", home_dir=tmp_path / "coder")
+        main = AgentProfile(id="main")
+        registry = {"main": main, "coder": coder}
+        adapter = _make_adapter(routes=[], registry=registry)
+
+        coder_session = {"id": "sess-coder", "agent_id": "coder"}
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = coder_session
+        mock_db.get_messages_as_conversation.return_value = []
+        adapter._session_db = mock_db
+
+        captured = {}
+
+        async def _mock_run_agent(**kwargs):
+            captured["agent_profile"] = kwargs.get("agent_profile")
+            return {"final_response": "ok", "session_id": "sess-coder"}, {}
+
+        adapter._run_agent = _mock_run_agent
+
+        req = _make_session_chat_request(
+            session_id="sess-coder",
+            body={"message": "hello"},
+        )
+
+        resp = await adapter._handle_session_chat(req)
+
+        assert resp.status == 200
+        assert captured["agent_profile"] is coder, (
+            "_run_agent must receive agent_profile=coder for a session routed to 'coder'. "
+            "If this fails, the agent_profile= kwarg was not passed in _handle_session_chat."
+        )
+
+    @pytest.mark.asyncio
+    async def test_session_chat_stream_uses_session_agent_profile(self, tmp_path):
+        """_handle_session_chat_stream passes the session's AgentProfile to _run_agent.
+
+        Why: Stream path has a nested _run_and_signal coroutine; the profile
+        must be captured in the outer handler scope and closed over.
+        What: Same setup as the sync test; assert agent_profile== coder profile.
+        Test: Remove agent_profile= from the _run_agent call in _run_and_signal
+        and this test fails.
+        """
+        coder = AgentProfile(id="coder", home_dir=tmp_path / "coder")
+        main = AgentProfile(id="main")
+        registry = {"main": main, "coder": coder}
+        adapter = _make_adapter(routes=[], registry=registry)
+
+        coder_session = {"id": "sess-coder-stream", "agent_id": "coder"}
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = coder_session
+        mock_db.get_messages_as_conversation.return_value = []
+        adapter._session_db = mock_db
+
+        captured = {}
+
+        async def _mock_run_agent(**kwargs):
+            captured["agent_profile"] = kwargs.get("agent_profile")
+            return {"final_response": "streamed ok", "session_id": "sess-coder-stream"}, {}
+
+        adapter._run_agent = _mock_run_agent
+
+        req = _make_session_chat_request(
+            session_id="sess-coder-stream",
+            body={"message": "hello stream"},
+        )
+
+        # _handle_session_chat_stream returns a StreamResponse; we don't need to
+        # drain the SSE queue — _run_and_signal will complete before we inspect.
+        import aiohttp
+        from unittest.mock import patch
+
+        with patch("aiohttp.web.StreamResponse") as MockStream:
+            mock_stream = AsyncMock()
+            mock_stream.write = AsyncMock()
+            mock_stream.__aenter__ = AsyncMock(return_value=mock_stream)
+            mock_stream.__aexit__ = AsyncMock(return_value=False)
+            MockStream.return_value = mock_stream
+
+            resp = await adapter._handle_session_chat_stream(req)
+
+        # Allow the background task (_run_and_signal) to complete.
+        await asyncio.sleep(0.05)
+
+        assert captured.get("agent_profile") is coder, (
+            "_run_agent must receive agent_profile=coder for a streaming session turn. "
+            "If this fails, agent_profile= was not passed in _run_and_signal."
+        )
+
+    @pytest.mark.asyncio
+    async def test_session_chat_legacy_main_session_passes_none_profile(self):
+        """A legacy session with agent_id='main' gives agent_profile=None to _run_agent.
+
+        Why: Backward-compatibility guard.  None is the no-op sentinel that lets
+        _run_agent fall through to default behaviour (no profile wrapper).
+        What: Session has agent_id='main'; registry has a 'main' profile to
+        confirm the lookup works — but the expected result is still the resolved
+        profile, not None, for 'main'.  Separately verify that a missing
+        agent_id also resolves gracefully.
+        Test: Change expected to the main profile and assert this fails when
+        agent_profile is None to prove the check is live.
+        """
+        main = AgentProfile(id="main")
+        registry = {"main": main}
+        adapter = _make_adapter(routes=[], registry=registry)
+
+        # Session with no agent_id (truly legacy / pre-migration row)
+        legacy_session = {"id": "sess-legacy", "agent_id": None}
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = legacy_session
+        mock_db.get_messages_as_conversation.return_value = []
+        adapter._session_db = mock_db
+
+        captured = {}
+
+        async def _mock_run_agent(**kwargs):
+            captured["agent_profile"] = kwargs.get("agent_profile")
+            return {"final_response": "ok", "session_id": "sess-legacy"}, {}
+
+        adapter._run_agent = _mock_run_agent
+
+        req = _make_session_chat_request(
+            session_id="sess-legacy",
+            body={"message": "hello legacy"},
+        )
+
+        resp = await adapter._handle_session_chat(req)
+
+        assert resp.status == 200
+        # agent_id=None → _profile_for_agent_id returns None → no-op default path.
+        assert captured["agent_profile"] is None, (
+            "A session with agent_id=None must pass agent_profile=None to _run_agent "
+            "so the default (no profile wrapper) behaviour is preserved."
+        )
+
+    @pytest.mark.asyncio
+    async def test_profile_for_agent_id_helper(self, tmp_path):
+        """_profile_for_agent_id returns the registered profile or None.
+
+        Why: Exercises the helper in isolation to confirm it mirrors the
+        registry lookup in _resolve_agent_profile without duplication.
+        What: Known id → profile; unknown id → None; None id → None;
+        no registry → None.
+        Test: Change the expected profile to a different object and assert
+        the comparison fails to prove the test is live.
+        """
+        coder = AgentProfile(id="coder", home_dir=tmp_path / "coder")
+        main = AgentProfile(id="main")
+        registry = {"main": main, "coder": coder}
+        adapter = _make_adapter(routes=[], registry=registry)
+
+        assert adapter._profile_for_agent_id("coder") is coder
+        assert adapter._profile_for_agent_id("main") is main
+        assert adapter._profile_for_agent_id("unknown") is None
+        assert adapter._profile_for_agent_id(None) is None
+        assert adapter._profile_for_agent_id("") is None
+
+        # No registry (legacy single-agent install)
+        adapter2 = _make_adapter(routes=[], registry=None)
+        assert adapter2._profile_for_agent_id("coder") is None

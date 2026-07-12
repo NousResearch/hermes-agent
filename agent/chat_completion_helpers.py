@@ -190,6 +190,214 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+_DFLASH_MODEL_FAMILY_RE = re.compile(
+    r"(?:^|[/_.:-])(?:dflash|deepseek[-_.]?v4[-_.]?flash)(?:$|[/_.:-])",
+    re.IGNORECASE,
+)
+# The production W2 runtime has a measured healthy cold-start TTFB of 116s.
+# Keep the default comfortably above that observation while still bounding an
+# opaque local queue wait such as the observed 494.5s no-first-chunk stall.
+_DFLASH_LOCAL_TIMEOUT_DEFAULT_S = 180.0
+
+
+def _is_dflash_like_model(model: Any) -> bool:
+    """Return whether *model* belongs to the local DeepSeek V4 Flash family.
+
+    ``dflash`` remains a supported shorthand, while production model IDs use
+    the explicit ``deepseek-v4-flash-*`` family (currently W2 and IQ3XXS).
+    Token boundaries avoid treating unrelated names such as ``dflashish`` as
+    this family.
+    """
+    return bool(_DFLASH_MODEL_FAMILY_RE.search(str(model or "").strip()))
+
+
+def _dflash_context_timeout_default(api_payload: Any) -> float:
+    """Return the implicit DFlash watchdog timeout for the request size."""
+    est_tokens = estimate_request_context_tokens(api_payload)
+    if est_tokens > 100_000:
+        return 300.0
+    if est_tokens > 50_000:
+        return 240.0
+    return _DFLASH_LOCAL_TIMEOUT_DEFAULT_S
+
+
+def _legacy_dflash_timeout_override(*names: str) -> float | None:
+    """Read a pre-config DFlash timeout override, if one is usable.
+
+    These names predate provider/model ``stale_timeout_seconds`` support and
+    remain only for compatibility with existing deployments. New behavioral
+    configuration belongs in config.yaml.
+    """
+    for name in names:
+        raw = os.getenv(name)
+        if raw is None:
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _normalize_watchdog_timeout(timeout: float) -> float:
+    """Apply the shared convention that non-positive disables a watchdog."""
+    return float("inf") if timeout <= 0 else timeout
+
+
+def _dflash_local_stale_timeout(api_payload: Any, model: Any) -> float | None:
+    """Return a bounded local-provider stale timeout for DFlash models.
+
+    Generic local endpoints retain their generous unbounded default because
+    large self-hosted models can legitimately prefill for a long time. The
+    DFlash family instead gets a finite default so an accepted request cannot
+    park forever without giving retry/fallback handling a chance to run.
+    """
+    if not _is_dflash_like_model(model):
+        return None
+
+    legacy_override = _legacy_dflash_timeout_override(
+        "HERMES_DFLASH_STALE_TIMEOUT",
+        "HERMES_DFLASH_STREAM_STALE_TIMEOUT",
+    )
+    timeout = (
+        legacy_override
+        if legacy_override is not None
+        else _DFLASH_LOCAL_TIMEOUT_DEFAULT_S
+    )
+    timeout = _normalize_watchdog_timeout(timeout)
+    if timeout == float("inf"):
+        return timeout
+
+    # Preserve the established legacy-override semantics while giving the
+    # implicit 180s default the same 240s/300s large-context protection as the
+    # first-chunk guard.
+    est_tokens = estimate_request_context_tokens(api_payload)
+    if est_tokens > 100_000:
+        return max(timeout, 300.0)
+    if est_tokens > 50_000:
+        return max(timeout, 240.0)
+    if est_tokens > 25_000:
+        return max(timeout, 150.0)
+    if est_tokens > 10_000:
+        return max(timeout, 90.0)
+    return timeout
+
+
+def _dflash_local_first_chunk_timeout(api_payload: Any, model: Any) -> float | None:
+    """Return the DFlash no-first-chunk cutoff for local streaming calls.
+
+    This low-level helper preserves the legacy DFlash-specific environment
+    overrides. Runtime calls should use
+    :func:`resolve_dflash_local_first_chunk_timeout`, which gives config.yaml
+    canonical precedence and otherwise shares the stream-stale policy.
+    """
+    if not _is_dflash_like_model(model):
+        return None
+
+    legacy_override = _legacy_dflash_timeout_override(
+        "HERMES_DFLASH_FIRST_CHUNK_TIMEOUT",
+        "HERMES_DFLASH_TTFB_TIMEOUT",
+    )
+    if legacy_override is not None:
+        return _normalize_watchdog_timeout(legacy_override)
+    return _dflash_context_timeout_default(api_payload)
+
+
+def resolve_stream_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Resolve the no-chunk timeout for streaming chat completions."""
+    effective_model = api_kwargs.get("model") or agent.model
+    configured_timeout = get_provider_stale_timeout(
+        agent.provider,
+        effective_model,
+    )
+    if configured_timeout is not None:
+        stale_timeout_base = configured_timeout
+        uses_implicit_default = False
+    else:
+        env_timeout = os.getenv("HERMES_STREAM_STALE_TIMEOUT")
+        if env_timeout is not None:
+            stale_timeout_base = _env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+            uses_implicit_default = False
+        else:
+            stale_timeout_base = 180.0
+            uses_implicit_default = True
+
+    estimated_tokens = estimate_request_context_tokens(api_kwargs)
+    if (
+        uses_implicit_default
+        and agent.base_url
+        and is_local_endpoint(agent.base_url)
+    ):
+        dflash_timeout = _dflash_local_stale_timeout(api_kwargs, effective_model)
+        if dflash_timeout is not None:
+            logger.debug(
+                "Local DFlash provider detected (%s) — stream stale timeout set to %.0fs",
+                agent.base_url,
+                dflash_timeout,
+            )
+            return dflash_timeout
+        logger.debug(
+            "Local provider detected (%s) — stale stream timeout disabled",
+            agent.base_url,
+        )
+        return float("inf")
+
+    if estimated_tokens > 100_000:
+        return max(stale_timeout_base, 300.0)
+    if estimated_tokens > 50_000:
+        return max(stale_timeout_base, 240.0)
+    return stale_timeout_base
+
+
+def resolve_dflash_local_first_chunk_timeout(
+    agent,
+    api_kwargs: dict,
+    resolved_stream_stale_timeout: float | None = None,
+) -> float | None:
+    """Resolve the local DFlash pre-first-chunk watchdog.
+
+    Provider/model ``stale_timeout_seconds`` is the canonical behavioral
+    configuration and controls both the pre-first-chunk and post-chunk stale
+    phases. Legacy first-chunk environment overrides remain compatible only
+    when config.yaml does not specify a value. Without either, the first-chunk
+    guard reuses the already-resolved stream timeout, including the 240s/300s
+    long-context floors.
+    """
+    effective_model = api_kwargs.get("model") or agent.model
+    if not (
+        agent.base_url
+        and is_local_endpoint(agent.base_url)
+        and _is_dflash_like_model(effective_model)
+    ):
+        return None
+
+    configured_timeout = get_provider_stale_timeout(
+        agent.provider,
+        effective_model,
+    )
+    if configured_timeout is not None:
+        if resolved_stream_stale_timeout is None:
+            resolved_stream_stale_timeout = resolve_stream_stale_timeout(
+                agent,
+                api_kwargs,
+            )
+        return resolved_stream_stale_timeout
+
+    legacy_override = _legacy_dflash_timeout_override(
+        "HERMES_DFLASH_FIRST_CHUNK_TIMEOUT",
+        "HERMES_DFLASH_TTFB_TIMEOUT",
+    )
+    if legacy_override is not None:
+        return _normalize_watchdog_timeout(legacy_override)
+
+    if resolved_stream_stale_timeout is None:
+        resolved_stream_stale_timeout = resolve_stream_stale_timeout(
+            agent,
+            api_kwargs,
+        )
+    return resolved_stream_stale_timeout
+
+
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
 # A session wedged against an unresponsive provider hits the stale detector
 # on every call and loops forever (observed: 494 consecutive failures over
@@ -1639,19 +1847,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
+        _reason_value = getattr(reason, "value", reason) if reason is not None else ""
+        _reason_label = str(_reason_value).replace("_", " ").strip()
+        _reason_suffix = f" (reason: {_reason_label})" if _reason_label else ""
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
+            f"{fb_model} via {fb_provider}{_reason_suffix}"
         )
-        # The buffered line above is dropped on successful recovery, but a
-        # provider/model switch is a durable state change operators must see
-        # even when the fallback succeeds.  Record a one-shot notice that the
-        # success path surfaces exactly once via _emit_pending_fallback_notice
-        # (see run_agent.py); it is discarded on terminal failure since the
-        # buffered line is flushed instead.  See fallback-observability fix.
+        # Retry chatter is dropped on successful recovery, but the provider /
+        # model switch is a durable state change operators must still see.
+        # The success path emits this one-shot notice before clearing buffered
+        # retry noise; terminal failure flushes the buffered switch line and
+        # discards this pending duplicate instead.
         agent._pending_fallback_notice = (
             f"🔄 Switched to fallback model: {old_model} via {old_provider} "
-            f"→ {fb_model} via {fb_provider}"
+            f"→ {fb_model} via {fb_provider}{_reason_suffix}"
         )
         logger.info(
             "Fallback activated: %s → %s (%s)",
@@ -2990,42 +3200,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         finally:
             _close_request_client_once("stream_request_complete")
 
-    # Provider-configured stale timeout takes priority over env default.
-    _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
-    if _cfg_stale is not None:
-        _stream_stale_timeout_base = _cfg_stale
-    else:
-        _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
-    # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts.  Disable the stale detector unless
-    # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
-    else:
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = estimate_request_context_tokens(api_kwargs)
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-        else:
-            _stream_stale_timeout = _stream_stale_timeout_base
-        # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
-        # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
-        # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
-        # model threshold during their thinking phase.  The cloud gateway
-        # upstream kills the socket first, surfacing as BrokenPipeError.
-        # Raises the floor only — never overrides explicit user config
-        # (handled by get_provider_stale_timeout above).
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
-        if _reasoning_floor is not None:
-            _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+    _stream_stale_timeout = resolve_stream_stale_timeout(agent, api_kwargs)
+    # Reasoning-model floor: known reasoning models (Nemotron 3 Ultra,
+    # OpenAI o1/o3, Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ,
+    # xAI Grok reasoning, etc.) routinely exceed the default 180s chat-
+    # model threshold during their thinking phase. The base timeout is
+    # resolved first; this floor can only increase it.
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
+    _local_dflash = bool(
+        agent.base_url
+        and is_local_endpoint(agent.base_url)
+        and _is_dflash_like_model(api_kwargs.get("model") or agent.model)
+    )
+    # Local DFlash has its own measured cold-start/context policy above. A
+    # generic reasoning floor would expand the 180s watchdog past the observed
+    # 494s hang and defeat the family-specific failover bound.
+    if _reasoning_floor is not None and not _local_dflash:
+        _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+
+    _dflash_first_chunk_timeout = None
+    if agent.base_url and is_local_endpoint(agent.base_url):
+        _dflash_first_chunk_timeout = resolve_dflash_local_first_chunk_timeout(
+            agent,
+            api_kwargs,
+            resolved_stream_stale_timeout=_stream_stale_timeout,
+        )
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
@@ -3049,6 +3249,55 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             agent._touch_activity(
                 f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
             )
+
+        # Local dflash has a distinct no-first-chunk failure mode: the HTTP
+        # request is accepted but the server never emits the first SSE chunk.
+        # Configured timeout policy applies to this phase too; once any chunk
+        # arrives, the normal stale detector below takes over.
+        _stream_diag = request_client_holder.get("diag")
+        _first_chunk_seen = bool(
+            _stream_diag and _stream_diag.get("first_chunk_at") is not None
+        )
+        if _dflash_first_chunk_timeout is not None and not _first_chunk_seen:
+            _first_elapsed = time.time() - last_chunk_time["t"]
+            if _first_elapsed > _dflash_first_chunk_timeout:
+                _est_ctx = estimate_request_context_tokens(api_kwargs)
+                logger.warning(
+                    "Local dflash stream produced no first chunk for %.0fs "
+                    "(threshold %.0fs). model=%s context=~%s tokens. "
+                    "Killing connection.",
+                    _first_elapsed,
+                    _dflash_first_chunk_timeout,
+                    api_kwargs.get("model", "unknown"),
+                    f"{_est_ctx:,}",
+                )
+                agent._buffer_status(
+                    f"⚠️ No first stream chunk from local dflash for "
+                    f"{int(_first_elapsed)}s "
+                    f"(context: ~{_est_ctx:,} tokens). Reconnecting..."
+                )
+                try:
+                    _close_request_client_once("dflash_first_chunk_kill")
+                except Exception:
+                    pass
+                try:
+                    agent._replace_primary_openai_client(
+                        reason="dflash_first_chunk_pool_cleanup"
+                    )
+                except Exception:
+                    pass
+                t.join(timeout=_env_float("HERMES_STREAM_ABORT_JOIN_TIMEOUT", 2.0))
+                if result["error"] is None and result["response"] is None:
+                    result["error"] = TimeoutError(
+                        f"Local dflash stream produced no first chunk after "
+                        f"{int(_first_elapsed)}s "
+                        f"(threshold: {int(_dflash_first_chunk_timeout)}s)"
+                    )
+                    break
+                last_chunk_time["t"] = time.time()
+                agent._touch_activity(
+                    f"local dflash first-chunk timeout after {int(_first_elapsed)}s"
+                )
 
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the

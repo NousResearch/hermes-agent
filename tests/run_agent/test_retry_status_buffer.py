@@ -1,9 +1,9 @@
 """Tests for the retry/fallback status buffer helpers on AIAgent.
 
-These helpers defer noisy retry chatter (rate-limit retries, fallback
-switches, compression attempts) so users only see the trace when
-everything ultimately fails.  On successful recovery the buffer is
-silently dropped.
+These helpers defer noisy retry chatter (rate-limit retries and compression
+attempts) so users only see the trace when everything ultimately fails. On
+successful recovery the noisy buffer is dropped, while a durable provider /
+model fallback switch is surfaced exactly once.
 """
 
 from __future__ import annotations

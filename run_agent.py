@@ -1258,6 +1258,17 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
+        # Local DeepSeek V4 Flash has a measured family-specific watchdog
+        # policy. Preserve the implicit-default signal so
+        # _compute_non_stream_stale_timeout can apply that bounded policy
+        # instead of the generic 600s reasoning-model floor.
+        base_url = getattr(self, "_base_url", None) or self.base_url or ""
+        if base_url and is_local_endpoint(base_url):
+            from agent.chat_completion_helpers import _is_dflash_like_model
+
+            if _is_dflash_like_model(self.model):
+                return 90.0, True
+
         # Reasoning-model floor: auto-mitigation for known reasoning models
         # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
         # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud
@@ -1284,6 +1295,19 @@ class AIAgent:
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
+            from agent.chat_completion_helpers import _dflash_local_stale_timeout
+
+            effective_model = (
+                api_payload.get("model")
+                if isinstance(api_payload, dict)
+                else self.model
+            ) or self.model
+            dflash_timeout = _dflash_local_stale_timeout(
+                api_payload,
+                effective_model,
+            )
+            if dflash_timeout is not None:
+                return dflash_timeout
             return float("inf")
 
         from agent.chat_completion_helpers import estimate_request_context_tokens
@@ -2672,6 +2696,10 @@ class AIAgent:
             if session_has_running_agent:
                 running_agent.interrupt(new_message.text)
         """
+        # A fallback notice belongs only to the turn that activated it. If
+        # that turn is cancelled, never let the next primary success announce
+        # a stale provider switch.
+        self._pending_fallback_notice = None
         self._interrupt_requested = True
         self._interrupt_message = message
         # A cron turn performs its API request on the conversation thread to
@@ -2728,6 +2756,9 @@ class AIAgent:
 
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
+        # ``clear_interrupt`` is the common turn-finalizer path, including
+        # cancellations noticed outside ``interrupt()`` itself.
+        self._pending_fallback_notice = None
         self._interrupt_requested = False
         self._interrupt_message = None
         self._interrupt_thread_signal_pending = False

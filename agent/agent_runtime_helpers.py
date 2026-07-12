@@ -1146,6 +1146,11 @@ def restore_primary_runtime(agent) -> bool:
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
     """
+    # Pending switch notices are turn-scoped. Clear before every early return
+    # too (no active fallback or cooldown), so a later primary success cannot
+    # emit a stale notice from an interrupted/abandoned prior turn.
+    agent._pending_fallback_notice = None
+
     if not agent._fallback_activated:
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was

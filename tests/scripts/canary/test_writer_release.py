@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -23,7 +24,9 @@ from scripts.canary.writer_release import (
     install_commands,
     python_bootstrap_commands,
     render_systemd_units,
+    source_snapshot_command,
     verify_clean_checkout,
+    wheel_install_command,
 )
 
 
@@ -92,7 +95,10 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
         "--managed-python",
         "--no-config",
     )
-    venv_command, lock_command, sync_command = install_commands(spec, managed)
+    venv_command, lock_command, sync_command, build_command = install_commands(
+        spec,
+        managed,
+    )
     assert venv_command.argv == (
         str(managed),
         "-I",
@@ -106,6 +112,7 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
     assert "--frozen" in sync_command.argv
     assert "--no-editable" in sync_command.argv
     assert "--no-dev" in sync_command.argv
+    assert "--no-install-project" in sync_command.argv
     assert sync_command.argv[sync_command.argv.index("--link-mode") + 1] == "copy"
     assert sync_command.argv[sync_command.argv.index("--python") + 1] == str(
         spec.interpreter
@@ -113,6 +120,17 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
     assert sync_command.environment()["UV_PROJECT_ENVIRONMENT"] == str(
         spec.venv_root
     )
+    assert sync_command.argv[sync_command.argv.index("--project") + 1] == str(
+        spec.build_project_root
+    )
+    assert str(spec.source_root) not in sync_command.argv
+    assert build_command.argv[-1] == str(spec.build_project_root)
+    assert "--no-create-gitignore" in build_command.argv
+    assert "--force-pep517" in build_command.argv
+    assert "--require-hashes" in build_command.argv
+    assert build_command.argv[
+        build_command.argv.index("--build-constraints") + 1
+    ] == str(spec.build_constraints)
     assert all(
         command.argv[0] not in {"sh", "bash", "/bin/sh", "/bin/bash"}
         for command in commands
@@ -125,6 +143,454 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
         for command in commands
         for name in command.environment()
     )
+
+
+def test_snapshot_and_install_paths_cannot_alias_source_release_or_cache(tmp_path):
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    snapshot = source_snapshot_command(spec)
+
+    assert snapshot.argv == (
+        str(spec.git_executable),
+        "-C",
+        str(spec.source_root),
+        "checkout-index",
+        "--all",
+        "--force",
+        f"--prefix={spec.build_project_root}/",
+    )
+    assert spec.build_scratch_root.parent == spec.release_root
+    assert spec.build_project_root.parent == spec.build_scratch_root
+    assert spec.wheel_output_root.parent == spec.build_scratch_root
+    assert spec.wheel_artifact_root.parent == spec.release_root
+    assert spec.source_root not in spec.build_scratch_root.parents
+    assert spec.uv_cache_dir not in spec.build_scratch_root.parents
+
+    scratch_wheel = spec.wheel_output_root / "test-1-py3-none-any.whl"
+    with pytest.raises(ValueError, match="artifact directory"):
+        wheel_install_command(spec, scratch_wheel)
+    with pytest.raises(ValueError, match="uv cache"):
+        replace(spec, uv_cache_dir=spec.build_scratch_root).validate()
+    with pytest.raises(ValueError, match="disjoint"):
+        replace(spec, source_root=spec.build_project_root).validate()
+
+    retained = spec.wheel_artifact_root / "test-1-py3-none-any.whl"
+    install = wheel_install_command(spec, retained)
+    assert install.argv[-1] == str(retained)
+    assert "--no-deps" in install.argv
+    assert "--no-build" in install.argv
+    assert "--no-index" in install.argv
+    assert "--no-cache" in install.argv
+    assert install.argv[install.argv.index("--link-mode") + 1] == "copy"
+    assert str(managed) not in install.argv
+
+
+def test_build_constraints_are_exact_and_hash_pinned(tmp_path):
+    constraints = (
+        Path(writer_release.__file__).resolve().parents[2]
+        / writer_release.BUILD_CONSTRAINTS_RELATIVE_PATH
+    )
+    expected = (
+        "setuptools==81.0.0 "
+        "--hash=sha256:"
+        "fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6\n"
+    ).encode("ascii")
+
+    assert constraints.read_bytes() == expected
+
+    spec = _spec(tmp_path)
+    spec.build_constraints.parent.mkdir(parents=True)
+    spec.build_constraints.write_bytes(expected)
+    real_lstat = writer_release.os.lstat
+
+    def root_lstat(path, *args, **kwargs):
+        item = real_lstat(path, *args, **kwargs)
+        return SimpleNamespace(
+            st_mode=item.st_mode,
+            st_uid=0,
+            st_gid=0,
+            st_dev=item.st_dev,
+            st_ino=item.st_ino,
+            st_nlink=item.st_nlink,
+            st_size=item.st_size,
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(writer_release.os, "lstat", root_lstat)
+        writer_release._validate_build_constraints(spec)
+        spec.build_constraints.write_bytes(expected.replace(b"81.0.0", b"81.0.1"))
+        with pytest.raises(PermissionError, match="constraints"):
+            writer_release._validate_build_constraints(spec)
+
+
+def test_build_and_egg_info_writes_are_isolated_from_canonical_source(tmp_path):
+    spec = _spec(tmp_path)
+    _source(spec)
+    before = {
+        path.relative_to(spec.source_root): path.read_bytes()
+        for path in spec.source_root.rglob("*")
+        if path.is_file()
+    }
+    spec.build_project_root.mkdir(parents=True)
+    spec.wheel_output_root.mkdir()
+    (spec.build_project_root / "pyproject.toml").write_bytes(
+        (spec.source_root / "pyproject.toml").read_bytes()
+    )
+    (spec.build_project_root / "uv.lock").write_bytes(
+        (spec.source_root / "uv.lock").read_bytes()
+    )
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+
+    for command in install_commands(spec, managed):
+        if command.argv[1] not in {"sync", "build"}:
+            continue
+        project = Path(
+            command.argv[command.argv.index("--project") + 1]
+            if "--project" in command.argv
+            else command.argv[-1]
+        )
+        (project / "build").mkdir(exist_ok=True)
+        (project / "test.egg-info").mkdir(exist_ok=True)
+        if command.argv[1] == "build":
+            (spec.wheel_output_root / "test-1-py3-none-any.whl").write_bytes(
+                b"wheel"
+            )
+
+    after = {
+        path.relative_to(spec.source_root): path.read_bytes()
+        for path in spec.source_root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert not (spec.source_root / "build").exists()
+    assert not (spec.source_root / "test.egg-info").exists()
+    assert (spec.build_project_root / "build").is_dir()
+    assert (spec.build_project_root / "test.egg-info").is_dir()
+
+
+def test_real_uv_build_dirties_only_tracked_index_scratch(tmp_path):
+    uv_raw = shutil.which("uv")
+    git_raw = shutil.which("git")
+    if uv_raw is None or git_raw is None:
+        pytest.skip("real uv/git executables are unavailable")
+    uv = Path(uv_raw).resolve()
+    git = Path(git_raw).resolve()
+    managed_result = subprocess.run(
+        [
+            str(uv),
+            "python",
+            "find",
+            "3.11.15",
+            "--managed-python",
+            "--no-python-downloads",
+            "--no-project",
+            "--resolve-links",
+            "--no-config",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if managed_result.returncode != 0:
+        pytest.skip("the exact managed Python is unavailable for real build proof")
+
+    source = tmp_path / "canonical-source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        "[build-system]\n"
+        "requires = ['setuptools>=77.0,<83']\n"
+        "build-backend = 'setuptools.build_meta'\n"
+        "[project]\n"
+        "name = 'scratch-proof'\n"
+        "version = '1.0.0'\n"
+        "[tool.setuptools]\n"
+        "py-modules = ['proof']\n",
+        encoding="utf-8",
+    )
+    (source / "proof.py").write_text("PROOF = True\n", encoding="utf-8")
+    constraints = source / writer_release.BUILD_CONSTRAINTS_RELATIVE_PATH
+    constraints.parent.mkdir(parents=True)
+    constraints.write_bytes(writer_release._PINNED_BUILD_CONSTRAINTS)
+    subprocess.run([str(git), "init", "--quiet", str(source)], check=True)
+    subprocess.run([str(git), "-C", str(source), "add", "."], check=True)
+    subprocess.run(
+        [
+            str(git),
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Writer Release Test",
+            "-c",
+            "user.email=writer-release@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+        check=True,
+    )
+    revision = subprocess.run(
+        [str(git), "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    spec = ReleaseBuildSpec(
+        revision=revision,
+        source_root=source,
+        release_base=tmp_path / "releases",
+        python_version="3.11.15",
+        uv_executable=uv,
+        git_executable=git,
+        uv_cache_dir=tmp_path / "uv-cache",
+    )
+    spec.build_project_root.mkdir(parents=True)
+    spec.wheel_output_root.mkdir()
+    managed_real = Path(managed_result.stdout.strip())
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.symlink_to(managed_real)
+
+    snapshot = source_snapshot_command(spec)
+    snapshot_result = subprocess.run(
+        list(snapshot.argv),
+        env=snapshot.environment(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert snapshot_result.returncode == 0, snapshot_result.stderr
+    build = install_commands(spec, managed)[-1]
+    built = subprocess.run(
+        list(build.argv),
+        env=build.environment(),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert built.returncode == 0, built.stderr
+
+    status = subprocess.run(
+        [str(git), "-C", str(source), "status", "--porcelain=v1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status == ""
+    assert not (source / "build").exists()
+    assert not list(source.glob("*.egg-info"))
+    assert (spec.build_project_root / "build").is_dir()
+    assert list(spec.build_project_root.glob("*.egg-info"))
+    wheels = list(spec.wheel_output_root.glob("*.whl"))
+    assert len(wheels) == 1
+
+    venv = subprocess.run(
+        [
+            str(managed_real),
+            "-I",
+            "-m",
+            "venv",
+            "--copies",
+            str(spec.venv_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert venv.returncode == 0, venv.stderr
+    spec.wheel_artifact_root.mkdir()
+    retained = spec.wheel_artifact_root / wheels[0].name
+    shutil.copyfile(wheels[0], retained)
+    install = wheel_install_command(spec, retained)
+    installed = subprocess.run(
+        list(install.argv),
+        env=install.environment(),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert installed.returncode == 0, installed.stderr
+    imported = subprocess.run(
+        [str(spec.interpreter), "-I", "-c", "import proof; assert proof.PROOF"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_built_wheel_selection_rejects_missing_multiple_and_symlink(tmp_path):
+    spec = _spec(tmp_path)
+    spec.wheel_output_root.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="one exact wheel"):
+        writer_release._select_built_wheel(spec)
+
+    first = spec.wheel_output_root / "test-1-py3-none-any.whl"
+    second = spec.wheel_output_root / "test-2-py3-none-any.whl"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    with pytest.raises(RuntimeError, match="one exact wheel"):
+        writer_release._select_built_wheel(spec)
+
+    second.unlink()
+    first.unlink()
+    target = tmp_path / "outside.whl"
+    target.write_bytes(b"outside")
+    first.symlink_to(target)
+    with pytest.raises(RuntimeError, match="root-owned regular file"):
+        writer_release._select_built_wheel(spec)
+
+
+def test_exact_wheel_is_copied_into_manifest_bound_artifacts(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    spec.wheel_output_root.mkdir(parents=True)
+    spec.wheel_artifact_root.mkdir()
+    source = spec.wheel_output_root / "test-1-py3-none-any.whl"
+    source.write_bytes(b"exact-wheel-content")
+    real_lstat = writer_release.os.lstat
+
+    def root_lstat(path, *args, **kwargs):
+        item = real_lstat(path, *args, **kwargs)
+        return SimpleNamespace(
+            st_mode=item.st_mode,
+            st_uid=0,
+            st_gid=0,
+            st_dev=item.st_dev,
+            st_ino=item.st_ino,
+            st_nlink=item.st_nlink,
+            st_size=item.st_size,
+        )
+
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+    monkeypatch.setattr(writer_release.os, "lstat", root_lstat)
+
+    retained = writer_release._copy_built_wheel(spec, source)
+
+    assert retained == spec.wheel_artifact_root / source.name
+    assert retained.read_bytes() == source.read_bytes()
+    assert retained.stat().st_ino != source.stat().st_ino
+    assert wheel_install_command(spec, retained).argv[-1] == str(retained)
+
+
+def test_scratch_provenance_mismatch_and_symlink_fail_closed(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    spec.source_root.mkdir(parents=True)
+    spec.release_root.mkdir(parents=True)
+    real_lstat = writer_release.os.lstat
+
+    def root_lstat(path, *args, **kwargs):
+        item = real_lstat(path, *args, **kwargs)
+        return SimpleNamespace(
+            st_mode=item.st_mode,
+            st_uid=0,
+            st_gid=0,
+            st_dev=item.st_dev,
+            st_ino=item.st_ino,
+            st_nlink=item.st_nlink,
+            st_size=item.st_size,
+        )
+
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+    monkeypatch.setattr(writer_release.os, "lstat", root_lstat)
+    device, inode = writer_release._prepare_build_scratch(spec)
+    provenance = spec.build_scratch_root / writer_release.SCRATCH_PROVENANCE_NAME
+    provenance.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="provenance drifted"):
+        writer_release._remove_build_scratch(
+            spec,
+            scratch_device=device,
+            scratch_inode=inode,
+        )
+    assert spec.build_scratch_root.is_dir()
+
+    provenance.chmod(0o400)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    saved = spec.release_root / "saved-scratch"
+    spec.build_scratch_root.rename(saved)
+    spec.build_scratch_root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="scratch identity drifted"):
+        writer_release._remove_build_scratch(
+            spec,
+            scratch_device=device,
+            scratch_inode=inode,
+        )
+    assert outside.is_dir()
+    spec.build_scratch_root.unlink()
+    saved.rename(spec.build_scratch_root)
+
+    symlink = spec.build_scratch_root / "escape"
+    symlink.symlink_to(outside, target_is_directory=True)
+    writer_release._remove_build_scratch(
+        spec,
+        scratch_device=device,
+        scratch_inode=inode,
+    )
+    assert not spec.build_scratch_root.exists()
+    assert outside.is_dir()
+
+
+def test_failed_build_retains_incomplete_release_and_scratch(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    _source(spec)
+    spec.release_base.mkdir()
+    spec.uv_cache_dir.mkdir()
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+
+    monkeypatch.setattr(writer_release, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(writer_release, "_validate_root_parent_chain", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_root_executable", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_root_source_tree", lambda _p: None)
+    monkeypatch.setattr(
+        writer_release,
+        "_validate_root_directory",
+        lambda _p, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        writer_release,
+        "_write_incomplete_marker",
+        lambda current: (
+            current.release_root / writer_release.INCOMPLETE_MARKER_NAME
+        ).write_text("incomplete\n", encoding="utf-8"),
+    )
+
+    def prepare(current):
+        current.build_project_root.mkdir(parents=True)
+        current.wheel_output_root.mkdir()
+        current.wheel_artifact_root.mkdir()
+        item = os.lstat(current.build_scratch_root)
+        return item.st_dev, item.st_ino
+
+    monkeypatch.setattr(writer_release, "_prepare_build_scratch", prepare)
+    observed = []
+
+    def runner(command):
+        observed.append(command.argv)
+        if "rev-parse" in command.argv:
+            stdout = f"{REVISION}\n"
+        elif command.argv[1:3] == ("python", "find"):
+            stdout = f"{managed}\n"
+        else:
+            stdout = ""
+        if command.argv[1:3] == ("python", "install"):
+            managed.parent.mkdir(parents=True)
+            managed.write_bytes(b"python")
+            managed.chmod(0o755)
+        if "checkout-index" in command.argv:
+            return subprocess.CompletedProcess(command.argv, 23, "", "snapshot failed")
+        return subprocess.CompletedProcess(command.argv, 0, stdout, "")
+
+    with pytest.raises(RuntimeError, match="tracked source snapshot failed"):
+        build_release(spec, runner=runner)
+
+    assert (spec.release_root / writer_release.INCOMPLETE_MARKER_NAME).is_file()
+    assert spec.build_scratch_root.is_dir()
+    assert not (spec.release_root / writer_release.RELEASE_MANIFEST_NAME).exists()
+    assert sum("rev-parse" in argv for argv in observed) == 2
 
 
 @pytest.mark.parametrize(

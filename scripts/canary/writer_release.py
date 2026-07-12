@@ -3,10 +3,11 @@
 
 The builder accepts one clean Git revision and invokes only fixed argv vectors.
 It installs a uv-managed Python inside the release, creates a copied virtual
-environment from that interpreter, and performs a frozen non-editable uv sync
-with cache links disabled.  The completed tree is root-owned, read-only, and
-described by a canonical per-path manifest whose digest is stable for identical
-content and modes.
+environment from that interpreter, installs frozen dependencies without the
+project, and builds the exact project wheel only from a tracked-index scratch
+snapshot using a hash-pinned build backend.  The retained wheel and completed
+tree are root-owned, read-only, and described by a canonical per-path manifest
+whose digest is stable for identical content and modes.
 
 The systemd renderer is deliberately pure.  It emits the Canonical Writer and
 credential-free gateway units plus a tmpfiles.d contract for the setgid writer
@@ -21,6 +22,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -33,6 +35,12 @@ RELEASE_SCHEMA = "muncho-writer-only-release.v1"
 UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v1"
 RELEASE_MANIFEST_NAME = "release-manifest.json"
 INCOMPLETE_MARKER_NAME = ".release-build-incomplete"
+BUILD_SCRATCH_NAME = ".release-build-scratch"
+SCRATCH_PROVENANCE_NAME = "provenance.json"
+SCRATCH_PROVENANCE_SCHEMA = "muncho-writer-release-scratch.v1"
+BUILD_CONSTRAINTS_RELATIVE_PATH = Path(
+    "scripts/canary/writer-build-constraints.txt"
+)
 WRITER_MODULE = "gateway.canonical_writer_bootstrap"
 GATEWAY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
 DEFAULT_RELEASE_BASE = Path("/opt/muncho-canary-releases")
@@ -58,6 +66,15 @@ _SEALED_FILE_MODE = 0o444
 _SEALED_EXECUTABLE_MODE = 0o555
 _BUILD_DIRECTORY_MODE = 0o700
 _COMMAND_TIMEOUT_SECONDS = 1800
+_SETUPTOOLS_BUILD_VERSION = "81.0.0"
+_SETUPTOOLS_BUILD_WHEEL_SHA256 = (
+    "fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6"
+)
+_PINNED_BUILD_CONSTRAINTS = (
+    f"setuptools=={_SETUPTOOLS_BUILD_VERSION} "
+    f"--hash=sha256:{_SETUPTOOLS_BUILD_WHEEL_SHA256}\n"
+).encode("ascii")
+_SAFE_WHEEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.+-]+\.whl$")
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -133,6 +150,26 @@ class ReleaseBuildSpec:
         return self.release_root / "venv"
 
     @property
+    def build_scratch_root(self) -> Path:
+        return self.release_root / BUILD_SCRATCH_NAME
+
+    @property
+    def build_project_root(self) -> Path:
+        return self.build_scratch_root / "project"
+
+    @property
+    def wheel_output_root(self) -> Path:
+        return self.build_scratch_root / "wheel"
+
+    @property
+    def build_constraints(self) -> Path:
+        return self.build_project_root / BUILD_CONSTRAINTS_RELATIVE_PATH
+
+    @property
+    def wheel_artifact_root(self) -> Path:
+        return self.release_root / "artifacts"
+
+    @property
     def interpreter(self) -> Path:
         return self.venv_root / "bin" / "python"
 
@@ -178,6 +215,24 @@ class ReleaseBuildSpec:
             for protected in (source, self.release_root)
         ):
             raise ValueError("uv cache must be outside source and release trees")
+        if (
+            self.build_scratch_root.parent != self.release_root
+            or self.build_project_root.parent != self.build_scratch_root
+            or self.wheel_output_root.parent != self.build_scratch_root
+            or len(
+                {
+                    self.build_scratch_root,
+                    self.build_project_root,
+                    self.wheel_output_root,
+                    self.wheel_artifact_root,
+                }
+            )
+            != 4
+            or self.wheel_artifact_root.parent != self.release_root
+            or _is_within(self.wheel_artifact_root, self.build_scratch_root)
+            or _is_within(self.build_scratch_root, self.wheel_artifact_root)
+        ):
+            raise ValueError("release scratch layout is not exact")
         if uv == git:
             raise ValueError("uv and git executables must be distinct")
 
@@ -268,6 +323,24 @@ def checkout_commands(spec: ReleaseBuildSpec) -> tuple[BuildCommand, ...]:
     )
 
 
+def source_snapshot_command(spec: ReleaseBuildSpec) -> BuildCommand:
+    """Render the one-way tracked-index export into the isolated build context."""
+
+    spec.validate()
+    return BuildCommand(
+        (
+            str(spec.git_executable),
+            "-C",
+            str(spec.source_root),
+            "checkout-index",
+            "--all",
+            "--force",
+            f"--prefix={spec.build_project_root}/",
+        ),
+        env=_clean_environment(spec),
+    )
+
+
 def python_bootstrap_commands(spec: ReleaseBuildSpec) -> tuple[BuildCommand, ...]:
     spec.validate()
     environment = _clean_environment(spec)
@@ -320,6 +393,7 @@ def install_commands(
     if not _is_within(managed, spec.managed_python_root):
         raise ValueError("managed interpreter must be inside the release")
     uv = str(spec.uv_executable)
+    project = str(spec.build_project_root)
     clean = _clean_environment(spec)
     sync_environment = _clean_environment(
         spec,
@@ -347,7 +421,7 @@ def install_commands(
                 "--managed-python",
                 "--no-python-downloads",
                 "--project",
-                str(spec.source_root),
+                project,
                 "--no-config",
             ),
             env=clean,
@@ -359,17 +433,67 @@ def install_commands(
                 "--frozen",
                 "--no-editable",
                 "--no-dev",
+                "--no-install-project",
                 "--link-mode",
                 "copy",
                 "--python",
                 str(spec.interpreter),
                 "--no-python-downloads",
                 "--project",
-                str(spec.source_root),
+                project,
                 "--no-config",
             ),
             env=sync_environment,
         ),
+        BuildCommand(
+            (
+                uv,
+                "build",
+                "--wheel",
+                "--out-dir",
+                str(spec.wheel_output_root),
+                "--no-create-gitignore",
+                "--python",
+                str(managed),
+                "--managed-python",
+                "--no-python-downloads",
+                "--force-pep517",
+                "--build-constraints",
+                str(spec.build_constraints),
+                "--require-hashes",
+                "--no-config",
+                project,
+            ),
+            env=clean,
+        ),
+    )
+
+
+def wheel_install_command(spec: ReleaseBuildSpec, wheel: Path) -> BuildCommand:
+    """Install one already-built local wheel without resolving or building."""
+
+    spec.validate()
+    exact_wheel = _absolute_normalized_path(wheel, "release wheel")
+    if exact_wheel.parent != spec.wheel_artifact_root or exact_wheel.suffix != ".whl":
+        raise ValueError("release wheel must be inside the exact artifact directory")
+    return BuildCommand(
+        (
+            str(spec.uv_executable),
+            "pip",
+            "install",
+            "--python",
+            str(spec.interpreter),
+            "--no-python-downloads",
+            "--no-deps",
+            "--no-build",
+            "--no-index",
+            "--no-cache",
+            "--link-mode",
+            "copy",
+            "--no-config",
+            str(exact_wheel),
+        ),
+        env=_clean_environment(spec),
     )
 
 
@@ -744,6 +868,268 @@ def _write_incomplete_marker(spec: ReleaseBuildSpec) -> None:
         os.close(descriptor)
 
 
+def _scratch_provenance_bytes(
+    spec: ReleaseBuildSpec,
+    *,
+    scratch_device: int,
+    scratch_inode: int,
+) -> bytes:
+    source = os.lstat(spec.source_root)
+    return _canonical_bytes(
+        {
+            "schema": SCRATCH_PROVENANCE_SCHEMA,
+            "revision": spec.revision,
+            "source_root": str(spec.source_root),
+            "source_device": int(source.st_dev),
+            "source_inode": int(source.st_ino),
+            "scratch_root": str(spec.build_scratch_root),
+            "scratch_device": int(scratch_device),
+            "scratch_inode": int(scratch_inode),
+        }
+    ) + b"\n"
+
+
+def _write_scratch_provenance(
+    spec: ReleaseBuildSpec,
+    *,
+    scratch_device: int,
+    scratch_inode: int,
+) -> None:
+    path = spec.build_scratch_root / SCRATCH_PROVENANCE_NAME
+    raw = _scratch_provenance_bytes(
+        spec,
+        scratch_device=scratch_device,
+        scratch_inode=scratch_inode,
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o400)
+    try:
+        os.fchown(descriptor, 0, 0)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("scratch provenance write made no progress")
+            offset += written
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _prepare_build_scratch(spec: ReleaseBuildSpec) -> tuple[int, int]:
+    """Create one non-reusable scratch context inside the incomplete release."""
+
+    os.mkdir(spec.build_scratch_root, _BUILD_DIRECTORY_MODE)
+    scratch = os.lstat(spec.build_scratch_root)
+    if (
+        not stat.S_ISDIR(scratch.st_mode)
+        or stat.S_ISLNK(scratch.st_mode)
+        or scratch.st_uid != 0
+        or scratch.st_gid != 0
+        or stat.S_IMODE(scratch.st_mode) != _BUILD_DIRECTORY_MODE
+    ):
+        raise PermissionError("release scratch root is not exact")
+    identity = (int(scratch.st_dev), int(scratch.st_ino))
+    _write_scratch_provenance(
+        spec,
+        scratch_device=identity[0],
+        scratch_inode=identity[1],
+    )
+    os.mkdir(spec.build_project_root, _BUILD_DIRECTORY_MODE)
+    os.mkdir(spec.wheel_output_root, _BUILD_DIRECTORY_MODE)
+    os.mkdir(spec.wheel_artifact_root, _BUILD_DIRECTORY_MODE)
+    return identity
+
+
+def _validate_build_constraints(spec: ReleaseBuildSpec) -> None:
+    path = spec.build_constraints
+    item = os.lstat(path)
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != 0
+        or item.st_gid != 0
+        or stat.S_IMODE(item.st_mode) & 0o022
+        or item.st_size != len(_PINNED_BUILD_CONSTRAINTS)
+        or path.read_bytes() != _PINNED_BUILD_CONSTRAINTS
+    ):
+        raise PermissionError("release build constraints are not exact")
+
+
+def _select_built_wheel(spec: ReleaseBuildSpec) -> Path:
+    entries = sorted(spec.wheel_output_root.iterdir(), key=lambda item: item.name)
+    if len(entries) != 1 or _SAFE_WHEEL_NAME_RE.fullmatch(entries[0].name) is None:
+        raise RuntimeError("release build did not produce one exact wheel")
+    wheel = entries[0]
+    item = os.lstat(wheel)
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != 0
+        or item.st_gid != 0
+        or stat.S_IMODE(item.st_mode) & 0o022
+        or item.st_nlink != 1
+        or item.st_size <= 0
+    ):
+        raise RuntimeError("release build wheel is not a root-owned regular file")
+    return wheel
+
+
+def _copy_built_wheel(spec: ReleaseBuildSpec, source: Path) -> Path:
+    """Copy the exact wheel into the manifest-bound release artifact tree."""
+
+    source_path = _absolute_normalized_path(source, "scratch wheel")
+    if source_path.parent != spec.wheel_output_root:
+        raise ValueError("scratch wheel is outside the exact output directory")
+    destination = spec.wheel_artifact_root / source_path.name
+    read_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(
+        os,
+        "O_CLOEXEC",
+        0,
+    )
+    if hasattr(os, "O_NOFOLLOW"):
+        read_flags |= os.O_NOFOLLOW
+        write_flags |= os.O_NOFOLLOW
+    source_fd = os.open(source_path, read_flags)
+    try:
+        source_stat = os.fstat(source_fd)
+        observed = os.lstat(source_path)
+        if (
+            (source_stat.st_dev, source_stat.st_ino)
+            != (observed.st_dev, observed.st_ino)
+            or not stat.S_ISREG(source_stat.st_mode)
+            or source_stat.st_nlink != 1
+        ):
+            raise RuntimeError("scratch wheel identity changed before copy")
+        destination_fd = os.open(destination, write_flags, 0o400)
+        try:
+            os.fchown(destination_fd, 0, 0)
+            while chunk := os.read(source_fd, 1024 * 1024):
+                offset = 0
+                while offset < len(chunk):
+                    written = os.write(destination_fd, chunk[offset:])
+                    if written <= 0:
+                        raise OSError("release wheel copy made no progress")
+                    offset += written
+            os.fchmod(destination_fd, _SEALED_FILE_MODE)
+            os.fsync(destination_fd)
+        finally:
+            os.close(destination_fd)
+    finally:
+        os.close(source_fd)
+    copied = os.lstat(destination)
+    original = os.lstat(source_path)
+    if (
+        not stat.S_ISREG(copied.st_mode)
+        or stat.S_ISLNK(copied.st_mode)
+        or copied.st_uid != 0
+        or copied.st_gid != 0
+        or stat.S_IMODE(copied.st_mode) != _SEALED_FILE_MODE
+        or copied.st_nlink != 1
+        or copied.st_size != original.st_size
+        or (copied.st_dev, copied.st_ino) == (original.st_dev, original.st_ino)
+        or _hash_file(destination) != _hash_file(source_path)
+    ):
+        raise RuntimeError("release wheel copy digest does not match source")
+    return destination
+
+
+def _validate_scratch_provenance(
+    spec: ReleaseBuildSpec,
+    *,
+    scratch_device: int,
+    scratch_inode: int,
+) -> None:
+    root = os.lstat(spec.build_scratch_root)
+    if (
+        not stat.S_ISDIR(root.st_mode)
+        or stat.S_ISLNK(root.st_mode)
+        or (root.st_dev, root.st_ino) != (scratch_device, scratch_inode)
+        or root.st_uid != 0
+        or root.st_gid != 0
+        or stat.S_IMODE(root.st_mode) != _BUILD_DIRECTORY_MODE
+    ):
+        raise RuntimeError("release scratch identity drifted")
+    path = spec.build_scratch_root / SCRATCH_PROVENANCE_NAME
+    item = os.lstat(path)
+    expected = _scratch_provenance_bytes(
+        spec,
+        scratch_device=scratch_device,
+        scratch_inode=scratch_inode,
+    )
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != 0
+        or item.st_gid != 0
+        or item.st_nlink != 1
+        or stat.S_IMODE(item.st_mode) != 0o400
+        or item.st_size != len(expected)
+    ):
+        raise RuntimeError("release scratch provenance drifted")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (item.st_dev, item.st_ino):
+            raise RuntimeError("release scratch provenance identity changed")
+        raw = bytearray()
+        while chunk := os.read(descriptor, 4096):
+            raw.extend(chunk)
+            if len(raw) > len(expected):
+                raise RuntimeError("release scratch provenance is oversized")
+    finally:
+        os.close(descriptor)
+    if bytes(raw) != expected:
+        raise RuntimeError("release scratch provenance does not match")
+
+
+def _remove_build_scratch(
+    spec: ReleaseBuildSpec,
+    *,
+    scratch_device: int,
+    scratch_inode: int,
+) -> None:
+    """Remove only the provenance-bound scratch tree, or leave it untouched."""
+
+    _validate_scratch_provenance(
+        spec,
+        scratch_device=scratch_device,
+        scratch_inode=scratch_inode,
+    )
+    for current, directories, files in os.walk(
+        spec.build_scratch_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        directories.sort()
+        files.sort()
+        for name in [*directories, *files]:
+            path = Path(current) / name
+            item = os.lstat(path)
+            if item.st_uid != 0 or item.st_gid != 0:
+                raise RuntimeError("release scratch contains a non-root-owned entry")
+            if stat.S_ISDIR(item.st_mode):
+                if item.st_dev != scratch_device:
+                    raise RuntimeError("release scratch crosses a filesystem boundary")
+            elif stat.S_ISREG(item.st_mode):
+                if item.st_nlink != 1:
+                    raise RuntimeError("release scratch contains a hard-linked file")
+            elif not stat.S_ISLNK(item.st_mode):
+                raise RuntimeError("release scratch contains a special file")
+    if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+        raise RuntimeError("symlink-safe release scratch cleanup is unavailable")
+    shutil.rmtree(spec.build_scratch_root)
+    if os.path.lexists(spec.build_scratch_root):
+        raise RuntimeError("release scratch cleanup did not complete")
+
+
 def _validate_installed_runtime(
     spec: ReleaseBuildSpec,
     managed_python: Path,
@@ -838,31 +1224,73 @@ def build_release(
     _validate_root_directory(spec.release_root, exact_mode=_BUILD_DIRECTORY_MODE)
     _write_incomplete_marker(spec)
 
-    install_python, find_python = python_bootstrap_commands(spec)
-    _run_checked(install_python, runner=runner, label="uv managed Python install")
-    managed_raw = _run_checked(
-        find_python,
-        runner=runner,
-        label="uv managed Python discovery",
-    ).stdout.strip()
-    managed_python = _absolute_normalized_path(
-        managed_raw,
-        "discovered managed interpreter",
-    )
-    if not _is_within(managed_python, spec.managed_python_root):
-        raise RuntimeError("uv discovered Python outside the exact release")
-    managed_stat = os.lstat(managed_python)
-    if (
-        not stat.S_ISREG(managed_stat.st_mode)
-        or stat.S_ISLNK(managed_stat.st_mode)
-        or not stat.S_IMODE(managed_stat.st_mode) & 0o111
-    ):
-        raise RuntimeError("uv managed Python is not a copied executable")
+    try:
+        install_python, find_python = python_bootstrap_commands(spec)
+        _run_checked(install_python, runner=runner, label="uv managed Python install")
+        managed_raw = _run_checked(
+            find_python,
+            runner=runner,
+            label="uv managed Python discovery",
+        ).stdout.strip()
+        managed_python = _absolute_normalized_path(
+            managed_raw,
+            "discovered managed interpreter",
+        )
+        if not _is_within(managed_python, spec.managed_python_root):
+            raise RuntimeError("uv discovered Python outside the exact release")
+        managed_stat = os.lstat(managed_python)
+        if (
+            not stat.S_ISREG(managed_stat.st_mode)
+            or stat.S_ISLNK(managed_stat.st_mode)
+            or not stat.S_IMODE(managed_stat.st_mode) & 0o111
+        ):
+            raise RuntimeError("uv managed Python is not a copied executable")
 
-    for index, command in enumerate(install_commands(spec, managed_python), start=1):
-        _run_checked(command, runner=runner, label=f"release install step {index}")
-    verify_clean_checkout(spec, runner=runner)
-    _validate_installed_runtime(spec, managed_python)
+        scratch_device, scratch_inode = _prepare_build_scratch(spec)
+        _run_checked(
+            source_snapshot_command(spec),
+            runner=runner,
+            label="tracked source snapshot",
+        )
+        _validate_root_source_tree(spec.build_project_root)
+        _validate_build_constraints(spec)
+        for index, command in enumerate(
+            install_commands(spec, managed_python),
+            start=1,
+        ):
+            _run_checked(command, runner=runner, label=f"release install step {index}")
+        scratch_wheel = _select_built_wheel(spec)
+        artifact_wheel = _copy_built_wheel(spec, scratch_wheel)
+        if any(
+            os.path.lexists(path)
+            for path in (spec.writer_module_origin, spec.gateway_module_origin)
+        ):
+            raise RuntimeError("release project was installed before exact wheel gate")
+        _run_checked(
+            wheel_install_command(spec, artifact_wheel),
+            runner=runner,
+            label="exact release wheel install",
+        )
+        _validate_installed_runtime(spec, managed_python)
+    except Exception as build_error:
+        try:
+            verify_clean_checkout(spec, runner=runner)
+        except Exception as source_error:
+            raise ExceptionGroup(
+                "release build failed and canonical source re-attestation failed",
+                [build_error, source_error],
+            ) from None
+        raise
+    else:
+        # Every post-marker success and ordinary failure path re-attests that
+        # build tooling left the canonical checkout byte/SCM clean.  This code
+        # deliberately never attempts to clean or repair that source.
+        verify_clean_checkout(spec, runner=runner)
+    _remove_build_scratch(
+        spec,
+        scratch_device=scratch_device,
+        scratch_inode=scratch_inode,
+    )
     _seal_release_tree(spec.release_root)
     manifest = create_release_manifest(spec)
     _write_release_manifest(spec.release_root, manifest)
@@ -1234,12 +1662,16 @@ def render_systemd_units(
 
 
 __all__ = [
+    "BUILD_CONSTRAINTS_RELATIVE_PATH",
+    "BUILD_SCRATCH_NAME",
     "BuildCommand",
     "GATEWAY_MODULE",
     "GATEWAY_UNIT_NAME",
     "INCOMPLETE_MARKER_NAME",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_SCHEMA",
+    "SCRATCH_PROVENANCE_NAME",
+    "SCRATCH_PROVENANCE_SCHEMA",
     "ReleaseBuildSpec",
     "ReleaseManifest",
     "SystemdUnitBundle",
@@ -1256,5 +1688,7 @@ __all__ = [
     "install_commands",
     "python_bootstrap_commands",
     "render_systemd_units",
+    "source_snapshot_command",
     "verify_clean_checkout",
+    "wheel_install_command",
 ]

@@ -2319,7 +2319,13 @@ async def git_review_list_route(path: str, scope: str = "uncommitted", base: Opt
 async def git_review_diff_route(
     path: str, file: str, scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
 ):
-    return {"diff": await _git_op(_web_git.review_diff, _git_path(path), file, scope, base, staged)}
+    # Diff context lines are configurable (desktop.review_diff_context) so the
+    # review pane can show the whole file, mirroring lazygit's diffContextSize.
+    try:
+        context = int((load_config() or {}).get("desktop", {}).get("review_diff_context", 3) or 3)
+    except (TypeError, ValueError):
+        context = 3
+    return {"diff": await _git_op(_web_git.review_diff, _git_path(path), file, scope, base, staged, context)}
 
 
 @app.get("/api/git/file-diff")

@@ -305,21 +305,44 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
     return {"files": files, "base": None}
 
 
-def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
+# Above this many lines, a large `review_diff_context` (e.g. full-file 999999)
+# falls back to git's standard 3-line context — the desktop review pane renders
+# every diff line without virtualization, so a huge full-file diff would flood it.
+REVIEW_DIFF_FULL_CONTEXT_MAX_LINES = 3000
+
+
+def _review_diff_unified_flag(cwd: str, file_path: str, context: int) -> str:
+    """`--unified=N` for the review diff, clamped so a large (full-file) context
+    is only honored for files small enough for the non-virtualized renderer."""
+    if context <= 3:
+        return f"--unified={context}"
+    try:
+        with open(os.path.join(cwd, file_path), "rb") as fh:
+            if sum(1 for _ in fh) > REVIEW_DIFF_FULL_CONTEXT_MAX_LINES:
+                return "--unified=3"
+    except OSError:
+        pass
+    return f"--unified={context}"
+
+
+def review_diff(
+    cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool, context: int = 3
+) -> str:
     if not _is_dir(cwd):
         return ""
+    unified = _review_diff_unified_flag(cwd, file_path, context)
     if scope == "branch":
         base = _branch_base(cwd)
-        return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
+        return _git_out(cwd, ["diff", unified, f"{base}...HEAD", "--", file_path]) if base else ""
     if scope == "lastTurn":
-        return _git_out(cwd, ["diff", base_ref, "--", file_path]) if base_ref else ""
+        return _git_out(cwd, ["diff", unified, base_ref, "--", file_path]) if base_ref else ""
     if staged:
-        return _git_out(cwd, ["diff", "--cached", "--", file_path])
-    worktree = _git_out(cwd, ["diff", "--", file_path])
+        return _git_out(cwd, ["diff", unified, "--cached", "--", file_path])
+    worktree = _git_out(cwd, ["diff", unified, "--", file_path])
     if worktree.strip():
         return worktree
     # Untracked: synthesize an all-add diff (exits non-zero by design).
-    _, out, _ = _git(cwd, ["diff", "--no-index", "--", os.devnull, file_path])
+    _, out, _ = _git(cwd, ["diff", "--no-index", unified, "--", os.devnull, file_path])
     return out
 
 

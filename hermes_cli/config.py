@@ -3281,6 +3281,13 @@ DEFAULT_CONFIG = {
         #   false   - always keep GPU acceleration on, even over a remote display.
         # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
         "disable_gpu": "auto",
+        # Unified-diff context lines for the desktop review pane's per-file diff.
+        # Mirrors lazygit's `git.diffContextSize`. The default matches git's
+        # standard 3 lines; set it high (e.g. 999999) to show the ENTIRE file with
+        # changes highlighted inline. Files larger than the renderer can
+        # comfortably draw fall back to the default context (see web_git.py) so a
+        # huge file never floods the non-virtualized diff view.
+        "review_diff_context": 3,
     },
 
 

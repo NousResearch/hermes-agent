@@ -2254,3 +2254,87 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+# ---------------------------------------------------------------------------
+# _is_authorized_interaction_for_session — approval button auth check
+# ---------------------------------------------------------------------------
+
+class TestAuthorizedInteractionForSession:
+    """Verify approval button interaction authorization accepts both
+    'c2c' and 'dm' as private-chat chat types (fix #63232)."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def _make_event(self, user_openid: str = "", group_member_openid: str = "", group_openid: str = "", guild_id: str = ""):
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+        return InteractionEvent(
+            id="evt_1",
+            scene="c2c",
+            button_data="approve:agent:main:qqbot:c2c:user123:once",
+            user_openid=user_openid,
+            group_member_openid=group_member_openid,
+            group_openid=group_openid,
+            guild_id=guild_id,
+        )
+
+    # --- c2c chat_type ---
+
+    def test_c2c_operator_matches(self):
+        adapter = self._make_adapter()
+        event = self._make_event(user_openid="user123")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:c2c:user123"
+        ) is True
+
+    def test_c2c_operator_mismatch(self):
+        adapter = self._make_adapter()
+        event = self._make_event(user_openid="attacker")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:c2c:user123"
+        ) is False
+
+    # --- dm chat_type (C2C mapped to dm) ---
+
+    def test_dm_operator_matches(self):
+        """'dm' chat_type should be accepted — C2C messages are dispatched
+        with chat_type='dm' in the session key."""
+        adapter = self._make_adapter()
+        event = self._make_event(user_openid="user123")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:dm:user123"
+        ) is True
+
+    def test_dm_operator_mismatch(self):
+        adapter = self._make_adapter()
+        event = self._make_event(user_openid="attacker")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:dm:user123"
+        ) is False
+
+    # --- group chat_type ---
+
+    def test_group_matches_both_ids(self):
+        adapter = self._make_adapter()
+        event = self._make_event(group_member_openid="member1", group_openid="grp1")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:group:grp1:member1"
+        ) is True
+
+    def test_group_mismatch_user(self):
+        adapter = self._make_adapter()
+        event = self._make_event(group_member_openid="other_user", group_openid="grp1")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:group:grp1:member1"
+        ) is False
+
+    # --- malformed session key ---
+
+    def test_malformed_key_returns_false(self):
+        adapter = self._make_adapter()
+        event = self._make_event(user_openid="user123")
+        assert adapter._is_authorized_interaction_for_session(
+            event, "invalid_key"
+        ) is False

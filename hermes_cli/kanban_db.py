@@ -6850,6 +6850,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
+    if (
+        latest_run is not None
+        and latest_run["outcome"] in {"spawn_failed", "gave_up"}
+    ):
+        err = None
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 

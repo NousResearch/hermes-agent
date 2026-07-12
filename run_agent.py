@@ -4255,6 +4255,7 @@ class AIAgent:
         self.base_url = base_url.strip().rstrip("/")
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        self._apply_client_headers_for_base_url(str(self.base_url or ""))
 
         if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
             return False

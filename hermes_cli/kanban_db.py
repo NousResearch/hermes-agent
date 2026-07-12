@@ -214,6 +214,63 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     return DEFAULT_CLAIM_TTL_SECONDS
 
 
+def live_worker_workspace_snapshot(task) -> dict[str, str]:
+    """Return live workspace overrides for a worker task row.
+
+    The dispatcher writes the intended workspace state into the DB, but for the
+    currently running worker we prefer the live checkout on disk as the source
+    of truth. We only expose live metadata for actual worktree tasks so scratch
+    and dir workspaces never get an invented branch name -- EXCEPT for the
+    worker's own currently-running task (``HERMES_KANBAN_TASK`` matches the row
+    id), where the live checkout on disk is authoritative even if the persisted
+    ``workspace_kind`` is stale/scratch. The git-worktree probe below still
+    gates any branch name on the workspace actually being a linked worktree, so
+    a non-worktree active workspace still returns no overrides.
+    """
+    is_active_task = (
+        os.environ.get("HERMES_KANBAN_TASK", "").strip() == getattr(task, "id", None)
+    )
+    if not is_active_task and getattr(task, "workspace_kind", None) != "worktree":
+        return {}
+
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if not workspace:
+        return {}
+
+    path = Path(workspace).expanduser()
+    git_dir = path / ".git"
+    if not git_dir.is_file():
+        return {}
+    try:
+        if not git_dir.read_text(encoding="utf-8").startswith("gitdir:"):
+            return {}
+    except OSError:
+        return {}
+
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    branch_name = (result.stdout or "").strip()
+    if not branch_name:
+        return {}
+
+    try:
+        resolved = str(path.resolve(strict=False))
+    except OSError:
+        resolved = str(path)
+    return {
+        "workspace_kind": "worktree",
+        "workspace_path": resolved,
+        "branch_name": branch_name,
+    }
+
+
 # Grace period after a task transitions to ``running`` during which
 # ``detect_crashed_workers`` skips the ``_pid_alive`` check. Covers the
 # fork() → /proc-visibility window where liveness can transiently report
@@ -512,25 +569,47 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _scoped_board_override_slug() -> Optional[str]:
+    """Return the normalized in-process board override, if one is active.
+
+    ``scoped_current_board(...)`` is the CLI's first-class explicit-board
+    override path. When present it must outrank ambient worker DB/workspace
+    pins, otherwise ``hermes kanban --board <slug> ...`` can open the wrong
+    sqlite file even though the command is explicitly scoped.
+    """
+    scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if not scoped:
+        return None
+    try:
+        return _normalize_board_slug(scoped)
+    except ValueError:
+        return None
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
     Resolution (highest precedence first):
 
-    1. ``HERMES_KANBAN_DB`` env var — pins the path directly. Honoured for
-       back-compat and for the dispatcher→worker handoff (defense in
-       depth: dispatcher injects this into worker env so workers are
-       immune to any path-resolution disagreement).
-    2. When ``board`` arg is None, the active board from
-       :func:`get_current_board` is used.
-    3. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
+    1. Explicit board intent — either the ``board`` arg or an active
+       ``scoped_current_board(...)`` override.
+    2. ``HERMES_KANBAN_DB`` env var — pins the path directly when there is no
+       explicit board override. Honoured for back-compat and for the
+       dispatcher→worker handoff (defense in depth: dispatcher injects this
+       into worker env so workers are immune to any path-resolution
+       disagreement).
+    3. When neither explicit-board path above is present, the active board
+       from :func:`get_current_board` is used.
+    4. Board ``default`` → ``<root>/kanban.db`` (back-compat path).
        Other boards → ``<root>/kanban/boards/<slug>/kanban.db``.
     """
-    override = os.environ.get("HERMES_KANBAN_DB", "").strip()
-    if override:
-        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
+        slug = _scoped_board_override_slug()
+    if slug is None:
+        override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban.db"
@@ -541,18 +620,23 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     """Return the directory under which ``scratch`` workspaces are created.
 
     Anchored per-board so workspaces don't leak between projects.
-    ``HERMES_KANBAN_WORKSPACES_ROOT`` pins the path directly (highest
-    precedence) — the dispatcher injects this into worker env.
+    Explicit board intent (``board=`` or ``scoped_current_board(...)``)
+    outranks ambient worker pins so ``--board <slug>`` commands stay on their
+    requested board. Without an explicit board,
+    ``HERMES_KANBAN_WORKSPACES_ROOT`` still pins the path directly — the
+    dispatcher injects this into worker env.
 
     ``default`` keeps the legacy path ``<root>/kanban/workspaces/`` so
     that existing scratch workspaces from before the boards feature are
     preserved. Other boards use ``<root>/kanban/boards/<slug>/workspaces/``.
     """
-    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
-    if override:
-        return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:
+        slug = _scoped_board_override_slug()
+    if slug is None:
+        override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+        if override:
+            return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "workspaces"
@@ -647,6 +731,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "worktree_base_ref": None,
         "created_at": None,
         "archived": False,
     }
@@ -674,6 +759,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -697,6 +783,8 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if worktree_base_ref is not None:
+        meta["worktree_base_ref"] = str(worktree_base_ref) if worktree_base_ref else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -717,6 +805,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    worktree_base_ref: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -734,6 +823,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        worktree_base_ref=worktree_base_ref,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -854,9 +944,13 @@ class Task:
     claim_lock: Optional[str]
     claim_expires: Optional[int]
     tenant: Optional[str]
+    brand: Optional[str] = None
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_commit: Optional[str] = None
     result: Optional[str] = None
+    delivery_state: Optional[dict[str, Any]] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
@@ -907,6 +1001,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # True when the workspace kind was explicitly chosen at creation
+    # (e.g. ``--workspace scratch``). Pinned workspaces are never
+    # auto-upgraded to a worktree at create or dispatch time.
+    workspace_pinned: bool = False
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -927,6 +1025,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        delivery_state_value: Optional[dict[str, Any]] = None
+        if "delivery_state" in keys and row["delivery_state"]:
+            try:
+                parsed_delivery_state = json.loads(row["delivery_state"])
+                if isinstance(parsed_delivery_state, dict):
+                    delivery_state_value = parsed_delivery_state
+            except Exception:
+                delivery_state_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -942,10 +1048,18 @@ class Task:
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
             project_id=row["project_id"] if "project_id" in keys else None,
+            workspace_base_ref=(
+                row["workspace_base_ref"] if "workspace_base_ref" in keys else None
+            ),
+            workspace_base_commit=(
+                row["workspace_base_commit"] if "workspace_base_commit" in keys else None
+            ),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
+            brand=row["brand"] if "brand" in keys else None,
             result=row["result"] if "result" in keys else None,
+            delivery_state=delivery_state_value,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
@@ -989,6 +1103,11 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            workspace_pinned=(
+                bool(row["workspace_pinned"])
+                if "workspace_pinned" in keys and row["workspace_pinned"]
+                else False
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1089,6 +1208,226 @@ class Event:
 
 
 # ---------------------------------------------------------------------------
+# Delivery-state helpers (pilot: machine-checkable software-delivery truth)
+# ---------------------------------------------------------------------------
+
+DELIVERY_REVIEW_GATE_STAGES = {"implementation", "qa"}
+DELIVERY_WORKTREE_PROVENANCE_STAGES = {"implementation", "review", "converge"}
+
+
+def _delivery_ref_path(ref: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(ref, dict):
+        return None
+    raw = ref.get("path") or ref.get("stored_path")
+    if raw is None:
+        return None
+    path = str(raw).strip()
+    return path or None
+
+
+def delivery_artifact_readable(ref: Optional[dict[str, Any]]) -> bool:
+    """Return True when the delivery artifact ref resolves to a readable file.
+
+    The pilot intentionally treats file readability as first-class delivery
+    truth. Unsupported or incomplete refs stay false rather than pretending
+    delivery is green.
+    """
+
+    path = _delivery_ref_path(ref)
+    if not path:
+        return False
+    try:
+        return Path(path).expanduser().is_file()
+    except OSError:
+        return False
+
+
+def _delivery_workspace_snapshot(task: Task) -> dict[str, Any]:
+    return {
+        "kind": task.workspace_kind,
+        "path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "base_ref": task.workspace_base_ref,
+        "base_commit": task.workspace_base_commit,
+    }
+
+
+def _deep_merge_dicts(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def derive_delivery_verdict(snapshot: Optional[dict[str, Any]]) -> tuple[str, str]:
+    """Reduce a structured delivery-state snapshot into a verdict + reason."""
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ("unknown", "delivery_state missing")
+
+    required = [
+        "stage",
+        "workflow_stream_id",
+        "artifact",
+        "workspace",
+        "proof",
+        "review",
+        "merge",
+        "release",
+    ]
+    missing = [key for key in required if snapshot.get(key) is None]
+    if missing:
+        return ("unknown", f"missing delivery_state fields: {', '.join(missing)}")
+
+    stage = str(snapshot.get("stage") or "").strip()
+    if not stage:
+        return ("unknown", "stage missing")
+
+    artifact = snapshot.get("artifact") or {}
+    primary_ref = artifact.get("primary_ref")
+    if primary_ref is None:
+        return ("unknown", "primary artifact missing")
+    if artifact.get("readable") is False:
+        return ("blocked", "primary artifact unreadable")
+
+    proof = snapshot.get("proof") or {}
+    proof_status = str(proof.get("proof_status") or "").strip()
+    if proof_status == "failed":
+        return ("failed", "proof status failed")
+
+    workspace = snapshot.get("workspace") or {}
+    if (
+        stage in DELIVERY_WORKTREE_PROVENANCE_STAGES
+        and workspace.get("kind") == "worktree"
+        and (not workspace.get("branch_name") or not workspace.get("base_ref"))
+    ):
+        return ("unknown", "worktree delivery stage missing branch/base provenance")
+
+    task_status = str(snapshot.get("task_status") or "").strip()
+    if task_status == "blocked":
+        return ("blocked", "task is blocked")
+
+    review = snapshot.get("review") or {}
+    merge = snapshot.get("merge") or {}
+    release = snapshot.get("release") or {}
+    review_status = str(review.get("status") or "").strip()
+    merge_status = str(merge.get("status") or "").strip()
+    release_status = str(release.get("status") or "").strip()
+
+    if release_status == "released":
+        return ("released", "release evidence recorded")
+    if merge_status == "merged" and release_status not in {"released", "not_applicable"}:
+        return ("merged_not_released", "merge verified but release not proven")
+    if stage in DELIVERY_REVIEW_GATE_STAGES and review_status not in {"approved", "not_applicable"}:
+        return ("needs_review", "stage output awaits explicit review")
+    if review_status == "approved" and merge_status not in {"merged", "not_applicable"}:
+        return ("verified_not_merged", "review approved but merge not proven")
+    if task_status in {"running", "ready", "todo", "scheduled"}:
+        return ("in_progress", "delivery evidence still being collected")
+    if task_status == "done":
+        return ("in_progress", "task completed but downstream delivery truth is still partial")
+    return ("unknown", "delivery state incomplete")
+
+
+def _normalize_delivery_state(task: Task, state: dict[str, Any]) -> dict[str, Any]:
+    now = int(time.time())
+    normalized = dict(state)
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    normalized["task_id"] = task.id
+    normalized["task_status"] = task.status
+    normalized["assignee_profile"] = task.assignee
+
+    workspace = normalized.get("workspace")
+    if isinstance(workspace, dict):
+        normalized["workspace"] = _deep_merge_dicts(_delivery_workspace_snapshot(task), workspace)
+    else:
+        normalized["workspace"] = _delivery_workspace_snapshot(task)
+
+    artifact_raw = normalized.get("artifact")
+    artifact: dict[str, Any] = dict(artifact_raw) if isinstance(artifact_raw, dict) else {}
+    artifact.setdefault("primary_ref", None)
+    refs = artifact.get("refs")
+    artifact["refs"] = list(refs) if isinstance(refs, list) else []
+    artifact["readable"] = delivery_artifact_readable(artifact.get("primary_ref"))
+    artifact["last_checked_at"] = now
+    normalized["artifact"] = artifact
+
+    proof_raw = normalized.get("proof")
+    proof: dict[str, Any] = dict(proof_raw) if isinstance(proof_raw, dict) else {}
+    proof.setdefault("tests_required", {"count": 0, "items": []})
+    proof.setdefault("tests_run", {"count": 0, "items": []})
+    proof.setdefault("tests_passed", {"count": 0, "items": []})
+    proof.setdefault("test_evidence_refs", [])
+    proof.setdefault("proof_status", "not_started")
+    normalized["proof"] = proof
+
+    review_raw = normalized.get("review")
+    review: dict[str, Any] = dict(review_raw) if isinstance(review_raw, dict) else {}
+    review.setdefault("status", "not_requested")
+    review.setdefault("reviewer_identity", None)
+    review.setdefault("evidence_ref", None)
+    normalized["review"] = review
+
+    merge_raw = normalized.get("merge")
+    merge: dict[str, Any] = dict(merge_raw) if isinstance(merge_raw, dict) else {}
+    merge.setdefault("status", "not_applicable")
+    merge.setdefault("target", None)
+    merge.setdefault("commit", None)
+    merge.setdefault("evidence_ref", None)
+    normalized["merge"] = merge
+
+    release_raw = normalized.get("release")
+    release: dict[str, Any] = dict(release_raw) if isinstance(release_raw, dict) else {}
+    release.setdefault("status", "not_applicable")
+    release.setdefault("target", None)
+    release.setdefault("evidence_ref", None)
+    normalized["release"] = release
+
+    normalized["risk_class"] = str(normalized.get("risk_class") or "medium")
+    verdict, reason = derive_delivery_verdict(normalized)
+    normalized["delivery_verdict"] = verdict
+    normalized["delivery_verdict_reason"] = reason
+    normalized["last_verified_at"] = now
+    return normalized
+
+
+def build_delivery_state(
+    task: Task,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    base_state: dict[str, Any] = {
+        "schema_version": 1,
+        "task_id": task.id,
+        "workflow_stream_id": workflow_stream_id,
+        "stage": stage,
+        "task_status": task.status,
+        "assignee_profile": task.assignee,
+        "artifact": {
+            "primary_ref": artifact_ref,
+            "refs": list(artifact_refs) if artifact_refs is not None else [],
+        },
+        "workspace": _delivery_workspace_snapshot(task),
+        "proof": proof or {},
+        "review": review or {},
+        "merge": merge or {},
+        "release": release or {},
+        "risk_class": risk_class,
+    }
+    return _normalize_delivery_state(task, base_state)
+
+# ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
 
@@ -1111,10 +1450,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.
     project_id           TEXT,
+    workspace_base_ref   TEXT,
+    workspace_base_commit TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
+    brand                TEXT,
     result               TEXT,
+    delivery_state       TEXT,
     idempotency_key      TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
@@ -1163,6 +1506,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- 1 when the workspace kind was explicitly chosen at creation
+    -- (e.g. ``--workspace scratch``). Pinned workspaces are never
+    -- auto-upgraded to a worktree at create or dispatch time.
+    workspace_pinned     INTEGER NOT NULL DEFAULT 0,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1857,12 +2204,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
+    if "brand" not in cols:
+        _add_column_if_missing(conn, "tasks", "brand", "brand TEXT")
     if "result" not in cols:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "branch_name" not in cols:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
+    if "workspace_base_ref" not in cols:
+        _add_column_if_missing(conn, "tasks", "workspace_base_ref", "workspace_base_ref TEXT")
+    if "workspace_base_commit" not in cols:
+        _add_column_if_missing(conn, "tasks", "workspace_base_commit", "workspace_base_commit TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -1961,6 +2314,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "goal_max_turns", "goal_max_turns INTEGER"
         )
 
+    if "workspace_pinned" not in cols:
+        # Explicit workspace choice marker. 0 (the default) preserves the
+        # behaviour existing rows had before the column existed: eligible
+        # for auto-upgrade to a worktree on git-backed boards.
+        _add_column_if_missing(
+            conn, "tasks", "workspace_pinned",
+            "workspace_pinned INTEGER NOT NULL DEFAULT 0"
+        )
+
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
         # created from within an agent loop that propagated
@@ -1986,6 +2348,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "delivery_state" not in cols:
+        # Canonical task-level machine-readable delivery-truth snapshot for
+        # the structured software-delivery pilot. Existing rows keep NULL
+        # until a bounded backfill or an explicit stage handoff writes one.
+        _add_column_if_missing(
+            conn, "tasks", "delivery_state", "delivery_state TEXT"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1994,6 +2364,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # is cheap thanks to ``IF NOT EXISTS`` and stays correct on fresh DBs
     # (where the columns already exist from SCHEMA_SQL).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_brand ON tasks(brand)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
     )
@@ -2383,6 +2754,28 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _canonical_brand(brand: Optional[str], board: Optional[str]) -> Optional[str]:
+    """Return a stable brand tag for the task row.
+
+    Explicit ``brand`` wins. Otherwise we fall back to the board slug so every
+    task row carries a machine-checkable brand tag, even when the caller only
+    knows which board/database it is writing to.
+    """
+    if brand is not None:
+        brand = str(brand).strip()
+        return brand or None
+    try:
+        board_slug = _normalize_board_slug(board) if board is not None else None
+    except Exception:
+        board_slug = None
+    if board_slug:
+        return board_slug
+    try:
+        return get_current_board() or None
+    except Exception:
+        return None
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2394,6 +2787,7 @@ def create_task(
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
+    brand: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
     triage: bool = False,
@@ -2407,6 +2801,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    workspace_pinned: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2489,6 +2884,52 @@ def create_task(
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
 
+    # Board-linked worktree upgrade. When the task has no explicit project
+    # link and would otherwise be an ephemeral ``scratch`` task, but the
+    # target board is bound to a git repo (its ``default_workdir`` — set by
+    # ``hermes project bind-board`` / ``project create --board``), materialize
+    # the work as a real linked git worktree on that repo instead of a
+    # throwaway scratch dir. This keeps board-routed builds on their real
+    # branch/repo instead of evaporating when the scratch workspace is deleted
+    # on completion. ``default_workdir`` lives in the *shared* board metadata,
+    # so this resolves correctly no matter which profile creates the card —
+    # no cross-profile projects.db access is needed.
+    #
+    # goal_mode roots stay scratch: they run coordination loops, produce no
+    # code of their own, and the worktree completion gate (real CI on a code
+    # branch) would block them forever. An explicit ``--workspace worktree``
+    # still wins for the rare goal card that genuinely edits code.
+    board_repo: Optional[str] = None
+    if (
+        project_repo is None
+        and workspace_path is None
+        and workspace_kind == "scratch"
+        and not goal_mode
+        and not workspace_pinned
+    ):
+        try:
+            _board_slug = board if board else get_current_board()
+            _board_default = (
+                read_board_metadata(_board_slug).get("default_workdir") or ""
+            ).strip()
+            if _board_default:
+                _repo_root = _repo_root_for_worktree_target(
+                    Path(_board_default).expanduser()
+                )
+                if _repo_root is not None:
+                    # Upgrade to a linked worktree anchored on the bound repo.
+                    # The concrete ``<repo>/.worktrees/<task-id>`` path is
+                    # deferred to the insert loop (keyed on the new task id),
+                    # mirroring the project-linked path above.
+                    workspace_kind = "worktree"
+                    board_repo = str(_repo_root)
+        except Exception:
+            # Never let board resolution crash task creation — an unmounted
+            # external repo, a torn git dir, or a transient git failure must
+            # degrade gracefully to an ordinary scratch task.
+            board_repo = None
+
+    brand = _canonical_brand(brand, board)
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2565,6 +3006,7 @@ def create_task(
     if (
         workspace_path is None
         and project_repo is None
+        and board_repo is None
         and workspace_kind in {"dir", "worktree"}
     ):
         board_slug = board if board else get_current_board()
@@ -2610,33 +3052,40 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
-                # Project-linked worktree: a fresh worktree dir under the repo
-                # plus a deterministic branch (project slug + task id). Together
-                # these kill the random ``wt/<task-id>`` worker fallback and the
-                # unanchored ``.worktrees/<id>`` under the dispatcher's cwd.
-                if project_obj is not None and workspace_kind == "worktree":
-                    if project_repo and not workspace_path:
-                        workspace_path = os.path.join(
-                            project_repo, ".worktrees", task_id
+                # Project- or board-linked worktree: a fresh worktree dir under
+                # the anchor repo, ``<repo>/.worktrees/<task-id>``, keyed on the
+                # new task id. This kills the unanchored ``.worktrees/<id>``
+                # under the dispatcher's cwd. A project link additionally gets a
+                # deterministic branch (project slug + task id); a board link
+                # falls back to the worker's ``wt/<task-id>`` branch.
+                anchor_repo = project_repo or board_repo
+                if workspace_kind == "worktree" and anchor_repo and not workspace_path:
+                    workspace_path = os.path.join(
+                        anchor_repo, ".worktrees", task_id
+                    )
+                if (
+                    project_obj is not None
+                    and workspace_kind == "worktree"
+                    and not branch_name
+                ):
+                    # _pdb was imported above when project_obj was resolved.
+                    try:
+                        branch_name = _pdb.branch_name_for(
+                            project_obj, task_id, title=title or ""
                         )
-                    if not branch_name:
-                        # _pdb was imported above when project_obj was resolved.
-                        try:
-                            branch_name = _pdb.branch_name_for(
-                                project_obj, task_id, title=title or ""
-                            )
-                        except Exception:
-                            branch_name = None
+                    except Exception:
+                        branch_name = None
 
                 conn.execute(
                     """
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, project_id, tenant, idempotency_key,
+                        branch_name, project_id, tenant, brand, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        workspace_pinned
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2652,6 +3101,7 @@ def create_task(
                         branch_name,
                         project_id,
                         tenant,
+                        brand,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
@@ -2659,6 +3109,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        1 if workspace_pinned else 0,
                     ),
                 )
                 for pid in parents:
@@ -2675,6 +3126,7 @@ def create_task(
                         "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
+                        "brand": brand,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
@@ -2727,6 +3179,7 @@ def list_tasks(
     assignee: Optional[str] = None,
     status: Optional[str] = None,
     tenant: Optional[str] = None,
+    brand: Optional[str] = None,
     session_id: Optional[str] = None,
     include_archived: bool = False,
     limit: Optional[int] = None,
@@ -2747,6 +3200,9 @@ def list_tasks(
     if tenant is not None:
         query += " AND tenant = ?"
         params.append(tenant)
+    if brand is not None:
+        query += " AND brand = ?"
+        params.append(brand)
     if session_id is not None:
         query += " AND session_id = ?"
         params.append(session_id)
@@ -3097,6 +3553,259 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def write_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    state: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    """Persist a normalized task-level delivery-truth snapshot."""
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    normalized = _normalize_delivery_state(task, state)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET delivery_state = ? WHERE id = ?",
+            (json.dumps(normalized, ensure_ascii=False), task_id),
+        )
+        if emit_event:
+            _append_event(
+                conn,
+                task_id,
+                "delivery_state_updated",
+                {
+                    "stage": normalized.get("stage"),
+                    "workflow_stream_id": normalized.get("workflow_stream_id"),
+                    "delivery_verdict": normalized.get("delivery_verdict"),
+                    "delivery_verdict_reason": normalized.get("delivery_verdict_reason"),
+                    "artifact_readable": ((normalized.get("artifact") or {}).get("readable")),
+                },
+                run_id=run_id,
+            )
+    return normalized
+
+
+def init_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    stage: str,
+    workflow_stream_id: str,
+    artifact_ref: Optional[dict[str, Any]] = None,
+    artifact_refs: Optional[Iterable[dict[str, Any]]] = None,
+    risk_class: str = "medium",
+    proof: Optional[dict[str, Any]] = None,
+    review: Optional[dict[str, Any]] = None,
+    merge: Optional[dict[str, Any]] = None,
+    release: Optional[dict[str, Any]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    state = build_delivery_state(
+        task,
+        stage=stage,
+        workflow_stream_id=workflow_stream_id,
+        artifact_ref=artifact_ref,
+        artifact_refs=artifact_refs,
+        risk_class=risk_class,
+        proof=proof,
+        review=review,
+        merge=merge,
+        release=release,
+    )
+    return write_delivery_state(conn, task_id, state, run_id=run_id, emit_event=emit_event)
+
+
+def patch_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    patch: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    base = task.delivery_state or {}
+    merged = _deep_merge_dicts(base, patch)
+    return write_delivery_state(conn, task_id, merged, run_id=run_id, emit_event=emit_event)
+
+
+def update_delivery_artifacts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    primary_ref: Optional[dict[str, Any]] = None,
+    refs: Optional[Iterable[dict[str, Any]]] = None,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    artifact_patch: dict[str, Any] = {}
+    if primary_ref is not None:
+        artifact_patch["primary_ref"] = primary_ref
+    if refs is not None:
+        artifact_patch["refs"] = list(refs)
+    return patch_task_delivery_state(
+        conn,
+        task_id,
+        {"artifact": artifact_patch},
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def update_delivery_proof(
+    conn: sqlite3.Connection,
+    task_id: str,
+    proof: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"proof": proof}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    review: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"review": review}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_merge(
+    conn: sqlite3.Connection,
+    task_id: str,
+    merge: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"merge": merge}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def update_delivery_release(
+    conn: sqlite3.Connection,
+    task_id: str,
+    release: dict[str, Any],
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> dict[str, Any]:
+    return patch_task_delivery_state(
+        conn, task_id, {"release": release}, run_id=run_id, emit_event=emit_event
+    )
+
+
+def write_run_delivery_evidence(
+    conn: sqlite3.Connection,
+    run_id: int,
+    delivery_evidence: dict[str, Any],
+    *,
+    merge: bool = True,
+) -> dict[str, Any]:
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"unknown run {run_id}")
+    try:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+    except Exception:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    current = metadata.get("delivery_evidence")
+    if merge and isinstance(current, dict):
+        metadata["delivery_evidence"] = _deep_merge_dicts(current, delivery_evidence)
+    else:
+        metadata["delivery_evidence"] = dict(delivery_evidence)
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), run_id),
+        )
+    return metadata
+
+
+def refresh_task_delivery_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    emit_event: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Re-normalize an existing delivery-state snapshot against live task truth.
+
+    This keeps fields derived from the task row itself (notably
+    ``task_status`` and workspace provenance) aligned after lifecycle
+    transitions such as complete/block/unblock.
+    """
+
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    if not isinstance(task.delivery_state, dict) or not task.delivery_state:
+        return None
+    return write_delivery_state(
+        conn,
+        task_id,
+        task.delivery_state,
+        run_id=run_id,
+        emit_event=emit_event,
+    )
+
+
+def backfill_delivery_states(
+    conn: sqlite3.Connection,
+    task_specs: Iterable[dict[str, Any]],
+    *,
+    emit_events: bool = True,
+) -> list[dict[str, Any]]:
+    """Bounded helper for pilot-chain backfills from verified current data."""
+
+    written: list[dict[str, Any]] = []
+    for spec in task_specs:
+        task_id = str(spec.get("task_id") or "").strip()
+        stage = str(spec.get("stage") or "").strip()
+        workflow_stream_id = str(spec.get("workflow_stream_id") or "").strip()
+        if not task_id or not stage or not workflow_stream_id:
+            raise ValueError("each delivery-state backfill spec needs task_id, stage, and workflow_stream_id")
+        written.append(
+            init_task_delivery_state(
+                conn,
+                task_id,
+                stage=stage,
+                workflow_stream_id=workflow_stream_id,
+                artifact_ref=spec.get("artifact_ref"),
+                artifact_refs=spec.get("artifact_refs"),
+                risk_class=str(spec.get("risk_class") or "medium"),
+                proof=spec.get("proof"),
+                review=spec.get("review"),
+                merge=spec.get("merge"),
+                release=spec.get("release"),
+                run_id=spec.get("run_id"),
+                emit_event=emit_events,
+            )
+        )
+    return written
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3240,6 +3949,54 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
+def _dependency_state_snapshot(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
+    """Return a compact, comparable snapshot of the task's current parent state.
+
+    Used by dependency-wait parking to distinguish a legitimate upstream
+    transition (parent graph/status changed since the worker parked) from an
+    unchanged state that should stay dormant instead of re-promoting into a new
+    run.
+    """
+    parents = conn.execute(
+        "SELECT t.id, t.status FROM tasks t "
+        "JOIN task_links l ON l.parent_id = t.id "
+        "WHERE l.child_id = ? ORDER BY t.id",
+        (task_id,),
+    ).fetchall()
+    snapshot: list[list[str]] = []
+    unresolved_parent_ids: list[str] = []
+    for row in parents:
+        parent_id = str(row["id"])
+        status = str(row["status"])
+        snapshot.append([parent_id, status])
+        if status not in ("done", "archived"):
+            unresolved_parent_ids.append(parent_id)
+    return {
+        "parents": snapshot,
+        "unresolved_parent_ids": unresolved_parent_ids,
+    }
+
+
+def _last_dependency_wait_state(conn: sqlite3.Connection, task_id: str) -> Optional[dict[str, Any]]:
+    """Return the most recent dependency-wait snapshot, if one was recorded."""
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'dependency_wait' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get("dependency_state")
+    return state if isinstance(state, dict) else None
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return True when ``task_id`` is sticky-blocked by an explicit
     worker/operator ``kanban_block`` call (#28712).
@@ -3314,7 +4071,7 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, block_kind "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -3326,13 +4083,18 @@ def recompute_ready(
                 # legitimate exit (it emits ``"unblocked"`` which flips
                 # this predicate back).
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
-                (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            parent_state = _dependency_state_snapshot(conn, task_id)
+            parents = parent_state["parents"]
+            if cur_status == "todo" and row["block_kind"] == "dependency":
+                last_dependency_state = _last_dependency_wait_state(conn, task_id)
+                if last_dependency_state == parent_state:
+                    _log.info(
+                        "kanban dependency promotion suppressed: task=%s reason=unchanged_dependency_state parents=%s",
+                        task_id,
+                        parent_state["parents"],
+                    )
+                    continue
+            if all(status in ("done", "archived") for _, status in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this
@@ -3975,6 +4737,347 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class CompletionGateError(ValueError):
+    """Raised when a task completion fails the reality-based gate.
+
+    The message is designed for direct tool-error surfacing. Callers
+    may inspect ``.details`` for structured diagnostics.
+    """
+
+    def __init__(self, message: str, *, details: Optional[dict] = None):
+        self.details = dict(details or {})
+        super().__init__(message)
+
+
+def _ci_step_passed(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("passed"), bool):
+            return bool(value["passed"])
+        if isinstance(value.get("ok"), bool):
+            return bool(value["ok"])
+        if isinstance(value.get("success"), bool):
+            return bool(value["success"])
+        if isinstance(value.get("returncode"), int):
+            return value["returncode"] == 0
+        if isinstance(value.get("exit_code"), int):
+            return value["exit_code"] == 0
+        status = str(value.get("status") or value.get("verdict") or "").strip().casefold()
+        if status:
+            return status in {"pass", "passed", "ok", "success", "green"}
+    return False
+
+
+def _completion_ci_green(metadata: Optional[dict]) -> tuple[bool, str]:
+    if not isinstance(metadata, dict):
+        return False, "completion blocked: worktree tasks must include metadata['ci'] with real CI results"
+
+    ci = metadata.get("ci")
+    if ci is None:
+        return False, "completion blocked: worktree tasks must include metadata['ci'] with real CI results"
+
+    if isinstance(ci, bool):
+        return (
+            ci,
+            "completion blocked: CI verdict was red" if not ci else "",
+        )
+
+    if not isinstance(ci, dict):
+        return False, "completion blocked: metadata['ci'] must be a boolean or object with typecheck/lint/tests verdicts"
+
+    if isinstance(ci.get("passed"), bool):
+        passed = bool(ci["passed"])
+        return (
+            passed,
+            "completion blocked: CI verdict was red" if not passed else "",
+        )
+
+    required = {"typecheck": ci.get("typecheck"), "lint": ci.get("lint"), "tests": ci.get("tests")}
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        return False, (
+            "completion blocked: metadata['ci'] must include verdicts for "
+            + ", ".join(missing)
+        )
+
+    failed = [name for name, value in required.items() if not _ci_step_passed(value)]
+    if failed:
+        return False, (
+            "completion blocked: CI failed for " + ", ".join(failed)
+        )
+
+    return True, ""
+
+
+def _block_completion(conn: sqlite3.Connection, task_id: str, kind: str, message: str, details: dict) -> None:
+    payload = {"message": message, **details}
+    with write_txn(conn):
+        _append_event(conn, task_id, f"completion_blocked_{kind}", payload)
+    raise CompletionGateError(message, details=payload)
+
+
+_NOCODE_WAIVER_SUFFIXES = (".md", ".markdown", ".txt", ".rst")
+_CHECKPOINT_COMMIT_PREFIX = "wip: kanban worker checkpoint"
+_GOVERNED_CARRY_PROOF_MODES = {"patch_equivalence", "registry_manifest", "reviewed_override"}
+
+
+def _completion_nocode_waiver(
+    repo_root: Path, branch_name: str, base_ref: str
+) -> Optional[dict]:
+    """Detect a no-code task branch and return waiver details, else None.
+
+    The CI + merge completion gates exist to stop unverified *code*
+    handoffs. Research/spec/ops cards routed through a worktree produce
+    no reviewable code: their branch carries at most the auto commit(s)
+    made by the pre-handoff checkpoint guard, touching documentation
+    files only. Blocking those cards forces operators to fabricate
+    vacuous CI verdicts, so they are waived instead — with an audit
+    event recording exactly what was skipped.
+
+    A branch qualifies only when BOTH hold:
+    - every commit in ``base_ref..branch`` is an auto checkpoint
+      (``wip: kanban worker checkpoint …``), i.e. the worker authored
+      no commits of its own; and
+    - the cumulative diff vs the merge base touches only documentation
+      files (``_NOCODE_WAIVER_SUFFIXES``).
+    An already-merged branch with zero extra commits qualifies
+    trivially (empty commit list, empty diff).
+    """
+    subjects = subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "log", "--format=%s", f"{base_ref}..{branch_name}",
+        ],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if subjects.returncode != 0:
+        return None
+    commit_subjects = [s for s in (subjects.stdout or "").splitlines() if s.strip()]
+    if any(not s.startswith(_CHECKPOINT_COMMIT_PREFIX) for s in commit_subjects):
+        return None
+    files = subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "diff", "--name-only", f"{base_ref}...{branch_name}",
+        ],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if files.returncode != 0:
+        return None
+    changed = [f for f in (files.stdout or "").splitlines() if f.strip()]
+    if any(not f.casefold().endswith(_NOCODE_WAIVER_SUFFIXES) for f in changed):
+        return None
+    return {
+        "checkpoint_commits": len(commit_subjects),
+        "changed_files": changed,
+    }
+
+
+def _git_patch_id(repo_root: Path, commit: str) -> Optional[str]:
+    show = subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "show", "--pretty=format:", "--no-ext-diff", commit,
+        ],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if show.returncode != 0 or not show.stdout.strip():
+        return None
+    patch_id = subprocess.run(
+        ["git", "patch-id", "--stable"],
+        input=show.stdout,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if patch_id.returncode != 0:
+        return None
+    lines = (patch_id.stdout or b"").decode("utf-8", errors="replace").strip().splitlines()
+    if not lines:
+        return None
+    parts = lines[0].split()
+    return parts[0] if parts else None
+
+
+def _resolve_governed_manifest_path(repo_root: Path, registry_ref: str) -> Path:
+    ref = Path(str(registry_ref)).expanduser()
+    if not ref.is_absolute():
+        ref = (repo_root / ref).resolve(strict=False)
+    return ref
+
+
+def _governed_manifest_matches(
+    repo_root: Path,
+    registry_ref: str,
+    *,
+    source_branch: str,
+    source_commit: str,
+    base_ref: str,
+    carry_commits: list[str],
+) -> tuple[bool, str, Optional[str]]:
+    manifest_path = _resolve_governed_manifest_path(repo_root, registry_ref)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, "registry_manifest_missing", None
+    except (OSError, json.JSONDecodeError):
+        return False, "registry_manifest_unreadable", None
+
+    if isinstance(payload, dict):
+        raw_entries = payload.get("entries")
+        entries = raw_entries if isinstance(raw_entries, list) else [payload]
+    elif isinstance(payload, list):
+        entries = payload
+    else:
+        return False, "registry_manifest_invalid_shape", str(manifest_path)
+
+    requested_carries = sorted(str(item).strip() for item in carry_commits if str(item).strip())
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_source_commit = str(entry.get("source_commit") or "").strip()
+        if entry_source_commit != source_commit:
+            continue
+        entry_source_branch = str(entry.get("source_branch") or "").strip()
+        if entry_source_branch and entry_source_branch != source_branch:
+            continue
+        entry_base_ref = str(entry.get("base_ref") or "").strip()
+        if entry_base_ref and entry_base_ref != base_ref:
+            continue
+        entry_carries_raw = entry.get("carry_commits")
+        if not isinstance(entry_carries_raw, list):
+            continue
+        entry_carries = sorted(str(item).strip() for item in entry_carries_raw if str(item).strip())
+        if entry_carries != requested_carries:
+            continue
+        return True, "", str(manifest_path)
+    return False, "registry_manifest_no_matching_entry", str(manifest_path)
+
+
+def _completion_governed_carry(
+    repo_root: Path,
+    branch_name: str,
+    base_ref: str,
+    metadata: Optional[dict],
+) -> tuple[Optional[dict], Optional[dict]]:
+    if not isinstance(metadata, dict):
+        return None, None
+    raw = metadata.get("governed_carry")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, {
+            "governed_carry_checked": True,
+            "rejection_reason": "governed_carry_not_object",
+        }
+
+    source_branch = str(raw.get("source_branch") or "").strip()
+    source_commit = str(raw.get("source_commit") or "").strip()
+    proof_mode = str(raw.get("proof_mode") or "").strip()
+    registry_ref = str(raw.get("registry_ref") or "").strip() or None
+    carry_commits_raw = raw.get("carry_commits")
+    rejection: dict[str, Any] = {
+        "governed_carry_checked": True,
+        "proof_mode": proof_mode or None,
+        "source_commit": source_commit or None,
+    }
+
+    if not source_branch:
+        rejection["rejection_reason"] = "missing_source_branch"
+        return None, rejection
+    if not source_commit:
+        rejection["rejection_reason"] = "missing_source_commit"
+        return None, rejection
+    if proof_mode not in _GOVERNED_CARRY_PROOF_MODES:
+        rejection["rejection_reason"] = "unsupported_proof_mode"
+        return None, rejection
+    if not isinstance(carry_commits_raw, list) or not carry_commits_raw:
+        rejection["rejection_reason"] = "missing_carry_commits"
+        return None, rejection
+
+    carry_commits = [str(item).strip() for item in carry_commits_raw if str(item).strip()]
+    if not carry_commits:
+        rejection["rejection_reason"] = "missing_carry_commits"
+        return None, rejection
+    if proof_mode == "registry_manifest" and not registry_ref:
+        rejection["rejection_reason"] = "missing_registry_ref"
+        return None, rejection
+    if proof_mode == "reviewed_override" and not registry_ref:
+        rejection["rejection_reason"] = "missing_override_ref"
+        return None, rejection
+
+    if _git_ref_commit(repo_root, source_branch) is None:
+        rejection["rejection_reason"] = "source_branch_missing"
+        return None, rejection
+    if _git_ref_commit(repo_root, source_commit) is None:
+        rejection["rejection_reason"] = "source_commit_missing"
+        return None, rejection
+    if not _git_is_ancestor(repo_root, source_commit, source_branch):
+        rejection["rejection_reason"] = "source_commit_not_on_source_branch"
+        return None, rejection
+
+    for carry_commit in carry_commits:
+        if _git_ref_commit(repo_root, carry_commit) is None:
+            rejection["rejection_reason"] = f"carry_commit_missing:{carry_commit}"
+            return None, rejection
+        if not _git_is_ancestor(repo_root, carry_commit, base_ref):
+            rejection["rejection_reason"] = f"carry_commit_not_on_base:{carry_commit}"
+            return None, rejection
+
+    registry_path: Optional[str] = None
+    if proof_mode == "patch_equivalence":
+        source_patch_id = _git_patch_id(repo_root, source_commit)
+        if source_patch_id is None:
+            rejection["rejection_reason"] = "source_patch_id_unavailable"
+            return None, rejection
+        if not any(_git_patch_id(repo_root, carry_commit) == source_patch_id for carry_commit in carry_commits):
+            rejection["rejection_reason"] = "patch_equivalence_not_found"
+            return None, rejection
+    elif proof_mode == "registry_manifest":
+        ok, reason, resolved_registry_path = _governed_manifest_matches(
+            repo_root,
+            registry_ref or "",
+            source_branch=source_branch,
+            source_commit=source_commit,
+            base_ref=base_ref,
+            carry_commits=carry_commits,
+        )
+        registry_path = resolved_registry_path
+        if not ok:
+            rejection["rejection_reason"] = reason
+            if registry_path:
+                rejection["registry_ref"] = registry_path
+            return None, rejection
+    elif proof_mode == "reviewed_override":
+        override_path = _resolve_governed_manifest_path(repo_root, registry_ref or "")
+        registry_path = str(override_path)
+        try:
+            if not override_path.is_file():
+                rejection["rejection_reason"] = "override_ref_missing"
+                rejection["registry_ref"] = registry_path
+                return None, rejection
+            if not override_path.read_text(encoding="utf-8").strip():
+                rejection["rejection_reason"] = "override_ref_empty"
+                rejection["registry_ref"] = registry_path
+                return None, rejection
+        except OSError:
+            rejection["rejection_reason"] = "override_ref_unreadable"
+            rejection["registry_ref"] = registry_path
+            return None, rejection
+
+    return {
+        "source_branch": source_branch,
+        "source_commit": source_commit,
+        "base_ref": base_ref,
+        "carry_commits": carry_commits,
+        "proof_mode": proof_mode,
+        "registry_ref": registry_path or registry_ref,
+    }, None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3997,6 +5100,15 @@ def complete_task(
     callers do not have to pass both. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
+
+    Worktree tasks are gated on the live git checkout: the branch must be
+    merged into the base ref (``workspace_base_ref`` or ``main``), or the
+    completion metadata must include an explicit, verifiable
+    ``metadata['governed_carry']`` proof showing the reviewed source commit
+    already landed on the base through an approved carry path. Completion
+    metadata must also include a green ``metadata['ci']`` verdict for
+    typecheck, lint, and tests. This keeps the gate anchored to branch
+    reality instead of prose quality.
 
     ``created_cards`` is an optional list of task ids the completing
     worker claims to have created. Each id is verified against
@@ -4042,7 +5154,133 @@ def complete_task(
     else:
         verified_cards = []
 
+    task = get_task(conn, task_id)
+    if task is None:
+        return False
+
+    workspace_snapshot = live_worker_workspace_snapshot(task)
+    workspace_kind = workspace_snapshot.get("workspace_kind") or getattr(task, "workspace_kind", None)
+    governed_carry_event: Optional[dict[str, Any]] = None
+    if workspace_kind == "worktree":
+        workspace_path = workspace_snapshot.get("workspace_path") or getattr(task, "workspace_path", None)
+        branch_name = workspace_snapshot.get("branch_name") or getattr(task, "branch_name", None) or f"wt/{task.id}"
+        if not workspace_path:
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: could not locate the live worktree path for this task",
+                {
+                    "workspace_kind": workspace_kind,
+                    "branch_name": branch_name,
+                },
+            )
+        worktree_path = Path(str(workspace_path)).expanduser()
+        if not _is_linked_worktree_checkout(worktree_path):
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: task workspace is not an inspectable git worktree checkout",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                },
+            )
+        # Resolve the repo from the linked worktree checkout itself, not its
+        # parent directory. Kanban worktrees often live in a board workspace
+        # directory outside the repo root, so `worktree_path.parent` is just a
+        # container folder with no git metadata. The checkout's own `.git`
+        # file points back to the common git dir, which is enough to recover
+        # the real repo root even for externally-located linked worktrees.
+        repo_root = _repo_root_for_worktree_target(worktree_path)
+        if repo_root is None:
+            _block_completion(
+                conn,
+                task_id,
+                "unverifiable_workspace",
+                "completion blocked: could not determine the git repo for this worktree",
+                {
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                },
+            )
+        assert repo_root is not None
+        base_ref = (getattr(task, "workspace_base_ref", None) or "main").strip() or "main"
+        nocode_waiver = _completion_nocode_waiver(repo_root, branch_name, base_ref)
+        if nocode_waiver is not None and isinstance(metadata, dict) and metadata.get("ci") is not None:
+            # The waiver excuses MISSING verdicts on no-code branches; it
+            # never overrides a worker-reported CI verdict. An explicitly
+            # red verdict still blocks below.
+            ci_ok, _ = _completion_ci_green(metadata)
+            if not ci_ok:
+                nocode_waiver = None
+        if nocode_waiver is not None:
+            # No worker-authored code on the branch: the CI + merge gates
+            # are not applicable. Record the waiver so the skip is
+            # auditable, then fall through to normal completion.
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "completion_gate_waived_nocode",
+                    {
+                        "workspace_path": str(worktree_path),
+                        "branch_name": branch_name,
+                        "base_ref": base_ref,
+                        **nocode_waiver,
+                    },
+                )
+        else:
+            if not _git_is_ancestor(repo_root, branch_name, base_ref):
+                governed_carry_event, governed_failure = _completion_governed_carry(
+                    repo_root,
+                    branch_name,
+                    base_ref,
+                    metadata,
+                )
+                if governed_carry_event is None:
+                    details = {
+                        "workspace_path": str(worktree_path),
+                        "branch_name": branch_name,
+                        "base_ref": base_ref,
+                    }
+                    if governed_failure:
+                        details.update(governed_failure)
+                    _block_completion(
+                        conn,
+                        task_id,
+                        "unmerged_branch",
+                        f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
+                        details,
+                    )
+                governed_payload = governed_carry_event
+                assert governed_payload is not None
+                governed_carry_event = {
+                    **governed_payload,
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                }
+            ci_ok, ci_message = _completion_ci_green(metadata)
+            if not ci_ok:
+                _block_completion(
+                    conn,
+                    task_id,
+                    "ci_failure",
+                    ci_message,
+                    {
+                        "workspace_path": str(worktree_path),
+                        "branch_name": branch_name,
+                        "base_ref": base_ref,
+                    },
+                )
+
     with write_txn(conn):
+        if workspace_kind == "worktree" and governed_carry_event is not None:
+            _append_event(
+                conn,
+                task_id,
+                "completion_gate_satisfied_governed_carry",
+                governed_carry_event,
+            )
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -4128,6 +5366,7 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -4599,6 +5838,7 @@ def block_task(
         # here (rather than ``blocked``) is what keeps a cron from ever seeing
         # a dependency-wait as something to "unblock".
         if kind == "dependency":
+            dependency_state = _dependency_state_snapshot(conn, task_id)
             cur = conn.execute(
                 """
                 UPDATE tasks
@@ -4626,8 +5866,25 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "dependency_state": dependency_state,
+                },
+                run_id=run_id,
             )
+            if not dependency_state["unresolved_parent_ids"]:
+                _append_event(
+                    conn,
+                    task_id,
+                    "dependency_wait_without_unmet_parent",
+                    {
+                        "reason": reason,
+                        "kind": kind,
+                        "dependency_state": dependency_state,
+                    },
+                    run_id=run_id,
+                )
             routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
@@ -4742,6 +5999,7 @@ def block_task(
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
+    refresh_task_delivery_state(conn, task_id, run_id=run_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
         task_id,
@@ -4887,7 +6145,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
-        return True
+    refresh_task_delivery_state(conn, task_id)
+    return True
 
 
 def specify_triage_task(
@@ -4898,6 +6157,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    event_payload: Optional[dict] = None,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -4966,12 +6226,10 @@ def specify_triage_task(
                     int(time.time()),
                 ),
             )
-        _append_event(
-            conn,
-            task_id,
-            "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
-        )
+        payload: Optional[dict] = {"changed_fields": changed_fields} if changed_fields else None
+        if event_payload:
+            payload = {**(payload or {}), **event_payload}
+        _append_event(conn, task_id, "specified", payload)
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
     # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
     # logic the dispatcher would on its next tick, so a specified task
@@ -4989,6 +6247,8 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    rationale: Optional[str] = None,
+    roster_snapshot: Optional[list[dict]] = None,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5074,7 +6334,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, status, tenant, brand, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -5083,6 +6343,7 @@ def decompose_triage_task(
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        brand = root_row["brand"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
         # rather than throwaway scratch tmp dirs. A child dict can still
@@ -5107,6 +6368,14 @@ def decompose_triage_task(
             child_ws_kind = child.get("workspace_kind") or root_ws_kind
             if child.get("workspace_path"):
                 child_ws_path = child.get("workspace_path")
+            elif child_ws_kind == "worktree":
+                # Never share one worktree checkout between siblings: the
+                # root's literal path would put every child in the same
+                # directory on the first-dispatched sibling's branch, with
+                # no lock. Leave the path unset so dispatch materializes a
+                # fresh <repo>/.worktrees/<child-id> per child from the
+                # board anchor.
+                child_ws_path = None
             elif child_ws_kind == root_ws_kind:
                 child_ws_path = root_ws_path
             else:
@@ -5114,8 +6383,8 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, brand, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -5124,13 +6393,19 @@ def decompose_triage_task(
                     child_ws_kind,
                     child_ws_path,
                     tenant,
+                    brand,
                     now,
                     (author or "decomposer"),
                 ),
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {
+                    "by": author or "decomposer",
+                    "from_decompose_of": task_id,
+                    "tenant": tenant,
+                    "brand": brand,
+                },
             )
             child_ids.append(new_id)
 
@@ -5191,6 +6466,10 @@ def decompose_triage_task(
             {
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
+                "tenant": tenant,
+                "brand": brand,
+                "rationale": rationale,
+                "roster_snapshot": roster_snapshot,
             },
         )
 
@@ -5559,7 +6838,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        p, _branch_name = _resolve_worktree_workspace(task, board=board)
+        p, _branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -5574,6 +6853,16 @@ def set_workspace_path(
         )
 
 
+def set_workspace_kind(
+    conn: sqlite3.Connection, task_id: str, workspace_kind: str
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ? WHERE id = ?",
+            (str(workspace_kind), task_id),
+        )
+
+
 def set_branch_name(
     conn: sqlite3.Connection, task_id: str, branch_name: str
 ) -> None:
@@ -5582,6 +6871,294 @@ def set_branch_name(
             "UPDATE tasks SET branch_name = ? WHERE id = ?",
             (str(branch_name), task_id),
         )
+
+
+def set_workspace_base(
+    conn: sqlite3.Connection,
+    task_id: str,
+    base_ref: Optional[str],
+    base_commit: Optional[str],
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET workspace_base_ref = ?, workspace_base_commit = ? WHERE id = ?",
+            (base_ref, base_commit, task_id),
+        )
+
+
+def _git_ref_commit(path: Path, ref: str) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", ref],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    commit = (result.stdout or "").strip()
+    return commit or None
+
+
+def _git_is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _git_remotes(repo_root: Path) -> set:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "remote"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()}
+
+
+def _resolve_worktree_base_commit(repo_root: Path, base_ref: str) -> str:
+    """Resolve ``base_ref`` to a commit, fetching FIRST only if it is a
+    remote-tracking ref (``<remote>/<branch>`` for a configured remote).
+
+    A local ref (e.g. ``main``) is used as-is and NEVER triggers a network
+    fetch. This is deliberate: for installs whose source of truth is local
+    ``main`` and whose ``origin`` is a public fork the fleet must not contact,
+    the base ref stays ``main`` and no remote is ever touched. Boards that
+    genuinely track a remote can opt into ``origin/main`` via board config.
+    """
+    remote = base_ref.split("/", 1)[0] if "/" in base_ref else None
+    if remote and remote in _git_remotes(repo_root):
+        branch = base_ref.split("/", 1)[1]
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "fetch", remote, branch],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"git fetch {remote} {branch} failed in {repo_root}: {stderr}")
+    commit = _git_ref_commit(repo_root, base_ref)
+    if not commit:
+        raise RuntimeError(f"worktree base ref {base_ref!r} is unavailable in {repo_root}")
+    return commit
+
+
+def _worktree_base_ref(board: Optional[str]) -> str:
+    """The git ref new worktrees branch from. Per-board ``worktree_base_ref``
+    config, defaulting to local ``main`` — workers build on the local default
+    branch (the source of truth for patch-maintained installs), not a remote.
+    """
+    if board is not None:
+        ref = (read_board_metadata(board).get("worktree_base_ref") or "").strip()
+        if ref:
+            return ref
+    return "main"
+
+
+def _board_is_git_backed(board: Optional[str]) -> bool:
+    """True when the board's ``default_workdir`` resolves to a git repo root.
+
+    Git-backed boards run workers in worktrees (branch-based, verifiable
+    handoffs); other boards keep scratch/dir workspaces so research / ops
+    workloads still dispatch (kinds coexist by design — see module header).
+    """
+    if board is None:
+        return False
+    wd = read_board_metadata(board).get("default_workdir")
+    if not wd:
+        return False
+    return _repo_root_for_worktree_target(Path(str(wd)).expanduser()) is not None
+
+
+def _git_toplevel(path: Path) -> Optional[Path]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    top = (result.stdout or "").strip()
+    return Path(top).resolve(strict=False) if top else None
+
+
+def _git_current_branch(path: Path) -> Optional[str]:
+    result = subprocess.run(
+        ["git", "-C", str(path), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _is_linked_worktree_checkout(path: Path) -> bool:
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        return git_dir.is_file() and git_dir.read_text(encoding="utf-8").startswith("gitdir:")
+    except OSError:
+        return False
+
+
+def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
+    cur = path.resolve(strict=False)
+    result = subprocess.run(
+        ["git", "-C", str(cur), "rev-parse", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode == 0:
+        common_dir = (result.stdout or "").strip()
+        if common_dir:
+            common_path = Path(common_dir)
+            if not common_path.is_absolute():
+                common_path = (cur / common_path).resolve(strict=False)
+            return common_path.parent.resolve(strict=False)
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str, base_ref: str) -> None:
+    base_commit = _resolve_worktree_base_commit(repo_root, base_ref)
+    if target.exists():
+        if _is_linked_worktree_checkout(target):
+            actual_branch = _git_current_branch(target)
+            if actual_branch != branch_name:
+                raise RuntimeError(
+                    f"existing worktree {target} is on branch {actual_branch or '(detached)'} "
+                    f"but expected {branch_name}"
+                )
+            if not _git_is_ancestor(repo_root, base_ref, branch_name):
+                raise RuntimeError(
+                    f"existing branch {branch_name} is not based on fresh {base_ref} {base_commit}"
+                )
+            return
+        raise RuntimeError(f"worktree target {target} already exists but is not a linked git worktree")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_ref_commit(repo_root, branch_name):
+        if not _git_is_ancestor(repo_root, base_ref, branch_name):
+            raise RuntimeError(
+                f"existing branch {branch_name} is not based on fresh {base_ref} {base_commit}"
+            )
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+    else:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name, str(target), base_ref
+        ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"git worktree add failed for {target} on branch {branch_name}: {stderr}")
+
+
+def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> tuple[Path, str, str, str]:
+    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    base_ref = _worktree_base_ref(board)
+
+    def _finish(target_path: Path, resolved_branch: str, repo_root: Path) -> tuple[Path, str, str, str]:
+        base_commit = _git_ref_commit(repo_root, base_ref)
+        if not base_commit:
+            raise RuntimeError(f"worktree base ref {base_ref!r} is unavailable in {repo_root}")
+        return target_path, resolved_branch, base_ref, base_commit
+
+    if not task.workspace_path:
+        repo_root = None
+        if board is not None:
+            board_meta = read_board_metadata(board)
+            board_default = board_meta.get("default_workdir")
+            if board_default:
+                repo_root = _repo_root_for_worktree_target(Path(str(board_default)).expanduser())
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but no workspace_path, "
+                "and no git repo could be discovered from the board default_workdir"
+            )
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref)
+        return _finish(target, branch_name, repo_root)
+
+    requested = Path(task.workspace_path).expanduser()
+    if not requested.is_absolute():
+        raise ValueError(
+            f"task {task.id} has non-absolute worktree path {task.workspace_path!r}; use an absolute path"
+        )
+    requested_resolved = requested.resolve(strict=False)
+    if requested.exists() and _is_linked_worktree_checkout(requested):
+        actual_branch = _git_current_branch(requested)
+        if actual_branch != branch_name:
+            # Another task's checkout occupies this path (decompose children
+            # used to inherit the root's workspace_path verbatim, so siblings
+            # collide here; stale rows still carry shared paths). Rather than
+            # failing the spawn — or silently reusing the other task's
+            # branch, which cross-contaminates provenance — fall back to a
+            # fresh worktree of our own under the same repo.
+            fallback_root = _repo_root_for_worktree_target(requested)
+            fallback = (
+                fallback_root / ".worktrees" / task.id
+                if fallback_root is not None
+                else None
+            )
+            if (
+                fallback is None
+                or fallback.resolve(strict=False) == requested_resolved
+            ):
+                # No repo to anchor a fallback on, or the occupied path IS
+                # this task's own canonical worktree — that is real
+                # corruption; keep failing loudly.
+                raise ValueError(
+                    f"task {task.id} worktree path {task.workspace_path!r} is already on branch {actual_branch or '(detached)'} but expected {branch_name}"
+                )
+            _ensure_git_worktree(fallback_root, fallback, branch_name, base_ref)
+            return _finish(fallback.resolve(strict=False), branch_name, fallback_root)
+        repo_root = _repo_root_for_worktree_target(requested.parent)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo"
+            )
+        _ensure_git_worktree(repo_root, requested, branch_name, base_ref)
+        return _finish(requested_resolved, actual_branch or branch_name, repo_root)
+    repo_root = _git_toplevel(requested)
+    if repo_root is not None and requested_resolved == repo_root:
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name, base_ref)
+        return _finish(target, branch_name, repo_root)
+    repo_root = _repo_root_for_worktree_target(requested.parent)
+    if repo_root is None:
+        raise ValueError(
+            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo and does not point at a git repo root"
+        )
+    _ensure_git_worktree(repo_root, requested, branch_name, base_ref)
+    return _finish(requested_resolved, branch_name, repo_root)
 
 
 # ---------------------------------------------------------------------------
@@ -5744,6 +7321,10 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    route_watchdog_hits: list[tuple[str, str, str]] = field(default_factory=list)
+    """Route-watchdog decisions recorded during dispatch, as
+    ``(task_id, kind, action)`` triples. The watchdog is fail-open; this is
+    telemetry and review signal, not a hard dependency on spawning."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6789,9 +8370,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
-        human review rather than immediately re-spawning. Bypassed when an
-        explicit re-queue event (status change, promote, unblock, reclaim)
-        arrives AFTER that completion — that's a deliberate re-run request.
+        human review rather than immediately re-spawning.
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
@@ -6854,29 +8433,13 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.
-    #    Exception: an explicit re-queue AFTER that success (an operator
-    #    dragging done→ready, a dependency re-promotion, an unblock, a
-    #    reclaim) is a deliberate "run it again" — honor it instead of
-    #    deferring. Without this, a manual done→ready just sits there,
-    #    silently held by the guard, until the window elapses.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    recent_completed = conn.execute(
-        "SELECT ended_at FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
-        "ORDER BY ended_at DESC LIMIT 1",
+    if conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
         (task_id, cutoff),
-    ).fetchone()
-    if recent_completed:
-        completed_at = int(recent_completed["ended_at"] or 0)
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
-        ).fetchone()
-        if not requeued_after:
-            return "recent_success"
+    ).fetchone():
+        return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
@@ -6960,6 +8523,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_watchdog: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -6994,6 +8558,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_watchdog=route_watchdog,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7010,6 +8575,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            route_watchdog=route_watchdog,
         )
 
 
@@ -7026,6 +8592,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    route_watchdog: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7098,6 +8665,71 @@ def _dispatch_once_locked(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
+
+    route_watchdog_cfg = None
+    route_watchdog_eval = None
+    route_watchdog_board_meta = None
+    if route_watchdog is not None:
+        try:
+            from hermes_cli.kanban_route_watchdog import evaluate_route as route_watchdog_eval_fn
+            from hermes_cli.kanban_route_watchdog import load_watchdog_config
+
+            route_watchdog_cfg = load_watchdog_config(route_watchdog)
+            if route_watchdog_cfg.enabled:
+                route_watchdog_eval = route_watchdog_eval_fn
+                route_watchdog_board_meta = read_board_metadata(board)
+        except Exception:
+            route_watchdog_cfg = None
+            route_watchdog_eval = None
+            route_watchdog_board_meta = None
+
+    def _apply_route_watchdog(task_id: str) -> bool:
+        """Best-effort route watchdog hook.
+
+        Returns True when the watchdog already held the task and the normal
+        spawn path should stop. Never raises.
+        """
+        if route_watchdog_cfg is None or route_watchdog_eval is None:
+            return False
+        try:
+            task = get_task(conn, task_id)
+            if task is None:
+                return False
+            child_ids = [
+                row["child_id"]
+                for row in conn.execute(
+                    "SELECT child_id FROM task_links WHERE parent_id = ?",
+                    (task_id,),
+                )
+            ]
+            decision = route_watchdog_eval(
+                task,
+                config=route_watchdog_cfg,
+                board_meta=route_watchdog_board_meta,
+                child_ids=child_ids,
+            )
+            if decision is None:
+                return False
+            action = "commented"
+            if not dry_run:
+                try:
+                    add_comment(conn, task_id, "route-watchdog", decision.comment_body())
+                except Exception:
+                    pass
+                if route_watchdog_cfg.mode == "hold":
+                    try:
+                        if block_task(conn, task_id, reason=decision.review_reason()):
+                            action = "blocked"
+                    except Exception:
+                        pass
+            else:
+                action = "would_block" if route_watchdog_cfg.mode == "hold" else "would_comment"
+            result.route_watchdog_hits.append((task_id, decision.kind, action))
+            if dry_run:
+                return route_watchdog_cfg.mode == "hold"
+            return route_watchdog_cfg.mode == "hold" and action == "blocked"
+        except Exception:
+            return False
 
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
@@ -7212,6 +8844,8 @@ def _dispatch_once_locked(
         # subprocess would crash on startup, get reaped as a zombie,
         # the task would loop back to ``ready`` on next tick, and we'd
         # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        if _apply_route_watchdog(row["id"]):
+            continue
         try:
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
@@ -7273,12 +8907,28 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # Git-backed boards (default_workdir resolves to a repo) run workers in
+        # worktrees for branch-based, verifiable handoffs; a worktree-kind task
+        # always does. Other boards keep scratch/dir so research/ops still runs.
+        # goal_mode roots are coordination loops (they fan out / wake on child
+        # completion) and produce no code of their own, so they stay scratch
+        # even on a git-backed board — otherwise the worktree completion gate
+        # (which requires real CI on a code branch) blocks them forever. An
+        # explicit workspace_kind=worktree still wins for the rare goal card
+        # that genuinely edits code.
+        use_worktree = claimed.workspace_kind == "worktree" or (
+            _board_is_git_backed(board)
+            and not getattr(claimed, "goal_mode", False)
+            and not getattr(claimed, "workspace_pinned", False)
+        )
         try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            if use_worktree:
+                workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                    claimed, board=board
+                )
             else:
                 workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _base_ref = _base_commit = None
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7289,9 +8939,13 @@ def _dispatch_once_locked(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if use_worktree:
+            set_workspace_kind(conn, claimed.id, "worktree")
+            set_branch_name(conn, claimed.id, resolved_branch_name)
+            set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(
+            conn, claimed.id, "worktree" if use_worktree else (claimed.workspace_kind or "scratch")
+        )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -7365,12 +9019,25 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # goal_mode roots are coordination loops (they fan out / wake on child
+        # completion) and produce no code of their own, so they stay scratch
+        # even on a git-backed board — otherwise the worktree completion gate
+        # (which requires real CI on a code branch) blocks them forever. An
+        # explicit workspace_kind=worktree still wins for the rare goal card
+        # that genuinely edits code.
+        use_worktree = claimed.workspace_kind == "worktree" or (
+            _board_is_git_backed(board)
+            and not getattr(claimed, "goal_mode", False)
+            and not getattr(claimed, "workspace_pinned", False)
+        )
         try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            if use_worktree:
+                workspace, resolved_branch_name, _base_ref, _base_commit = _resolve_worktree_workspace(
+                    claimed, board=board
+                )
             else:
                 workspace = resolve_workspace(claimed, board=board)
+                resolved_branch_name = _base_ref = _base_commit = None
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -7381,9 +9048,13 @@ def _dispatch_once_locked(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        if use_worktree:
+            set_workspace_kind(conn, claimed.id, "worktree")
+            set_branch_name(conn, claimed.id, resolved_branch_name)
+            set_workspace_base(conn, claimed.id, _base_ref, _base_commit)
+        _maybe_emit_scratch_tip(
+            conn, claimed.id, "worktree" if use_worktree else (claimed.workspace_kind or "scratch")
+        )
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
         # kanban lifecycle is already injected into every worker's system
@@ -7786,18 +9457,9 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
-    # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
-    # or a `display.interface: tui` in the profile's config would send the
-    # quiet chat run into the Ink TUI, whose no-TTY bail-out exits 0 without
-    # doing the task → "protocol violation" on every attempt. `--cli` is the
-    # highest-precedence interface override; dropping the env var covers
-    # older hermes builds on PATH that predate the flag's precedence.
-    env.pop("HERMES_TUI", None)
-
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
-        "--cli",
         # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
         # so they see that profile's shell-hook allowlist instead of the
         # dispatcher's root allowlist. Pass --accept-hooks explicitly so
@@ -7954,6 +9616,17 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     # by the seconds it takes to build the block).
     _now = int(time.time())
 
+    live_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
+    workspace_kind = task.workspace_kind
+    workspace_path = task.workspace_path
+    branch_name = task.branch_name
+    if live_workspace:
+        live_path = Path(live_workspace).expanduser()
+        if live_path.exists() and _is_linked_worktree_checkout(live_path):
+            workspace_kind = "worktree"
+            workspace_path = str(live_path)
+            branch_name = _git_current_branch(live_path) or branch_name
+
     def _cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
         """Truncate a string to `limit` chars with a visible ellipsis."""
         if not s:
@@ -7970,7 +9643,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append(f"Status:   {task.status}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
+    lines.append(f"Workspace: {workspace_kind} @ {workspace_path or '(unresolved)'}")
     if task.max_runtime_seconds is not None:
         terminal_timeout = _worker_terminal_timeout_env(
             task.max_runtime_seconds,
@@ -7980,13 +9653,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(f"Max runtime: {task.max_runtime_seconds}s")
         if effective_terminal_timeout:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
-    if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
+    if branch_name:
+        lines.append(f"Branch:   {branch_name}")
     lines.append("")
 
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+        lines.append("")
+
+    if task.delivery_state:
+        lines.append("## Delivery state")
+        try:
+            state_text = json.dumps(task.delivery_state, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            state_text = str(task.delivery_state)
+        lines.append(f"`{_cap(state_text)}`")
         lines.append("")
 
     # Attachments — files uploaded to this task (PDFs, source docs,

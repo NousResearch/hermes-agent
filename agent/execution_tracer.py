@@ -120,29 +120,33 @@ def _flush() -> None:
         now = time.time()
 
         def _do(conn):
-            conn.executemany(
-                "INSERT INTO agent_traces "
-                "(session_id, tool_name, duration_ms, success, error_class, "
-                " error_message, confidence, recovery_action, result_summary, "
-                " task_id, at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    (
-                        e["session_id"],
-                        e["tool"],
-                        e["duration_ms"],
-                        1 if e["success"] else 0,
-                        e["error_class"],
-                        e["error_message"],
-                        e["confidence"],
-                        e["recovery_action"],
-                        e["result_summary"],
-                        e["task_id"],
-                        e["at"],
-                    )
-                    for e in events
-                ],
-            )
+            try:
+                conn.executemany(
+                    "INSERT INTO agent_traces "
+                    "(session_id, tool_name, duration_ms, success, error_class, "
+                    " error_message, confidence, recovery_action, result_summary, "
+                    " task_id, at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            e["session_id"],
+                            e["tool"],
+                            e["duration_ms"],
+                            1 if e["success"] else 0,
+                            e["error_class"],
+                            e["error_message"],
+                            e["confidence"],
+                            e["recovery_action"],
+                            e["result_summary"],
+                            e["task_id"],
+                            e["at"],
+                        )
+                        for e in events
+                    ],
+                )
+            except Exception:
+                pass  # Table might not exist yet — best-effort
+            return None
 
         db._execute_write(_do)
     except Exception:

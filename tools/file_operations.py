@@ -1068,6 +1068,16 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
     # READ Implementation
     # =========================================================================
+
+    def _read_size_probe_failure(
+        self, path: str, stat_result: ExecuteResult
+    ) -> ReadResult:
+        """Preserve control-flow failures from the initial ``wc`` probe."""
+        if stat_result.exit_code == 130:
+            return ReadResult(error=f"Read interrupted while checking file: {path}")
+        if stat_result.exit_code == 124:
+            return ReadResult(error=f"Read timed out while checking file: {path}")
+        return self._suggest_similar_files(path)
     
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
@@ -1091,8 +1101,7 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
-            return self._suggest_similar_files(path)
+            return self._read_size_probe_failure(path, stat_result)
         
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
@@ -1228,7 +1237,7 @@ class ShellFileOperations(FileOperations):
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
-            return self._suggest_similar_files(path)
+            return self._read_size_probe_failure(path, stat_result)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
             file_size = int(stat_output.strip())

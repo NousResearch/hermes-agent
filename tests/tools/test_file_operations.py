@@ -577,6 +577,45 @@ class TestShellFileOpsHelpers:
         assert result.error is None
         assert result.content == "alpha\n"
 
+    @pytest.mark.parametrize("method_name", ["read_file", "read_file_raw"])
+    @pytest.mark.parametrize(
+        ("exit_code", "expected_error"),
+        [
+            (130, "Read interrupted while checking file: /tmp/test/a.txt"),
+            (124, "Read timed out while checking file: /tmp/test/a.txt"),
+        ],
+    )
+    def test_read_size_probe_reports_control_flow_failures(
+        self, mock_env, method_name, exit_code, expected_error
+    ):
+        mock_env.execute.return_value = {"output": "", "returncode": exit_code}
+        ops = ShellFileOperations(mock_env)
+
+        result = getattr(ops, method_name)("/tmp/test/a.txt")
+
+        assert result.error == expected_error
+        assert result.similar_files == []
+        mock_env.execute.assert_called_once()
+
+    @pytest.mark.parametrize("method_name", ["read_file", "read_file_raw"])
+    def test_read_size_probe_preserves_missing_file_suggestions(
+        self, mock_env, method_name
+    ):
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "", "returncode": 1}
+            if command.startswith("ls -1"):
+                return {"output": "a.md\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+
+        result = getattr(ops, method_name)("/tmp/test/a.txt")
+
+        assert result.error == "File not found: /tmp/test/a.txt"
+        assert result.similar_files == ["/tmp/test/a.md"]
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""

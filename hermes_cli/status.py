@@ -4,6 +4,7 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+import importlib.util
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
@@ -427,6 +428,14 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "e2b":
+        template = os.getenv("TERMINAL_E2B_TEMPLATE") or terminal_cfg.get("e2b_template") or "base"
+        api_key = bool(os.getenv("E2B_API_KEY"))
+        sdk_ok = importlib.util.find_spec("e2b") is not None
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[e2b]')"
+        print(f"  Template:     {template}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  API key:      {check_mark(api_key)} {'configured' if api_key else 'not set (E2B_API_KEY)'}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

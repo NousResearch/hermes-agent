@@ -3,13 +3,15 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, and Daytona environments. Supports local execution,
+Singularity, Daytona, and E2B environments. Supports local execution,
 containerized backends, and cloud sandboxes, including managed Modal mode.
 
 Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
+- "daytona": Execute in Daytona cloud workspaces
+- "e2b": Execute in E2B cloud sandboxes (template-based, pause/resume persistence)
 
 Features:
 - Multiple execution backends (local, docker, modal)
@@ -1213,7 +1215,7 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "e2b"})
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1260,7 +1262,7 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
+    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "e2b"}
     docker_backend = env_type == "docker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
@@ -1294,6 +1296,12 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "e2b":
+        # E2B sandboxes run as the non-root ``user`` account; ``/root`` is not
+        # writable there. Default to the SDK's home so the container cwd guard
+        # below (which treats ``/home/...`` as a host path) keeps it verbatim.
+        from tools.environments.e2b import DEFAULT_E2B_CWD
+        default_cwd = DEFAULT_E2B_CWD
     else:
         default_cwd = "/root"
 
@@ -1330,6 +1338,7 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "e2b_template": os.getenv("TERMINAL_E2B_TEMPLATE", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1520,6 +1529,16 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "e2b":
+        # Lazy import so the e2b SDK is only required when the backend is selected.
+        from tools.environments.e2b import E2BEnvironment as _E2BEnvironment
+        return _E2BEnvironment(
+            template=cc.get("e2b_template") or None,
+            cwd=cwd, timeout=timeout,
+            cpu=int(cpu), memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1535,7 +1554,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'e2b', or 'ssh'"
         )
 
 
@@ -2198,13 +2217,14 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {"docker", "singularity", "modal", "daytona", "e2b"}:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "modal_mode": config.get("modal_mode", "auto"),
+                                "e2b_template": config.get("e2b_template", ""),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -2897,10 +2917,25 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "e2b":
+            if importlib.util.find_spec("e2b") is None:
+                logger.error(
+                    "e2b is required for the E2B terminal backend: "
+                    "pip install 'hermes-agent[e2b]'"
+                )
+                return False
+            if not os.getenv("E2B_API_KEY"):
+                logger.error(
+                    "E2B backend selected but E2B_API_KEY is not set. "
+                    "Create a key at https://e2b.dev and run `hermes setup`."
+                )
+                return False
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, e2b, ssh.",
                 env_type,
             )
             return False
@@ -2943,12 +2978,13 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/ssh)"
+        "(local/docker/singularity/modal/daytona/e2b/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
+    print(f"  TERMINAL_E2B_TEMPLATE: {os.getenv('TERMINAL_E2B_TEMPLATE', 'base')}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', _safe_getcwd())}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")

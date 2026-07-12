@@ -889,7 +889,7 @@ WSL_ENVIRONMENT_HINT = (
 # runs. For these backends, host info (Windows/Linux/macOS, $HOME, cwd) is
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh",
+    "docker", "singularity", "modal", "daytona", "e2b", "ssh",
     "managed_modal",
 })
 
@@ -904,6 +904,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "modal": "a Modal sandbox (Linux)",
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
+    "e2b": "an E2B cloud sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -978,13 +979,14 @@ def _probe_remote_backend(env_type: str) -> str | None:
             }
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
+        if env_type in {"docker", "singularity", "modal", "daytona", "e2b"}:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "modal_mode": config.get("modal_mode", "auto"),
+                "e2b_template": config.get("e2b_template", ""),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                 "docker_forward_env": config.get("docker_forward_env", []),

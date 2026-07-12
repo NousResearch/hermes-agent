@@ -1219,7 +1219,8 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "e2b_template": "base",
+        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh/e2b)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -6838,6 +6839,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "e2b_template": "TERMINAL_E2B_TEMPLATE",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -7983,6 +7985,10 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'e2b':
+        print(f"  E2B template: {terminal.get('e2b_template', 'base')}")
+        e2b_key = get_env_value('E2B_API_KEY')
+        print(f"  API key:      {'configured' if e2b_key else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')

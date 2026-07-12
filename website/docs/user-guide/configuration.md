@@ -108,11 +108,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, an E2B cloud sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | ssh | modal | daytona | e2b | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -120,9 +120,10 @@ terminal:
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
+  e2b_template: "base"                                                      # Sandbox template for E2B backend
 ```
 
-For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal, Daytona, and E2B, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -133,6 +134,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **e2b** | E2B cloud sandbox (Firecracker microVM) | Full (cloud VM) | Secure ephemeral compute, pause/resume |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -370,6 +372,25 @@ terminal:
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
 
+### E2B Backend
+
+Runs commands in an [E2B](https://e2b.dev) cloud sandbox — a secure, isolated Firecracker microVM. Persistence uses E2B's `beta_pause` + `connect`, so the sandbox filesystem survives across sessions.
+
+```yaml
+terminal:
+  backend: e2b
+  e2b_template: base               # base | code-interpreter-v1 | desktop | <custom template ID>
+  container_persistent: true       # Pause/resume instead of kill
+```
+
+**Required:** `E2B_API_KEY` environment variable (create one at [e2b.dev](https://e2b.dev)). Install the SDK with `pip install 'hermes-agent[e2b]'` — or let `hermes setup` install it for you.
+
+**Template:** `e2b_template` selects the sandbox image. `base` is a minimal Ubuntu+bash image; `code-interpreter-v1` is Jupyter-ready; `desktop` adds a GUI. Build your own with `e2b template build` and pass its ID here (or via `TERMINAL_E2B_TEMPLATE`). Sandbox resources (CPU/memory/disk) are defined by the template, so the `container_*` limits are ignored for this backend.
+
+**Persistence:** When enabled, the sandbox is paused (not killed) on cleanup and resumed via `Sandbox.connect` on the next session, preserving the filesystem. Paused sandbox IDs are tracked in `~/.hermes/e2b_sandboxes.json`. If a pause fails, Hermes falls back to killing the sandbox. This preserves filesystem state, not live processes, PID space, or background jobs.
+
+**Credential files:** Automatically synced from `~/.hermes/` (OAuth tokens, etc.) before each command, same as Modal and Daytona.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -400,6 +421,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **E2B** — Needs `E2B_API_KEY` and the `e2b` SDK (`pip install 'hermes-agent[e2b]'`). Run `hermes doctor` to check both.
 - **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.

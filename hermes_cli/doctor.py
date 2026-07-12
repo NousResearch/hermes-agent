@@ -1554,6 +1554,29 @@ def run_doctor(args):
                 issues,
             )
 
+    # E2B (if using e2b backend)
+    if terminal_env == "e2b":
+        e2b_key = os.getenv("E2B_API_KEY")
+        if e2b_key:
+            check_ok("E2B API key", "(configured)")
+        else:
+            _fail_and_issue(
+                "E2B_API_KEY not set",
+                "(required for TERMINAL_ENV=e2b)",
+                "Set E2B_API_KEY environment variable",
+                issues,
+            )
+        try:
+            from e2b import Sandbox  # noqa: F401 — SDK presence check
+            check_ok("e2b SDK", "(installed)")
+        except ImportError:
+            _fail_and_issue(
+                "e2b SDK not installed",
+                "(pip install 'hermes-agent[e2b]')",
+                "Install e2b SDK: pip install 'hermes-agent[e2b]'",
+                issues,
+            )
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")

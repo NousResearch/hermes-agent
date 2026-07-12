@@ -1196,11 +1196,12 @@ def setup_terminal_backend(config: dict):
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
+        "E2B - secure cloud sandbox (pause/resume persistence)",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "e2b"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "e2b": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1385,6 +1386,67 @@ def setup_terminal_backend(config: dict):
         config["terminal"].setdefault(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
+
+    elif selected_backend == "e2b":
+        print_success("Terminal backend: E2B")
+        print_info("Secure cloud sandboxes with pause/resume filesystem persistence.")
+        print_info("Each session gets a dedicated sandbox; state is preserved on cleanup.")
+        print_info("Sign up at: https://e2b.dev")
+
+        # Check if the e2b SDK is installed
+        try:
+            __import__("e2b")
+        except ImportError:
+            print_info("Installing e2b SDK...")
+            from hermes_cli.tools_config import _pip_install
+
+            result = _pip_install(["e2b"])
+            if result.returncode == 0:
+                print_success("e2b SDK installed")
+            else:
+                print_warning("Install failed — run manually: uv pip install e2b")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        # E2B API key
+        print()
+        existing_key = get_env_value("E2B_API_KEY")
+        if existing_key:
+            print_info("  E2B API key: already configured")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    E2B API key", password=True)
+                if api_key:
+                    save_env_value("E2B_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    E2B API key", password=True)
+            if api_key:
+                save_env_value("E2B_API_KEY", api_key)
+                print_success("    Configured")
+
+        # Template picker — offer the common built-ins plus a custom entry.
+        print()
+        from tools.environments.e2b import DEFAULT_E2B_TEMPLATE, KNOWN_E2B_TEMPLATES
+
+        current_template = (
+            cfg_get(config, "terminal", "e2b_template", default=DEFAULT_E2B_TEMPLATE)
+            or DEFAULT_E2B_TEMPLATE
+        )
+        template_choices = list(KNOWN_E2B_TEMPLATES) + ["Custom template ID"]
+        default_tmpl_idx = (
+            KNOWN_E2B_TEMPLATES.index(current_template)
+            if current_template in KNOWN_E2B_TEMPLATES
+            else 0
+        )
+        tmpl_idx = prompt_choice(
+            "  Select E2B template:", template_choices, default_tmpl_idx
+        )
+        if tmpl_idx == len(KNOWN_E2B_TEMPLATES):
+            template = prompt("    Custom template ID", current_template) or DEFAULT_E2B_TEMPLATE
+        else:
+            template = KNOWN_E2B_TEMPLATES[tmpl_idx]
+        config["terminal"]["e2b_template"] = template
+        print_success(f"    Template: {template}")
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

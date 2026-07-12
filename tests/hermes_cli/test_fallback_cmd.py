@@ -480,6 +480,55 @@ class TestDispatcher:
             cmd_fallback(types.SimpleNamespace(fallback_command="nope"))
 
 
+class TestPolicyCommand:
+    def test_show_defaults_to_any_for_legacy_config(self, isolated_home, capsys):
+        _write_config(isolated_home, {})
+        from hermes_cli.fallback_cmd import cmd_fallback_policy
+
+        cmd_fallback_policy(types.SimpleNamespace(fallback_policy=None))
+
+        assert capsys.readouterr().out.strip() == "any"
+
+    def test_set_exact_policy(self, isolated_home, capsys):
+        _write_config(isolated_home, {"fallback_policy": "any"})
+        from hermes_cli.fallback_cmd import cmd_fallback_policy
+
+        cmd_fallback_policy(types.SimpleNamespace(fallback_policy="local-only"))
+
+        assert _read_config(isolated_home)["fallback_policy"] == "local-only"
+        assert "local-only" in capsys.readouterr().out
+
+    def test_invalid_direct_call_fails_without_writing(self, isolated_home):
+        _write_config(isolated_home, {"fallback_policy": "off"})
+        from hermes_cli.fallback_cmd import cmd_fallback_policy
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_fallback_policy(types.SimpleNamespace(fallback_policy="remote"))
+
+        assert exc.value.code == 2
+        assert _read_config(isolated_home)["fallback_policy"] == "off"
+
+    def test_list_shows_policy_and_local_eligibility(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "fallback_policy": "local-only",
+            "fallback_providers": [
+                {
+                    "provider": "custom",
+                    "model": "local",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                },
+                {"provider": "openrouter", "model": "remote"},
+            ],
+        })
+        from hermes_cli.fallback_cmd import cmd_fallback_list
+
+        cmd_fallback_list(types.SimpleNamespace())
+
+        out = capsys.readouterr().out
+        assert "Policy:    local-only" in out
+        assert "(1/2 configured)" in out
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring — verify the subparser is registered
 # ---------------------------------------------------------------------------
@@ -503,8 +552,9 @@ class TestArgparseWiring:
         # --help exits 0
         assert result.returncode == 0, f"stderr: {result.stderr}"
         out = result.stdout + result.stderr
-        # All four subcommands should appear in help
+        # All subcommands should appear in help
         assert "list" in out
         assert "add" in out
         assert "remove" in out
         assert "clear" in out
+        assert "policy" in out

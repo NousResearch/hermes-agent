@@ -399,6 +399,7 @@ export interface SessionRuntimeInfo {
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  fallback_policy?: 'any' | 'local-only' | 'off'
   install_warning?: string
   model?: string
   personality?: string

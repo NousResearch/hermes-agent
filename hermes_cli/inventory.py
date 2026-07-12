@@ -243,6 +243,8 @@ def build_models_payload(
 
     if include_unconfigured:
         rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
+    effective_current_provider = _normalize_current_provider(ctx, rows)
+    rows = _hide_shadow_bare_custom_row(rows, effective_current_provider)
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:

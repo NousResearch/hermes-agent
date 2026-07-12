@@ -1278,6 +1278,25 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    parent_fallback_entry = (
+        getattr(parent_agent, "_active_fallback_entry", None)
+        or getattr(parent_agent, "_init_fallback_entry", None)
+    )
+    parent_route = (
+        str(getattr(parent_agent, "provider", None) or "").strip().lower(),
+        str(getattr(parent_agent, "model", None) or "").strip().lower(),
+        str(getattr(parent_agent, "base_url", None) or "")
+        .strip()
+        .rstrip("/")
+        .lower(),
+    )
+    child_route = (
+        str(effective_provider or "").strip().lower(),
+        str(effective_model or "").strip().lower(),
+        str(effective_base_url or "").strip().rstrip("/").lower(),
+    )
+    if child_route != parent_route:
+        parent_fallback_entry = None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1330,6 +1349,10 @@ def _build_child_agent(
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
+        fallback_chain_from_config=getattr(
+            parent_agent, "_fallback_chain_from_config", False
+        ),
+        initial_fallback_entry=parent_fallback_entry,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,

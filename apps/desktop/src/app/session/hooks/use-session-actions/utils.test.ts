@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $currentFallbackPolicy, setCurrentFallbackPolicy } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  applyRuntimeInfo,
   chatMessageArraysEquivalent,
   isSessionGoneError,
   reconcileResumeMessages,
@@ -16,6 +18,17 @@ const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial
   ({ id, role, parts: [{ type: 'text', text }], ...extra }) as ChatMessage
 
 const session = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
+
+describe('applyRuntimeInfo', () => {
+  it('hydrates the effective fallback policy on cold resume', () => {
+    setCurrentFallbackPolicy('')
+
+    expect(applyRuntimeInfo({ fallback_policy: 'local-only' })).toMatchObject({ fallbackPolicy: 'local-only' })
+    expect($currentFallbackPolicy.get()).toBe('local-only')
+
+    setCurrentFallbackPolicy('')
+  })
+})
 
 describe('isSessionGoneError', () => {
   it('is true for 404 / session-not-found, false otherwise', () => {

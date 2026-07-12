@@ -7,10 +7,15 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(
+    fallback_model=None,
+    fallback_chain_from_config=None,
+    initial_fallback_entry=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -24,6 +29,8 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            fallback_chain_from_config=fallback_chain_from_config,
+            initial_fallback_entry=initial_fallback_entry,
         )
         agent.client = MagicMock()
         return agent
@@ -210,6 +217,276 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
+
+
+class TestExplicitFallbackPolicy:
+    def test_cached_agent_refreshes_policy_and_chain_without_recreation(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openrouter", "model": "remote"}],
+            fallback_chain_from_config=True,
+        )
+        agent._fallback_terminal_status_emitted = True
+        agent._pending_fallback_notice = "queued init decision"
+
+        refreshed = [
+            {
+                "provider": "custom",
+                "model": "local-b",
+                "base_url": "http://127.0.0.1:9000/v1",
+            },
+            {
+                "provider": "custom",
+                "model": "local-a",
+                "base_url": "http://127.0.0.1:8000/v1",
+            },
+        ]
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "fallback_policy": "local-only",
+                "fallback_providers": refreshed,
+            },
+        ):
+            assert agent._refresh_fallback_policy() == "local-only"
+
+        assert agent._fallback_policy == "local-only"
+        assert agent._fallback_chain == refreshed
+        assert agent._fallback_model == refreshed[0]
+        assert agent._fallback_index == 0
+        assert agent._fallback_terminal_status_emitted is False
+        assert agent._pending_fallback_notice == "queued init decision"
+
+    def test_cached_agent_refresh_removes_deleted_routes(self):
+        initial = [{"provider": "openrouter", "model": "deleted"}]
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "fallback_policy": "any",
+                "fallback_providers": initial,
+            },
+        ):
+            agent = _make_agent(fallback_model=initial)
+
+        assert agent._fallback_chain_from_config is True
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "any", "fallback_providers": []},
+        ):
+            agent._refresh_fallback_policy()
+
+        assert agent._fallback_chain == []
+        assert agent._fallback_model is None
+
+    def test_programmatic_chain_survives_empty_default_config(self):
+        supplied = [{"provider": "openrouter", "model": "library-backup"}]
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "any", "fallback_providers": []},
+        ):
+            agent = _make_agent(fallback_model=supplied)
+            agent._refresh_fallback_policy()
+
+        assert agent._fallback_chain_from_config is False
+        assert agent._fallback_chain == supplied
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "off", "fallback_providers": []},
+        ):
+            agent._refresh_fallback_policy()
+        assert agent._fallback_chain == []
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "any", "fallback_providers": []},
+        ):
+            agent._refresh_fallback_policy()
+        assert agent._fallback_chain == supplied
+
+    def test_programmatic_chain_is_not_replaced_by_unrelated_config_chain(self):
+        supplied = [{"provider": "openrouter", "model": "library-backup"}]
+        configured = [{"provider": "openrouter", "model": "profile-backup"}]
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "fallback_policy": "any",
+                "fallback_providers": configured,
+            },
+        ):
+            agent = _make_agent(
+                fallback_model=supplied,
+                fallback_chain_from_config=False,
+            )
+            agent._refresh_fallback_policy()
+
+        assert agent._fallback_chain_from_config is False
+        assert agent._fallback_chain == supplied
+
+    def test_config_managed_chain_recovers_after_init_config_read_failure(self):
+        supplied = [{"provider": "openrouter", "model": "initial-backup"}]
+        recovered = [{"provider": "openrouter", "model": "recovered-backup"}]
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=OSError("config temporarily unreadable"),
+        ):
+            agent = _make_agent(
+                fallback_model=supplied,
+                fallback_chain_from_config=True,
+            )
+
+        assert agent._fallback_policy == "off"
+        assert agent._fallback_chain == []
+        assert agent._fallback_chain_from_config is True
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "fallback_policy": "any",
+                "fallback_providers": recovered,
+            },
+        ):
+            agent._refresh_fallback_policy()
+
+        assert agent._fallback_chain == recovered
+
+    def test_initial_entry_without_captured_chain_infers_config_ownership(self):
+        selected = {"provider": "openrouter", "model": "profile-backup"}
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "fallback_policy": "any",
+                "fallback_providers": [selected],
+            },
+        ):
+            agent = _make_agent(
+                fallback_model=None,
+                initial_fallback_entry=selected,
+            )
+            agent._refresh_fallback_policy()
+
+        assert agent._fallback_chain_from_config is True
+        assert agent._fallback_chain == [selected]
+
+    def test_initial_entry_recovers_config_ownership_after_read_failure(self):
+        selected = {"provider": "openrouter", "model": "profile-backup"}
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=OSError("config temporarily unreadable"),
+        ):
+            agent = _make_agent(
+                fallback_model=None,
+                initial_fallback_entry=selected,
+            )
+
+        assert agent._fallback_chain_from_config is True
+        assert agent._fallback_chain == []
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={
+                "fallback_policy": "any",
+                "fallback_providers": [selected],
+            },
+        ):
+            agent._refresh_fallback_policy()
+
+        assert agent._fallback_chain == [selected]
+
+    def test_off_never_resolves_or_switches_and_fails_loudly(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openrouter", "model": "remote"}]
+        )
+        primary_provider = agent.provider
+        agent._fallback_policy = "off"
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, text))
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+            assert agent._try_activate_fallback(FailoverReason.server_error) is False
+
+        resolve.assert_not_called()
+        assert agent.provider == primary_provider
+        assert statuses and statuses[-1][0] == "fallback"
+        assert "policy off" in statuses[-1][1]
+        assert "No provider switch was attempted" in statuses[-1][1]
+
+    def test_local_only_rejects_remote_metadata_before_resolution(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "anthropic", "model": "claude"}]
+        )
+        agent._fallback_policy = "local-only"
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, text))
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as resolve:
+            assert agent._try_activate_fallback(FailoverReason.timeout) is False
+
+        resolve.assert_not_called()
+        assert "no eligible local fallback remained" in statuses[-1][1]
+        assert "Remote and unknown-endpoint fallbacks were not used" in statuses[-1][1]
+
+    def test_local_only_switch_status_precedes_runtime_mutation(self):
+        local = {
+            "provider": "custom",
+            "model": "local-model",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        agent = _make_agent(fallback_model=[local])
+        agent._fallback_policy = "local-only"
+        primary_identity = (agent.model, agent.provider)
+        observed = []
+
+        def status(kind, text):
+            observed.append((kind, text, agent.model, agent.provider))
+
+        agent.status_callback = status
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(local["base_url"]), "local-model"),
+        ):
+            assert agent._try_activate_fallback(FailoverReason.server_error) is True
+
+        decision = next(item for item in observed if item[0] == "fallback")
+        assert decision[2:4] == primary_identity
+        assert "reason: server error" in decision[1]
+        assert "switching to local-model via custom" in decision[1]
+        assert agent.model == "local-model"
+        assert agent.provider == "custom"
+
+    def test_local_only_rechecks_resolved_endpoint_before_switch(self):
+        local = {
+            "provider": "custom",
+            "model": "local-model",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        agent = _make_agent(fallback_model=[local])
+        agent._fallback_policy = "local-only"
+        remote_client = _mock_client("https://remote.example/v1")
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(remote_client, "local-model"),
+        ):
+            assert agent._try_activate_fallback() is False
+
+        remote_client.close.assert_called_once()
+        assert agent.model != "local-model"
+
+    def test_terminal_policy_status_is_emitted_once(self):
+        agent = _make_agent(fallback_model=[])
+        agent._fallback_policy = "any"
+        statuses = []
+        agent.status_callback = lambda kind, text: statuses.append((kind, text))
+
+        assert agent._try_activate_fallback(FailoverReason.timeout) is False
+        assert agent._try_activate_fallback(FailoverReason.timeout) is False
+
+        fallback_statuses = [item for item in statuses if item[0] == "fallback"]
+        assert len(fallback_statuses) == 1
+        assert "policy any" in fallback_statuses[0][1]
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

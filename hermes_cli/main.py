@@ -12904,6 +12904,16 @@ def main():
         "clear",
         help="Remove all fallback entries",
     )
+    fallback_policy_parser = fallback_subparsers.add_parser(
+        "policy",
+        help="Show or set the fallback boundary: off | local-only | any",
+    )
+    fallback_policy_parser.add_argument(
+        "fallback_policy",
+        nargs="?",
+        choices=("off", "local-only", "any"),
+        help="Omit to show the current policy",
+    )
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================

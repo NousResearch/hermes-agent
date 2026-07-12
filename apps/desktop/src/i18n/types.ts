@@ -1756,6 +1756,8 @@ export interface Translations {
       openContextUsage: string
       session: string
       runtimeSessionElapsed: string
+      fallback: string
+      effectiveFallbackPolicy: (policy: string) => string
       yoloOn: string
       yoloOff: string
       modelNone: string

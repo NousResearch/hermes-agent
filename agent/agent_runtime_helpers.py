@@ -1146,6 +1146,11 @@ def restore_primary_runtime(agent) -> bool:
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
     """
+    # The turn preflight emits any queued init-time decision before calling
+    # this helper. Clear defensively here so direct callers cannot carry it
+    # across a later turn boundary.
+    agent._pending_fallback_notice = None
+    agent._fallback_restore_required = False
     if not agent._fallback_activated:
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was
@@ -1157,7 +1162,28 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+    def _entry_key(entry):
+        return (
+            str((entry or {}).get("provider") or "").strip().lower(),
+            str((entry or {}).get("model") or "").strip().lower(),
+            str((entry or {}).get("base_url") or "").strip().rstrip("/").lower(),
+        )
+
+    active_entry = getattr(agent, "_active_fallback_entry", None)
+    active_still_eligible = active_entry is None or any(
+        _entry_key(candidate) == _entry_key(active_entry)
+        for candidate in (getattr(agent, "_fallback_chain", None) or [])
+    )
+    force_restore = (
+        getattr(agent, "_fallback_policy", "any") == "off"
+        or not active_still_eligible
+    )
+    agent._fallback_restore_required = force_restore
+
+    if (
+        not force_restore
+        and getattr(agent, "_rate_limited_until", 0) > time.monotonic()
+    ):
         return False  # primary still in rate-limit cooldown, stay on fallback
 
     rt = agent._primary_runtime
@@ -1308,6 +1334,8 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        agent._active_fallback_entry = None
+        agent._fallback_restore_required = False
 
         # Reset the stale-call circuit breaker (#58962): the streak measured
         # the FALLBACK provider we're leaving; the restored primary deserves
@@ -2105,6 +2133,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Reset fallback state ──
     agent._fallback_activated = False
     agent._fallback_index = 0
+    agent._active_fallback_entry = None
+    agent._init_fallback_entry = None
+    agent._pending_fallback_notice = None
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary
@@ -2117,6 +2148,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     new_norm = (new_provider or "").strip().lower()
     fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
     if old_norm and new_norm and old_norm != new_norm:
+        excluded_providers = set(
+            getattr(agent, "_fallback_excluded_providers", None) or set()
+        )
+        excluded_providers.update({old_norm, new_norm})
+        agent._fallback_excluded_providers = excluded_providers
         fallback_chain = [
             entry for entry in fallback_chain
             if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}

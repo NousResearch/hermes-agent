@@ -2043,6 +2043,37 @@ class TestTryPaymentFallback:
         assert model is None
         assert label == ""
 
+    def test_policy_off_never_walks_builtin_remote_chain(self):
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "off"},
+        ), patch("agent.auxiliary_client._get_provider_chain") as chain:
+            client, model, label = _try_payment_fallback("custom", task="vision")
+
+        chain.assert_not_called()
+        assert (client, model, label) == (None, None, "")
+
+    def test_local_only_skips_remote_and_returns_local_endpoint(self):
+        remote = MagicMock(base_url="https://api.anthropic.com")
+        local = MagicMock(base_url="http://10.55.0.3:8000/v1")
+        remote_resolver = MagicMock(return_value=(remote, "claude"))
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"fallback_policy": "local-only"},
+        ), patch(
+            "agent.auxiliary_client._get_provider_chain",
+            return_value=[
+                ("anthropic", remote_resolver),
+                ("local/custom", lambda: (local, "qwen")),
+            ],
+        ), patch("agent.auxiliary_client._read_main_provider", return_value="custom"):
+            client, model, label = _try_payment_fallback("failed", task="compression")
+
+        assert client is local
+        assert model == "qwen"
+        assert label == "local/custom"
+        remote_resolver.assert_not_called()
+
 
 class TestCallLlmPaymentFallback:
     """call_llm() retries with a different provider on 402 / payment / rate-limit errors."""

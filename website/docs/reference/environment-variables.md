@@ -811,9 +811,10 @@ For task-specific direct endpoints, Hermes uses the task's configured API key or
 
 ## Fallback Providers (config.yaml only)
 
-The primary model fallback chain is configured exclusively through `config.yaml` — there are no environment variables for it. Add a top-level `fallback_providers` list with `provider` and `model` keys to enable automatic failover when your main model encounters errors. Auxiliary tasks whose provider is `auto` also consult this chain before Hermes' built-in auxiliary discovery chain.
+The primary model fallback chain is configured exclusively through `config.yaml` — there are no environment variables for it. Set the exact top-level `fallback_policy` (`off`, `local-only`, or `any`) and add a `fallback_providers` list with `provider` and `model` keys. Auxiliary tasks whose provider is `auto` obey the same policy before Hermes' built-in auxiliary discovery chain.
 
 ```yaml
+fallback_policy: any  # compatibility default; off | local-only | any
 fallback_providers:
   - provider: openrouter
     model: anthropic/claude-sonnet-4

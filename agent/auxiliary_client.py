@@ -101,7 +101,11 @@ class _OpenAIProxy:
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.model_metadata import (
+    MINIMUM_CONTEXT_LENGTH,
+    get_model_context_length,
+    is_local_endpoint,
+)
 from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -3729,6 +3733,20 @@ def _try_payment_fallback(
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import get_fallback_policy
+
+        policy = get_fallback_policy(load_config_readonly())
+    except Exception:
+        policy = "off"
+    if policy == "off":
+        logger.warning(
+            "Auxiliary %s: fallback policy off; not switching after %s on %s",
+            task or "call", reason, failed_provider,
+        )
+        return None, None, ""
+
     # Normalise the failed provider label for matching.
     skip = failed_provider.lower().strip()
     # Also skip Step-1 main-provider path if it maps to the same backend.
@@ -3745,6 +3763,9 @@ def _try_payment_fallback(
 
     tried = []
     for label, try_fn in _get_provider_chain():
+        if policy == "local-only" and label != "local/custom":
+            tried.append(f"{label} (remote provider blocked by local-only policy)")
+            continue
         if label in skip_chain_labels:
             continue
         if _is_provider_unhealthy(label):
@@ -3753,6 +3774,11 @@ def _try_payment_fallback(
             continue
         client, model = try_fn()
         if client is not None:
+            if policy == "local-only" and not is_local_endpoint(
+                str(getattr(client, "base_url", "") or "")
+            ):
+                tried.append(f"{label} (remote blocked by local-only policy)")
+                continue
             logger.info(
                 "Auxiliary %s: %s on %s — falling back to %s (%s)",
                 task or "call", reason, failed_provider, label, model or "default",
@@ -3785,6 +3811,18 @@ def _try_main_agent_model_fallback(
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import get_fallback_policy
+
+        policy_config = load_config_readonly()
+        policy = get_fallback_policy(policy_config)
+    except Exception:
+        policy_config = {}
+        policy = "off"
+    if policy == "off":
+        return None, None, ""
+
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
@@ -3807,6 +3845,26 @@ def _try_main_agent_model_fallback(
 
     if client is None:
         return None, None, ""
+    if policy == "local-only":
+        try:
+            from hermes_cli.fallback_config import fallback_entry_is_local
+
+            allowed_local = fallback_entry_is_local(
+                {
+                    "provider": main_provider,
+                    "model": resolved_model or main_model,
+                    "base_url": str(getattr(client, "base_url", "") or ""),
+                },
+                policy_config,
+            )
+        except Exception:
+            allowed_local = False
+        if not allowed_local:
+            logger.warning(
+                "Auxiliary %s: local-only policy blocked remote main-agent fallback %s",
+                task or "call", main_provider,
+            )
+            return None, None, ""
 
     label = f"main-agent({main_provider})"
     logger.info(
@@ -3915,6 +3973,21 @@ def _try_configured_fallback_chain(
     if not task:
         return None, None, ""
 
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import (
+            fallback_entry_is_local,
+            get_fallback_policy,
+        )
+
+        policy_config = load_config_readonly()
+        policy = get_fallback_policy(policy_config)
+    except Exception:
+        policy_config = {}
+        policy = "off"
+    if policy == "off":
+        return None, None, ""
+
     task_config = _get_auxiliary_task_config(task)
     chain = task_config.get("fallback_chain")
     if not chain or not isinstance(chain, list):
@@ -3933,6 +4006,11 @@ def _try_configured_fallback_chain(
         fb_model = str(entry.get("model", "")).strip() or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
+        if policy == "local-only" and not fallback_entry_is_local(
+            entry, policy_config
+        ):
+            tried.append(f"{label} (remote/unknown blocked)")
+            continue
 
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
@@ -3940,6 +4018,11 @@ def _try_configured_fallback_chain(
             fb_client, resolved_model = None, None
 
         if fb_client is not None:
+            if policy == "local-only" and not is_local_endpoint(
+                str(getattr(fb_client, "base_url", "") or "")
+            ):
+                tried.append(f"{label} (resolved remote endpoint blocked)")
+                continue
             if min_ctx is not None and resolved_model:
                 fb_ctx = _candidate_context_window(
                     fb_provider,
@@ -4073,6 +4156,18 @@ def _try_main_fallback_chain(
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            try:
+                from hermes_cli.config import load_config_readonly
+                from hermes_cli.fallback_config import get_fallback_policy
+
+                policy = get_fallback_policy(load_config_readonly())
+            except Exception:
+                policy = "off"
+            if policy == "local-only" and not is_local_endpoint(
+                str(getattr(fb_client, "base_url", "") or "")
+            ):
+                tried.append(f"{label} (resolved remote endpoint blocked)")
+                continue
             if min_ctx is not None:
                 fb_ctx = _candidate_context_window(
                     fb_provider,
@@ -4270,14 +4365,36 @@ def _resolve_auto(
         return fb_client, fb_model
 
     # ── Step 3: aggregator / fallback chain ──────────────────────────────
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import get_fallback_policy
+
+        fallback_policy_config = load_config_readonly()
+        fallback_policy = get_fallback_policy(fallback_policy_config)
+    except Exception:
+        fallback_policy_config = {}
+        fallback_policy = "off"
+    if fallback_policy == "off":
+        logger.warning(
+            "Auxiliary auto-detect: main provider unavailable and fallback policy is off"
+        )
+        return None, None
     tried = []
     for label, try_fn in _get_provider_chain():
+        if fallback_policy == "local-only" and label != "local/custom":
+            tried.append(f"{label} (remote provider blocked by local-only policy)")
+            continue
         if _is_provider_unhealthy(label):
             _log_skip_unhealthy(label)
             tried.append(f"{label} (unhealthy)")
             continue
         client, model = try_fn()
         if client is not None:
+            if fallback_policy == "local-only" and not is_local_endpoint(
+                str(getattr(client, "base_url", "") or "")
+            ):
+                tried.append(f"{label} (remote blocked by local-only policy)")
+                continue
             if tried:
                 logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
                             label, model or "default", ", ".join(tried))

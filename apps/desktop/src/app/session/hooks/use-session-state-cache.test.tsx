@@ -3,7 +3,9 @@ import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { createFallbackNotice, deferFallbackNotice, restoreFallbackNotices } from '@/lib/fallback-notices'
 import {
+  $currentFallbackPolicy,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -11,6 +13,7 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  setCurrentFallbackPolicy,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentProvider,
@@ -61,12 +64,14 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
       return null as unknown as number
     })
+    window.localStorage.clear()
     setTurnStartedAt(null)
     setCurrentModel('')
     setCurrentProvider('')
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setCurrentFallbackPolicy('')
   })
 
   afterEach(() => {
@@ -78,6 +83,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('')
     setCurrentServiceTier('')
     setCurrentFastMode(false)
+    setCurrentFallbackPolicy('')
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
@@ -96,6 +102,21 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // ...but the global atom (statusbar timer) is untouched — a background turn
     // must not drive the foreground timer.
     expect($turnStartedAt.get()).toBeNull()
+  })
+
+  it('backfills a pre-bind fallback notice when the stored session id becomes known', () => {
+    let cache!: Cache
+    const notice = createFallbackNotice('init fallback', 1_700_000_000_000)
+    deferFallbackNotice('fg-runtime', notice, 1)
+
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+
+    act(() => {
+      cache.ensureSessionState('fg-runtime', 'fg-stored')
+    })
+
+    const restored = restoreFallbackNotices('fg-stored', [userMessage('u', 'hello'), assistantText('a', 'answer')])
+    expect(restored.map(message => message.id)).toEqual(['u', notice.id, 'a'])
   })
 
   it("mirrors the focused session's turn clock into the global atom on view-sync", () => {
@@ -145,6 +166,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
         state => ({
           ...state,
           fast: true,
+          fallbackPolicy: 'local-only',
           model: 'anthropic/claude-opus-4.8',
           provider: 'anthropic',
           reasoningEffort: 'high',
@@ -158,6 +180,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentModel.get()).toBe('')
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+    expect($currentFallbackPolicy.get()).toBe('')
 
     rerender(<Harness activeSessionId="bg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="bg-stored" />)
 
@@ -173,6 +196,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentServiceTier.get()).toBe('priority')
     expect($currentFastMode.get()).toBe(true)
+    expect($currentFallbackPolicy.get()).toBe('local-only')
   })
 
   it('clears stale model metadata when the newly focused session has no cached value', () => {
@@ -181,6 +205,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentReasoningEffort('high')
     setCurrentServiceTier('priority')
     setCurrentFastMode(true)
+    setCurrentFallbackPolicy('any')
 
     let cache!: Cache
 
@@ -206,6 +231,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+    expect($currentFallbackPolicy.get()).toBe('')
   })
 })
 

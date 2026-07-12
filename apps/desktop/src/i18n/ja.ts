@@ -2066,6 +2066,8 @@ export const ja = defineLocale({
       openContextUsage: 'コンテキスト使用状況の内訳を開く',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
+      fallback: 'フォールバック',
+      effectiveFallbackPolicy: policy => `有効なフォールバックポリシー: ${policy}`,
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
       yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',

@@ -76,13 +76,23 @@ class _FakeAgent:
         # Records _cached_system_prompt at the moment _ensure_db_session()
         # is called (regression guard for #45499 turn-setup ordering).
         self._ensure_db_prompt_at_call = "<unset>"
+        self._fallback_policy_refreshes = 0
+        self._fallback_events = []
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):
         self._ensure_db_prompt_at_call = self._cached_system_prompt
 
     def _restore_primary_runtime(self):
-        pass
+        self._fallback_events.append("restore")
+
+    def _refresh_fallback_policy(self):
+        self._fallback_policy_refreshes += 1
+        self._fallback_events.append("refresh")
+        return "any"
+
+    def _emit_pending_fallback_notice(self):
+        self._fallback_events.append("pending")
 
     def _cleanup_dead_connections(self):
         return False
@@ -188,6 +198,19 @@ def test_applies_agent_side_effects():
     # task/turn ids assigned on the agent.
     assert agent._current_task_id
     assert agent._current_turn_id
+
+
+def test_cached_agent_refreshes_policy_before_restore_on_every_turn():
+    agent = _FakeAgent()
+
+    _build(agent)
+    _build(agent)
+
+    assert agent._fallback_policy_refreshes == 2
+    assert agent._fallback_events == [
+        "refresh", "pending", "restore",
+        "refresh", "pending", "restore",
+    ]
 
 
 def test_task_id_passthrough():
@@ -363,4 +386,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

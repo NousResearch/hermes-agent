@@ -200,6 +200,109 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_init_auth_fallback_obeys_local_only_policy(monkeypatch):
+    cli = _import_cli()
+    config = {
+        "fallback_policy": "local-only",
+        "fallback_providers": [
+            {"provider": "openrouter", "model": "remote-backup"},
+        ],
+    }
+    calls = []
+    messages = []
+
+    def _runtime_resolve(**kwargs):
+        calls.append(kwargs)
+        raise AuthError("primary credentials unavailable", code="missing_credentials")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly", lambda: config
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error", str
+    )
+    monkeypatch.setattr(
+        cli,
+        "ChatConsole",
+        lambda: SimpleNamespace(print=messages.append),
+    )
+
+    shell = cli.HermesCLI(model="primary-model", compact=True, max_turns=1)
+    shell.requested_provider = "primary-provider"
+
+    assert shell._ensure_runtime_credentials() is False
+    assert [call["requested"] for call in calls] == ["primary-provider"]
+    assert any("Fallback policy local-only" in message for message in messages)
+
+
+def test_cli_init_auth_fallback_uses_live_chain_and_explicit_route(monkeypatch):
+    cli = _import_cli()
+    local = {
+        "provider": "custom",
+        "model": "local-backup",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key": "local-test-key",
+    }
+    config = {
+        "fallback_policy": "local-only",
+        "fallback_providers": [local],
+    }
+    calls = []
+
+    def _runtime_resolve(**kwargs):
+        calls.append(kwargs)
+        if kwargs["requested"] == "primary-provider":
+            raise AuthError(
+                "primary credentials unavailable", code="missing_credentials"
+            )
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": local["base_url"],
+            "api_key": local["api_key"],
+            "source": "fallback-config",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly", lambda: config
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error", str
+    )
+
+    shell = cli.HermesCLI(model="primary-model", compact=True, max_turns=1)
+    shell.requested_provider = "primary-provider"
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.requested_provider == "custom"
+    assert shell.model == "local-backup"
+    assert shell._initial_fallback_entry == local
+    assert "Fallback policy local-only" in shell._initial_fallback_decision
+    assert calls[1] == {
+        "requested": "custom",
+        "target_model": "local-backup",
+        "explicit_base_url": local["base_url"],
+        "explicit_api_key": local["api_key"],
+    }
+
+    captured = {}
+
+    class _DummyAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    assert shell._init_agent() is True
+    assert captured["initial_fallback_entry"] == local
+    assert "initial_fallback_decision" not in captured
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)

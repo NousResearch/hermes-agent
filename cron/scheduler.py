@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_configured_fallback_chain, get_fallback_chain
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -2915,6 +2915,9 @@ def run_job(
         # off-host call is ever made with a stored key.
         _guard_job_credential_exfil(job)
 
+        _initial_fallback_decision = None
+        _initial_fallback_entry = None
+        _runtime_model = model
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -2934,18 +2937,54 @@ def run_job(
             runtime = None
             for entry in fb_list:
                 try:
-                    fb_kwargs = {"requested": entry.get("provider")}
+                    fb_kwargs = {
+                        "requested": entry.get("provider"),
+                        "target_model": entry.get("model"),
+                    }
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
-                    if entry.get("api_key"):
-                        fb_kwargs["explicit_api_key"] = entry["api_key"]
+                    explicit_api_key = str(entry.get("api_key") or "").strip()
+                    if not explicit_api_key:
+                        key_env = str(
+                            entry.get("key_env") or entry.get("api_key_env") or ""
+                        ).strip()
+                        if key_env:
+                            explicit_api_key = os.getenv(key_env, "").strip()
+                    if explicit_api_key:
+                        fb_kwargs["explicit_api_key"] = explicit_api_key
                     runtime = resolve_runtime_provider(**fb_kwargs)
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    from hermes_cli.fallback_config import get_fallback_policy
+
+                    _policy = get_fallback_policy(_cfg)
+                    _initial_fallback_decision = (
+                        f"🔄 Fallback policy {_policy}: {model} via "
+                        f"{job.get('provider') or 'primary provider'} could not "
+                        f"initialize (reason: {auth_exc}); switching to "
+                        f"{entry.get('model')} via {entry.get('provider')}."
+                    )
+                    _initial_fallback_entry = dict(entry)
+                    _runtime_model = entry.get("model") or model
                     break
                 except Exception as fb_exc:
                     logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
             if runtime is None:
-                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+                from hermes_cli.fallback_config import get_fallback_policy
+
+                _policy = get_fallback_policy(_cfg)
+                if _policy == "off":
+                    _detail = "Fallback policy off: no backup provider was attempted."
+                elif _policy == "local-only":
+                    _detail = (
+                        "Fallback policy local-only: no usable local backup route remained."
+                    )
+                else:
+                    _detail = (
+                        "Fallback policy any: no usable configured backup route remained."
+                    )
+                raise RuntimeError(
+                    f"{format_runtime_provider_error(auth_exc)}\n{_detail}"
+                ) from auth_exc
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
@@ -3004,7 +3043,7 @@ def run_job(
                 f"(or pin the original values to keep them). See #44585."
             )
 
-        fallback_model = get_fallback_chain(_cfg) or None
+        fallback_model = get_configured_fallback_chain(_cfg) or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:
@@ -3044,7 +3083,7 @@ def run_job(
             )
 
         agent = AIAgent(
-            model=model,
+            model=_runtime_model,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),
@@ -3055,6 +3094,9 @@ def run_job(
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
+            fallback_chain_from_config=True,
+            initial_fallback_decision=_initial_fallback_decision,
+            initial_fallback_entry=_initial_fallback_entry,
             credential_pool=credential_pool,
             providers_allowed=pr.get("only"),
             providers_ignored=pr.get("ignore"),

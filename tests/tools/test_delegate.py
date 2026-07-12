@@ -3116,6 +3116,8 @@ class TestFallbackModelInheritance(unittest.TestCase):
         parent = _make_mock_parent(depth=0)
         fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
         parent._fallback_chain = [fallback_entry]
+        parent._fallback_chain_from_config = True
+        parent._active_fallback_entry = fallback_entry
 
         with patch("run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
@@ -3132,6 +3134,8 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+        self.assertIs(kwargs["fallback_chain_from_config"], True)
+        self.assertEqual(kwargs["initial_fallback_entry"], fallback_entry)
 
     def test_child_gets_no_fallback_when_parent_chain_empty(self):
         """When parent._fallback_chain is empty, fallback_model is None."""
@@ -3153,6 +3157,29 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+    def test_explicit_child_route_does_not_inherit_parent_fallback_identity(self):
+        parent = _make_mock_parent(depth=0)
+        fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini"}
+        parent._fallback_chain = [fallback_entry]
+        parent._fallback_chain_from_config = True
+        parent._active_fallback_entry = fallback_entry
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test explicit child route",
+                context=None,
+                toolsets=None,
+                model="different-model",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["initial_fallback_entry"])
 
 
 if __name__ == "__main__":

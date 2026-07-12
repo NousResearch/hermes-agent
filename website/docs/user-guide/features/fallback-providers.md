@@ -27,17 +27,30 @@ The easiest path is the interactive manager:
 hermes fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. `hermes fallback policy` shows the active safety boundary; set it with `hermes fallback policy off`, `local-only`, or `any`. Changes persist under top-level keys in `config.yaml`.
 
 If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
 
 ```yaml
+fallback_policy: any
 fallback_providers:
   - provider: openrouter
     model: anthropic/claude-sonnet-4
 ```
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
+
+### Fallback Policy
+
+| Value | Behavior |
+|-------|----------|
+| `off` | Never switches providers. The turn fails loudly with the policy and failure reason. |
+| `local-only` | Tries only routes whose endpoint metadata proves they are local. Remote and unknown endpoints are rejected. |
+| `any` | Preserves the historical behavior: configured local or remote routes are tried in order. |
+
+`any` is the compatibility default when an older config has no `fallback_policy` key. Values are exact and case-sensitive; an invalid explicit value fails closed as `off` and is reported by config validation.
+
+`local-only` checks the explicit `base_url`, provider configuration, and provider-specific base-URL environment override. It recognizes loopback, private/LAN, container-local, link-local, and Tailscale endpoints. Built-in cloud providers such as OpenCode, Anthropic, OpenRouter, and Nous remain remote even if a base-URL environment variable points them at localhost; deliberately redefine a local-compatible route under `providers:` or use `provider: custom`. Hermes does **not** guess from model names: an entry such as `model: my-local-model` with a remote or unknown endpoint is not eligible. It rechecks the resolved client's actual endpoint before switching as a second guard.
 
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
@@ -108,19 +121,20 @@ The fallback activates automatically when the primary model fails with:
 
 When triggered, Hermes:
 
-1. Resolves credentials for the fallback provider
-2. Builds a new API client
-3. Swaps the model, provider, and client in-place
-4. Resets the retry counter and continues the conversation
+1. Applies `fallback_policy` and finds the next eligible route
+2. Resolves credentials and builds the fallback client
+3. Shows the policy, classified failure reason, and destination in CLI/desktop status **before** switching
+4. Swaps the model, provider, and client in-place
+5. Resets the retry counter and continues the conversation
 
-The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
+Your conversation history, tool calls, and context are preserved. If policy blocks fallback or no eligible route remains, Hermes shows a terminal fallback status instead of silently ending or selecting an unrelated provider.
 
 :::warning Fallback resets the prompt cache
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::
 
 :::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a turn, Hermes walks the eligible ordered chain and attempts each route at most once. Every actual switch is reported once as non-terminal status; only policy rejection or exhaustion is terminal. This bounds failover loops while still letting a later configured backup recover the turn.
 :::
 
 ### Examples
@@ -205,7 +219,7 @@ Main provider + main model → auxiliary.<task>.fallback_chain →
 fallback_providers / fallback_model → built-in auxiliary discovery chain
 ```
 
-The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
+The task-specific chain is most precise and wins when present. `fallback_policy` is the global cross-provider boundary for auxiliary fallback too: `off` stops after the selected main route fails, `local-only` filters task-specific, top-level, and built-in candidates by resolved endpoint, and `any` preserves the full chain.
 
 **Built-in text discovery chain (compression, web extract, title generation, etc.):**
 
@@ -221,7 +235,7 @@ Main provider (if vision-capable) → OpenRouter → Nous Portal →
 Codex OAuth → Anthropic → Custom endpoint → give up
 ```
 
-Those built-in chains are a convenience fallback for users who have not declared a task-specific or main fallback policy.
+Those built-in chains are a convenience fallback under `fallback_policy: any`. Under `local-only`, remote rungs such as OpenRouter, Nous, OpenCode, and Anthropic are skipped; under `off`, the built-in fallback chain is not walked.
 
 ### Configuring Auxiliary Providers
 

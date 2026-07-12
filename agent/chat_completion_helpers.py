@@ -1326,8 +1326,46 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _fallback_reason_text(reason: "FailoverReason | str | None") -> str:
+    if isinstance(reason, FailoverReason):
+        value = reason.value
+    else:
+        value = str(reason or "provider failure")
+    return value.strip().replace("_", " ") or "provider failure"
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+
+def emit_fallback_policy_terminal_status(
+    agent,
+    reason: "FailoverReason | str | None" = None,
+) -> None:
+    """Fail loudly once when policy or exhaustion prevents another switch."""
+    if getattr(agent, "_fallback_terminal_status_emitted", False):
+        return
+    policy = getattr(agent, "_fallback_policy", "any")
+    current_model = str(getattr(agent, "model", "") or "unknown model")
+    current_provider = str(getattr(agent, "provider", "") or "unknown provider")
+    reason_text = _fallback_reason_text(reason)
+
+    if policy == "off":
+        detail = "fallback is disabled. No provider switch was attempted."
+    elif policy == "local-only":
+        detail = (
+            "no eligible local fallback remained. Remote and unknown-endpoint "
+            "fallbacks were not used."
+        )
+    else:
+        detail = "no usable configured fallback remained."
+    agent._emit_fallback_status(
+        f"❌ Fallback policy {policy}: {current_model} via {current_provider} "
+        f"failed (reason: {reason_text}); {detail}"
+    )
+    agent._fallback_terminal_status_emitted = True
+
+
+
+def try_activate_fallback(
+    agent, reason: "FailoverReason | str | None" = None,
+) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
     Called when the current model is failing after retries.  Swaps the
@@ -1348,6 +1386,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
+    policy = getattr(agent, "_fallback_policy", "any")
+    if policy == "off":
+        agent._fallback_index = len(agent._fallback_chain)
+        emit_fallback_policy_terminal_status(agent, reason)
+        return False
     if agent._fallback_index >= len(agent._fallback_chain):
         # Chain exhausted.  If we actually walked a non-empty chain and the
         # failure was NOT a rate-limit/billing event (those already armed
@@ -1364,6 +1407,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 _existing_cooldown,
                 time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S,
             )
+        emit_fallback_policy_terminal_status(agent, reason)
         return False
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
@@ -1379,6 +1423,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback(reason)  # skip invalid, try next
+
+    if policy == "local-only":
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.fallback_config import fallback_entry_is_local
+
+            metadata_local = fallback_entry_is_local(fb, load_config_readonly())
+        except Exception:
+            metadata_local = False
+        if not metadata_local:
+            unavailable.add(fb_key)
+            logger.warning(
+                "Fallback policy local-only rejected %s/%s: endpoint metadata is remote or unknown",
+                fb_provider,
+                fb_model,
+            )
+            return agent._try_activate_fallback(reason)
 
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
@@ -1448,6 +1509,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_provider)
             unavailable.add(fb_key)
             return agent._try_activate_fallback(reason)  # try next in chain
+        if policy == "local-only" and not is_local_endpoint(str(fb_client.base_url)):
+            unavailable.add(fb_key)
+            logger.warning(
+                "Fallback policy local-only rejected resolved endpoint %s for %s/%s",
+                fb_client.base_url,
+                fb_provider,
+                fb_model,
+            )
+            try:
+                fb_client.close()
+            except Exception:
+                pass
+            return agent._try_activate_fallback(reason)
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
 
@@ -1499,6 +1573,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         old_model = agent.model
         old_provider = agent.provider
 
+        # This decision is intentionally immediate (not retry-buffered): the
+        # operator sees policy, reason, and destination before runtime state is
+        # changed and before the next provider request is sent.
+        agent._emit_fallback_status(
+            f"🔄 Fallback policy {policy}: {old_model} via {old_provider} failed "
+             f"(reason: {_fallback_reason_text(reason)}); switching to "
+             f"{fb_model} via {fb_provider}."
+         )
+
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
         # the stale value from the previous model.  See #22387.
@@ -1510,6 +1593,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        agent._active_fallback_entry = dict(fb)
 
         # Rebind the credential pool to the fallback provider when the provider
         # changes.  Keeping the primary pool attached would make downstream
@@ -1639,20 +1723,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
-        )
-        # The buffered line above is dropped on successful recovery, but a
-        # provider/model switch is a durable state change operators must see
-        # even when the fallback succeeds.  Record a one-shot notice that the
-        # success path surfaces exactly once via _emit_pending_fallback_notice
-        # (see run_agent.py); it is discarded on terminal failure since the
-        # buffered line is flushed instead.  See fallback-observability fix.
-        agent._pending_fallback_notice = (
-            f"🔄 Switched to fallback model: {old_model} via {old_provider} "
-            f"→ {fb_model} via {fb_provider}"
-        )
         logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
@@ -3225,6 +3295,7 @@ __all__ = [
     "build_api_kwargs",
     "build_assistant_message",
     "try_activate_fallback",
+    "emit_fallback_policy_terminal_status",
     "handle_max_iterations",
     "cleanup_task_resources",
     "interruptible_streaming_api_call",

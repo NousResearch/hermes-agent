@@ -210,6 +210,28 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Script exited with code 1\nstdout:\nTimeoutError: timed out",
+        "HTTP 429 rate limit",
+        "authentication failed with 403",
+    ],
+)
+def test_no_agent_failure_summary_does_not_claim_provider_fallback(hermes_env, error):
+    """Script-only failures must not be mislabeled as LLM provider failures."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    summary = _summarize_cron_failure_for_delivery(
+        {"id": "watchdog", "name": "Local watchdog", "no_agent": True},
+        error,
+    )
+
+    assert summary.startswith("⚠️ Cron 'Local watchdog' script failed:")
+    assert "provider" not in summary.lower()
+    assert "fallback chain" not in summary.lower()
+
+
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     """Empty stdout → SILENT_MARKER, which suppresses delivery downstream."""
     from cron.jobs import create_job

@@ -6,8 +6,9 @@ or a deactivated user — re-sending to it on every cron tick or every fan-out
 delivery wastes a send attempt against the platform's flood-control envelope and
 spams the logs.  This registry lets the delivery layer short-circuit a target it
 has already proven dead, while staying self-healing: any successful send to that
-target clears the flag, so a user who re-adds the bot (or restores the chat)
-recovers automatically with no manual cleanup.
+target clears the flag, and old dead flags periodically allow one retry so a
+user who re-adds the bot (or restores the chat) recovers automatically with no
+manual cleanup.
 
 Scope is deliberately narrow.  Only *whole-chat* deaths are recorded — the
 ``forbidden`` and chat-level ``not_found`` (``chat not found``) error kinds.
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 # Error kinds (from gateway.platforms.base.classify_send_error) that mean the
 # *whole chat* is unreachable, not a transient or thread-level problem.
 _DEAD_ERROR_KINDS = frozenset({"forbidden", "not_found"})
+_DEAD_TARGET_RETRY_AFTER_SECONDS = 3600
 
 
 def _normalize(platform: str, chat_id: str) -> str:
@@ -99,7 +101,16 @@ class DeadTargetRegistry:
         if not chat_id:
             return False
         with self._lock:
-            return _normalize(platform, chat_id) in self._dead
+            entry = self._dead.get(_normalize(platform, chat_id))
+            if not entry:
+                return False
+            try:
+                marked_at = float(entry.get("marked_at", 0))
+            except (TypeError, ValueError):
+                marked_at = 0
+            if marked_at > 0 and time.time() - marked_at >= _DEAD_TARGET_RETRY_AFTER_SECONDS:
+                return False
+            return True
 
     def mark_dead(self, platform: str, chat_id: Optional[str],
                   reason: str = "") -> bool:

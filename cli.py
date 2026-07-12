@@ -779,7 +779,7 @@ class HermesCLI:
             provider: Inference provider ("auto", "openrouter", "nous")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
-            max_turns: Maximum tool-calling iterations (default: 60)
+            max_turns: Maximum tool-calling iterations (default: 90)
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
@@ -2693,7 +2693,7 @@ def main(
         provider: Inference provider ("auto", "openrouter", "nous")
         api_key: API key for authentication
         base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
+        max_turns: Maximum tool-calling iterations (default: 90)
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit

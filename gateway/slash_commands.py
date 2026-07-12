@@ -2764,12 +2764,20 @@ class GatewaySlashCommandsMixin:
         new setting takes effect on the next message.
         """
         from gateway.run import _hermes_home
-        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.write_approval_commands import (
+            approval_toggle_allowed,
+            handle_pending_subcommand,
+        )
         from tools import write_approval as wa
         from tools.memory_tool import load_on_disk_store
 
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
+        if args and args[0].lower() in {"approval", "mode"} and not approval_toggle_allowed(
+            get_active_profile_name() or ""
+        ):
+            return "Approval gate changes are operator-managed for this profile."
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 
@@ -2814,11 +2822,19 @@ class GatewaySlashCommandsMixin:
         ``hermes skills diff <name>`` that diffs a bundled skill vs stock.)
         """
         from gateway.run import _hermes_home
-        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.write_approval_commands import (
+            approval_toggle_allowed,
+            handle_pending_subcommand,
+        )
         from tools import write_approval as wa
 
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
+        if args and args[0].lower() in {"approval", "mode"} and not approval_toggle_allowed(
+            get_active_profile_name() or ""
+        ):
+            return "Approval gate changes are operator-managed for this profile."
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 

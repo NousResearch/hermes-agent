@@ -36,6 +36,15 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
+def test_household_profiles_cannot_toggle_approval_gate():
+    from hermes_cli.write_approval_commands import approval_toggle_allowed
+
+    for profile in ("family", "home", "partner", "kid-1", "kid-2"):
+        assert approval_toggle_allowed(profile) is False
+    assert approval_toggle_allowed("dev") is True
+    assert approval_toggle_allowed("rescue") is True
+
+
 def test_default_gate_is_off(hermes_home):
     from tools import write_approval as wa
     # Default: gate off → writes flow freely.

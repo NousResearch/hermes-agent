@@ -21,6 +21,14 @@ from typing import List, Optional
 from tools import write_approval as wa
 
 
+HOUSEHOLD_PROFILES = frozenset({"family", "home", "partner", "kid-1", "kid-2"})
+
+
+def approval_toggle_allowed(profile_name: str) -> bool:
+    """Return whether a profile may change its durable-write approval gates."""
+    return (profile_name or "").strip().lower() not in HOUSEHOLD_PROFILES
+
+
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
     return f"{subsystem}.write_approval = {'on' if on else 'off'}"

@@ -125,7 +125,7 @@ class NodeServer:
                 kwargs = {
                     k: payload[k]
                     for k in ("url", "guest_name", "duration", "headed",
-                              "auth_state", "session_id", "out_dir")
+                              "auth_state", "session_id", "out_dir", "mode")
                     if k in payload
                 }
                 if "url" not in kwargs:

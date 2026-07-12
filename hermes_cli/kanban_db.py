@@ -1192,6 +1192,17 @@ CREATE TABLE IF NOT EXISTS task_comments (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS terminal_handoffs (
+    task_id         TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_hash    TEXT NOT NULL,
+    run_id          INTEGER NOT NULL,
+    transition      TEXT NOT NULL,
+    response_json   TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (task_id, idempotency_key)
+);
+
 CREATE TABLE IF NOT EXISTS task_events (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT NOT NULL,
@@ -2956,6 +2967,168 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
         )
         for r in rows
     ]
+
+
+class TerminalHandoffError(ValueError):
+    """A claim-guarded terminal handoff was rejected without mutation."""
+
+
+def terminal_handoff(
+    conn: sqlite3.Connection, task_id: str, *, run_id: int, profile: str,
+    workspace: str, claim_lock: str, idempotency_key: str, transition: str,
+    comment: str, summary: Optional[str] = None, metadata: Optional[dict] = None,
+    result: Optional[str] = None, reason: Optional[str] = None,
+    kind: Optional[str] = None,
+) -> dict:
+    """Atomically persist an external worker handoff and close its claim."""
+    import hashlib
+
+    required = {"profile": profile, "workspace": workspace, "claim_lock": claim_lock,
+                "idempotency_key": idempotency_key, "comment": comment}
+    missing = [key for key, value in required.items() if not str(value or "").strip()]
+    if missing:
+        raise TerminalHandoffError(f"required field(s) missing: {', '.join(missing)}")
+    if transition not in {"complete", "block"}:
+        raise TerminalHandoffError("transition must be 'complete' or 'block'")
+    if transition == "complete" and not (summary or result):
+        raise TerminalHandoffError("complete requires summary or result")
+    if transition == "block" and not str(reason or "").strip():
+        raise TerminalHandoffError("block requires reason")
+    if kind is not None and kind not in VALID_BLOCK_KINDS:
+        raise TerminalHandoffError(
+            f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
+        )
+    if transition != "block" and kind is not None:
+        raise TerminalHandoffError("kind is only valid for a block transition")
+
+    canonical_workspace = str(Path(workspace).expanduser().resolve())
+    request = {
+        "task_id": task_id, "run_id": int(run_id), "profile": profile.strip(),
+        "workspace": canonical_workspace, "claim_lock": claim_lock.strip(),
+        "transition": transition, "comment": comment.strip(), "summary": summary,
+        "metadata": metadata, "result": result, "reason": reason, "kind": kind,
+    }
+    request_hash = hashlib.sha256(json.dumps(
+        request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    now = int(time.time())
+    final_status = "done"
+    outcome = "completed" if transition == "complete" else "blocked"
+    final_summary = summary if transition == "complete" else reason
+
+    with write_txn(conn):
+        replay = conn.execute(
+            "SELECT request_hash, response_json FROM terminal_handoffs "
+            "WHERE task_id = ? AND idempotency_key = ?",
+            (task_id, idempotency_key.strip()),
+        ).fetchone()
+        if replay:
+            if replay["request_hash"] != request_hash:
+                raise TerminalHandoffError("idempotency_key was already used with a different payload")
+            response = json.loads(replay["response_json"])
+            response["replayed"] = True
+            return response
+
+        task = conn.execute(
+            "SELECT assignee, status, workspace_path, claim_lock, claim_expires, current_run_id, "
+            "block_kind, block_recurrences "
+            "FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if task is None:
+            raise TerminalHandoffError(f"unknown task {task_id}")
+        run = conn.execute(
+            "SELECT profile, status, claim_lock, claim_expires, ended_at FROM task_runs "
+            "WHERE id = ? AND task_id = ?", (int(run_id), task_id),
+        ).fetchone()
+        expected_workspace = str(Path(task["workspace_path"]).expanduser().resolve()) if task["workspace_path"] else None
+        mismatches = []
+        if task["status"] != "running": mismatches.append("task is not running")
+        if task["current_run_id"] != int(run_id): mismatches.append("run is stale or superseded")
+        if task["assignee"] != profile.strip(): mismatches.append("profile does not match assignee")
+        if expected_workspace != canonical_workspace: mismatches.append("workspace does not match claim")
+        if task["claim_lock"] != claim_lock.strip(): mismatches.append("claim lock does not match")
+        if task["claim_expires"] is None or int(task["claim_expires"]) <= now: mismatches.append("claim is expired")
+        if run is None or run["status"] != "running" or run["ended_at"] is not None:
+            mismatches.append("run is not active")
+        elif (run["profile"] != profile.strip() or run["claim_lock"] != claim_lock.strip()
+              or run["claim_expires"] is None or int(run["claim_expires"]) <= now):
+            mismatches.append("run claim does not match")
+        if mismatches:
+            raise TerminalHandoffError("handoff rejected: " + "; ".join(mismatches))
+
+        cur = conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, profile.strip(), comment.strip(), now),
+        )
+        comment_id = int(cur.lastrowid or 0)
+        _append_event(conn, task_id, "commented", {
+            "author": profile.strip(), "len": len(comment.strip()), "source": "terminal_handoff",
+        }, run_id=int(run_id))
+        event_kind = "completed"
+        event_payload = {
+            "result_len": len(result) if result else 0,
+            "summary": (final_summary or "").strip().splitlines()[0][:400] or None,
+        }
+        if transition == "complete":
+            conn.execute(
+                "UPDATE tasks SET status = 'done', result = ?, completed_at = ?, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "current_run_id = NULL, block_kind = NULL, block_recurrences = 0 WHERE id = ?",
+                (result, now, task_id),
+            )
+        else:
+            previous_kind = task["block_kind"]
+            previous_recurrences = int(task["block_recurrences"] or 0)
+            if kind == "dependency":
+                # Dependency waits are scheduler routing, not repeated human
+                # blocks. Match block_task(): preserve the loop counter.
+                recurrences = previous_recurrences
+                final_status = "todo"
+                event_kind = "dependency_wait"
+            else:
+                recurrences = previous_recurrences + 1 if previous_kind == kind else 1
+                if recurrences >= BLOCK_RECURRENCE_LIMIT:
+                    final_status = "triage"
+                    event_kind = "block_loop_detected"
+                else:
+                    final_status = "blocked"
+                    event_kind = "blocked"
+            conn.execute(
+                "UPDATE tasks SET status = ?, result = NULL, completed_at = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+                "current_run_id = NULL, block_kind = ?, block_recurrences = ? WHERE id = ?",
+                (final_status, kind, recurrences, task_id),
+            )
+            event_payload = {"reason": reason, "kind": kind, "recurrences": recurrences}
+            if event_kind == "block_loop_detected":
+                event_payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        conn.execute(
+            "UPDATE task_runs SET status = ?, outcome = ?, summary = ?, metadata = ?, ended_at = ?, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL WHERE id = ? AND ended_at IS NULL",
+            ("done" if transition == "complete" else "blocked", outcome, final_summary,
+             json.dumps(metadata, ensure_ascii=False) if metadata else None, now, int(run_id)),
+        )
+        event_payload["source"] = "terminal_handoff"
+        _append_event(conn, task_id, event_kind, event_payload, run_id=int(run_id))
+        response = {"task_id": task_id, "run_id": int(run_id), "status": final_status,
+                    "transition": transition, "comment_id": comment_id, "replayed": False}
+        conn.execute(
+            "INSERT INTO terminal_handoffs (task_id, idempotency_key, request_hash, run_id, transition, response_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, idempotency_key.strip(), request_hash, int(run_id), transition,
+             json.dumps(response, sort_keys=True), now),
+        )
+
+    if transition == "complete":
+        _clear_failure_counter(conn, task_id)
+        recompute_ready(conn)
+        _cleanup_workspace(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_completed" if transition == "complete" else "kanban_task_blocked",
+        task_id, board=get_current_board(), assignee=profile.strip(), run_id=int(run_id),
+        **({"summary": final_summary} if transition == "complete" else {"reason": reason}),
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------

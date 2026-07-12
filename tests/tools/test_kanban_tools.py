@@ -56,7 +56,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_comment", "kanban_handoff", "kanban_create", "kanban_link",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -136,7 +136,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     expected = {
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_comment", "kanban_handoff", "kanban_create", "kanban_link",
         "kanban_unblock",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -730,11 +730,14 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     kb.init_db()
     conn = kb.connect()
     try:
+        workspace = tmp_path / "goal-workspace"
+        workspace.mkdir()
         goal_task_id = kb.create_task(
             conn, title="goal-mode-block-test", assignee="test-worker",
             body="Must achieve X.", goal_mode=True,
+            workspace_kind="dir", workspace_path=str(workspace),
         )
-        kb.claim_task(conn, goal_task_id)
+        kb.claim_task(conn, goal_task_id, claimer="goal-claim")
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", goal_task_id)
@@ -815,6 +818,80 @@ def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
     conn = kb.connect()
     try:
         assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
+def _goal_handoff_args(task_id):
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        return {
+            "task_id": task_id, "run_id": task.current_run_id,
+            "profile": "test-worker", "workspace": task.workspace_path,
+            "claim_lock": "goal-claim", "idempotency_key": "goal-handoff-1",
+            "transition": "complete", "comment": "external worker handoff",
+            "summary": "finished",
+        }
+    finally:
+        conn.close()
+
+
+def test_handoff_goal_mode_complete_rejected_by_judge(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+    monkeypatch.setattr(kt, "judge_goal", lambda **kwargs: ("continue", "not done", None))
+    out = json.loads(kt._handle_handoff(_goal_handoff_args(tid)))
+    assert "Goal completion rejected" in out["error"]
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.list_comments(conn, tid) == []
+    finally:
+        conn.close()
+
+
+def test_handoff_goal_mode_judge_exception_fails_open(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(kt, "_goal_judge_available", lambda: True)
+
+    def broken_judge(**kwargs):
+        raise RuntimeError("judge unavailable")
+
+    monkeypatch.setattr(kt, "judge_goal", broken_judge)
+    out = json.loads(kt._handle_handoff(_goal_handoff_args(tid)))
+    assert out["ok"] is True
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "done"
+        assert [comment.body for comment in kb.list_comments(conn, tid)] == [
+            "external worker handoff"
+        ]
+    finally:
+        conn.close()
+
+
+def test_handoff_goal_mode_invalid_block_rejected_without_mutation(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    args = _goal_handoff_args(tid)
+    args.update(transition="block", summary=None, reason="giving up", kind="transient")
+    out = json.loads(kt._handle_handoff(args))
+    assert "goal_mode" in out["error"]
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.list_comments(conn, tid) == []
     finally:
         conn.close()
 

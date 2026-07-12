@@ -831,6 +831,68 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _handle_handoff(args: dict, **kw) -> str:
+    """Claim-guarded atomic terminal handoff for external worker adapters."""
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            transition = str(args.get("transition") or "")
+            kind = args.get("kind")
+            task_id = str(args.get("task_id") or "")
+            task = kb.get_task(conn, task_id)
+            if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
+                return tool_error(
+                    f"kanban_handoff: kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+                )
+            if task and task.goal_mode and transition == "block" and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS:
+                return tool_error(
+                    f"kanban_handoff: goal_mode tasks can only block with kind in "
+                    f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r})"
+                )
+            if task and task.goal_mode and transition == "complete" and _goal_judge_available():
+                verdict = "done"
+                judge_reason = ""
+                try:
+                    judge_result = judge_goal(
+                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                        last_response=str(args.get("summary") or args.get("result") or "").strip(),
+                    )
+                    verdict, judge_reason = judge_result[:2]
+                except Exception as judge_exc:
+                    # Mirror kanban_complete: a broken auxiliary judge must
+                    # not wedge an otherwise valid terminal claim.
+                    logger.warning(
+                        "goal judge check failed, allowing atomic handoff: %s",
+                        judge_exc,
+                        exc_info=True,
+                    )
+                if verdict != "done":
+                    return tool_error(
+                        f"kanban_handoff: Goal completion rejected by judge: {judge_reason}"
+                    )
+            response = kb.terminal_handoff(
+                conn, task_id, run_id=int(args.get("run_id")),
+                profile=str(args.get("profile") or ""), workspace=str(args.get("workspace") or ""),
+                claim_lock=str(args.get("claim_lock") or ""),
+                idempotency_key=str(args.get("idempotency_key") or ""),
+                transition=transition,
+                comment=redact_sensitive_text(str(args.get("comment") or ""), force=True),
+                summary=redact_sensitive_text(str(args["summary"]), force=True) if args.get("summary") else None,
+                metadata=args.get("metadata"),
+                result=redact_sensitive_text(str(args["result"]), force=True) if args.get("result") else None,
+                reason=redact_sensitive_text(str(args["reason"]), force=True) if args.get("reason") else None,
+                kind=kind,
+            )
+            return _ok(**response)
+        finally:
+            conn.close()
+    except (TypeError, ValueError) as e:
+        return tool_error(f"kanban_handoff: {e}")
+    except Exception as e:
+        logger.exception("kanban_handoff failed")
+        return tool_error(f"kanban_handoff: {e}")
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -1387,6 +1449,24 @@ KANBAN_COMMENT_SCHEMA = {
     },
 }
 
+KANBAN_HANDOFF_SCHEMA = {
+    "name": "kanban_handoff",
+    "description": "Atomically validate an external worker claim, append its handoff, and complete or block the run. Idempotent retries return the original result.",
+    "parameters": {"type": "object", "properties": {
+        "task_id": {"type": "string"}, "run_id": {"type": "integer"},
+        "profile": {"type": "string"}, "workspace": {"type": "string"},
+        "claim_lock": {"type": "string"}, "idempotency_key": {"type": "string"},
+        "transition": {"type": "string", "enum": ["complete", "block"]},
+        "comment": {"type": "string"}, "summary": {"type": "string"},
+        "metadata": {"type": "object"}, "result": {"type": "string"},
+        "reason": {"type": "string"},
+        "kind": {"type": "string", "enum": ["dependency", "needs_input", "capability", "transient"]},
+        "board": _board_schema_prop(),
+    }, "required": ["task_id", "run_id", "profile", "workspace", "claim_lock",
+                    "idempotency_key", "transition", "comment"]},
+}
+
+
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
@@ -1642,6 +1722,11 @@ registry.register(
     handler=_handle_comment,
     check_fn=_check_kanban_mode,
     emoji="💬",
+)
+
+registry.register(
+    name="kanban_handoff", toolset="kanban", schema=KANBAN_HANDOFF_SCHEMA,
+    handler=_handle_handoff, check_fn=_check_kanban_mode, emoji="🤝",
 )
 
 registry.register(

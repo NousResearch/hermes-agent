@@ -334,6 +334,60 @@ def _looks_like_error_output(content: Any) -> bool:
     )
 
 
+
+def _build_tool_trace_from_messages(
+    messages: Any,
+) -> list[Dict[str, Any]]:
+    """Reconstruct an ordered tool_trace from a chat-completions message list.
+
+    Each assistant tool_call becomes an entry; matching tool-role responses
+    (paired by tool_call_id) decorate that entry with ``result_bytes`` and
+    ``status``. Entries that never received a response keep ``status`` unset —
+    callers can then mark the trailing one as ``"in_progress"``.
+
+    Uses the same content normalization + conservative error classifier as the
+    normal-completion path (``_stringify_tool_content`` /
+    ``_looks_like_error_output``). Extracted so the N-API-call timeout branch
+    can reuse it (closes #17308) without reintroducing substring heuristics.
+    """
+    tool_trace: list[Dict[str, Any]] = []
+    trace_by_id: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(messages, list):
+        return tool_trace
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
+                entry_t = {
+                    "tool": fn.get("name", "unknown"),
+                    "args_bytes": len(fn.get("arguments", "") or ""),
+                }
+                tool_trace.append(entry_t)
+                tc_id = tc.get("id")
+                if tc_id:
+                    trace_by_id[tc_id] = entry_t
+        elif msg.get("role") == "tool":
+            content = _stringify_tool_content(msg.get("content", ""))
+            is_error = _looks_like_error_output(content)
+            result_meta = {
+                "result_bytes": len(content),
+                "status": "error" if is_error else "ok",
+            }
+            # Match by tool_call_id for parallel calls
+            tc_id = msg.get("tool_call_id")
+            target = trace_by_id.get(tc_id) if tc_id else None
+            if target is not None:
+                target.update(result_meta)
+            elif tool_trace:
+                # Fallback for messages without tool_call_id
+                tool_trace[-1].update(result_meta)
+    return tool_trace
+
+
 def _normalize_role(r: Optional[str]) -> str:
     """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
 
@@ -2017,6 +2071,54 @@ def _run_single_child(
                 except Exception:
                     pass
 
+            # For N-API-call timeouts, reconstruct what the child was doing
+            # so the lead agent can distinguish 'tool finished, next LLM request
+            # stuck' from 'tool itself hung'. Closes #17308 — the gap between
+            # #1175 (normal completion has tool_trace) and #15105 (0-API-call
+            # timeout has diagnostic_path) was that N-API-call timeouts
+            # surfaced a vague string and nothing else.
+            timeout_tool_trace: list[Dict[str, Any]] = []
+            timeout_last_tool: Optional[str] = None
+            timeout_last_tool_status: Optional[str] = None
+            timeout_current_tool: Optional[str] = None
+            if is_timeout and child_api_calls > 0:
+                try:
+                    _msgs = getattr(child, "_session_messages", None) or []
+                    timeout_tool_trace = _build_tool_trace_from_messages(_msgs)
+                except Exception as exc:
+                    logger.debug(
+                        "Subagent %d timeout: tool_trace reconstruction failed: %s",
+                        task_index,
+                        exc,
+                    )
+                    timeout_tool_trace = []
+                # current_tool from the activity summary captures a tool that
+                # was *started* but whose tool-role response never arrived —
+                # i.e. the tool itself is the prime suspect.
+                try:
+                    timeout_current_tool = (
+                        _summary.get("current_tool") if isinstance(_summary, dict) else None
+                    )
+                except Exception:
+                    timeout_current_tool = None
+                # last_tool / last_tool_status: read off the trace tail. If the
+                # final entry has no result yet, mark it in_progress — that's
+                # the 'tool itself hung' fingerprint.
+                if timeout_tool_trace:
+                    _tail = timeout_tool_trace[-1]
+                    timeout_last_tool = _tail.get("tool")
+                    if "status" in _tail:
+                        timeout_last_tool_status = _tail["status"]
+                    else:
+                        timeout_last_tool_status = "in_progress"
+                        _tail["status"] = "in_progress"
+                # Prefer the live current_tool when it disagrees with the
+                # trace tail (the trace can lag if the tool-role write is
+                # batched after the assistant call).
+                if timeout_current_tool and timeout_current_tool != timeout_last_tool:
+                    timeout_last_tool = timeout_current_tool
+                    timeout_last_tool_status = "in_progress"
+
             if is_timeout:
                 if child_api_calls == 0:
                     _err = (
@@ -2033,6 +2135,11 @@ def _run_single_child(
                         f"{child_api_calls} API call(s) completed — likely "
                         f"stuck on a slow API call or unresponsive network request."
                     )
+                    if timeout_last_tool:
+                        _suffix = f" last_tool={timeout_last_tool}"
+                        if timeout_last_tool_status:
+                            _suffix += f" (status={timeout_last_tool_status})"
+                        _err += _suffix
             else:
                 _err = str(_timeout_exc)
 
@@ -2046,6 +2153,13 @@ def _run_single_child(
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
+                # #17308: structured diagnostics for N-API-call timeouts.
+                # Empty/None on the 0-API-call branch (where diagnostic_path
+                # is the right artifact) and on non-timeout errors.
+                "tool_trace": timeout_tool_trace,
+                "last_tool": timeout_last_tool,
+                "last_tool_status": timeout_last_tool_status,
+                "current_tool": timeout_current_tool,
             }
         finally:
             # Shut down executor without waiting — if the child thread
@@ -2085,39 +2199,8 @@ def _run_single_child(
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
-        tool_trace: list[Dict[str, Any]] = []
-        trace_by_id: Dict[str, Dict[str, Any]] = {}
         messages = result.get("messages") or []
-        if isinstance(messages, list):
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    continue
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        fn = tc.get("function", {})
-                        entry_t = {
-                            "tool": fn.get("name", "unknown"),
-                            "args_bytes": len(fn.get("arguments", "")),
-                        }
-                        tool_trace.append(entry_t)
-                        tc_id = tc.get("id")
-                        if tc_id:
-                            trace_by_id[tc_id] = entry_t
-                elif msg.get("role") == "tool":
-                    content = _stringify_tool_content(msg.get("content", ""))
-                    is_error = _looks_like_error_output(content)
-                    result_meta = {
-                        "result_bytes": len(content),
-                        "status": "error" if is_error else "ok",
-                    }
-                    # Match by tool_call_id for parallel calls
-                    tc_id = msg.get("tool_call_id")
-                    target = trace_by_id.get(tc_id) if tc_id else None
-                    if target is not None:
-                        target.update(result_meta)
-                    elif tool_trace:
-                        # Fallback for messages without tool_call_id
-                        tool_trace[-1].update(result_meta)
+        tool_trace = _build_tool_trace_from_messages(messages)
 
         # Determine exit reason
         if interrupted:

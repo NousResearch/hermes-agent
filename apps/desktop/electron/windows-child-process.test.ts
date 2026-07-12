@@ -14,8 +14,7 @@ function readElectronFile(name) {
 }
 
 function requireHiddenChildOptions(source, needle) {
-  const match = needle instanceof RegExp ? needle.exec(source) : null
-  const index = needle instanceof RegExp ? (match?.index ?? -1) : source.indexOf(needle)
+  const index = needle instanceof RegExp ? source.search(needle) : source.indexOf(needle)
   assert.notEqual(index, -1, `missing call site: ${needle}`)
   const snippet = source.slice(index, index + 700)
   assert.match(
@@ -86,7 +85,7 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
   assert.match(helperSnippet, /forceKillProcessTree\(child\.pid\)/)
   assert.match(helperSnippet, /child\.kill\('SIGTERM'\)/)
 
-  const resetIndex = source.indexOf('function resetHermesConnection()')
+  const resetIndex = source.search(/function resetHermesConnection\([^)]*\)/)
   assert.notEqual(resetIndex, -1, 'missing resetHermesConnection')
   const resetSnippet = source.slice(resetIndex, resetIndex + 300)
   assert.match(resetSnippet, /stopBackendChild\(hermesProcess\)/)

@@ -72,6 +72,38 @@ function normalizeRemoteBaseUrl(rawUrl) {
   return parsed.toString().replace(/\/+$/, '')
 }
 
+function isLoopbackRemoteBaseUrl(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(normalizeRemoteBaseUrl(rawUrl))
+  } catch {
+    return false
+  }
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '::1'].includes(hostname)
+}
+
+function extractDashboardSessionToken(html) {
+  const match = String(html || '').match(
+    /window\.__HERMES_SESSION_TOKEN__\s*=\s*("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*')/
+  )
+  if (!match) {
+    return null
+  }
+
+  const literal = match[1]
+  let token = ''
+  try {
+    token = literal.startsWith('"') ? JSON.parse(literal) : literal.slice(1, -1)
+  } catch {
+    return null
+  }
+
+  token = String(token || '').trim()
+  return token || null
+}
+
 function buildGatewayWsUrl(baseUrl, token) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
@@ -98,7 +130,8 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  *
  * Return semantics:
  *   - token mode + token   → ws(s)://…/api/ws?token=…
- *   - token mode, no token → null  (genuine skip; nothing to authenticate with)
+ *   - token mode + loopback, no token → discover dashboard token, then build
+ *   - token mode, no token, non-loopback → null  (genuine skip)
  *   - oauth, mint ok       → ws(s)://…/api/ws?ticket=…
  *   - oauth, mint fails    → THROWS  (NOT a skip)
  *
@@ -112,7 +145,10 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  * @param {string} baseUrl
  * @param {'token'|'oauth'} authMode
  * @param {string|null} token
- * @param {{ mintTicket: (baseUrl: string) => Promise<string> }} deps
+ * @param {{
+ *   mintTicket?: (baseUrl: string) => Promise<string>,
+ *   discoverToken?: (baseUrl: string) => Promise<string|null>
+ * }} deps
  * @returns {Promise<string|null>}
  */
 async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
@@ -140,12 +176,17 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
 
     return buildGatewayWsUrlWithTicket(baseUrl, ticket)
   }
+  let wsToken = token
 
-  if (!token) {
+  if (!wsToken && isLoopbackRemoteBaseUrl(baseUrl) && typeof deps.discoverToken === 'function') {
+    wsToken = await deps.discoverToken(baseUrl)
+  }
+
+  if (!wsToken) {
     return null
   }
 
-  return buildGatewayWsUrl(baseUrl, token)
+  return buildGatewayWsUrl(baseUrl, wsToken)
 }
 
 // Normalize a profile name to a connection scope key, or null for the global
@@ -337,6 +378,8 @@ export {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  extractDashboardSessionToken,
+  isLoopbackRemoteBaseUrl,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normAuthMode,

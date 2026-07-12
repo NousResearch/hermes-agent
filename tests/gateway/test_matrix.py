@@ -2967,6 +2967,18 @@ class TestMatrixMarkdownHtmlFormatting:
         assert "<blockquote>" in result
         assert "A quote" in result
 
+    def test_github_style_table(self):
+        result = self.convert(
+            "| Item | Quantity |\n"
+            "| :--- | ---: |\n"
+            "| Apples | 4 |\n"
+            "| Bread | 1 |"
+        )
+        assert "<table>" in result
+        assert "<thead><tr><th>Item</th><th>Quantity</th></tr></thead>" in result
+        assert "<tbody><tr><td>Apples</td><td>4</td></tr>" in result
+        assert "<tr><td>Bread</td><td>1</td></tr></tbody>" in result
+
     def test_horizontal_rule(self):
         assert "<hr>" in self.convert("---")
         assert "<hr>" in self.convert("***")

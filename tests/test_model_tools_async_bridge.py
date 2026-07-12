@@ -376,6 +376,7 @@ class TestVisionDispatchLoopSafety:
                 new_callable=AsyncMock,
                 return_value=True,
             ),
+            patch("tools.url_safety.is_safe_url", return_value=True),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/jpeg;base64,abc",
@@ -421,6 +422,7 @@ class TestVisionDispatchLoopSafety:
                 new_callable=AsyncMock,
                 return_value=True,
             ),
+            patch("tools.url_safety.is_safe_url", return_value=True),
             patch(
                 "tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/jpeg;base64,abc",

@@ -16,9 +16,6 @@ __pycache__/
 .env.development
 .env.test
 .hermes-docker/
-.notebooklm-home/
-.notebooklm-cli-venv/
-.notebooklm-playwright/
 .pip-cache/
 .uv-cache/
 compose.hermes.local.yml

@@ -462,7 +462,7 @@ def test_legacy_session_keeps_original_response_and_event_shape():
     sid = created["session_id"]
 
     assert "synchronization" not in created
-    assert "mobile_sync" not in server._sessions[sid]
+    assert not server._sessions[sid].get("mobile_sync_retention")
 
     server._emit("status.update", sid, {"kind": "idle", "text": "Ready"})
 
@@ -476,7 +476,8 @@ def test_legacy_session_keeps_original_response_and_event_shape():
             "payload": {"kind": "idle", "text": "Ready"},
         },
     }
-    assert "mobile_sync" not in server._sessions[sid]
+    assert not server._sessions[sid].get("mobile_sync_retention")
+    assert server._sessions[sid]["mobile_sync"].cursor()["sequence"] == 0
 
 
 def test_mobile_replay_stays_retained_across_a_legacy_handoff(monkeypatch):
@@ -519,6 +520,116 @@ def test_mobile_replay_stays_retained_across_a_legacy_handoff(monkeypatch):
         "status.update"
     ]
     assert recovery["events"][0]["params"]["sequence"] == 1
+
+
+def test_transport_handoffs_serialize_audience_snapshot_and_delivery(monkeypatch):
+    class LegacyTransport(RecordingTransport):
+        def __init__(self):
+            super().__init__()
+            self.authorization = {
+                "subject": "dashboard-user",
+                "provider": "password",
+                "audience": "dashboard",
+                "scopes": ("*",),
+            }
+
+    class BlockingWriteMobile(RecordingTransport):
+        def __init__(self, entered, release):
+            super().__init__()
+            self._entered = entered
+            self._release = release
+
+        def write(self, obj):
+            self._entered.set()
+            assert self._release.wait(timeout=2)
+            return super().write(obj)
+
+    mobile = RecordingTransport()
+    legacy = LegacyTransport()
+    created = create_session(mobile)
+    sid = created["session_id"]
+    stored_id = created["stored_session_id"]
+    session = server._sessions[sid]
+    monkeypatch.setattr(server, "_get_db", lambda: SessionDBStub(stored_id))
+
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    blocking_mobile = BlockingWriteMobile(write_entered, release_write)
+    with session["history_lock"]:
+        server._set_session_transport_locked(session, blocking_mobile)
+
+    emitted = threading.Thread(
+        target=server._emit,
+        args=("status.update", sid, {"kind": "race", "text": "mobile"}),
+    )
+    legacy_result = {}
+
+    def attach_legacy():
+        legacy_result["payload"] = server._live_session_payload(
+            sid,
+            session,
+            transport=legacy,
+        )
+
+    emitted.start()
+    assert write_entered.wait(timeout=1)
+    legacy_handoff = threading.Thread(target=attach_legacy)
+    legacy_handoff.start()
+    assert legacy_handoff.is_alive()
+    release_write.set()
+    emitted.join(timeout=1)
+    legacy_handoff.join(timeout=1)
+    assert not emitted.is_alive()
+    assert not legacy_handoff.is_alive()
+    mobile_event = blocking_mobile.frames[-1]
+    assert mobile_event["params"]["sequence"] == 1
+    assert "synchronization" not in legacy_result["payload"]
+
+    auth_entered = threading.Event()
+    release_auth = threading.Event()
+
+    class BlockingAuthMobile(RecordingTransport):
+        def __init__(self):
+            self._authorization = dict(RecordingTransport().authorization)
+            self.frames = []
+
+        @property
+        def authorization(self):
+            auth_entered.set()
+            assert release_auth.wait(timeout=2)
+            return self._authorization
+
+    blocking_auth_mobile = BlockingAuthMobile()
+    mobile_result = {}
+    final_legacy_result = {}
+
+    def attach_mobile():
+        mobile_result["payload"] = server._live_session_payload(
+            sid,
+            session,
+            transport=blocking_auth_mobile,
+        )
+
+    def attach_final_legacy():
+        final_legacy_result["payload"] = server._live_session_payload(
+            sid,
+            session,
+            transport=legacy,
+        )
+
+    mobile_handoff = threading.Thread(target=attach_mobile)
+    mobile_handoff.start()
+    assert auth_entered.wait(timeout=1)
+    final_legacy_handoff = threading.Thread(target=attach_final_legacy)
+    final_legacy_handoff.start()
+    assert final_legacy_handoff.is_alive()
+    release_auth.set()
+    mobile_handoff.join(timeout=1)
+    final_legacy_handoff.join(timeout=1)
+    assert not mobile_handoff.is_alive()
+    assert not final_legacy_handoff.is_alive()
+    assert "synchronization" in mobile_result["payload"]
+    assert "synchronization" not in final_legacy_result["payload"]
 
 
 def test_concurrent_first_mobile_snapshot_and_publish_share_one_stream():

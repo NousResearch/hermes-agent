@@ -821,7 +821,8 @@ def _close_sessions_for_transport(
             # Point detached sessions at the drop sentinel (NOT real stdio) so
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
+            with session.setdefault("history_lock", threading.RLock()):
+                _set_session_transport_locked(session, _detached_ws_transport)
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
@@ -1160,38 +1161,24 @@ def _session_event_stream(session: dict) -> SessionEventStream:
         return _session_event_stream_locked(session)
 
 
-def _session_transport_requests_sync(session: dict) -> bool:
-    transport = session.get("transport") or current_transport()
+def _transport_requests_sync(transport: Any) -> bool:
     authorization = getattr(transport, "authorization", None)
     if not isinstance(authorization, dict):
         return False
     from tui_gateway.mobile_contract import MOBILE_AUDIENCE, effective_authorization
 
-
     return effective_authorization(authorization)["audience"] == MOBILE_AUDIENCE
 
 
-def _enable_session_sync_retention(session: dict) -> SessionEventStream:
-    """Atomically enable replay retention and return its single stream."""
-    with _session_event_stream_init_lock:
-        stream = _session_event_stream_locked(session)
-        session["mobile_sync_retention"] = True
-        return stream
+def _captured_session_transport(session: dict) -> Transport:
+    return session.get("transport") or current_transport() or _stdio_transport
 
 
-def _session_retains_sync(session: dict) -> bool:
-    """Keep replay after mobile disconnect without changing legacy wire shape.
-
-    Legacy stdio and Desktop clients retain the original response/event shape
-    even after a mobile client previously attached. The sticky bit controls
-    replay retention only; the current transport audience controls envelopes.
-    """
-    if session.get("mobile_sync_retention"):
-        return True
-    if _session_transport_requests_sync(session):
-        _enable_session_sync_retention(session)
-        return True
-    return False
+def _set_session_transport_locked(session: dict, transport: Transport) -> None:
+    """Replace the event recipient while holding history then stream locks."""
+    stream = _session_event_stream(session)
+    with stream.transition(lambda _stream: None):
+        session["transport"] = transport
 
 
 def _emit(
@@ -1204,24 +1191,34 @@ def _emit(
     if payload is not None:
         params["payload"] = payload
     legacy_frame = {"jsonrpc": "2.0", "method": "event", "params": params}
-    if session is None or not _session_retains_sync(session):
+    if session is None:
         write_json(legacy_frame)
         return legacy_frame
 
-    mobile_recipient = _session_transport_requests_sync(session)
     stream = _session_event_stream(session)
-    if mobile_recipient:
-        return stream.publish(event, sid, payload, write_json)
+    with stream.transition(lambda _stream: None):
+        # Capture the recipient once under the same boundary used by transport
+        # handoff. Never classify one transport and then let write_json re-read
+        # a different transport before delivery.
+        recipient = _captured_session_transport(session)
+        mobile_recipient = _transport_requests_sync(recipient)
+        if mobile_recipient:
+            session["mobile_sync_retention"] = True
+        if not session.get("mobile_sync_retention"):
+            recipient.write(legacy_frame)
+            return legacy_frame
+        if mobile_recipient:
+            return stream.publish(event, sid, payload, recipient.write)
 
-    # Retain a sequenced copy for a future mobile reconnect, but preserve the
-    # original unsequenced event shape on the currently attached legacy wire.
-    stream.publish(
-        event,
-        sid,
-        payload,
-        lambda _sequenced: write_json(legacy_frame),
-    )
-    return legacy_frame
+        # Retain a sequenced copy for a future mobile reconnect, but preserve
+        # the original event shape on the currently attached legacy wire.
+        stream.publish(
+            event,
+            sid,
+            payload,
+            lambda _sequenced: recipient.write(legacy_frame),
+        )
+        return legacy_frame
 
 
 def _emit_with_sync_update(event: str, sid: str, payload: dict, update):
@@ -1238,8 +1235,12 @@ def _mark_snapshot_mutation(session: dict) -> None:
     Callers hold ``history_lock`` first, preserving the same history -> stream
     lock order used by snapshot capture and event publication.
     """
-    if _session_retains_sync(session):
-        _session_event_stream(session).mutate(lambda _stream: None)
+    stream = _session_event_stream(session)
+    with stream.transition(lambda _stream: None):
+        if _transport_requests_sync(_captured_session_transport(session)):
+            session["mobile_sync_retention"] = True
+        if session.get("mobile_sync_retention"):
+            stream.mutate(lambda _stream: None)
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
@@ -5402,7 +5403,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         session["queued_prompt"] = None
         session["running"] = True
         if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+            _set_session_transport_locked(session, queued["transport"])
     try:
         _run_prompt_submit(rid, sid, session, queued["text"])
     except Exception as exc:
@@ -5459,6 +5460,42 @@ def _conversation_root(db, session_id: str) -> str:
     )
 
 
+def _session_synchronization_locked(
+    sid: str,
+    session: dict,
+    stream: SessionEventStream,
+    cursor: object = None,
+) -> dict:
+    """Capture synchronization while history and stream boundaries are held."""
+    history = list(session.get("display_history_prefix") or []) + list(
+        session.get("history") or []
+    )
+    messages = _history_to_messages(history)
+    inflight = _inflight_snapshot(session, include_turn_id=True)
+    stored_session_id = _session_lookup_key(session, fallback=sid)
+    conversation_id = str(
+        session.get("conversation_id") or stored_session_id or sid
+    )
+    running = bool(session.get("running"))
+
+    def snapshot(state: dict) -> dict:
+        status = "waiting" if state["pending_interactions"] else (
+            "working" if running else "idle"
+        )
+        return {
+            "conversation_id": conversation_id,
+            "stored_session_id": stored_session_id,
+            "live_session_id": sid,
+            "messages": messages,
+            "inflight_turn": inflight,
+            "active_tools": state["active_tools"],
+            "pending_interactions": state["pending_interactions"],
+            "status": status,
+        }
+
+    return stream.synchronization(snapshot, cursor)
+
+
 def _session_synchronization(
     sid: str,
     session: dict,
@@ -5466,33 +5503,10 @@ def _session_synchronization(
 ) -> dict:
     """Capture history then the stream watermark using the documented lock order."""
     with session["history_lock"]:
-        history = list(session.get("display_history_prefix") or []) + list(
-            session.get("history") or []
-        )
-        messages = _history_to_messages(history)
-        inflight = _inflight_snapshot(session, include_turn_id=True)
-        stored_session_id = _session_lookup_key(session, fallback=sid)
-        conversation_id = str(
-            session.get("conversation_id") or stored_session_id or sid
-        )
-        running = bool(session.get("running"))
+        stream = _session_event_stream(session)
+        with stream.transition(lambda _stream: None):
+            return _session_synchronization_locked(sid, session, stream, cursor)
 
-        def snapshot(state: dict) -> dict:
-            status = "waiting" if state["pending_interactions"] else (
-                "working" if running else "idle"
-            )
-            return {
-                "conversation_id": conversation_id,
-                "stored_session_id": stored_session_id,
-                "live_session_id": sid,
-                "messages": messages,
-                "inflight_turn": inflight,
-                "active_tools": state["active_tools"],
-                "pending_interactions": state["pending_interactions"],
-                "status": status,
-            }
-
-        return _session_event_stream(session).synchronization(snapshot, cursor)
 
 
 def _attach_synchronization(
@@ -5501,11 +5515,19 @@ def _attach_synchronization(
     session: dict,
     cursor: object = None,
 ) -> dict:
-    if not _session_transport_requests_sync(session):
-        return payload
-    _enable_session_sync_retention(session)
-    payload["synchronization"] = _session_synchronization(sid, session, cursor)
-    return payload
+    with session["history_lock"]:
+        stream = _session_event_stream(session)
+        with stream.transition(lambda _stream: None):
+            if not _transport_requests_sync(_captured_session_transport(session)):
+                return payload
+            session["mobile_sync_retention"] = True
+            payload["synchronization"] = _session_synchronization_locked(
+                sid,
+                session,
+                stream,
+                cursor,
+            )
+            return payload
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -6441,31 +6463,42 @@ def _live_session_payload(
     transport: Transport | None = None,
     cursor: object = None,
 ) -> dict:
+    info = _fallback_session_info(session)
     with session["history_lock"]:
-        if cols is not None:
-            session["cols"] = cols
-        if transport is not None:
-            session["transport"] = transport
-        if touch:
-            session["last_active"] = time.time()
-        history = list(session.get("display_history_prefix") or []) + list(
-            session.get("history") or []
-        )
-        inflight = _inflight_snapshot(session)
-        running = bool(session.get("running"))
-    payload = {
-        "info": _fallback_session_info(session),
-        "message_count": len(history),
-        "messages": _history_to_messages(history),
-        "running": running,
-        "session_id": sid,
-        "session_key": _session_lookup_key(session, fallback=sid),
-        "started_at": float(session.get("created_at") or time.time()),
-        "status": _session_live_status(sid, session),
-    }
-    if inflight:
-        payload["inflight"] = inflight
-    return _attach_synchronization(payload, sid, session, cursor)
+        stream = _session_event_stream(session)
+        with stream.transition(lambda _stream: None):
+            if cols is not None:
+                session["cols"] = cols
+            if transport is not None:
+                session["transport"] = transport
+            if touch:
+                session["last_active"] = time.time()
+            history = list(session.get("display_history_prefix") or []) + list(
+                session.get("history") or []
+            )
+            inflight = _inflight_snapshot(session)
+            running = bool(session.get("running"))
+            payload = {
+                "info": info,
+                "message_count": len(history),
+                "messages": _history_to_messages(history),
+                "running": running,
+                "session_id": sid,
+                "session_key": _session_lookup_key(session, fallback=sid),
+                "started_at": float(session.get("created_at") or time.time()),
+                "status": _session_live_status(sid, session),
+            }
+            if inflight:
+                payload["inflight"] = inflight
+            if _transport_requests_sync(_captured_session_transport(session)):
+                session["mobile_sync_retention"] = True
+                payload["synchronization"] = _session_synchronization_locked(
+                    sid,
+                    session,
+                    stream,
+                    cursor,
+                )
+            return payload
 
 
 @method("session.active_list")
@@ -8857,7 +8890,7 @@ def _(rid, params: dict) -> dict:
                 CONVERSATION_CONTROL_SCOPE,
             )
             if t is not None and allow_control:
-                session["transport"] = t
+                _set_session_transport_locked(session, t)
             return _handle_busy_submit(
                 rid,
                 sid,
@@ -8867,7 +8900,7 @@ def _(rid, params: dict) -> dict:
                 allow_control=allow_control,
             )
         if t is not None:
-            session["transport"] = t
+            _set_session_transport_locked(session, t)
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)

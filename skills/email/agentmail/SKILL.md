@@ -11,6 +11,12 @@ metadata:
     homepage: https://agentmail.to
 prerequisites:
   commands: [agentmail]
+required_environment_variables:
+  - name: AGENTMAIL_API_KEY
+    prompt: AgentMail API key (starts with am_)
+    help: "Create one at https://console.agentmail.to — or run the CLI self-signup flow in references/signup.md to obtain a key without one."
+    required_for: "authenticating the agentmail CLI; not needed before self-signup"
+    optional: true
 ---
 
 # AgentMail Skill

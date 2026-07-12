@@ -3134,6 +3134,25 @@ class AIAgent:
             return
 
         # retain-last-known: only overwrite on a fresh valid parse
+        # ── Per-call authoritative cost (server-billed) ──────────────────────
+        # The Nous x-nous-credits-* headers report REMAINING balance AFTER this
+        # call. The cost of THIS call = (remaining before) - (remaining after)
+        # = old _credits_state.remaining_micros - new state.remaining_micros.
+        # This is the billable amount per call, independent of any price-table
+        # estimate. Stash it for the conversation loop's update_token_counts,
+        # which writes it to state.db.actual_cost_usd (incrementing). Cleared
+        # after each read so a stale value can't leak across calls.
+        _call_cost_micros = None
+        _prev = getattr(self, "_credits_state", None)
+        if (
+            _prev is not None
+            and getattr(_prev, "from_header", False)
+            and getattr(_prev, "remaining_micros", None) is not None
+            and state.remaining_micros is not None
+            and state.remaining_micros <= _prev.remaining_micros
+        ):
+            _call_cost_micros = _prev.remaining_micros - state.remaining_micros
+        self._last_call_actual_cost_micros = _call_cost_micros
         self._credits_state = state
         # Latch session-start remaining the first time we ever see a header
         if self._credits_session_start_micros is None:

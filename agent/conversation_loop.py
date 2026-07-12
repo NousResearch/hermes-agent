@@ -2116,6 +2116,19 @@ def run_conversation(
                                     _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
                                 except (TypeError, ValueError):  # pragma: no cover
                                     pass
+                            # Authoritative per-call cost from the Nous credits
+                            # headers (remaining-before minus remaining-after), if
+                            # captured this call. Overrides/complement the estimate;
+                            # update_token_counts increments actual_cost_usd, so pass
+                            # the per-call delta (None when no billable header).
+                            _actual_cost_usd = None
+                            _call_micros = getattr(agent, "_last_call_actual_cost_micros", None)
+                            if _call_micros:
+                                try:
+                                    _actual_cost_usd = float(_call_micros) / 1_000_000.0
+                                except (TypeError, ValueError):
+                                    _actual_cost_usd = None
+                            agent._last_call_actual_cost_micros = None
                             agent._session_db.update_token_counts(
                                 agent.session_id,
                                 input_tokens=canonical_usage.input_tokens,
@@ -2124,6 +2137,7 @@ def run_conversation(
                                 cache_write_tokens=canonical_usage.cache_write_tokens,
                                 reasoning_tokens=canonical_usage.reasoning_tokens,
                                 estimated_cost_usd=_cost_delta,
+                                actual_cost_usd=_actual_cost_usd,
                                 cost_status=cost_result.status,
                                 cost_source=cost_result.source,
                                 billing_provider=agent.provider,

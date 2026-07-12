@@ -377,3 +377,64 @@ class TestPickerIntegration:
 
         for row in _plugin_browser_providers():
             assert row.get("browser_plugin_name") == row.get("browser_provider")
+
+
+# ---------------------------------------------------------------------------
+# Firecrawl persistent profile
+# ---------------------------------------------------------------------------
+
+
+class TestFirecrawlProfile:
+    """Firecrawl persistent profile resolution and creation tests."""
+
+    def test_resolve_profile_default_none(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        p = get_provider("firecrawl")
+        assert p is not None
+        assert p._resolve_profile() is None
+
+    def test_resolve_profile_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        p = get_provider("firecrawl")
+        assert p is not None
+        monkeypatch.setenv("FIRECRAWL_BROWSER_PROFILE", "test-profile-123")
+        assert p._resolve_profile() == "test-profile-123"
+
+    def test_create_session_includes_profile(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.browser_registry import get_provider
+
+        p = get_provider("firecrawl")
+        assert p is not None
+
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "test-key")
+        monkeypatch.setenv("FIRECRAWL_BROWSER_PROFILE", "my-pers-profile")
+
+        class MockResponse:
+            ok = True
+            status_code = 200
+            def json(self):
+                return {"id": "session-123", "cdpUrl": "ws://test-cdp"}
+
+        posted_json = None
+        def mock_post(url, headers, json, timeout):
+            nonlocal posted_json
+            posted_json = json
+            return MockResponse()
+
+        monkeypatch.setattr("requests.post", mock_post)
+
+        session = p.create_session("task-999")
+        assert session["bb_session_id"] == "session-123"
+        assert session["features"].get("persistent_profile") is True
+        assert posted_json is not None
+        assert posted_json.get("profile") == {
+            "name": "my-pers-profile",
+            "saveChanges": True,
+        }

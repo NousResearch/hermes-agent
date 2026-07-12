@@ -6438,6 +6438,12 @@ async function ensureBackend(profile) {
     return startHermes()
   }
 
+  const stopping = poolStops.get(key)
+
+  if (stopping) {
+    await stopping
+  }
+
   const existing = backendPool.get(key)
 
   if (existing) {
@@ -6651,33 +6657,39 @@ async function spawnPoolBackend(profile, entry) {
   }
 }
 
-function stopPoolBackend(profile) {
+const poolStops = new Map()
+
+async function stopPoolBackend(profile) {
+  const stopping = poolStops.get(profile)
+
+  if (stopping) {
+    return stopping
+  }
   const entry = backendPool.get(profile)
 
   if (!entry) {
     return
   }
-  backendPool.delete(profile)
-  stopBackendChild(entry.process)
+  const stop = (async () => {
+    stopBackendChild(entry.process)
+    await waitForBackendExit(entry.process)
+  })().finally(() => {
+    if (backendPool.get(profile) === entry) {
+      backendPool.delete(profile)
+    }
+    poolStops.delete(profile)
+  })
+
+  poolStops.set(profile, stop)
+  return stop
 }
 
-async function teardownPoolBackendAndWait(profile) {
-  const entry = backendPool.get(profile)
-
-  if (!entry) {
-    return
-  }
-  backendPool.delete(profile)
-
-  stopBackendChild(entry.process)
-
-  await waitForBackendExit(entry.process)
+function teardownPoolBackendAndWait(profile) {
+  return stopPoolBackend(profile)
 }
 
 function stopAllPoolBackends() {
-  for (const profile of [...backendPool.keys()]) {
-    stopPoolBackend(profile)
-  }
+  return Promise.all([...backendPool.keys()].map(profile => stopPoolBackend(profile)))
 }
 
 function profileNameFromDeleteRequest(request) {
@@ -9119,7 +9131,19 @@ function configureSpellChecker() {
   }
 }
 
-app.on('before-quit', () => {
+let backendQuitReady = false
+let backendQuitPromise = null
+
+app.on('before-quit', event => {
+  if (backendQuitReady) {
+    return
+  }
+  event.preventDefault()
+
+  if (backendQuitPromise) {
+    return
+  }
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
@@ -9147,8 +9171,14 @@ app.on('before-quit', () => {
     disposeTerminalSession(id)
   }
 
-  stopBackendChild(hermesProcess)
-  stopAllPoolBackends()
+  const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
+  stopBackendChild(dying)
+  hermesProcess = null
+
+  backendQuitPromise = Promise.all([waitForBackendExit(dying), stopAllPoolBackends()]).finally(() => {
+    backendQuitReady = true
+    app.quit()
+  })
 })
 
 app.on('window-all-closed', () => {
